@@ -33,6 +33,72 @@ from hydra_suite.runtime.compute_runtime import derive_pose_runtime_settings
 logger = logging.getLogger(__name__)
 
 
+def _norm_hw(value: Any) -> Optional[int]:
+    """Normalize a height/width value: align to 32, clamp to [64, 1024]."""
+    try:
+        v = int(value)
+    except Exception:
+        return None
+    if v <= 0:
+        return None
+    v = int(((v + 31) // 32) * 32)
+    v = max(64, min(1024, v))
+    return v
+
+
+def _resolve_device_and_batch(
+    params: Dict[str, Any],
+    backend_family: str,
+    derived_device: str,
+) -> Tuple[str, int]:
+    """Resolve the device string and batch size from params and derived settings."""
+    if backend_family == "sleap":
+        device = (
+            derived_device
+            or str(params.get("POSE_SLEAP_DEVICE", "auto")).strip()
+            or "auto"
+        )
+        batch_size = int(params.get("POSE_SLEAP_BATCH", 4))
+    else:
+        device = derived_device or (
+            str(params.get("YOLO_DEVICE", params.get("POSE_DEVICE", "auto"))).strip()
+            or "auto"
+        )
+        batch_size = int(
+            params.get("POSE_YOLO_BATCH", params.get("POSE_BATCH_SIZE", 4))
+        )
+    return device, batch_size
+
+
+def _resolve_export_hw(
+    params: Dict[str, Any],
+    backend_family: str,
+    model_path: str,
+) -> Optional[Tuple[int, int]]:
+    """Resolve the SLEAP export input height/width from params and model introspection."""
+    derived_model_hw: Optional[Tuple[int, int]] = None
+    if backend_family == "sleap" and model_path:
+        try:
+            derived_model_hw = derive_sleap_export_input_hw(model_path)
+        except Exception:
+            derived_model_hw = None
+
+    export_h = _norm_hw(params.get("POSE_SLEAP_EXPORT_INPUT_HEIGHT", 0))
+    export_w = _norm_hw(params.get("POSE_SLEAP_EXPORT_INPUT_WIDTH", 0))
+    if export_h is None and export_w is None and derived_model_hw is not None:
+        export_h, export_w = int(derived_model_hw[0]), int(derived_model_hw[1])
+    if export_h is None and export_w is None:
+        crop_hint = _norm_hw(params.get("IDENTITY_CROP_MAX_SIZE", 0))
+        if crop_hint is not None:
+            export_h = crop_hint
+            export_w = crop_hint
+    if export_h is None and export_w is not None:
+        export_h = export_w
+    if export_w is None and export_h is not None:
+        export_w = export_h
+    return (int(export_h), int(export_w)) if (export_h and export_w) else None
+
+
 def build_runtime_config(
     params: Dict[str, Any],
     out_root: str,
@@ -67,57 +133,12 @@ def build_runtime_config(
         )
         derived_device = str(derived.get("pose_sleap_device", "auto")).strip() or "auto"
 
-    if backend_family == "sleap":
-        device = (
-            derived_device
-            or str(params.get("POSE_SLEAP_DEVICE", "auto")).strip()
-            or "auto"
-        )
-        batch_size = int(params.get("POSE_SLEAP_BATCH", 4))
-    else:
-        device = derived_device or (
-            str(params.get("YOLO_DEVICE", params.get("POSE_DEVICE", "auto"))).strip()
-            or "auto"
-        )
-        batch_size = int(
-            params.get(
-                "POSE_YOLO_BATCH",
-                params.get("POSE_BATCH_SIZE", 4),
-            )
-        )
-
-    def _norm_hw(value: Any) -> Optional[int]:
-        try:
-            v = int(value)
-        except Exception:
-            return None
-        if v <= 0:
-            return None
-        v = int(((v + 31) // 32) * 32)
-        v = max(64, min(1024, v))
-        return v
-
-    derived_model_hw: Optional[Tuple[int, int]] = None
-    if backend_family == "sleap" and model_path:
-        try:
-            derived_model_hw = derive_sleap_export_input_hw(model_path)
-        except Exception:
-            derived_model_hw = None
-
-    export_h = _norm_hw(params.get("POSE_SLEAP_EXPORT_INPUT_HEIGHT", 0))
-    export_w = _norm_hw(params.get("POSE_SLEAP_EXPORT_INPUT_WIDTH", 0))
-    if export_h is None and export_w is None and derived_model_hw is not None:
-        export_h, export_w = int(derived_model_hw[0]), int(derived_model_hw[1])
-    if export_h is None and export_w is None:
-        crop_hint = _norm_hw(params.get("IDENTITY_CROP_MAX_SIZE", 0))
-        if crop_hint is not None:
-            export_h = crop_hint
-            export_w = crop_hint
-    if export_h is None and export_w is not None:
-        export_h = export_w
-    if export_w is None and export_h is not None:
-        export_w = export_h
-    export_hw = (int(export_h), int(export_w)) if (export_h and export_w) else None
+    device, batch_size = _resolve_device_and_batch(
+        params,
+        backend_family,
+        derived_device,
+    )
+    export_hw = _resolve_export_hw(params, backend_family, model_path)
 
     return PoseRuntimeConfig(
         backend_family=backend_family,

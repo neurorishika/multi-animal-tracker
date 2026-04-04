@@ -157,7 +157,9 @@ class NewProjectDialog(QDialog):
         )
 
     def _pick_location(self):
-        start = str(self._parent_dir or Path.home())
+        from hydra_suite.paths import get_projects_dir
+
+        start = str(self._parent_dir or get_projects_dir())
         d = QFileDialog.getExistingDirectory(self, "Choose parent folder", start)
         if not d:
             return

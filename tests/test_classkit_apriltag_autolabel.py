@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+
 from hydra_suite.classkit.presets import apriltag_preset
+from hydra_suite.classkit.store.db import ClassKitDB
 
 
 def test_apriltag_preset_labels():
@@ -42,12 +49,6 @@ def test_apriltag_preset_max_tag_id_zero():
     scheme = apriltag_preset("tag36h11", max_tag_id=0)
     assert scheme.factors[0].labels == ["tag_0", "no_tag"]
     assert scheme.total_classes == 2
-
-
-import sqlite3
-from pathlib import Path
-
-from hydra_suite.classkit.store.db import ClassKitDB
 
 
 def _make_db(tmp_path: Path) -> ClassKitDB:
@@ -106,10 +107,6 @@ def test_clear_all_labels_on_empty_db_is_noop(tmp_path):
     db = ClassKitDB(tmp_path / "empty.db")
     db.clear_all_labels()  # must not raise
 
-
-from unittest.mock import MagicMock, patch
-
-import numpy as np
 
 # ---------------------------------------------------------------------------
 # Helpers

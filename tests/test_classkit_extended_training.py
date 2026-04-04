@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import torch
 
@@ -361,7 +363,6 @@ def test_build_torchvision_classifier_tinyclassifier():
 # ---------------------------------------------------------------------------
 # Task 3: runner dispatch tests
 # ---------------------------------------------------------------------------
-from unittest.mock import patch
 
 
 def test_runner_flat_tiny_alias_dispatches_to_custom_classify():

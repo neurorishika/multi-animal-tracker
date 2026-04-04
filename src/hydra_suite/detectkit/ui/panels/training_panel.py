@@ -1333,15 +1333,30 @@ class TrainingPanel(QWidget):
         if "class_name" in config:
             self.line_class.setText(config["class_name"])
 
-        # Roles
-        roles = config.get("roles", [])
+        self._apply_roles_config(config.get("roles", []))
+        self._apply_hyperparams_config(config.get("hyperparams", {}))
+        self._apply_imgsz_config(config.get("imgsz", {}))
+        self._apply_split_config(config.get("split", {}))
+        self._apply_seed_dedup_config(config)
+        self._apply_crop_derivation_config(config.get("crop_derivation", {}))
+        self._apply_base_models_config(config.get("base_models", {}))
+        self._apply_augmentation_config(config.get("augmentation", {}))
+
+        if "device" in config:
+            self.combo_device.setCurrentText(config["device"])
+
+        self._apply_publish_config(config.get("publish", {}))
+        self._append_log(f"Config loaded from {path}")
+
+    def _apply_roles_config(self, roles):
+        """Apply role checkboxes from loaded config."""
         for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
             chk = getattr(self, f"chk_role_{role_key}", None)
             if chk:
                 chk.setChecked(role_key in roles)
 
-        # Hyperparams
-        hp = config.get("hyperparams", {})
+    def _apply_hyperparams_config(self, hp):
+        """Apply hyperparameter widgets from loaded config."""
         for key, widget_name in (
             ("epochs", "spin_epochs"),
             ("batch", "spin_batch"),
@@ -1358,29 +1373,30 @@ class TrainingPanel(QWidget):
         if "auto_batch" in hp:
             self.chk_auto_batch.setChecked(hp["auto_batch"])
 
-        # Image sizes
-        isz = config.get("imgsz", {})
+    def _apply_imgsz_config(self, isz):
+        """Apply image-size spinners from loaded config."""
         for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
             if role_key in isz:
                 w = getattr(self, f"spin_imgsz_{role_key}", None)
                 if w:
                     w.setValue(isz[role_key])
 
-        # Split
-        sp = config.get("split", {})
+    def _apply_split_config(self, sp):
+        """Apply train/val split values from loaded config."""
         if "train" in sp:
             self.spin_train.setValue(sp["train"])
         if "val" in sp:
             self.spin_val.setValue(sp["val"])
 
-        # Seed / dedup
+    def _apply_seed_dedup_config(self, config):
+        """Apply seed and dedup settings from loaded config."""
         if "seed" in config:
             self.spin_seed.setValue(config["seed"])
         if "dedup" in config:
             self.chk_dedup.setChecked(config["dedup"])
 
-        # Crop derivation
-        cd = config.get("crop_derivation", {})
+    def _apply_crop_derivation_config(self, cd):
+        """Apply crop derivation settings from loaded config."""
         if "pad_ratio" in cd:
             self.spin_crop_pad.setValue(cd["pad_ratio"])
         if "min_crop_size_px" in cd:
@@ -1388,16 +1404,16 @@ class TrainingPanel(QWidget):
         if "enforce_square" in cd:
             self.chk_crop_square.setChecked(cd["enforce_square"])
 
-        # Base models
-        bm = config.get("base_models", {})
+    def _apply_base_models_config(self, bm):
+        """Apply base model combo boxes from loaded config."""
         for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
             if role_key in bm:
                 combo = getattr(self, f"combo_model_{role_key}", None)
                 if combo:
                     combo.setCurrentText(bm[role_key])
 
-        # Augmentation
-        aug = config.get("augmentation", {})
+    def _apply_augmentation_config(self, aug):
+        """Apply augmentation settings from loaded config."""
         if "enabled" in aug:
             self.aug_group.setChecked(aug["enabled"])
         for key in (
@@ -1415,12 +1431,8 @@ class TrainingPanel(QWidget):
                 if w:
                     w.setValue(aug[key])
 
-        # Device
-        if "device" in config:
-            self.combo_device.setCurrentText(config["device"])
-
-        # Publish
-        pub = config.get("publish", {})
+    def _apply_publish_config(self, pub):
+        """Apply publish settings from loaded config."""
         if "species" in pub:
             self.line_species.setText(pub["species"])
         if "model_tag" in pub:
@@ -1429,8 +1441,6 @@ class TrainingPanel(QWidget):
             self.chk_auto_import.setChecked(pub["auto_import"])
         if "auto_select" in pub:
             self.chk_auto_select.setChecked(pub["auto_select"])
-
-        self._append_log(f"Config loaded from {path}")
 
     # ------------------------------------------------------------------
     # Analysis / preview (delegate to canvas if available)

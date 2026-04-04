@@ -49,8 +49,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-logger = logging.getLogger("pose_label")
-
 from .canvas import FrameListDelegate, PoseCanvas
 
 # Local refactored modules
@@ -81,6 +79,8 @@ from .utils import (
     save_ui_settings,
 )
 from .workers import BulkPosePredictWorker, PosePredictWorker, SleapServiceWorker
+
+logger = logging.getLogger("pose_label")
 
 # External imports (formerly in try/except blocks in main.py)
 try:
@@ -3474,10 +3474,12 @@ class MainWindow(QMainWindow):
         """
         from PySide6.QtWidgets import QFileDialog
 
+        from hydra_suite.paths import get_projects_dir
+
         start = (
             str(self.project.images_dir.parent)
             if self.project.images_dir
-            else str(Path.home())
+            else str(get_projects_dir())
         )
 
         path, _ = QFileDialog.getOpenFileName(
@@ -3811,106 +3813,116 @@ class MainWindow(QMainWindow):
             self._show_canvas_logo_placeholder()
             self.lbl_info.setText("No images found.")
 
-    def _cleanup_deleted_cache(self, deleted_paths: List[Path]) -> None:
-        if not deleted_paths:
-            return
-        deleted_keys = set()
+    @staticmethod
+    def _build_deleted_keys(deleted_paths: List[Path]) -> set:
+        """Build a set of string keys (original + resolved) for deleted paths."""
+        deleted_keys: set = set()
         for p in deleted_paths:
             try:
                 deleted_keys.add(str(p))
                 deleted_keys.add(str(Path(p).resolve()))
             except Exception:
                 deleted_keys.add(str(p))
+        return deleted_keys
 
-        # Metadata cleanup
+    @staticmethod
+    def _key_in_deleted(key: str, deleted_keys: set) -> bool:
+        """Check whether *key* (a path string) matches any deleted path."""
+        try:
+            return key in deleted_keys or str(Path(key).resolve()) in deleted_keys
+        except Exception:
+            return key in deleted_keys
+
+    def _cleanup_metadata(self, deleted_keys: set) -> None:
+        """Remove metadata entries whose paths are in *deleted_keys*."""
         try:
             keys = list(self.metadata_manager.metadata.keys())
             for k in keys:
-                try:
-                    if str(Path(k).resolve()) in deleted_keys or k in deleted_keys:
-                        self.metadata_manager.metadata.pop(k, None)
-                except Exception:
-                    if k in deleted_keys:
-                        self.metadata_manager.metadata.pop(k, None)
+                if self._key_in_deleted(k, deleted_keys):
+                    self.metadata_manager.metadata.pop(k, None)
             self.metadata_manager.save()
         except Exception:
             pass
 
-        # Prediction cache cleanup
+    def _cleanup_prediction_cache(self, deleted_keys: set) -> None:
+        """Purge deleted paths from JSON prediction caches."""
         pred_dir = self.project.out_root / "posekit" / "predictions"
-        if pred_dir.exists():
-            for cache_path in pred_dir.glob("*.json"):
-                try:
-                    data = json.loads(cache_path.read_text(encoding="utf-8"))
-                    preds = data.get("preds", {})
-                    if not preds:
-                        continue
-                    changed = False
-                    for k in list(preds.keys()):
-                        if k in deleted_keys:
-                            preds.pop(k, None)
-                            changed = True
-                    if changed:
-                        data["preds"] = preds
-                        cache_path.write_text(json.dumps(data), encoding="utf-8")
-                except Exception:
+        if not pred_dir.exists():
+            return
+        for cache_path in pred_dir.glob("*.json"):
+            try:
+                data = json.loads(cache_path.read_text(encoding="utf-8"))
+                preds = data.get("preds", {})
+                if not preds:
                     continue
+                changed = False
+                for k in list(preds.keys()):
+                    if k in deleted_keys:
+                        preds.pop(k, None)
+                        changed = True
+                if changed:
+                    data["preds"] = preds
+                    cache_path.write_text(json.dumps(data), encoding="utf-8")
+            except Exception:
+                continue
 
-        # Embeddings cache cleanup (path-based)
+    def _cleanup_embeddings_cache(self, deleted_keys: set) -> None:
+        """Remove deleted paths from incremental embedding caches."""
         try:
             emb_root = self.project.out_root / "posekit" / "embeddings"
-            if emb_root.exists():
-                for child in emb_root.iterdir():
-                    if not child.is_dir():
-                        continue
-                    try:
-                        cache = IncrementalEmbeddingCache(
-                            self.project.out_root / "posekit", child.name
-                        )
-                        cache.remove_paths(deleted_keys)
-                    except Exception:
-                        continue
+            if not emb_root.exists():
+                return
+            for child in emb_root.iterdir():
+                if not child.is_dir():
+                    continue
+                try:
+                    cache = IncrementalEmbeddingCache(
+                        self.project.out_root / "posekit", child.name
+                    )
+                    cache.remove_paths(deleted_keys)
+                except Exception:
+                    continue
         except Exception:
             pass
 
-        # Clusters cache cleanup (path-based CSV)
+    def _cleanup_clusters_csv(self, deleted_keys: set) -> None:
+        """Remove deleted paths from the clusters CSV cache."""
         try:
             cluster_csv = (
                 self.project.out_root / "posekit" / "clusters" / "clusters.csv"
             )
-            if cluster_csv.exists():
-                rows = []
-                changed = False
-                with cluster_csv.open("r", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        img = (
-                            row.get("image") or row.get("image_path") or row.get("path")
-                        )
-                        if not img:
-                            continue
-                        key = img
-                        try:
-                            if (
-                                key in deleted_keys
-                                or str(Path(key).resolve()) in deleted_keys
-                            ):
-                                changed = True
-                                continue
-                        except Exception:
-                            if key in deleted_keys:
-                                changed = True
-                                continue
-                        rows.append({"image": img, "cluster_id": row.get("cluster_id")})
-                if changed:
-                    cluster_csv.parent.mkdir(parents=True, exist_ok=True)
-                    with cluster_csv.open("w", newline="", encoding="utf-8") as f:
-                        writer = csv.writer(f)
-                        writer.writerow(["image", "cluster_id"])
-                        for row in rows:
-                            writer.writerow([row["image"], row["cluster_id"]])
+            if not cluster_csv.exists():
+                return
+            rows = []
+            changed = False
+            with cluster_csv.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    img = row.get("image") or row.get("image_path") or row.get("path")
+                    if not img:
+                        continue
+                    if self._key_in_deleted(img, deleted_keys):
+                        changed = True
+                        continue
+                    rows.append({"image": img, "cluster_id": row.get("cluster_id")})
+            if changed:
+                cluster_csv.parent.mkdir(parents=True, exist_ok=True)
+                with cluster_csv.open("w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["image", "cluster_id"])
+                    for row in rows:
+                        writer.writerow([row["image"], row["cluster_id"]])
         except Exception:
             pass
+
+    def _cleanup_deleted_cache(self, deleted_paths: List[Path]) -> None:
+        if not deleted_paths:
+            return
+        deleted_keys = self._build_deleted_keys(deleted_paths)
+        self._cleanup_metadata(deleted_keys)
+        self._cleanup_prediction_cache(deleted_keys)
+        self._cleanup_embeddings_cache(deleted_keys)
+        self._cleanup_clusters_csv(deleted_keys)
 
     def _preds_to_keypoints(
         self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25
@@ -5207,4 +5219,5 @@ class MainWindow(QMainWindow):
                 cluster_ids.append(mapping[key])
             else:
                 cluster_ids.append(-1)
+        return cluster_ids
         return cluster_ids

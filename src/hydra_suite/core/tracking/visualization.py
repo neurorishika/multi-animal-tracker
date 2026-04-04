@@ -51,6 +51,99 @@ def draw_uncertainty_ellipses(overlay, kf_manager, params, track_states):
         cv2.ellipse(overlay, center, axes, angle, 0, 360, color, 2)
 
 
+def _draw_obb_from_corners(overlay, obb_corners):
+    """Draw OBB boxes from cached corner arrays."""
+    for corners in obb_corners:
+        if corners is not None:
+            corners_int = corners.astype(np.int32)
+            cv2.polylines(
+                overlay,
+                [corners_int],
+                isClosed=True,
+                color=(0, 255, 255),
+                thickness=2,
+            )
+
+
+def _draw_obb_from_yolo_results(overlay, yolo_results):
+    """Draw OBB boxes from a live YOLO results object."""
+    if (
+        not hasattr(yolo_results, "obb")
+        or yolo_results.obb is None
+        or len(yolo_results.obb) == 0
+    ):
+        return
+    obb_data = yolo_results.obb
+    for i in range(len(obb_data)):
+        corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+        cv2.polylines(
+            overlay,
+            [corners],
+            isClosed=True,
+            color=(0, 255, 255),
+            thickness=2,
+        )
+        if hasattr(obb_data, "conf"):
+            conf = obb_data.conf[i].cpu().item()
+            cx = int(corners[:, 0].mean())
+            cy = int(corners[:, 1].mean())
+            cv2.putText(
+                overlay,
+                f"{conf:.2f}",
+                (cx - 15, cy - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (0, 255, 255),
+                1,
+            )
+
+
+def _draw_yolo_obb(overlay, obb_corners, yolo_results):
+    """Draw YOLO OBB boxes from cached corners or live results."""
+    if obb_corners is not None and len(obb_corners) > 0:
+        _draw_obb_from_corners(overlay, obb_corners)
+    elif yolo_results is not None:
+        _draw_obb_from_yolo_results(overlay, yolo_results)
+
+
+def _draw_track_overlays(overlay, p, trajectories, track_states, ids, continuity):
+    """Draw per-track circles, orientation arrows, trajectories, and labels."""
+    for i, tr in enumerate(trajectories):
+        if not tr or track_states[i] == "lost":
+            continue
+        x, y, th, _ = tr[-1]
+        if math.isnan(x):
+            continue
+        pt = (int(x), int(y))
+        col = tuple(
+            int(c) for c in p["TRAJECTORY_COLORS"][i % len(p["TRAJECTORY_COLORS"])]
+        )
+        if p.get("SHOW_CIRCLES"):
+            cv2.circle(overlay, pt, 8, col, -1)
+        if p.get("SHOW_ORIENTATION"):
+            ex, ey = int(x + 20 * math.cos(th)), int(y + 20 * math.sin(th))
+            cv2.line(overlay, pt, (ex, ey), col, 2)
+        if p.get("SHOW_TRAJECTORIES"):
+            pts = np.array(
+                [(pt[0], pt[1]) for pt in tr if not math.isnan(pt[0])],
+                dtype=np.int32,
+            ).reshape((-1, 1, 2))
+            if len(pts) > 1:
+                cv2.polylines(overlay, [pts], isClosed=False, color=col, thickness=2)
+        if p.get("SHOW_LABELS") or p.get("SHOW_STATE"):
+            label = f"T{ids[i]} C:{continuity[i]}" if p.get("SHOW_LABELS") else ""
+            state = f" [{track_states[i]}]" if p.get("SHOW_STATE") else ""
+            cv2.putText(
+                overlay,
+                f"{label}{state}",
+                (pt[0] + 15, pt[1] - 15),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                col,
+                2,
+            )
+
+
 def draw_overlays(
     overlay,
     p,
@@ -79,50 +172,9 @@ def draw_overlays(
         yolo_results: YOLO results object (direct detection mode).
         obb_corners: OBB corners list (cached detection mode).
     """
-    # Draw YOLO OBB boxes if enabled and available
     if p.get("SHOW_YOLO_OBB", False):
-        if obb_corners is not None and len(obb_corners) > 0:
-            for corners in obb_corners:
-                if corners is not None:
-                    corners_int = corners.astype(np.int32)
-                    cv2.polylines(
-                        overlay,
-                        [corners_int],
-                        isClosed=True,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-        elif yolo_results is not None:
-            if (
-                hasattr(yolo_results, "obb")
-                and yolo_results.obb is not None
-                and len(yolo_results.obb) > 0
-            ):
-                obb_data = yolo_results.obb
-                for i in range(len(obb_data)):
-                    corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
-                    cv2.polylines(
-                        overlay,
-                        [corners],
-                        isClosed=True,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-                    if hasattr(obb_data, "conf"):
-                        conf = obb_data.conf[i].cpu().item()
-                        cx = int(corners[:, 0].mean())
-                        cy = int(corners[:, 1].mean())
-                        cv2.putText(
-                            overlay,
-                            f"{conf:.2f}",
-                            (cx - 15, cy - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            (0, 255, 255),
-                            1,
-                        )
+        _draw_yolo_obb(overlay, obb_corners, yolo_results)
 
-    # Draw Kalman uncertainty ellipses if enabled
     if p.get("SHOW_KALMAN_UNCERTAINTY", False):
         draw_uncertainty_ellipses(overlay, kf_manager, p, track_states)
 
@@ -136,42 +188,8 @@ def draw_overlays(
             "SHOW_STATE",
         ]
     ):
-        for i, tr in enumerate(trajectories):
-            if not tr or track_states[i] == "lost":
-                continue
-            x, y, th, _ = tr[-1]
-            pt = (int(x), int(y))
-            if math.isnan(x):
-                continue
-            col = tuple(
-                int(c) for c in p["TRAJECTORY_COLORS"][i % len(p["TRAJECTORY_COLORS"])]
-            )
-            if p.get("SHOW_CIRCLES"):
-                cv2.circle(overlay, pt, 8, col, -1)
-            if p.get("SHOW_ORIENTATION"):
-                ex, ey = int(x + 20 * math.cos(th)), int(y + 20 * math.sin(th))
-                cv2.line(overlay, pt, (ex, ey), col, 2)
-            if p.get("SHOW_TRAJECTORIES"):
-                pts = np.array(
-                    [(pt[0], pt[1]) for pt in tr if not math.isnan(pt[0])],
-                    dtype=np.int32,
-                ).reshape((-1, 1, 2))
-                if len(pts) > 1:
-                    cv2.polylines(
-                        overlay, [pts], isClosed=False, color=col, thickness=2
-                    )
-            if p.get("SHOW_LABELS") or p.get("SHOW_STATE"):
-                label = f"T{ids[i]} C:{continuity[i]}" if p.get("SHOW_LABELS") else ""
-                state = f" [{track_states[i]}]" if p.get("SHOW_STATE") else ""
-                cv2.putText(
-                    overlay,
-                    f"{label}{state}",
-                    (pt[0] + 15, pt[1] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    col,
-                    2,
-                )
+        _draw_track_overlays(overlay, p, trajectories, track_states, ids, continuity)
+
     if p.get("SHOW_FG") and fg is not None:
         small_fg = cv2.resize(fg, (0, 0), fx=0.3, fy=0.3)
         overlay[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(

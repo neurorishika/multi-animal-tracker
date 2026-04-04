@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -67,8 +68,6 @@ class TestRecentItemsStore:
         store._json_path().write_text("NOT JSON", encoding="utf-8")
         assert store.load() == []
 
-
-import sys
 
 # Guard Qt tests — skip if display not available
 pytest.importorskip("PySide6")

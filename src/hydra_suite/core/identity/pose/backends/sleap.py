@@ -29,6 +29,69 @@ from hydra_suite.core.identity.pose.utils import empty_pose_result, summarize_ke
 logger = logging.getLogger(__name__)
 
 
+def _build_sleap_export_kwargs(
+    params: Any,
+    model_dir: Path,
+    export_dir: Path,
+    runtime: str,
+    batch_size: int,
+    max_instances: int,
+) -> Dict[str, Any]:
+    """Build keyword arguments for a SLEAP export function based on its signature."""
+    kwargs: Dict[str, Any] = {}
+
+    # Model input path (try several parameter names)
+    _MODEL_PARAM_NAMES = ["model_dir", "model_path", "trained_model_path"]
+    for name in _MODEL_PARAM_NAMES:
+        if name in params:
+            kwargs[name] = str(model_dir)
+            break
+
+    # Output directory
+    _OUTPUT_PARAM_NAMES = ["output_dir", "export_dir", "save_dir"]
+    for name in _OUTPUT_PARAM_NAMES:
+        if name in params:
+            kwargs[name] = str(export_dir)
+            break
+
+    # Runtime / format hints
+    for name in ("runtime", "model_type", "format"):
+        if name in params:
+            kwargs[name] = runtime
+
+    # Numeric options
+    if "batch_size" in params:
+        kwargs["batch_size"] = int(max(1, batch_size))
+    if "max_instances" in params:
+        kwargs["max_instances"] = int(max(1, max_instances))
+
+    return kwargs
+
+
+def _try_sleap_export_function(
+    fn: Any,
+    model_dir: Path,
+    export_dir: Path,
+    runtime: str,
+    batch_size: int,
+    max_instances: int,
+) -> Tuple[bool, str]:
+    """Attempt to call a single SLEAP export function and check the result."""
+    import inspect
+
+    sig = inspect.signature(fn)
+    kwargs = _build_sleap_export_kwargs(
+        sig.parameters, model_dir, export_dir, runtime, batch_size, max_instances
+    )
+    if kwargs:
+        fn(**kwargs)
+    else:
+        fn(str(model_dir), str(export_dir))
+    if looks_like_sleap_export_path(str(export_dir), runtime):
+        return True, ""
+    return False, "Export completed but output not found."
+
+
 def _attempt_sleap_python_export(
     model_dir: Path,
     export_dir: Path,
@@ -38,7 +101,6 @@ def _attempt_sleap_python_export(
 ) -> Tuple[bool, str]:
     try:
         import importlib
-        import inspect
     except Exception as exc:
         return False, str(exc)
 
@@ -62,36 +124,10 @@ def _attempt_sleap_python_export(
             if not callable(fn):
                 continue
             try:
-                sig = inspect.signature(fn)
-                params = sig.parameters
-                kwargs: Dict[str, Any] = {}
-                if "model_dir" in params:
-                    kwargs["model_dir"] = str(model_dir)
-                elif "model_path" in params:
-                    kwargs["model_path"] = str(model_dir)
-                elif "trained_model_path" in params:
-                    kwargs["trained_model_path"] = str(model_dir)
-                if "output_dir" in params:
-                    kwargs["output_dir"] = str(export_dir)
-                elif "export_dir" in params:
-                    kwargs["export_dir"] = str(export_dir)
-                elif "save_dir" in params:
-                    kwargs["save_dir"] = str(export_dir)
-                if "runtime" in params:
-                    kwargs["runtime"] = runtime
-                if "model_type" in params:
-                    kwargs["model_type"] = runtime
-                if "format" in params:
-                    kwargs["format"] = runtime
-                if "batch_size" in params:
-                    kwargs["batch_size"] = int(max(1, batch_size))
-                if "max_instances" in params:
-                    kwargs["max_instances"] = int(max(1, max_instances))
-                if kwargs:
-                    fn(**kwargs)
-                else:
-                    fn(str(model_dir), str(export_dir))
-                if looks_like_sleap_export_path(str(export_dir), runtime):
+                ok, err = _try_sleap_export_function(
+                    fn, model_dir, export_dir, runtime, batch_size, max_instances
+                )
+                if ok:
                     return True, ""
             except Exception as exc:
                 last_err = str(exc)

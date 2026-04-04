@@ -178,45 +178,7 @@ class YoloNativeBackend:
             return []
 
         t0 = time.perf_counter()
-        try:
-            results = self.model.predict(
-                source=list(crops),
-                conf=self.conf,
-                iou=self.iou,
-                max_det=self.max_det,
-                batch=self.batch_size,
-                verbose=False,
-                device=self.device,
-            )
-        except Exception as exc:
-            msg = str(exc)
-            coreml_failure = self.is_onnx_model and (
-                "CoreMLExecutionProvider" in msg
-                or "Unable to compute the prediction using a neural network model"
-                in msg
-            )
-            if coreml_failure and self.device != "cpu":
-                logger.warning(
-                    "YOLO ONNX inference failed on %s (CoreML path). Retrying on CPU ORT provider.",
-                    self.device,
-                )
-                self.device = "cpu"
-                try:
-                    if hasattr(self.model, "predictor"):
-                        self.model.predictor = None
-                except Exception:
-                    pass
-                results = self.model.predict(
-                    source=list(crops),
-                    conf=self.conf,
-                    iou=self.iou,
-                    max_det=self.max_det,
-                    batch=self.batch_size,
-                    verbose=False,
-                    device=self.device,
-                )
-            else:
-                raise
+        results = self._run_inference(crops)
         infer_ms = (time.perf_counter() - t0) * 1000.0
         logger.debug(
             "YOLO pose runtime: %d crops in %.2f ms (%.2f ms/crop)",
@@ -227,66 +189,105 @@ class YoloNativeBackend:
 
         outputs: List[PoseResult] = []
         for result in results:
-            keypoints = getattr(result, "keypoints", None)
-            if keypoints is None:
-                outputs.append(empty_pose_result())
-                continue
-            try:
-                xy = keypoints.xy
-                xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.asarray(xy)
-                conf = getattr(keypoints, "conf", None)
-                if conf is not None:
-                    conf = (
-                        conf.cpu().numpy() if hasattr(conf, "cpu") else np.asarray(conf)
-                    )
-            except Exception:
-                outputs.append(empty_pose_result())
-                continue
-
-            if xy.ndim == 2:
-                xy = xy[None, :, :]
-            if conf is not None and conf.ndim == 1:
-                conf = conf[None, :]
-            if xy.size == 0:
-                outputs.append(empty_pose_result())
-                continue
-
-            if conf is None:
-                conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
-            mean_per_instance = np.nanmean(conf, axis=1)
-            best_idx = (
-                int(np.nanargmax(mean_per_instance)) if len(mean_per_instance) else 0
-            )
-            pred_xy = np.asarray(xy[best_idx], dtype=np.float32)
-            pred_conf = np.asarray(conf[best_idx], dtype=np.float32)
-            if pred_conf.size:
-                bad_mask = (
-                    (pred_conf < 0.0) | (pred_conf > 1.0) | ~np.isfinite(pred_conf)
-                )
-                if np.any(bad_mask) and not self._warned_conf_out_of_range:
-                    bad_vals = pred_conf[bad_mask]
-                    logger.warning(
-                        "YOLO pose keypoint confidence out-of-range detected "
-                        "(count=%d/%d, min=%s, max=%s, model=%s, device=%s). "
-                        "Values will be clamped to [0,1].",
-                        int(np.sum(bad_mask)),
-                        int(pred_conf.size),
-                        float(np.nanmin(bad_vals)) if bad_vals.size else "nan",
-                        float(np.nanmax(bad_vals)) if bad_vals.size else "nan",
-                        self.model_path,
-                        self.device,
-                    )
-                    self._warned_conf_out_of_range = True
-            pred_conf = np.nan_to_num(pred_conf, nan=0.0, posinf=1.0, neginf=0.0)
-            pred_conf = np.clip(pred_conf, 0.0, 1.0)
-            if pred_xy.ndim != 2 or pred_xy.shape[1] != 2:
-                outputs.append(empty_pose_result())
-                continue
-
-            kpts = np.column_stack((pred_xy, pred_conf)).astype(np.float32)
-            outputs.append(summarize_keypoints(kpts, self.min_valid_conf))
-
+            outputs.append(self._parse_single_result(result))
         return outputs
+
+    def _run_inference(self, crops: Sequence[np.ndarray]):
+        """Run YOLO prediction with CoreML fallback handling."""
+        predict_kwargs = dict(
+            source=list(crops),
+            conf=self.conf,
+            iou=self.iou,
+            max_det=self.max_det,
+            batch=self.batch_size,
+            verbose=False,
+            device=self.device,
+        )
+        try:
+            return self.model.predict(**predict_kwargs)
+        except Exception as exc:
+            if not self._is_coreml_failure(exc):
+                raise
+            logger.warning(
+                "YOLO ONNX inference failed on %s (CoreML path). Retrying on CPU ORT provider.",
+                self.device,
+            )
+            self.device = "cpu"
+            try:
+                if hasattr(self.model, "predictor"):
+                    self.model.predictor = None
+            except Exception:
+                pass
+            predict_kwargs["device"] = self.device
+            return self.model.predict(**predict_kwargs)
+
+    def _is_coreml_failure(self, exc: Exception) -> bool:
+        """Check whether exception is a CoreML provider failure on ONNX model."""
+        if not self.is_onnx_model or self.device == "cpu":
+            return False
+        msg = str(exc)
+        return (
+            "CoreMLExecutionProvider" in msg
+            or "Unable to compute the prediction using a neural network model" in msg
+        )
+
+    def _parse_single_result(self, result) -> PoseResult:
+        """Parse a single YOLO pose result into a PoseResult."""
+        keypoints = getattr(result, "keypoints", None)
+        if keypoints is None:
+            return empty_pose_result()
+        try:
+            xy = keypoints.xy
+            xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.asarray(xy)
+            conf = getattr(keypoints, "conf", None)
+            if conf is not None:
+                conf = conf.cpu().numpy() if hasattr(conf, "cpu") else np.asarray(conf)
+        except Exception:
+            return empty_pose_result()
+
+        if xy.ndim == 2:
+            xy = xy[None, :, :]
+        if conf is not None and conf.ndim == 1:
+            conf = conf[None, :]
+        if xy.size == 0:
+            return empty_pose_result()
+
+        if conf is None:
+            conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
+        mean_per_instance = np.nanmean(conf, axis=1)
+        best_idx = int(np.nanargmax(mean_per_instance)) if len(mean_per_instance) else 0
+        pred_xy = np.asarray(xy[best_idx], dtype=np.float32)
+        pred_conf = np.asarray(conf[best_idx], dtype=np.float32)
+
+        self._warn_conf_out_of_range(pred_conf)
+        pred_conf = np.nan_to_num(pred_conf, nan=0.0, posinf=1.0, neginf=0.0)
+        pred_conf = np.clip(pred_conf, 0.0, 1.0)
+        if pred_xy.ndim != 2 or pred_xy.shape[1] != 2:
+            return empty_pose_result()
+
+        kpts = np.column_stack((pred_xy, pred_conf)).astype(np.float32)
+        return summarize_keypoints(kpts, self.min_valid_conf)
+
+    def _warn_conf_out_of_range(self, pred_conf: np.ndarray) -> None:
+        """Log a one-time warning if confidence values are outside [0, 1]."""
+        if not pred_conf.size or self._warned_conf_out_of_range:
+            return
+        bad_mask = (pred_conf < 0.0) | (pred_conf > 1.0) | ~np.isfinite(pred_conf)
+        if not np.any(bad_mask):
+            return
+        bad_vals = pred_conf[bad_mask]
+        logger.warning(
+            "YOLO pose keypoint confidence out-of-range detected "
+            "(count=%d/%d, min=%s, max=%s, model=%s, device=%s). "
+            "Values will be clamped to [0,1].",
+            int(np.sum(bad_mask)),
+            int(pred_conf.size),
+            float(np.nanmin(bad_vals)) if bad_vals.size else "nan",
+            float(np.nanmax(bad_vals)) if bad_vals.size else "nan",
+            self.model_path,
+            self.device,
+        )
+        self._warned_conf_out_of_range = True
 
     def close(self) -> None:
         """Release backend resources (no-op for YOLO native backend)."""

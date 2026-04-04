@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
+from PySide6.QtCore import QObject, Signal, Slot
 
 logger = logging.getLogger("pose_label.extensions")
 
@@ -754,6 +755,287 @@ def list_labeled_indices(image_paths: List[Path], labels_dir: Path) -> List[int]
     return labeled
 
 
+def _yolo_unique_stem(stem: str, used: set, salt: str) -> str:
+    """Return a unique stem, appending a hash suffix on collision."""
+    if stem not in used:
+        used.add(stem)
+        return stem
+    h = hashlib.sha1(salt.encode("utf-8")).hexdigest()[:8]
+    cand = f"{stem}_{h}"
+    used.add(cand)
+    return cand
+
+
+def _validate_bbox(
+    parts: List[str], label_name: str
+) -> Optional[Tuple[float, float, float, float]]:
+    """Parse and validate the bounding-box portion of a YOLO pose label.
+
+    Returns ``(cx, cy, bw, bh)`` or ``None`` when the label is invalid.
+    """
+    MIN_BBOX_DIM = 0.001
+    EPSILON = 1e-8
+    try:
+        cx, cy, bw, bh = (
+            float(parts[1]),
+            float(parts[2]),
+            float(parts[3]),
+            float(parts[4]),
+        )
+    except Exception:
+        return None
+
+    for v in (cx, cy, bw, bh):
+        if not np.isfinite(v):
+            logger.warning(f"Non-finite bbox value in {label_name}: {v}")
+            return None
+
+    if bw < MIN_BBOX_DIM or bh < MIN_BBOX_DIM:
+        logger.warning(f"Bbox too small in {label_name}: w={bw:.6f}, h={bh:.6f}")
+        return None
+
+    if not (-EPSILON <= cx <= 1.0 + EPSILON and -EPSILON <= cy <= 1.0 + EPSILON):
+        logger.warning(
+            f"Bbox center out of range in {label_name}: cx={cx:.6f}, cy={cy:.6f}"
+        )
+        return None
+    if not (0.0 <= bw <= 1.0 + EPSILON and 0.0 <= bh <= 1.0 + EPSILON):
+        logger.warning(
+            f"Bbox dims out of range in {label_name}: w={bw:.6f}, h={bh:.6f}"
+        )
+        return None
+
+    return (cx, cy, bw, bh)
+
+
+def _validate_keypoints(parts: List[str], kpt_count: int, label_name: str) -> bool:
+    """Return ``True`` when all keypoints in *parts* pass validation."""
+    EPSILON = 1e-8
+    for i in range(5, 5 + 3 * kpt_count, 3):
+        try:
+            x = float(parts[i])
+            y = float(parts[i + 1])
+            v = int(float(parts[i + 2]))
+        except Exception:
+            logger.warning(
+                f"Invalid keypoint format in {label_name} at index {(i - 5) // 3}"
+            )
+            return False
+
+        if not np.isfinite(x) or not np.isfinite(y):
+            logger.warning(
+                f"Non-finite keypoint in {label_name}: kpt={(i - 5) // 3}, x={x}, y={y}"
+            )
+            return False
+
+        if v not in (0, 1, 2):
+            logger.warning(
+                f"Invalid visibility {v} in {label_name} at keypoint {(i - 5) // 3}"
+            )
+            return False
+
+        if v > 0:
+            if not (-EPSILON <= x <= 1.0 + EPSILON and -EPSILON <= y <= 1.0 + EPSILON):
+                logger.warning(
+                    f"Keypoint out of range in {label_name}: kpt={(i - 5) // 3}, "
+                    f"x={x:.6f}, y={y:.6f}, vis={v}"
+                )
+                return False
+    return True
+
+
+def _parse_label_parts(label_path: Path, kpt_count: int) -> Optional[List[str]]:
+    """Read and validate a YOLO pose label file.
+
+    Returns the whitespace-split parts list, or ``None`` when the label is
+    invalid or incomplete.
+    """
+    try:
+        text = label_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    parts = text.split()
+    if len(parts) < 5 + 3 * kpt_count:
+        return None
+    if _validate_bbox(parts, label_path.name) is None:
+        return None
+    if not _validate_keypoints(parts, kpt_count, label_path.name):
+        return None
+    return parts
+
+
+def _has_any_visible_kpt_from_parts(
+    parts: List[str], kpt_count: int, include_occluded: bool
+) -> bool:
+    """Return ``True`` when at least one keypoint is visible."""
+    for i in range(5, 5 + 3 * kpt_count, 3):
+        v = int(float(parts[i + 2]))
+        if include_occluded:
+            if v > 0:
+                return True
+        else:
+            if v == 2:
+                return True
+    return False
+
+
+def _rewrite_label_for_training(parts: List[str], dst: Path):
+    """Write label to *dst*, zeroing occluded (v==1) keypoints."""
+    out = parts[:]
+    for i in range(5, len(out), 3):
+        if i + 2 >= len(out):
+            break
+        try:
+            v = int(float(out[i + 2]))
+        except Exception:
+            continue
+        if v == 1:
+            out[i] = "0"
+            out[i + 1] = "0"
+            out[i + 2] = "0"
+    dst.write_text(" ".join(out) + "\n", encoding="utf-8")
+
+
+def _collect_labeled_items(
+    image_paths: List[Path],
+    labels_dir: Path,
+    extra_datasets: Optional[List[Tuple[List[Path], Path]]],
+    extra_items: Optional[List[Tuple[Path, Path]]],
+) -> List[Tuple[Path, Path]]:
+    """Gather all (image, label) pairs from primary + extra sources."""
+    datasets = [(image_paths, labels_dir)]
+    if extra_datasets:
+        datasets.extend(extra_datasets)
+
+    items: List[Tuple[Path, Path]] = []
+    for imgs, lbl_dir in datasets:
+        labeled_indices = list_labeled_indices(imgs, lbl_dir)
+        for idx in labeled_indices:
+            img_path = imgs[idx]
+            label_path = lbl_dir / f"{img_path.stem}.txt"
+            if label_path.exists():
+                items.append((img_path, label_path))
+
+    if extra_items:
+        for img_path, label_path in extra_items:
+            if img_path.exists() and label_path.exists():
+                items.append((img_path, label_path))
+    return items
+
+
+def _copy_split(
+    split_items: List[Tuple[Path, Path]],
+    img_dir: Path,
+    lbl_dir: Path,
+    ignore_occluded: bool,
+    kpt_count: int,
+    used_stems: set,
+    manifest_rows: list,
+):
+    """Copy a train or val split into the dataset directory structure."""
+    skipped = 0
+    kept: List[Tuple[Path, Path]] = []
+    include_occluded = not bool(ignore_occluded)
+    for img_path, label_path in split_items:
+        parts = _parse_label_parts(label_path, kpt_count)
+        if parts is None:
+            skipped += 1
+            continue
+        if not _has_any_visible_kpt_from_parts(
+            parts, kpt_count, include_occluded=include_occluded
+        ):
+            skipped += 1
+            continue
+        stem = _yolo_unique_stem(img_path.stem, used_stems, str(img_path))
+        img_dst = img_dir / f"{stem}{img_path.suffix.lower()}"
+        lbl_dst = lbl_dir / f"{stem}.txt"
+        shutil.copy2(img_path, img_dst)
+        if ignore_occluded:
+            _rewrite_label_for_training(parts, lbl_dst)
+        else:
+            shutil.copy2(label_path, lbl_dst)
+        manifest_rows.append(
+            {
+                "src_image": str(img_path),
+                "src_label": str(label_path),
+                "dst_image": str(img_dst),
+                "dst_label": str(lbl_dst),
+            }
+        )
+        kept.append((img_path, label_path))
+    return len(kept), skipped, kept
+
+
+def _ensure_val_fallback(
+    train_items: List[Tuple[Path, Path]],
+    images_val: Path,
+    labels_val: Path,
+    kpt_count: int,
+    ignore_occluded_val: bool,
+    used_stems: set,
+    manifest_rows: list,
+) -> int:
+    """Copy one training sample into val when the val split ended up empty.
+
+    Returns the number of validation samples added (0 or 1).
+    """
+    include_occluded = not bool(ignore_occluded_val)
+    for img_path, label_path in train_items:
+        parts = _parse_label_parts(label_path, kpt_count)
+        if parts is None:
+            continue
+        if not _has_any_visible_kpt_from_parts(
+            parts, kpt_count, include_occluded=include_occluded
+        ):
+            continue
+        stem = _yolo_unique_stem(img_path.stem, used_stems, str(img_path))
+        img_dst = images_val / f"{stem}{img_path.suffix.lower()}"
+        lbl_dst = labels_val / f"{stem}.txt"
+        shutil.copy2(img_path, img_dst)
+        shutil.copy2(label_path, lbl_dst)
+        manifest_rows.append(
+            {
+                "src_image": str(img_path),
+                "src_label": str(label_path),
+                "dst_image": str(img_dst),
+                "dst_label": str(lbl_dst),
+            }
+        )
+        logger.warning(
+            "Validation set was empty after filtering; duplicated one train sample for validation."
+        )
+        return 1
+    return 0
+
+
+def _write_dataset_yaml(
+    output_dir: Path,
+    keypoint_names: List[str],
+    class_names: List[str],
+    manifest_rows: list,
+) -> Path:
+    """Write ``dataset.yaml`` and ``manifest.json``; return the yaml path."""
+    import yaml
+
+    k = len(keypoint_names)
+    data = {
+        "path": str(output_dir),
+        "train": "images/train",
+        "val": "images/val",
+        "kpt_shape": [k, 3],
+        "names": {i: n for i, n in enumerate(class_names)},
+        "kpt_names": {0: keypoint_names},
+    }
+    yaml_path = output_dir / "dataset.yaml"
+    yaml_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest_rows, indent=2), encoding="utf-8"
+    )
+    return yaml_path
+
+
 def build_yolo_pose_dataset(
     image_paths: List[Path],
     labels_dir: Path,
@@ -774,43 +1056,15 @@ def build_yolo_pose_dataset(
 
     Returns dict with paths and counts.
     """
-
-    def _unique_stem(stem: str, used: set, salt: str) -> str:
-        if stem not in used:
-            used.add(stem)
-            return stem
-        h = hashlib.sha1(salt.encode("utf-8")).hexdigest()[:8]
-        cand = f"{stem}_{h}"
-        used.add(cand)
-        return cand
-
     output_dir.mkdir(parents=True, exist_ok=True)
     images_train = output_dir / "images" / "train"
     images_val = output_dir / "images" / "val"
     labels_train = output_dir / "labels" / "train"
     labels_val = output_dir / "labels" / "val"
-    images_train.mkdir(parents=True, exist_ok=True)
-    images_val.mkdir(parents=True, exist_ok=True)
-    labels_train.mkdir(parents=True, exist_ok=True)
-    labels_val.mkdir(parents=True, exist_ok=True)
+    for d in (images_train, images_val, labels_train, labels_val):
+        d.mkdir(parents=True, exist_ok=True)
 
-    datasets = [(image_paths, labels_dir)]
-    if extra_datasets:
-        datasets.extend(extra_datasets)
-
-    items: List[Tuple[Path, Path]] = []
-    for imgs, lbl_dir in datasets:
-        labeled_indices = list_labeled_indices(imgs, lbl_dir)
-        for idx in labeled_indices:
-            img_path = imgs[idx]
-            label_path = lbl_dir / f"{img_path.stem}.txt"
-            if label_path.exists():
-                items.append((img_path, label_path))
-
-    if extra_items:
-        for img_path, label_path in extra_items:
-            if img_path.exists() and label_path.exists():
-                items.append((img_path, label_path))
+    items = _collect_labeled_items(image_paths, labels_dir, extra_datasets, extra_items)
 
     if len(items) < 2 and (not train_items or not val_items):
         raise ValueError("Need at least 2 labeled frames to build train/val split.")
@@ -818,225 +1072,56 @@ def build_yolo_pose_dataset(
     if train_items is None or val_items is None:
         rng = random.Random(int(seed))
         rng.shuffle(items)
-
         train_frac = max(0.05, min(0.95, float(train_frac)))
         n_train = int(len(items) * train_frac)
         n_train = max(1, min(n_train, len(items) - 1))
-
         train_items = items[:n_train]
         val_items = items[n_train:]
 
-    used_stems = set()
-    manifest_rows = []
+    used_stems: set = set()
+    manifest_rows: list = []
     k = len(keypoint_names)
 
-    def _parse_label_parts(label_path: Path, kpt_count: int) -> Optional[List[str]]:
-        # Minimum bbox dimension to prevent NaN (1 pixel at 640px = ~0.0015625)
-        MIN_BBOX_DIM = 0.001
-        EPSILON = 1e-8
-
-        try:
-            text = label_path.read_text(encoding="utf-8").strip()
-        except Exception:
-            return None
-        if not text:
-            return None
-        parts = text.split()
-        if len(parts) < 5 + 3 * kpt_count:
-            return None
-        # Validate bbox numbers
-        try:
-            cx = float(parts[1])
-            cy = float(parts[2])
-            bw = float(parts[3])
-            bh = float(parts[4])
-        except Exception:
-            return None
-
-        # Check for NaN or inf
-        for v in (cx, cy, bw, bh):
-            if not np.isfinite(v):
-                logger.warning(f"Non-finite bbox value in {label_path.name}: {v}")
-                return None
-
-        # Check for minimum bbox size to prevent numerical instability
-        if bw < MIN_BBOX_DIM or bh < MIN_BBOX_DIM:
-            logger.warning(
-                f"Bbox too small in {label_path.name}: w={bw:.6f}, h={bh:.6f}"
-            )
-            return None
-
-        # Validate normalized coordinates with small tolerance
-        if not (-EPSILON <= cx <= 1.0 + EPSILON and -EPSILON <= cy <= 1.0 + EPSILON):
-            logger.warning(
-                f"Bbox center out of range in {label_path.name}: cx={cx:.6f}, cy={cy:.6f}"
-            )
-            return None
-        if not (0.0 <= bw <= 1.0 + EPSILON and 0.0 <= bh <= 1.0 + EPSILON):
-            logger.warning(
-                f"Bbox dims out of range in {label_path.name}: w={bw:.6f}, h={bh:.6f}"
-            )
-            return None
-
-        # Validate keypoints
-        for i in range(5, 5 + 3 * kpt_count, 3):
-            try:
-                x = float(parts[i])
-                y = float(parts[i + 1])
-                v = int(float(parts[i + 2]))
-            except Exception:
-                logger.warning(
-                    f"Invalid keypoint format in {label_path.name} at index {(i - 5) // 3}"
-                )
-                return None
-
-            if not np.isfinite(x) or not np.isfinite(y):
-                logger.warning(
-                    f"Non-finite keypoint in {label_path.name}: kpt={(i - 5) // 3}, x={x}, y={y}"
-                )
-                return None
-
-            if v not in (0, 1, 2):
-                logger.warning(
-                    f"Invalid visibility {v} in {label_path.name} at keypoint {(i - 5) // 3}"
-                )
-                return None
-
-            # Only validate coordinates for visible keypoints
-            if v > 0:
-                if not (
-                    -EPSILON <= x <= 1.0 + EPSILON and -EPSILON <= y <= 1.0 + EPSILON
-                ):
-                    logger.warning(
-                        f"Keypoint out of range in {label_path.name}: kpt={(i - 5) // 3}, x={x:.6f}, y={y:.6f}, vis={v}"
-                    )
-                    return None
-
-        return parts
-
-    def _has_any_visible_kpt_from_parts(
-        parts: List[str], kpt_count: int, include_occluded: bool
-    ) -> bool:
-        for i in range(5, 5 + 3 * kpt_count, 3):
-            v = int(float(parts[i + 2]))
-            if include_occluded:
-                if v > 0:
-                    return True
-            else:
-                if v == 2:
-                    return True
-        return False
-
-    def _rewrite_label_for_training(parts: List[str], dst: Path):
-        out = parts[:]
-        for i in range(5, len(out), 3):
-            if i + 2 >= len(out):
-                break
-            try:
-                v = int(float(out[i + 2]))
-            except Exception:
-                continue
-            if v == 1:
-                out[i] = "0"
-                out[i + 1] = "0"
-                out[i + 2] = "0"
-        dst.write_text(" ".join(out) + "\n", encoding="utf-8")
-
-    def _copy_split(
-        split_items: List[Tuple[Path, Path]],
-        img_dir: Path,
-        lbl_dir: Path,
-        ignore_occluded: bool,
-    ):
-        skipped = 0
-        kept: List[Tuple[Path, Path]] = []
-        include_occluded = not bool(ignore_occluded)
-        for img_path, label_path in split_items:
-            parts = _parse_label_parts(label_path, k)
-            if parts is None:
-                skipped += 1
-                continue
-            if not _has_any_visible_kpt_from_parts(
-                parts, k, include_occluded=include_occluded
-            ):
-                skipped += 1
-                continue
-            stem = _unique_stem(img_path.stem, used_stems, str(img_path))
-            img_dst = img_dir / f"{stem}{img_path.suffix.lower()}"
-            lbl_dst = lbl_dir / f"{stem}.txt"
-            shutil.copy2(img_path, img_dst)
-            if ignore_occluded:
-                _rewrite_label_for_training(parts, lbl_dst)
-            else:
-                shutil.copy2(label_path, lbl_dst)
-            manifest_rows.append(
-                {
-                    "src_image": str(img_path),
-                    "src_label": str(label_path),
-                    "dst_image": str(img_dst),
-                    "dst_label": str(lbl_dst),
-                }
-            )
-            kept.append((img_path, label_path))
-        return len(kept), skipped, kept
-
     kept_train, _, _ = _copy_split(
-        train_items, images_train, labels_train, ignore_occluded_train
+        train_items,
+        images_train,
+        labels_train,
+        ignore_occluded_train,
+        k,
+        used_stems,
+        manifest_rows,
     )
-    kept_val, _, _ = _copy_split(val_items, images_val, labels_val, ignore_occluded_val)
+    kept_val, _, _ = _copy_split(
+        val_items,
+        images_val,
+        labels_val,
+        ignore_occluded_val,
+        k,
+        used_stems,
+        manifest_rows,
+    )
 
     if kept_train <= 0:
         raise ValueError("No training labels with visible keypoints after filtering.")
 
     if kept_val <= 0:
-        # Ensure at least one validation sample to avoid NaN val losses.
-        for img_path, label_path in train_items:
-            parts = _parse_label_parts(label_path, k)
-            if parts is None:
-                continue
-            if not _has_any_visible_kpt_from_parts(
-                parts, k, include_occluded=not bool(ignore_occluded_val)
-            ):
-                continue
-            stem = _unique_stem(img_path.stem, used_stems, str(img_path))
-            img_dst = images_val / f"{stem}{img_path.suffix.lower()}"
-            lbl_dst = labels_val / f"{stem}.txt"
-            shutil.copy2(img_path, img_dst)
-            # Keep original occluded labels for validation
-            shutil.copy2(label_path, lbl_dst)
-            manifest_rows.append(
-                {
-                    "src_image": str(img_path),
-                    "src_label": str(label_path),
-                    "dst_image": str(img_dst),
-                    "dst_label": str(lbl_dst),
-                }
-            )
-            kept_val = 1
-            logger.warning(
-                "Validation set was empty after filtering; duplicated one train sample for validation."
-            )
-            break
+        kept_val = _ensure_val_fallback(
+            train_items,
+            images_val,
+            labels_val,
+            k,
+            ignore_occluded_val,
+            used_stems,
+            manifest_rows,
+        )
 
     train_txt = output_dir / "train.txt"
     val_txt = output_dir / "val.txt"
     train_txt.write_text("images/train\n", encoding="utf-8")
     val_txt.write_text("images/val\n", encoding="utf-8")
 
-    data = {
-        "path": str(output_dir),
-        "train": "images/train",
-        "val": "images/val",
-        "kpt_shape": [k, 3],
-        "names": {i: n for i, n in enumerate(class_names)},
-        "kpt_names": {0: keypoint_names},
-    }
-    yaml_path = output_dir / "dataset.yaml"
-    import yaml
-
-    yaml_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    (output_dir / "manifest.json").write_text(
-        json.dumps(manifest_rows, indent=2), encoding="utf-8"
+    yaml_path = _write_dataset_yaml(
+        output_dir, keypoint_names, class_names, manifest_rows
     )
 
     return {
@@ -1255,8 +1340,6 @@ def build_coco_keypoints_dataset(
 # -----------------------------
 # Embedding Worker Thread
 # -----------------------------
-
-from PySide6.QtCore import QObject, Signal, Slot
 
 
 class EmbeddingWorker(QObject):

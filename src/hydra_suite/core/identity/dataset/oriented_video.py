@@ -558,6 +558,48 @@ class OrientedTrackVideoExporter:
             polygon_index=int(polygon_index),
         )
 
+    def _process_frame_bundle(
+        self, frame, bundle, track_sizes, writers, frames_written_by_track, _canvases
+    ):
+        """Write all tasks from a single frame bundle to their track writers."""
+        for task in bundle.tasks:
+            canvas_size = track_sizes.get(task.trajectory_id)
+            if canvas_size is None:
+                continue
+            writer = writers.get(task.trajectory_id)
+            if writer is None:
+                writer = self._open_writer(task.trajectory_id, canvas_size)
+                writers[task.trajectory_id] = writer
+            rendered = self._render_task(
+                frame,
+                task,
+                bundle.polygons,
+                canvas_size,
+                canvas=_canvases.get(task.trajectory_id),
+            )
+            if rendered is not None:
+                writer.write(rendered)
+                frames_written_by_track[task.trajectory_id] += 1
+
+    def _tally_exports(self, track_sizes, frames_written_by_track):
+        """Compute export summary and clean up empty output files."""
+        exported_videos = 0
+        skipped_tracks = 0
+        exported_frames = 0
+        for traj_id in track_sizes:
+            count = int(frames_written_by_track.get(traj_id, 0))
+            if count > 0:
+                exported_videos += 1
+                exported_frames += count
+            else:
+                skipped_tracks += 1
+                output_path = self.output_dir / f"trajectory_{int(traj_id):04d}.mp4"
+                try:
+                    output_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        return exported_videos, exported_frames, skipped_tracks
+
     def _write_videos(
         self,
         frame_bundles: dict[int, FrameBundle],
@@ -600,9 +642,7 @@ class OrientedTrackVideoExporter:
 
         try:
             total_frames = len(needed_frames)
-            # Use a single-thread executor for 1-frame read-ahead
             with ThreadPoolExecutor(max_workers=1) as reader:
-                # Submit the first read
                 future = reader.submit(_read_frame, needed_frames[0])
 
                 for index, frame_id in enumerate(needed_frames, start=1):
@@ -615,36 +655,22 @@ class OrientedTrackVideoExporter:
                     )
 
                     ok, frame = future.result()
-
-                    # Submit read-ahead for next frame while processing this one
                     if index < total_frames:
                         future = reader.submit(_read_frame, needed_frames[index])
 
                     if not ok or frame is None:
                         continue
-
                     bundle = frame_bundles.get(frame_id)
                     if bundle is None:
                         continue
-                    for task in bundle.tasks:
-                        canvas_size = track_sizes.get(task.trajectory_id)
-                        if canvas_size is None:
-                            continue
-                        writer = writers.get(task.trajectory_id)
-                        if writer is None:
-                            writer = self._open_writer(task.trajectory_id, canvas_size)
-                            writers[task.trajectory_id] = writer
-                        rendered = self._render_task(
-                            frame,
-                            task,
-                            bundle.polygons,
-                            canvas_size,
-                            canvas=_canvases.get(task.trajectory_id),
-                        )
-                        if rendered is None:
-                            continue
-                        writer.write(rendered)
-                        frames_written_by_track[task.trajectory_id] += 1
+                    self._process_frame_bundle(
+                        frame,
+                        bundle,
+                        track_sizes,
+                        writers,
+                        frames_written_by_track,
+                        _canvases,
+                    )
         finally:
             cap.release()
             for writer in writers.values():
@@ -653,22 +679,7 @@ class OrientedTrackVideoExporter:
                 except Exception:
                     pass
 
-        exported_videos = 0
-        skipped_tracks = 0
-        exported_frames = 0
-        for traj_id, canvas_size in track_sizes.items():
-            count = int(frames_written_by_track.get(traj_id, 0))
-            if count > 0:
-                exported_videos += 1
-                exported_frames += count
-            else:
-                skipped_tracks += 1
-                output_path = self.output_dir / f"trajectory_{int(traj_id):04d}.mp4"
-                try:
-                    output_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-        return exported_videos, exported_frames, skipped_tracks
+        return self._tally_exports(track_sizes, frames_written_by_track)
 
     def _open_writer(
         self, trajectory_id: int, canvas_size: tuple[int, int]

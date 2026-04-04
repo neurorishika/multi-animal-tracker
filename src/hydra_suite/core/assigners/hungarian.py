@@ -625,6 +625,140 @@ class TrackAssigner:
         scale = self.params.get("MAX_DISTANCE_THRESHOLD", 100.0) * 0.5
         return {r: 1.0 / (1.0 + cost[r, c] / scale) for r, c in matched_pairs}
 
+    def _compute_distance_gates(self, N, M, meas, tracking_continuity, kf_manager):
+        """Compute per-track distance gates and the raw Euclidean distance matrix.
+
+        Returns ``(per_track_gate, raw_dist_mat, meas_xy)``.
+        """
+        p = self.params
+        THRESH = p.get("KALMAN_MATURITY_AGE", 10)
+        MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
+        _young_mult = max(1.0, float(p.get("KALMAN_YOUNG_GATE_MULTIPLIER", 1.0)))
+        per_track_gate = np.where(
+            np.array([tracking_continuity[r] for r in range(N)], dtype=np.float32)
+            < THRESH,
+            MAX_DIST * _young_mult,
+            MAX_DIST,
+        )
+        meas_xy = np.array([meas[j][:2] for j in range(M)], dtype=np.float32)
+        raw_dist_mat = np.linalg.norm(
+            np.asarray(kf_manager.X[:N, :2], dtype=np.float32)[:, None, :]
+            - meas_xy[None, :, :],
+            axis=2,
+        )
+        return per_track_gate, raw_dist_mat, meas_xy
+
+    def _assign_established_greedy(
+        self, est, M, cost, raw_dist_mat, MAX_DIST, VEL_GATE
+    ):
+        """Phase 1 greedy assignment for established tracks."""
+        track_det_costs = []
+        for r in est:
+            for c in range(M):
+                if cost[r, c] < MAX_DIST and raw_dist_mat[r, c] < VEL_GATE:
+                    track_det_costs.append((cost[r, c], r, c))
+        track_det_costs.sort()
+        assignments = []
+        assigned_dets = set()
+        assigned_r = set()
+        for _, r, c in track_det_costs:
+            if r not in assigned_r and c not in assigned_dets:
+                assignments.append((r, c))
+                assigned_dets.add(c)
+                assigned_r.add(r)
+        return assignments, assigned_dets
+
+    def _assign_established_hungarian(
+        self, est, cost, raw_dist_mat, MAX_DIST, VEL_GATE
+    ):
+        """Phase 1 Hungarian assignment for established tracks."""
+        assignments = []
+        assigned_dets = set()
+        rows, cols = linear_sum_assignment(cost[est, :])
+        for r_idx, c in zip(rows, cols):
+            r = est[r_idx]
+            if cost[r, c] < MAX_DIST and raw_dist_mat[r, c] < VEL_GATE:
+                assignments.append((r, c))
+                assigned_dets.add(c)
+        return assignments, assigned_dets
+
+    def _assign_unstable(
+        self,
+        unst,
+        M,
+        cost,
+        meas,
+        kf_manager,
+        tracking_continuity,
+        per_track_gate,
+        MAX_DIST,
+        assigned_dets,
+    ):
+        """Phase 2: greedily assign unstable (young) tracks."""
+        assignments = []
+        for r in sorted(unst, key=lambda i: tracking_continuity[i], reverse=True):
+            avail = [j for j in range(M) if j not in assigned_dets]
+            if not avail:
+                break
+            best_c = avail[np.argmin(cost[r, avail])]
+            raw_dist = float(
+                np.linalg.norm(np.asarray(meas[best_c][:2]) - kf_manager.X[r, :2])
+            )
+            if cost[r, best_c] < MAX_DIST and raw_dist < float(per_track_gate[r]):
+                assignments.append((r, best_c))
+                assigned_dets.add(best_c)
+        return assignments
+
+    def _assign_respawn(
+        self,
+        lost,
+        M,
+        meas,
+        kf_manager,
+        track_states,
+        N,
+        trajectory_ids,
+        next_trajectory_id,
+        MAX_DIST,
+        assigned_dets,
+    ):
+        """Phase 3: respawn lost tracks with unassigned detections."""
+        p = self.params
+        unassigned = [j for j in range(M) if j not in assigned_dets]
+        respawn_dist_limit = p.get("MIN_RESPAWN_DISTANCE", MAX_DIST * 0.8)
+        non_lost_positions = [
+            np.asarray(kf_manager.X[r, :2], dtype=np.float32)
+            for r in range(N)
+            if track_states[r] != "lost"
+        ]
+        assignments = []
+        for c in unassigned:
+            if not lost:
+                break
+            min_dist_non_lost = (
+                min(
+                    np.linalg.norm(meas[c][:2] - track_pos)
+                    for track_pos in non_lost_positions
+                )
+                if non_lost_positions
+                else 1e6
+            )
+            if min_dist_non_lost < respawn_dist_limit:
+                continue
+            best_r, best_c_val = None, 1e6
+            for r in lost:
+                last_pos = kf_manager.X[r, :2]
+                dist = np.linalg.norm(meas[c][:2] - last_pos)
+                if dist < best_c_val:
+                    best_c_val, best_r = dist, r
+            if best_r is not None and best_c_val < MAX_DIST:
+                assignments.append((best_r, c))
+                assigned_dets.add(c)
+                lost.remove(best_r)
+                trajectory_ids[best_r] = next_trajectory_id
+                next_trajectory_id += 1
+        return assignments, next_trajectory_id
+
     def assign_tracks(
         self: object,
         cost: object,
@@ -647,66 +781,23 @@ class TrackAssigner:
         if M == 0:
             return [], [], [], next_trajectory_id, []
 
-        # KALMAN_MATURITY_AGE is a frame count — use it to gate Phase-1 (Hungarian)
-        # vs Phase-2 (greedy). CONTINUITY_THRESHOLD stores a pixel value for the
-        # recovery search distance and must NOT be used here.
         THRESH = p.get("KALMAN_MATURITY_AGE", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
         USE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", False)
-
-        # Velocity-plausibility gate for established (Phase-1) tracks.
-        #
-        # After predict(), kf_manager.X[r, :2] is already at the KF-predicted
-        # position for this frame — it includes the track's own velocity step.
-        # The "innovation" (distance from predicted pos → matched detection) must
-        # therefore be bounded by at most one frame of maximum physical movement.
-        # Any larger innovation means the solver is trying to snap the track to a
-        # detection that requires a physically impossible acceleration — almost
-        # always a cross-identity swap.  When rejected, the track is simply left
-        # unmatched and treated as occluded for this frame.
-        #
-        #   VEL_GATE = KALMAN_MAX_VELOCITY_MULTIPLIER × body_size (pixels / frame)
-        #
-        # Phase-2 (unstable) and Phase-3 (respawn) use the looser MAX_DIST gate
-        # because those tracks do not yet have a reliable velocity estimate.
         _body_size = p.get("REFERENCE_BODY_SIZE", 20.0) * p.get("RESIZE_FACTOR", 1.0)
         VEL_GATE = p.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0) * _body_size
 
-        # Pre-gate: block any (track, detection) pair whose raw Euclidean distance
-        # exceeds the per-track gate before the Hungarian algorithm runs.
-        # When USE_MAHALANOBIS=True and a track's covariance P is large (coasting),
-        # Mahalanobis distances collapse toward zero for ALL detections — even those
-        # on the other side of the arena.  These near-zero costs corrupt the global
-        # optimisation, causing perfectly-tracked nearby tracks to lose their
-        # detections to the uncertain coasting track.  Setting cost=1e9 here
-        # prevents physically impossible assignments from being selected.
-        #
-        # Young tracks (continuity < KALMAN_MATURITY_AGE) have noisy KF predictions
-        # because they lack reliable velocity estimates; their predictions can drift
-        # far from the actual animal within a few frames.  We expand the gate for
-        # those tracks only, using KALMAN_YOUNG_GATE_MULTIPLIER, so the caller
-        # does not need to inflate MAX_DISTANCE_THRESHOLD globally (which would also
-        # widen the gate for mature tracks and increase swap probability there).
-        # Default is 1.0 so that existing configs without this key keep the old
-        # behaviour (uniform MAX_DIST gate for all tracks).  The auto-tuner's
-        # _DEFAULTS starts at 1.5, giving it the right search direction without
-        # breaking runs that haven't been re-tuned.
-        _young_mult = max(1.0, float(p.get("KALMAN_YOUNG_GATE_MULTIPLIER", 1.0)))
-        _per_track_gate = np.where(
-            np.array([tracking_continuity[r] for r in range(N)], dtype=np.float32)
-            < THRESH,
-            MAX_DIST * _young_mult,
-            MAX_DIST,
-        )  # shape (N,); young tracks get wider gate
-        meas_xy = np.array([meas[j][:2] for j in range(M)], dtype=np.float32)
-        raw_dist_mat = np.linalg.norm(
-            np.asarray(kf_manager.X[:N, :2], dtype=np.float32)[:, None, :]
-            - meas_xy[None, :, :],
-            axis=2,
-        )  # shape (N, M)
-        cost[raw_dist_mat >= _per_track_gate[:, None]] = 1e9
+        # Pre-gate: block physically impossible (track, detection) pairs.
+        per_track_gate, raw_dist_mat, _ = self._compute_distance_gates(
+            N,
+            M,
+            meas,
+            tracking_continuity,
+            kf_manager,
+        )
+        cost[raw_dist_mat >= per_track_gate[:, None]] = 1e9
 
-        # 1. Split tracks by state
+        # Split tracks by state
         est = [
             i
             for i in range(N)
@@ -724,78 +815,53 @@ class TrackAssigner:
         # Phase 1: Established Tracks
         if est:
             if USE_GREEDY:
-                # Optimized Greedy — velocity gate applied to established tracks.
-                track_det_costs = []
-                for r in est:
-                    for c in range(M):
-                        if cost[r, c] < MAX_DIST and raw_dist_mat[r, c] < VEL_GATE:
-                            track_det_costs.append((cost[r, c], r, c))
-                track_det_costs.sort()
-                assigned_r = set()
-                for _, r, c in track_det_costs:
-                    if r not in assigned_r and c not in assigned_dets:
-                        all_assignments.append((r, c))
-                        assigned_dets.add(c)
-                        assigned_r.add(r)
+                ph1, ph1_dets = self._assign_established_greedy(
+                    est,
+                    M,
+                    cost,
+                    raw_dist_mat,
+                    MAX_DIST,
+                    VEL_GATE,
+                )
             else:
-                # Hungarian — velocity gate replaces the old raw_dist < MAX_DIST check.
-                rows, cols = linear_sum_assignment(cost[est, :])
-                for r_idx, c in zip(rows, cols):
-                    r = est[r_idx]
-                    if cost[r, c] < MAX_DIST and raw_dist_mat[r, c] < VEL_GATE:
-                        all_assignments.append((r, c))
-                        assigned_dets.add(c)
+                ph1, ph1_dets = self._assign_established_hungarian(
+                    est,
+                    cost,
+                    raw_dist_mat,
+                    MAX_DIST,
+                    VEL_GATE,
+                )
+            all_assignments.extend(ph1)
+            assigned_dets.update(ph1_dets)
 
-        # Phase 2: Unstable Tracks — expanded per-track gate (velocity not yet reliable).
-        for r in sorted(unst, key=lambda i: tracking_continuity[i], reverse=True):
-            avail = [j for j in range(M) if j not in assigned_dets]
-            if not avail:
-                break
-            best_c = avail[np.argmin(cost[r, avail])]
-            raw_dist = float(
-                np.linalg.norm(np.asarray(meas[best_c][:2]) - kf_manager.X[r, :2])
-            )
-            if cost[r, best_c] < MAX_DIST and raw_dist < float(_per_track_gate[r]):
-                all_assignments.append((r, best_c))
-                assigned_dets.add(best_c)
+        # Phase 2: Unstable Tracks
+        ph2 = self._assign_unstable(
+            unst,
+            M,
+            cost,
+            meas,
+            kf_manager,
+            tracking_continuity,
+            per_track_gate,
+            MAX_DIST,
+            assigned_dets,
+        )
+        all_assignments.extend(ph2)
 
         # Phase 3: Respawn Lost Tracks
-        unassigned = [j for j in range(M) if j not in assigned_dets]
-        respawn_dist_limit = p.get("MIN_RESPAWN_DISTANCE", MAX_DIST * 0.8)
-        non_lost_positions = [
-            np.asarray(kf_manager.X[r, :2], dtype=np.float32)
-            for r in range(N)
-            if track_states[r] != "lost"
-        ]
-
-        for c in unassigned:
-            if not lost:
-                break
-            # Block respawns near any currently active or occluded track prediction.
-            min_dist_non_lost = (
-                min(
-                    np.linalg.norm(meas[c][:2] - track_pos)
-                    for track_pos in non_lost_positions
-                )
-                if non_lost_positions
-                else 1e6
-            )
-
-            if min_dist_non_lost >= respawn_dist_limit:
-                best_r, best_c_val = None, 1e6
-                for r in lost:
-                    # Accessing vectorized manager state X: [x, y, theta, vx, vy]
-                    last_pos = kf_manager.X[r, :2]
-                    dist = np.linalg.norm(meas[c][:2] - last_pos)
-                    if dist < best_c_val:
-                        best_c_val, best_r = dist, r
-
-                if best_r is not None and best_c_val < MAX_DIST:
-                    all_assignments.append((best_r, c))
-                    assigned_dets.add(c)
-                    lost.remove(best_r)
-                    trajectory_ids[best_r] = next_trajectory_id
-                    next_trajectory_id += 1
+        ph3, next_trajectory_id = self._assign_respawn(
+            lost,
+            M,
+            meas,
+            kf_manager,
+            track_states,
+            N,
+            trajectory_ids,
+            next_trajectory_id,
+            MAX_DIST,
+            assigned_dets,
+        )
+        all_assignments.extend(ph3)
 
         if not all_assignments:
             return [], [], list(range(M)), next_trajectory_id, []

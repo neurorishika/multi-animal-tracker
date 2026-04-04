@@ -9,6 +9,7 @@ environment variable overrides:
 
     HYDRA_CONFIG_DIR  — override config directory (presets, skeletons, advanced config)
     HYDRA_DATA_DIR    — override data directory (models, training runs)
+    HYDRA_PROJECTS_DIR — override default projects directory (browse/open default)
 
 Bundled read-only assets are accessed via *importlib.resources*.
 Qt helpers provide lazy-loaded QIcon construction.
@@ -22,7 +23,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from platformdirs import user_config_dir, user_data_dir
+from platformdirs import user_config_dir, user_data_dir, user_documents_dir
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,40 @@ def _user_data_dir() -> Path:
     return p
 
 
+def _user_projects_dir() -> Path:
+    """Return the default projects directory, creating it if possible.
+
+    Override with the ``HYDRA_PROJECTS_DIR`` environment variable.
+    Defaults to ``~/Documents/hydra-projects``.
+
+    On macOS the ``~/Documents`` folder may be gated by Full Disk Access.
+    If directory creation fails with a permission error the path is returned
+    as-is — callers that only need a starting directory for a file dialog can
+    still use it even if it does not exist yet.
+    """
+    override = os.environ.get("HYDRA_PROJECTS_DIR")
+    if override:
+        p = Path(override)
+    else:
+        p = Path(user_documents_dir()) / "hydra-projects"
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # macOS Full Disk Access not granted — return path without creating
+    return p
+
+
 # ---------------------------------------------------------------------------
 # Public — user-writable directories
 # ---------------------------------------------------------------------------
+
+
+def get_projects_dir() -> Path:
+    """Return (and create) the default projects directory.
+
+    Respects the ``HYDRA_PROJECTS_DIR`` environment variable override.
+    """
+    return _user_projects_dir()
 
 
 def get_app_data_dir(app_name: str) -> Path:
@@ -134,6 +166,7 @@ def print_paths() -> None:
     """
     print(f"Config dir:        {_user_config_dir()}")
     print(f"Data dir:          {_user_data_dir()}")
+    print(f"Projects dir:      {_user_projects_dir()}")
     print(f"Models:            {get_models_dir()}")
     print(f"Training runs:     {get_training_runs_dir()}")
     print(f"Presets:           {get_presets_dir()}")
@@ -145,6 +178,9 @@ def print_paths() -> None:
         print(f"  (HYDRA_CONFIG_DIR override active: {override_cfg})")
     if override_data:
         print(f"  (HYDRA_DATA_DIR override active: {override_data})")
+    override_proj = os.environ.get("HYDRA_PROJECTS_DIR")
+    if override_proj:
+        print(f"  (HYDRA_PROJECTS_DIR override active: {override_proj})")
 
 
 # ---------------------------------------------------------------------------

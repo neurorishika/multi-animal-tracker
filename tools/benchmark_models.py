@@ -31,30 +31,31 @@ Usage
 
 from __future__ import annotations
 
-import argparse
-import csv
-import gc
-import json
-import logging
 import os
-import statistics
 import sys
-import time
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
-
-import cv2
-import numpy as np
 
 # ---------------------------------------------------------------------------
-# Ensure the MAT package is importable
+# Ensure the MAT package is importable (must precede hydra_suite imports)
 # ---------------------------------------------------------------------------
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
+
+import argparse
+import csv
+import gc
+import json
+import logging
+import statistics
+import time
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+import cv2
+import numpy as np
 
 from hydra_suite.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,

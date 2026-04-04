@@ -137,16 +137,9 @@ class HeadTailAnalyzer:
             ]
 
         # Phase 1: collect canonical crops across all frames
-        all_crops: List[np.ndarray] = []
-        all_meta: List[Tuple[int, int, float, np.ndarray]] = []
-        for fi, (frame, corners_list) in enumerate(zip(frames, per_frame_obb_corners)):
-            for di, corners in enumerate(corners_list):
-                result = self._canonicalize_obb(frame, corners)
-                if result is None:
-                    continue
-                crop, axis_theta, M_align = result
-                all_crops.append(crop)
-                all_meta.append((fi, di, float(axis_theta), M_align))
+        all_crops, all_meta = self._collect_canonical_crops(
+            frames, per_frame_obb_corners
+        )
 
         # Pre-allocate results
         results: List[List[Tuple[float, float, int]]] = [
@@ -161,65 +154,94 @@ class HeadTailAnalyzer:
         if cls_results is None or len(cls_results) == 0:
             return results
 
-        # Phase 3: scatter results
-        TWO_PI = 2.0 * np.pi
-        if self._backend == "tiny":
-            probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
-            n_eval = min(len(all_meta), len(probs))
-            for j in range(n_eval):
-                fi, di, axis_theta, _ = all_meta[j]
-                p_right = float(probs[j])
-                conf = max(p_right, 1.0 - p_right)
-                if conf < self._conf_threshold:
-                    results[fi][di] = (float("nan"), float(conf), 0)
-                    continue
-                theta = axis_theta if p_right >= 0.5 else (axis_theta + np.pi)
-                results[fi][di] = (float(theta % TWO_PI), float(conf), 1)
+        # Phase 3: scatter results by backend type
+        self._scatter_results(cls_results, all_meta, results)
+        return results
 
+    def _collect_canonical_crops(
+        self,
+        frames: List[np.ndarray],
+        per_frame_obb_corners: List[List[np.ndarray]],
+    ) -> Tuple[List[np.ndarray], List[Tuple[int, int, float, np.ndarray]]]:
+        """Extract canonical crops and metadata from all frames."""
+        all_crops: List[np.ndarray] = []
+        all_meta: List[Tuple[int, int, float, np.ndarray]] = []
+        for fi, (frame, corners_list) in enumerate(zip(frames, per_frame_obb_corners)):
+            for di, corners in enumerate(corners_list):
+                result = self._canonicalize_obb(frame, corners)
+                if result is None:
+                    continue
+                crop, axis_theta, M_align = result
+                all_crops.append(crop)
+                all_meta.append((fi, di, float(axis_theta), M_align))
+        return all_crops, all_meta
+
+    def _scatter_results(
+        self,
+        cls_results,
+        all_meta: List[Tuple[int, int, float, np.ndarray]],
+        results: List[List[Tuple[float, float, int]]],
+    ) -> None:
+        """Scatter classification results back into the per-frame results grid."""
+        if self._backend == "tiny":
+            self._scatter_tiny(cls_results, all_meta, results)
         elif self._backend == "classkit_tiny":
-            n_eval = min(len(all_meta), len(cls_results))
-            for j in range(n_eval):
-                fi, di, axis_theta, _ = all_meta[j]
-                try:
-                    direction, conf = cls_results[j]
-                except Exception:
+            self._scatter_classkit_tiny(cls_results, all_meta, results)
+        else:
+            self._scatter_yolo(cls_results, all_meta, results)
+
+    def _scatter_tiny(self, cls_results, all_meta, results) -> None:
+        TWO_PI = 2.0 * np.pi
+        probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
+        for j in range(min(len(all_meta), len(probs))):
+            fi, di, axis_theta, _ = all_meta[j]
+            p_right = float(probs[j])
+            conf = max(p_right, 1.0 - p_right)
+            if conf < self._conf_threshold:
+                results[fi][di] = (float("nan"), float(conf), 0)
+                continue
+            theta = axis_theta if p_right >= 0.5 else (axis_theta + np.pi)
+            results[fi][di] = (float(theta % TWO_PI), float(conf), 1)
+
+    def _scatter_classkit_tiny(self, cls_results, all_meta, results) -> None:
+        TWO_PI = 2.0 * np.pi
+        for j in range(min(len(all_meta), len(cls_results))):
+            fi, di, axis_theta, _ = all_meta[j]
+            try:
+                direction, conf = cls_results[j]
+            except Exception:
+                continue
+            if direction not in {"left", "right"} or float(conf) < self._conf_threshold:
+                results[fi][di] = (float("nan"), float(conf), 0)
+                continue
+            theta = axis_theta if direction == "right" else (axis_theta + np.pi)
+            results[fi][di] = (float(theta % TWO_PI), float(conf), 1)
+
+    def _scatter_yolo(self, cls_results, all_meta, results) -> None:
+        TWO_PI = 2.0 * np.pi
+        for j in range(min(len(all_meta), len(cls_results))):
+            fi, di, axis_theta, _ = all_meta[j]
+            try:
+                result = cls_results[j]
+                if result is None:
                     continue
-                if direction not in {"left", "right"}:
-                    results[fi][di] = (float("nan"), float(conf), 0)
+                probs_obj = getattr(result, "probs", None)
+                if probs_obj is None:
                     continue
-                if float(conf) < self._conf_threshold:
-                    results[fi][di] = (float("nan"), float(conf), 0)
+                top1 = int(getattr(probs_obj, "top1", -1))
+                top1_conf = float(getattr(probs_obj, "top1conf", 0.0))
+                if top1 < 0 or top1_conf < self._conf_threshold:
+                    results[fi][di] = (float("nan"), top1_conf, 0)
+                    continue
+                label = self._label_from_top1(top1)
+                direction = self._class_to_direction(label, cls_idx=top1)
+                if direction is None:
+                    results[fi][di] = (float("nan"), top1_conf, 0)
                     continue
                 theta = axis_theta if direction == "right" else (axis_theta + np.pi)
-                results[fi][di] = (float(theta % TWO_PI), float(conf), 1)
-
-        else:  # yolo backend
-            n_eval = min(len(all_meta), len(cls_results))
-            for j in range(n_eval):
-                fi, di, axis_theta, _ = all_meta[j]
-                try:
-                    result = cls_results[j]
-                    if result is None:
-                        continue
-                    probs_obj = getattr(result, "probs", None)
-                    if probs_obj is None:
-                        continue
-                    top1 = int(getattr(probs_obj, "top1", -1))
-                    top1_conf = float(getattr(probs_obj, "top1conf", 0.0))
-                    if top1 < 0 or top1_conf < self._conf_threshold:
-                        results[fi][di] = (float("nan"), top1_conf, 0)
-                        continue
-                    label = self._label_from_top1(top1)
-                    direction = self._class_to_direction(label, cls_idx=top1)
-                    if direction is None:
-                        results[fi][di] = (float("nan"), top1_conf, 0)
-                        continue
-                    theta = axis_theta if direction == "right" else (axis_theta + np.pi)
-                    results[fi][di] = (float(theta % TWO_PI), top1_conf, 1)
-                except Exception:
-                    continue
-
-        return results
+                results[fi][di] = (float(theta % TWO_PI), top1_conf, 1)
+            except Exception:
+                continue
 
     def close(self) -> None:
         self._model = None

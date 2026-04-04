@@ -65,6 +65,160 @@ class EdgeLengthPriors:
 # ---------------------------------------------------------------------------
 
 
+def _rejected_result(n_kpts: int, flags: List[str]) -> PoseQualityResult:
+    kpts_out = (
+        np.zeros((n_kpts, 3), dtype=np.float32)
+        if n_kpts > 0
+        else np.zeros((0, 3), dtype=np.float32)
+    )
+    mask = np.zeros(n_kpts, dtype=bool)
+    return PoseQualityResult(
+        cleaned_keypoints=kpts_out,
+        valid_mask=mask,
+        quality_score=0.0,
+        quality_state="rejected",
+        quality_flags=flags,
+        was_cleaned=True,
+    )
+
+
+def _clean_keypoints(
+    arr: np.ndarray,
+    min_valid_conf: float,
+    ignore_set: set,
+) -> Tuple[np.ndarray, np.ndarray, bool, List[str]]:
+    """Clean per-keypoint confidence and return (cleaned, valid_mask, was_cleaned, flags)."""
+    K = len(arr)
+    cleaned = arr.copy()
+    valid_mask = np.zeros(K, dtype=bool)
+    was_cleaned = False
+    low_conf_count = 0
+    invalid_coords_count = 0
+
+    for i in range(K):
+        if i in ignore_set:
+            continue
+        x, y, conf = float(arr[i, 0]), float(arr[i, 1]), float(arr[i, 2])
+        coords_ok = np.isfinite(x) and np.isfinite(y)
+        conf_ok = np.isfinite(conf) and conf >= float(min_valid_conf)
+
+        if not conf_ok:
+            cleaned[i, 2] = 0.0
+            was_cleaned = True
+            low_conf_count += 1
+        elif not coords_ok:
+            cleaned[i, 2] = 0.0
+            was_cleaned = True
+            invalid_coords_count += 1
+        else:
+            valid_mask[i] = True
+
+    flags: List[str] = []
+    if low_conf_count > 0:
+        flags.append(f"low_conf:{low_conf_count}")
+    if invalid_coords_count > 0:
+        flags.append(f"invalid_coords:{invalid_coords_count}")
+
+    return cleaned, valid_mask, was_cleaned, flags
+
+
+def _check_body_length_outlier(
+    arr: np.ndarray,
+    body_length_prior: Optional[BodyLengthPrior],
+    anterior_indices: Optional[List[int]],
+    posterior_indices: Optional[List[int]],
+    min_valid_conf: float,
+    ignore_set: set,
+    z_threshold: float,
+) -> bool:
+    """Return True if body length is a statistical outlier."""
+    if (
+        body_length_prior is None
+        or not body_length_prior.is_valid
+        or not anterior_indices
+        or not posterior_indices
+    ):
+        return False
+    geom = compute_pose_geometry_from_keypoints(
+        arr,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
+        list(ignore_set) if ignore_set else None,
+    )
+    if geom is None or geom.get("body_length") is None:
+        return False
+    bl = float(geom["body_length"])
+    denom = max(float(body_length_prior.mad_px), 1.0)
+    z_score = abs(bl - float(body_length_prior.median_px)) / denom
+    return z_score > float(z_threshold)
+
+
+def _count_edge_outliers(
+    cleaned: np.ndarray,
+    valid_mask: np.ndarray,
+    skeleton_edges: Optional[List[Tuple[int, int]]],
+    edge_length_priors: Optional[EdgeLengthPriors],
+    z_threshold: float,
+) -> int:
+    """Count skeleton edges whose length exceeds the calibrated prior."""
+    if (
+        not skeleton_edges
+        or edge_length_priors is None
+        or not edge_length_priors.is_valid
+    ):
+        return 0
+    K = len(cleaned)
+    n_outliers = 0
+    for edge in skeleton_edges:
+        try:
+            ei, ej = int(edge[0]), int(edge[1])
+        except Exception:
+            continue
+        if ei >= K or ej >= K:
+            continue
+        if not (valid_mask[ei] and valid_mask[ej]):
+            continue
+        key = (min(ei, ej), max(ei, ej))
+        prior = edge_length_priors.priors.get(key)
+        if prior is None or int(prior.get("n_samples", 0)) < 20:
+            continue
+        dx = float(cleaned[ei, 0]) - float(cleaned[ej, 0])
+        dy = float(cleaned[ei, 1]) - float(cleaned[ej, 1])
+        edge_len = math.sqrt(dx * dx + dy * dy)
+        denom = max(float(prior.get("mad_px", 1.0)), 1.0)
+        z = abs(edge_len - float(prior["median_px"])) / denom
+        if z > float(z_threshold):
+            n_outliers += 1
+    return n_outliers
+
+
+def _compute_quality(
+    valid_fraction: float,
+    cleaned: np.ndarray,
+    valid_mask: np.ndarray,
+    body_length_outlier: bool,
+    n_edge_outliers: int,
+) -> Tuple[float, str]:
+    """Compute quality score and state from valid-fraction and outlier info."""
+    valid_confs = [float(cleaned[i, 2]) for i in range(len(cleaned)) if valid_mask[i]]
+    mean_conf = float(np.mean(valid_confs)) if valid_confs else 0.0
+    score = valid_fraction * mean_conf
+    if body_length_outlier:
+        score *= 0.7
+    if n_edge_outliers > 0:
+        score *= max(0.5, 1.0 - 0.15 * n_edge_outliers)
+    score = float(np.clip(score, 0.0, 1.0))
+
+    if score < 0.2:
+        state = "bad"
+    elif score < 0.7:
+        state = "partial"
+    else:
+        state = "good"
+    return score, state
+
+
 def assess_pose_row(
     keypoints: np.ndarray,
     min_valid_conf: float,
@@ -105,192 +259,88 @@ def assess_pose_row(
     Returns:
         PoseQualityResult with cleaned keypoints and quality metadata.
     """
-    K_dummy = 0
     ignore_set = {int(i) for i in (ignore_indices or [])}
 
-    def _rejected_result(n_kpts: int, flags: List[str]) -> PoseQualityResult:
-        kpts_out = (
-            np.zeros((n_kpts, 3), dtype=np.float32)
-            if n_kpts > 0
-            else np.zeros((0, 3), dtype=np.float32)
-        )
-        mask = np.zeros(n_kpts, dtype=bool)
-        return PoseQualityResult(
-            cleaned_keypoints=kpts_out,
-            valid_mask=mask,
-            quality_score=0.0,
-            quality_state="rejected",
-            quality_flags=flags,
-            was_cleaned=True,
-        )
-
-    # ------------------------------------------------------------------
     # 1. Validate input
-    # ------------------------------------------------------------------
     if keypoints is None:
-        return _rejected_result(K_dummy, ["null_input"])
-
+        return _rejected_result(0, ["null_input"])
     try:
         arr = np.asarray(keypoints, dtype=np.float32)
     except Exception:
-        return _rejected_result(K_dummy, ["invalid_input"])
-
+        return _rejected_result(0, ["invalid_input"])
     if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
-        return _rejected_result(K_dummy, ["invalid_shape"])
-
-    # All-NaN check
+        return _rejected_result(0, ["invalid_shape"])
     if not np.any(np.isfinite(arr)):
         return _rejected_result(len(arr), ["all_nan"])
 
     K = len(arr)
-    cleaned = arr.copy()
-    valid_mask = np.zeros(K, dtype=bool)
-    flags: List[str] = []
-    was_cleaned = False
 
-    low_conf_count = 0
-    invalid_coords_count = 0
-
-    # ------------------------------------------------------------------
     # 2. Per-keypoint cleaning
-    # ------------------------------------------------------------------
-    for i in range(K):
-        if i in ignore_set:
-            # Leave ignored keypoints untouched; do not mark valid or invalid
-            continue
-        x, y, conf = float(arr[i, 0]), float(arr[i, 1]), float(arr[i, 2])
-        coords_ok = np.isfinite(x) and np.isfinite(y)
-        conf_ok = np.isfinite(conf) and conf >= float(min_valid_conf)
+    cleaned, valid_mask, was_cleaned, flags = _clean_keypoints(
+        arr, min_valid_conf, ignore_set
+    )
 
-        if not conf_ok:
-            cleaned[i, 2] = 0.0
-            was_cleaned = True
-            low_conf_count += 1
-            # valid_mask[i] remains False
-        elif not coords_ok:
-            cleaned[i, 2] = 0.0
-            was_cleaned = True
-            invalid_coords_count += 1
-            # valid_mask[i] remains False
-        else:
-            valid_mask[i] = True
-
-    if low_conf_count > 0:
-        flags.append(f"low_conf:{low_conf_count}")
-    if invalid_coords_count > 0:
-        flags.append(f"invalid_coords:{invalid_coords_count}")
-
-    # ------------------------------------------------------------------
     # 3-4. Count valid keypoints (ignoring ignored indices in denominator)
-    # ------------------------------------------------------------------
     num_considered = sum(1 for i in range(K) if i not in ignore_set)
     num_valid = int(np.sum(valid_mask))
     valid_fraction = (
         float(num_valid) / float(num_considered) if num_considered > 0 else 0.0
     )
 
-    # ------------------------------------------------------------------
     # 5. Rejection check
-    # ------------------------------------------------------------------
     rejected = False
     if valid_fraction < float(min_valid_fraction) or num_valid < int(
         min_valid_keypoints
     ):
         rejected = True
         flags.append("too_few_valid")
-        # Zero all confs in output
         for i in range(K):
             if i not in ignore_set:
                 cleaned[i, 2] = 0.0
         was_cleaned = True
 
-    # ------------------------------------------------------------------
-    # 6. Body-length outlier check (on ORIGINAL keypoints before zeroing)
-    # ------------------------------------------------------------------
-    body_length_outlier = False
-    if (
-        not rejected
-        and body_length_prior is not None
-        and body_length_prior.is_valid
-        and anterior_indices
-        and posterior_indices
-    ):
-        geom = compute_pose_geometry_from_keypoints(
-            arr,  # original, before any zeroing
-            anterior_indices,
-            posterior_indices,
-            min_valid_conf,
-            list(ignore_set) if ignore_set else None,
+    if rejected:
+        return PoseQualityResult(
+            cleaned_keypoints=cleaned,
+            valid_mask=valid_mask,
+            quality_score=0.0,
+            quality_state="rejected",
+            quality_flags=flags,
+            was_cleaned=was_cleaned,
         )
-        if geom is not None and geom.get("body_length") is not None:
-            bl = float(geom["body_length"])
-            denom = max(float(body_length_prior.mad_px), 1.0)
-            z_score = abs(bl - float(body_length_prior.median_px)) / denom
-            if z_score > float(body_length_z_threshold):
-                flags.append("body_length_outlier")
-                body_length_outlier = True
 
-    # ------------------------------------------------------------------
+    # 6. Body-length outlier check (on ORIGINAL keypoints before zeroing)
+    body_length_outlier = _check_body_length_outlier(
+        arr,
+        body_length_prior,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
+        ignore_set,
+        body_length_z_threshold,
+    )
+    if body_length_outlier:
+        flags.append("body_length_outlier")
+
     # 6b. Per-edge skeleton length check
-    # ------------------------------------------------------------------
-    n_edge_outliers = 0
-    if (
-        not rejected
-        and skeleton_edges
-        and edge_length_priors is not None
-        and edge_length_priors.is_valid
-    ):
-        for edge in skeleton_edges:
-            try:
-                ei, ej = int(edge[0]), int(edge[1])
-            except Exception:
-                continue
-            if ei >= K or ej >= K:
-                continue
-            if not (valid_mask[ei] and valid_mask[ej]):
-                continue
-            key = (min(ei, ej), max(ei, ej))
-            prior = edge_length_priors.priors.get(key)
-            if prior is None or int(prior.get("n_samples", 0)) < 20:
-                continue
-            dx = float(cleaned[ei, 0]) - float(cleaned[ej, 0])
-            dy = float(cleaned[ei, 1]) - float(cleaned[ej, 1])
-            edge_len = math.sqrt(dx * dx + dy * dy)
-            denom = max(float(prior.get("mad_px", 1.0)), 1.0)
-            z = abs(edge_len - float(prior["median_px"])) / denom
-            if z > float(edge_length_z_threshold):
-                n_edge_outliers += 1
-        if n_edge_outliers > 0:
-            flags.append(f"edge_outlier:{n_edge_outliers}")
+    n_edge_outliers = _count_edge_outliers(
+        cleaned,
+        valid_mask,
+        skeleton_edges,
+        edge_length_priors,
+        edge_length_z_threshold,
+    )
+    if n_edge_outliers > 0:
+        flags.append(f"edge_outlier:{n_edge_outliers}")
 
-    # ------------------------------------------------------------------
-    # 7. quality_score computation
-    # ------------------------------------------------------------------
-    if rejected:
-        quality_score = 0.0
-    else:
-        # mean conf of valid keypoints in cleaned output
-        valid_confs = [float(cleaned[i, 2]) for i in range(K) if valid_mask[i]]
-        mean_conf = float(np.mean(valid_confs)) if valid_confs else 0.0
-        quality_score = valid_fraction * mean_conf
-        if body_length_outlier:
-            quality_score *= 0.7
-        if n_edge_outliers > 0:
-            # Each outlier edge applies a 15% penalty, capped at 50% total
-            quality_score *= max(0.5, 1.0 - 0.15 * n_edge_outliers)
-        quality_score = float(np.clip(quality_score, 0.0, 1.0))
-
-    # ------------------------------------------------------------------
-    # 8. quality_state
-    # ------------------------------------------------------------------
-    if rejected:
-        quality_state = "rejected"
-    elif quality_score < 0.2:
-        quality_state = "bad"
-    elif quality_score < 0.7:
-        quality_state = "partial"
-    else:
-        quality_state = "good"
+    # 7-8. Quality score and state
+    quality_score, quality_state = _compute_quality(
+        valid_fraction,
+        cleaned,
+        valid_mask,
+        body_length_outlier,
+        n_edge_outliers,
+    )
 
     return PoseQualityResult(
         cleaned_keypoints=cleaned,
@@ -305,6 +355,59 @@ def assess_pose_row(
 # ---------------------------------------------------------------------------
 # calibrate_body_length_prior
 # ---------------------------------------------------------------------------
+
+
+def _filter_high_conf_rows(df: pd.DataFrame, high_conf_floor: float) -> pd.DataFrame:
+    """Filter DataFrame to rows with PoseMeanConf >= threshold."""
+    if "PoseMeanConf" not in df.columns:
+        return df
+    try:
+        return df[df["PoseMeanConf"] >= float(high_conf_floor)]
+    except Exception:
+        return df
+
+
+def _collect_body_lengths(
+    high_conf_df: pd.DataFrame,
+    pose_labels: List[str],
+    anterior_indices: List[int],
+    posterior_indices: List[int],
+    min_valid_conf: float,
+) -> List[float]:
+    """Extract valid body lengths from high-confidence rows."""
+    body_lengths: List[float] = []
+    for _, row in high_conf_df.iterrows():
+        kpts = _extract_keypoints_from_row(row, pose_labels)
+        if kpts is None:
+            continue
+        geom = compute_pose_geometry_from_keypoints(
+            kpts,
+            anterior_indices,
+            posterior_indices,
+            min_valid_conf,
+        )
+        if geom is None:
+            continue
+        bl = geom.get("body_length")
+        if bl is not None and float(bl) > 0.0:
+            body_lengths.append(float(bl))
+    return body_lengths
+
+
+def _body_length_prior_from_samples(samples: List[float]) -> BodyLengthPrior:
+    """Compute BodyLengthPrior from a list of body-length samples."""
+    n = len(samples)
+    if n == 0:
+        return BodyLengthPrior(median_px=0.0, mad_px=0.0, n_samples=0, is_valid=False)
+    arr = np.asarray(samples, dtype=np.float64)
+    median_px = float(np.median(arr))
+    mad_px = float(np.median(np.abs(arr - median_px)))
+    return BodyLengthPrior(
+        median_px=median_px,
+        mad_px=mad_px,
+        n_samples=n,
+        is_valid=n >= 20,
+    )
 
 
 def calibrate_body_length_prior(
@@ -334,62 +437,91 @@ def calibrate_body_length_prior(
     """
     _invalid = BodyLengthPrior(median_px=0.0, mad_px=0.0, n_samples=0, is_valid=False)
 
-    if df is None or df.empty:
-        return _invalid
-    if not anterior_indices or not posterior_indices:
+    if df is None or df.empty or not anterior_indices or not posterior_indices:
         return _invalid
     if not pose_labels:
         return _invalid
 
-    # Filter to high-confidence rows
-    if "PoseMeanConf" not in df.columns:
-        high_conf_df = df
-    else:
-        try:
-            high_conf_df = df[df["PoseMeanConf"] >= float(high_conf_floor)]
-        except Exception:
-            high_conf_df = df
-
+    high_conf_df = _filter_high_conf_rows(df, high_conf_floor)
     if high_conf_df.empty:
         return _invalid
 
-    body_lengths: List[float] = []
-
-    for _, row in high_conf_df.iterrows():
-        kpts = _extract_keypoints_from_row(row, pose_labels)
-        if kpts is None:
-            continue
-        geom = compute_pose_geometry_from_keypoints(
-            kpts,
-            anterior_indices,
-            posterior_indices,
-            min_valid_conf,
-        )
-        if geom is None:
-            continue
-        bl = geom.get("body_length")
-        if bl is not None and float(bl) > 0.0:
-            body_lengths.append(float(bl))
-
-    n = len(body_lengths)
-    if n == 0:
-        return _invalid
-
-    arr = np.asarray(body_lengths, dtype=np.float64)
-    median_px = float(np.median(arr))
-    mad_px = float(np.median(np.abs(arr - median_px)))
-
-    return BodyLengthPrior(
-        median_px=median_px,
-        mad_px=mad_px,
-        n_samples=n,
-        is_valid=n >= 20,
+    body_lengths = _collect_body_lengths(
+        high_conf_df,
+        pose_labels,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
     )
+    return _body_length_prior_from_samples(body_lengths)
 
 
 # ---------------------------------------------------------------------------
 # calibrate_edge_length_priors
 # ---------------------------------------------------------------------------
+
+
+def _measure_edge_distance(
+    kpts: np.ndarray,
+    ei: int,
+    ej: int,
+    min_valid_conf: float,
+) -> Optional[float]:
+    """Measure pixel distance between two keypoints if both are valid."""
+    xi, yi, ci = float(kpts[ei, 0]), float(kpts[ei, 1]), float(kpts[ei, 2])
+    xj, yj, cj = float(kpts[ej, 0]), float(kpts[ej, 1]), float(kpts[ej, 2])
+    if ci < float(min_valid_conf) or cj < float(min_valid_conf):
+        return None
+    if not (math.isfinite(xi) and math.isfinite(yi)):
+        return None
+    if not (math.isfinite(xj) and math.isfinite(yj)):
+        return None
+    dist = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2)
+    return dist if dist > 0.0 else None
+
+
+def _accumulate_edge_samples(
+    high_conf_df: pd.DataFrame,
+    pose_labels: List[str],
+    skeleton_edges: List[Tuple[int, int]],
+    min_valid_conf: float,
+) -> Dict[Tuple[int, int], List[float]]:
+    """Accumulate per-edge distance samples from high-confidence rows."""
+    edge_samples: Dict[Tuple[int, int], List[float]] = {}
+    K = len(pose_labels)
+    for _, row in high_conf_df.iterrows():
+        kpts = _extract_keypoints_from_row(row, pose_labels)
+        if kpts is None or len(kpts) < K:
+            continue
+        for edge in skeleton_edges:
+            try:
+                ei, ej = int(edge[0]), int(edge[1])
+            except Exception:
+                continue
+            if ei >= K or ej >= K:
+                continue
+            dist = _measure_edge_distance(kpts, ei, ej, min_valid_conf)
+            if dist is not None:
+                key = (min(ei, ej), max(ei, ej))
+                edge_samples.setdefault(key, []).append(dist)
+    return edge_samples
+
+
+def _build_edge_priors(
+    edge_samples: Dict[Tuple[int, int], List[float]],
+) -> EdgeLengthPriors:
+    """Build EdgeLengthPriors from accumulated per-edge distance samples."""
+    priors: Dict[Tuple[int, int], Dict] = {}
+    any_valid = False
+    for key, samples in edge_samples.items():
+        n = len(samples)
+        arr = np.asarray(samples, dtype=np.float64)
+        median_px = float(np.median(arr))
+        mad_px = float(np.median(np.abs(arr - median_px)))
+        priors[key] = {"median_px": median_px, "mad_px": mad_px, "n_samples": n}
+        if n >= 20:
+            any_valid = True
+    return EdgeLengthPriors(priors=priors, is_valid=any_valid)
 
 
 def calibrate_edge_length_priors(
@@ -420,63 +552,17 @@ def calibrate_edge_length_priors(
     if df is None or df.empty or not pose_labels or not skeleton_edges:
         return _invalid
 
-    # Filter to high-confidence rows
-    if "PoseMeanConf" in df.columns:
-        try:
-            high_conf_df = df[df["PoseMeanConf"] >= float(high_conf_floor)]
-        except Exception:
-            high_conf_df = df
-    else:
-        high_conf_df = df
-
+    high_conf_df = _filter_high_conf_rows(df, high_conf_floor)
     if high_conf_df.empty:
         return _invalid
 
-    # Accumulate distances per canonical edge key
-    edge_samples: Dict[Tuple[int, int], List[float]] = {}
-    K = len(pose_labels)
-
-    for _, row in high_conf_df.iterrows():
-        kpts = _extract_keypoints_from_row(row, pose_labels)
-        if kpts is None or len(kpts) < K:
-            continue
-        for edge in skeleton_edges:
-            try:
-                ei, ej = int(edge[0]), int(edge[1])
-            except Exception:
-                continue
-            if ei >= K or ej >= K:
-                continue
-            xi, yi, ci = float(kpts[ei, 0]), float(kpts[ei, 1]), float(kpts[ei, 2])
-            xj, yj, cj = float(kpts[ej, 0]), float(kpts[ej, 1]), float(kpts[ej, 2])
-            if ci < float(min_valid_conf) or cj < float(min_valid_conf):
-                continue
-            if not (math.isfinite(xi) and math.isfinite(yi)):
-                continue
-            if not (math.isfinite(xj) and math.isfinite(yj)):
-                continue
-            dist = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2)
-            if dist <= 0.0:
-                continue
-            key = (min(ei, ej), max(ei, ej))
-            edge_samples.setdefault(key, []).append(dist)
-
-    priors: Dict[Tuple[int, int], Dict] = {}
-    any_valid = False
-    for key, samples in edge_samples.items():
-        n = len(samples)
-        arr = np.asarray(samples, dtype=np.float64)
-        median_px = float(np.median(arr))
-        mad_px = float(np.median(np.abs(arr - median_px)))
-        priors[key] = {
-            "median_px": median_px,
-            "mad_px": mad_px,
-            "n_samples": n,
-        }
-        if n >= 20:
-            any_valid = True
-
-    return EdgeLengthPriors(priors=priors, is_valid=any_valid)
+    edge_samples = _accumulate_edge_samples(
+        high_conf_df,
+        pose_labels,
+        skeleton_edges,
+        min_valid_conf,
+    )
+    return _build_edge_priors(edge_samples)
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +779,141 @@ def apply_quality_to_dataframe(
 # ---------------------------------------------------------------------------
 
 
+def _suppress_temporal_outliers(
+    out: pd.DataFrame,
+    pose_labels: List[str],
+    rolling_window: int,
+    z_score_threshold: float,
+) -> None:
+    """Zero confidence for keypoints that are rolling-z-score outliers (in-place)."""
+    _VALID_STATES = {"good", "partial"}
+    for label in pose_labels:
+        x_col = f"PoseKpt_{label}_X"
+        y_col = f"PoseKpt_{label}_Y"
+        c_col = f"PoseKpt_{label}_Conf"
+
+        if not all(c in out.columns for c in (x_col, y_col, c_col)):
+            continue
+
+        valid_idx = _get_valid_label_indices(out, c_col, _VALID_STATES)
+        if len(valid_idx) < 3:
+            continue
+
+        x_series = out.loc[valid_idx, x_col].astype(float)
+        y_series = out.loc[valid_idx, y_col].astype(float)
+
+        for series in (x_series, y_series):
+            _flag_rolling_outliers(
+                out,
+                series,
+                valid_idx,
+                c_col,
+                rolling_window,
+                z_score_threshold,
+            )
+
+
+def _get_valid_label_indices(
+    out: pd.DataFrame,
+    c_col: str,
+    valid_states: set,
+) -> list:
+    """Return row indices where quality state is acceptable and conf > 0."""
+    if "PoseQualityState" in out.columns:
+        quality_ok = out["PoseQualityState"].isin(valid_states)
+    else:
+        quality_ok = pd.Series([True] * len(out), index=out.index)
+    conf_ok = out[c_col].apply(lambda v: pd.notna(v) and float(v) > 0.0)
+    return out.index[quality_ok & conf_ok].tolist()
+
+
+def _flag_rolling_outliers(
+    out: pd.DataFrame,
+    series: pd.Series,
+    valid_idx: list,
+    c_col: str,
+    rolling_window: int,
+    z_score_threshold: float,
+) -> None:
+    """Flag individual index positions as temporal outliers based on rolling z-score."""
+    roll_mean = series.rolling(rolling_window, min_periods=3, center=True).mean()
+    roll_std = series.rolling(rolling_window, min_periods=3, center=True).std()
+
+    for idx_val in valid_idx:
+        if idx_val not in roll_mean.index:
+            continue
+        mean_v = roll_mean.loc[idx_val]
+        if pd.isna(mean_v):
+            continue
+        std_v = (
+            float(roll_std.loc[idx_val]) if not pd.isna(roll_std.loc[idx_val]) else 0.0
+        )
+        z = abs(float(series.loc[idx_val]) - float(mean_v)) / max(std_v, 1e-6)
+        if z > float(z_score_threshold):
+            out.at[idx_val, c_col] = 0.0
+            _add_flag(out, idx_val, "temporal_outlier")
+            out.at[idx_val, "PoseWasCleaned"] = 1
+
+
+def _interpolate_gaps(
+    out: pd.DataFrame,
+    pose_labels: List[str],
+    max_gap: int,
+) -> None:
+    """Linearly interpolate keypoint X/Y across short gaps (in-place)."""
+    for label in pose_labels:
+        x_col = f"PoseKpt_{label}_X"
+        y_col = f"PoseKpt_{label}_Y"
+        c_col = f"PoseKpt_{label}_Conf"
+
+        if not all(c in out.columns for c in (x_col, y_col, c_col)):
+            continue
+
+        valid_mask = out[c_col].apply(lambda v: pd.notna(v) and float(v) > 0.0)
+        valid_positions = out.index[valid_mask].tolist()
+        if len(valid_positions) < 2:
+            continue
+
+        for seg_start_pos, seg_end_pos in zip(
+            valid_positions[:-1], valid_positions[1:]
+        ):
+            _fill_single_gap(
+                out, seg_start_pos, seg_end_pos, x_col, y_col, c_col, max_gap
+            )
+
+
+def _fill_single_gap(
+    out: pd.DataFrame,
+    seg_start_pos,
+    seg_end_pos,
+    x_col: str,
+    y_col: str,
+    c_col: str,
+    max_gap: int,
+) -> None:
+    """Linearly interpolate X/Y for a single gap between two valid positions."""
+    start_iloc = out.index.get_loc(seg_start_pos)
+    end_iloc = out.index.get_loc(seg_end_pos)
+    gap_length = end_iloc - start_iloc - 1
+
+    if gap_length <= 0 or gap_length > max_gap:
+        return
+
+    x_start = float(out.at[seg_start_pos, x_col])
+    x_end = float(out.at[seg_end_pos, x_col])
+    y_start = float(out.at[seg_start_pos, y_col])
+    y_end = float(out.at[seg_end_pos, y_col])
+
+    gap_indices = out.index[start_iloc + 1 : end_iloc]
+    for step, gap_idx in enumerate(gap_indices, start=1):
+        t = float(step) / float(gap_length + 1)
+        out.at[gap_idx, x_col] = x_start + t * (x_end - x_start)
+        out.at[gap_idx, y_col] = y_start + t * (y_end - y_start)
+        out.at[gap_idx, c_col] = 0.3  # low-trust interpolated conf
+        out.at[gap_idx, "PoseSource"] = "cleaned"
+        out.at[gap_idx, "PoseWasCleaned"] = 1
+
+
 def apply_temporal_pose_postprocessing(
     trajectory_df: pd.DataFrame,
     pose_labels: List[str],
@@ -722,119 +943,16 @@ def apply_temporal_pose_postprocessing(
 
     out = trajectory_df.copy()
 
-    # Sort by FrameID
     if "FrameID" in out.columns:
         out = out.sort_values("FrameID").reset_index(drop=True)
 
-    _VALID_STATES = {"good", "partial"}
     rolling_window = max(5, max_gap * 2)
 
-    # ------------------------------------------------------------------
-    # 3. Per-label outlier suppression
-    # ------------------------------------------------------------------
-    for label in pose_labels:
-        x_col = f"PoseKpt_{label}_X"
-        y_col = f"PoseKpt_{label}_Y"
-        c_col = f"PoseKpt_{label}_Conf"
+    _suppress_temporal_outliers(out, pose_labels, rolling_window, z_score_threshold)
 
-        if (
-            x_col not in out.columns
-            or y_col not in out.columns
-            or c_col not in out.columns
-        ):
-            continue
-
-        # Determine valid rows for this label
-        if "PoseQualityState" in out.columns:
-            quality_ok = out["PoseQualityState"].isin(_VALID_STATES)
-        else:
-            quality_ok = pd.Series([True] * len(out), index=out.index)
-
-        conf_ok = out[c_col].apply(lambda v: pd.notna(v) and float(v) > 0.0)
-        valid_idx = out.index[quality_ok & conf_ok].tolist()
-
-        if len(valid_idx) < 3:
-            # Not enough data to do rolling stats
-            continue
-
-        # Compute rolling z-score on valid X and Y series
-        x_series = out.loc[valid_idx, x_col].astype(float)
-        y_series = out.loc[valid_idx, y_col].astype(float)
-
-        for series, col in [(x_series, x_col), (y_series, y_col)]:
-            roll_mean = series.rolling(
-                rolling_window, min_periods=3, center=True
-            ).mean()
-            roll_std = series.rolling(rolling_window, min_periods=3, center=True).std()
-
-            for idx_val in valid_idx:
-                if idx_val not in roll_mean.index:
-                    continue
-                mean_v = roll_mean.loc[idx_val]
-                std_v = roll_std.loc[idx_val]
-                if pd.isna(mean_v):
-                    continue
-                std_v = float(std_v) if not pd.isna(std_v) else 0.0
-                z = abs(float(series.loc[idx_val]) - float(mean_v)) / max(std_v, 1e-6)
-                if z > float(z_score_threshold):
-                    # Mark this row as an outlier — zero conf, update flags
-                    out.at[idx_val, c_col] = 0.0
-                    _add_flag(out, idx_val, "temporal_outlier")
-                    out.at[idx_val, "PoseWasCleaned"] = 1
-
-    # ------------------------------------------------------------------
-    # 4. Gap-fill via linear interpolation
-    # ------------------------------------------------------------------
     if fill_interpolated:
-        for label in pose_labels:
-            x_col = f"PoseKpt_{label}_X"
-            y_col = f"PoseKpt_{label}_Y"
-            c_col = f"PoseKpt_{label}_Conf"
+        _interpolate_gaps(out, pose_labels, max_gap)
 
-            if (
-                x_col not in out.columns
-                or y_col not in out.columns
-                or c_col not in out.columns
-            ):
-                continue
-
-            # Identify valid rows (conf > 0 after outlier suppression)
-            valid_mask = out[c_col].apply(lambda v: pd.notna(v) and float(v) > 0.0)
-            valid_positions = out.index[valid_mask].tolist()
-
-            if len(valid_positions) < 2:
-                continue
-
-            # Find contiguous gaps between valid positions
-            for seg_start_pos, seg_end_pos in zip(
-                valid_positions[:-1], valid_positions[1:]
-            ):
-                # Get the integer positions in the DataFrame
-                start_iloc = out.index.get_loc(seg_start_pos)
-                end_iloc = out.index.get_loc(seg_end_pos)
-                gap_length = end_iloc - start_iloc - 1
-
-                if gap_length <= 0 or gap_length > max_gap:
-                    continue
-
-                # Linear interpolation of X and Y over the gap
-                x_start = float(out.at[seg_start_pos, x_col])
-                x_end = float(out.at[seg_end_pos, x_col])
-                y_start = float(out.at[seg_start_pos, y_col])
-                y_end = float(out.at[seg_end_pos, y_col])
-
-                gap_indices = out.index[start_iloc + 1 : end_iloc]
-                for step, gap_idx in enumerate(gap_indices, start=1):
-                    t = float(step) / float(gap_length + 1)
-                    out.at[gap_idx, x_col] = x_start + t * (x_end - x_start)
-                    out.at[gap_idx, y_col] = y_start + t * (y_end - y_start)
-                    out.at[gap_idx, c_col] = 0.3  # low-trust interpolated conf
-                    out.at[gap_idx, "PoseSource"] = "cleaned"
-                    out.at[gap_idx, "PoseWasCleaned"] = 1
-
-    # ------------------------------------------------------------------
-    # 5. Recompute PoseMeanConf and PoseValidFraction for modified rows
-    # ------------------------------------------------------------------
     _recompute_pose_summary(out, pose_labels)
 
     return out
@@ -887,6 +1005,26 @@ def _add_flag(df: pd.DataFrame, idx, flag: str) -> None:
     df.at[idx, "PoseQualityFlags"] = new_val
 
 
+def _collect_row_conf_stats(
+    row,
+    present_conf_cols: List[str],
+) -> Tuple[List[float], int]:
+    """Collect finite confidence values and count of positive-confidence keypoints."""
+    confs: List[float] = []
+    valid_count = 0
+    for c in present_conf_cols:
+        v = row[c]
+        try:
+            fv = float(v)
+            if np.isfinite(fv):
+                confs.append(fv)
+                if fv > 0.0:
+                    valid_count += 1
+        except (ValueError, TypeError):
+            pass
+    return confs, valid_count
+
+
 def _recompute_pose_summary(df: pd.DataFrame, pose_labels: List[str]) -> None:
     """Recompute PoseMeanConf and PoseValidFraction columns in-place."""
     if not pose_labels:
@@ -897,25 +1035,15 @@ def _recompute_pose_summary(df: pd.DataFrame, pose_labels: List[str]) -> None:
         return
 
     K = len(pose_labels)
+    has_mean = "PoseMeanConf" in df.columns
+    has_frac = "PoseValidFraction" in df.columns
 
-    if "PoseMeanConf" in df.columns or "PoseValidFraction" in df.columns:
+    if has_mean or has_frac:
         for idx in df.index:
-            row = df.loc[idx]
-            confs = []
-            valid_count = 0
-            for c in present_conf_cols:
-                v = row[c]
-                try:
-                    fv = float(v)
-                    if np.isfinite(fv):
-                        confs.append(fv)
-                        if fv > 0.0:
-                            valid_count += 1
-                except (ValueError, TypeError):
-                    pass
-            if "PoseMeanConf" in df.columns:
+            confs, valid_count = _collect_row_conf_stats(df.loc[idx], present_conf_cols)
+            if has_mean:
                 df.at[idx, "PoseMeanConf"] = float(np.mean(confs)) if confs else 0.0
-            if "PoseValidFraction" in df.columns:
+            if has_frac:
                 df.at[idx, "PoseValidFraction"] = (
                     float(valid_count) / float(K) if K > 0 else 0.0
                 )

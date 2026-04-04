@@ -1064,8 +1064,13 @@ class MainWindow(QMainWindow):
     def open_project(self):
         """Open an existing project."""
         self._flush_pending_label_updates(force=True)
+        from hydra_suite.paths import get_projects_dir
+
         project_dir = QFileDialog.getExistingDirectory(
-            self, "Open ClassKit Project", str(Path.home()), QFileDialog.ShowDirsOnly
+            self,
+            "Open ClassKit Project",
+            str(get_projects_dir()),
+            QFileDialog.ShowDirsOnly,
         )
 
         if project_dir:

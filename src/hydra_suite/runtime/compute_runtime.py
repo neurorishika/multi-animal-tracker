@@ -89,6 +89,36 @@ def _cuda_like_available() -> bool:
     return bool(CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE)
 
 
+def _onnx_available(rt: str) -> bool:
+    """Check local ONNX runtime availability for the given canonical ONNX runtime."""
+    if rt == "onnx_cpu":
+        return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
+    if rt == "onnx_cuda":
+        return bool(
+            ONNXRUNTIME_CUDA_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
+        )
+    if rt == "onnx_rocm":
+        return bool(ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE)
+    return False
+
+
+def _tensorrt_available() -> bool:
+    return bool(TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE)
+
+
+def _sleap_onnx_available(rt: str) -> bool:
+    """SLEAP ONNX runs in the selected SLEAP conda env, not the MAT env."""
+    if not shutil.which("conda"):
+        return False
+    if rt == "onnx_cpu":
+        return True
+    if rt == "onnx_cuda":
+        return bool(_cuda_like_available() and not ROCM_AVAILABLE)
+    if rt == "onnx_rocm":
+        return bool(ROCM_AVAILABLE)
+    return False
+
+
 def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
     p = str(pipeline or "").strip().lower()
     rt = _normalize_runtime(runtime)
@@ -103,54 +133,10 @@ def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
     if rt == "rocm":
         return bool(ROCM_AVAILABLE)
 
-    # Pipeline-specific acceleration support.
-    if p == "yolo_obb_detection":
-        if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
-            # OBB ONNX uses Ultralytics+ONNXRuntime in the MAT environment.
-            if rt == "onnx_cpu":
-                return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
-            if rt == "onnx_cuda":
-                return bool(
-                    ONNXRUNTIME_CUDA_AVAILABLE
-                    and _cuda_like_available()
-                    and not ROCM_AVAILABLE
-                )
-            return bool(ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE)
-        if rt == "tensorrt":
-            return bool(
-                TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
-            )
-        return True
-
-    if p == "yolo_pose":
-        if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
-            if rt == "onnx_cpu":
-                return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
-            if rt == "onnx_cuda":
-                return bool(
-                    ONNXRUNTIME_CUDA_AVAILABLE
-                    and _cuda_like_available()
-                    and not ROCM_AVAILABLE
-                )
-            return bool(ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE)
-        if rt == "tensorrt":
-            return bool(
-                TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
-            )
-        return True
-
+    # SLEAP has its own ONNX/TRT availability logic.
     if p == "sleap_pose":
         if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
-            # SLEAP ONNX runtime is executed in the selected SLEAP conda env.
-            # Keep this selectable even if sleap-nn export deps are not installed
-            # in the MAT process environment.
-            if not shutil.which("conda"):
-                return False
-            if rt == "onnx_cpu":
-                return True
-            if rt == "onnx_cuda":
-                return bool(_cuda_like_available() and not ROCM_AVAILABLE)
-            return bool(ROCM_AVAILABLE)
+            return _sleap_onnx_available(rt)
         if rt == "tensorrt":
             return bool(
                 (SLEAP_RUNTIME_TENSORRT_AVAILABLE or TENSORRT_AVAILABLE)
@@ -159,37 +145,11 @@ def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
             )
         return True
 
-    if p == "tiny_classify":
-        # TinyCNN: PyTorch runtimes always supported; ONNX/TRT require onnxruntime.
-        if rt == "onnx_cpu":
-            return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
-        if rt == "onnx_cuda":
-            return bool(
-                ONNXRUNTIME_CUDA_AVAILABLE
-                and _cuda_like_available()
-                and not ROCM_AVAILABLE
-            )
-        if rt == "onnx_rocm":
-            return bool(ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE)
-        if rt == "tensorrt":
-            return bool(
-                TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
-            )
-        return True
-
-    # Unknown pipeline: require generic capability only.
-    if rt == "onnx_cpu":
-        return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
-    if rt == "onnx_cuda":
-        return bool(
-            ONNXRUNTIME_CUDA_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
-        )
-    if rt == "onnx_rocm":
-        return bool(ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE)
+    # All other pipelines use the standard ONNX/TRT availability checks.
+    if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+        return _onnx_available(rt)
     if rt == "tensorrt":
-        return bool(
-            TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
-        )
+        return _tensorrt_available()
     return True
 
 
@@ -216,37 +176,9 @@ def allowed_runtimes_for_pipelines(pipelines: Iterable[str]) -> List[str]:
     return allowed
 
 
-def infer_compute_runtime_from_legacy(
-    yolo_device: str,
-    enable_tensorrt: bool,
-    pose_runtime_flavor: str,
-) -> str:
-    """Infer canonical runtime from legacy config fields."""
-    if bool(enable_tensorrt):
-        return "tensorrt"
-
-    pr = str(pose_runtime_flavor or "").strip().lower()
-    if pr.startswith("tensorrt"):
-        return "tensorrt"
-    if pr.startswith("onnx_rocm"):
-        return "onnx_rocm"
-    if pr.startswith("onnx_cuda"):
-        return "onnx_cuda"
-    if pr.startswith("onnx"):
-        return "onnx_cpu"
-
-    dev = str(yolo_device or "auto").strip().lower()
-    if dev in {"mps"}:
-        return "mps"
-    if dev in {"rocm"}:
-        return "rocm"
-    if dev in {"cuda", "cuda:0", "gpu"}:
-        return "rocm" if ROCM_AVAILABLE else "cuda"
-    if dev in {"cpu"}:
-        return "cpu"
-
-    # auto/unknown: pick best available deterministic canonical runtime.
-    if TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE:
+def _best_auto_runtime() -> str:
+    """Pick the best available canonical runtime for auto-detection."""
+    if _tensorrt_available():
         return "tensorrt"
     if MPS_AVAILABLE:
         return "mps"
@@ -261,6 +193,50 @@ def infer_compute_runtime_from_legacy(
     if ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE:
         return "onnx_cpu"
     return "cpu"
+
+
+def _runtime_from_pose_flavor(pose_runtime_flavor: str) -> str | None:
+    """Map legacy pose_runtime_flavor to canonical runtime, or None."""
+    pr = str(pose_runtime_flavor or "").strip().lower()
+    if pr.startswith("tensorrt"):
+        return "tensorrt"
+    if pr.startswith("onnx_rocm"):
+        return "onnx_rocm"
+    if pr.startswith("onnx_cuda"):
+        return "onnx_cuda"
+    if pr.startswith("onnx"):
+        return "onnx_cpu"
+    return None
+
+
+_DEVICE_MAP = {
+    "mps": "mps",
+    "rocm": "rocm",
+    "cpu": "cpu",
+}
+_CUDA_DEVICES = {"cuda", "cuda:0", "gpu"}
+
+
+def infer_compute_runtime_from_legacy(
+    yolo_device: str,
+    enable_tensorrt: bool,
+    pose_runtime_flavor: str,
+) -> str:
+    """Infer canonical runtime from legacy config fields."""
+    if bool(enable_tensorrt):
+        return "tensorrt"
+
+    from_pose = _runtime_from_pose_flavor(pose_runtime_flavor)
+    if from_pose is not None:
+        return from_pose
+
+    dev = str(yolo_device or "auto").strip().lower()
+    if dev in _DEVICE_MAP:
+        return _DEVICE_MAP[dev]
+    if dev in _CUDA_DEVICES:
+        return "rocm" if ROCM_AVAILABLE else "cuda"
+
+    return _best_auto_runtime()
 
 
 def derive_detection_runtime_settings(compute_runtime: str) -> dict:

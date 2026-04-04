@@ -193,89 +193,102 @@ def pick_best_instance(
     return None
 
 
-def coerce_prediction_batch(
-    pred_out: Any, batch_size: int
+def _pad_to_batch(
+    out: List[Optional[np.ndarray]], batch_size: int
 ) -> List[Optional[np.ndarray]]:
-    """Convert predictor output into per-crop Nx3 arrays (x, y, conf)."""
-    empty = [None] * int(max(0, batch_size))
-    if pred_out is None or batch_size <= 0:
-        return empty
+    """Pad output list to batch_size with None entries and truncate."""
+    if len(out) < batch_size:
+        out.extend([None] * (batch_size - len(out)))
+    return out[:batch_size]
 
-    # Common dict output: instance_peaks + instance_peak_vals.
-    if isinstance(pred_out, dict):
-        xy = as_array(
-            dict_first_present(
-                pred_out,
-                ["instance_peaks", "pred_instance_peaks", "peaks", "keypoints"],
-            )
+
+def _coerce_dict_prediction(
+    pred_out: Dict[str, Any], batch_size: int
+) -> List[Optional[np.ndarray]]:
+    """Coerce dict-style predictor output (instance_peaks + instance_peak_vals)."""
+    xy = as_array(
+        dict_first_present(
+            pred_out,
+            ["instance_peaks", "pred_instance_peaks", "peaks", "keypoints"],
         )
-        conf = as_array(
-            dict_first_present(
-                pred_out,
-                [
-                    "instance_peak_vals",
-                    "pred_instance_peak_vals",
-                    "peak_vals",
-                    "scores",
-                    "confidences",
-                ],
-            )
+    )
+    conf = as_array(
+        dict_first_present(
+            pred_out,
+            [
+                "instance_peak_vals",
+                "pred_instance_peak_vals",
+                "peak_vals",
+                "scores",
+                "confidences",
+            ],
         )
-        if xy is None:
-            return empty
+    )
+    if xy is None:
+        return [None] * batch_size
 
-        # Normalize to [B, ...].
-        if xy.ndim == 2 and xy.shape[1] == 2:
-            xy = xy[None, :, :]
-            if conf is not None and conf.ndim == 1:
-                conf = conf[None, :]
-        elif xy.ndim == 3 and xy.shape[-1] == 2:
-            if int(xy.shape[0]) != int(batch_size):
-                xy = xy[None, :, :, :]
-                if conf is not None and conf.ndim == 2:
-                    conf = conf[None, :, :]
-        elif xy.ndim == 4 and xy.shape[-1] == 2:
-            pass
-        else:
-            return empty
+    # Normalize to [B, ...].
+    xy, conf = _normalize_dict_xy_conf(xy, conf, batch_size)
+    if xy is None:
+        return [None] * batch_size
 
-        out: List[Optional[np.ndarray]] = []
-        if xy.ndim == 3:
-            for b in range(min(batch_size, xy.shape[0])):
-                conf_b = conf[b] if conf is not None and conf.ndim >= 2 else None
-                out.append(pick_best_instance(xy[b], conf_b))
-        else:
-            for b in range(min(batch_size, xy.shape[0])):
-                conf_b = conf[b] if conf is not None and conf.ndim >= 3 else None
-                out.append(pick_best_instance(xy[b], conf_b))
-        if len(out) < batch_size:
-            out.extend([None] * (batch_size - len(out)))
-        return out[:batch_size]
+    min_conf_ndim = 2 if xy.ndim == 3 else 3
+    out: List[Optional[np.ndarray]] = []
+    for b in range(min(batch_size, xy.shape[0])):
+        conf_b = conf[b] if conf is not None and conf.ndim >= min_conf_ndim else None
+        out.append(pick_best_instance(xy[b], conf_b))
+    return _pad_to_batch(out, batch_size)
 
-    # List output, one entry per crop.
-    if isinstance(pred_out, (list, tuple)):
-        out: List[Optional[np.ndarray]] = []
-        for item in list(pred_out)[:batch_size]:
-            if isinstance(item, dict):
-                parsed = coerce_prediction_batch(item, 1)
-                out.append(parsed[0] if parsed else None)
-                continue
-            arr = as_array(item)
-            if arr is None:
-                out.append(None)
-                continue
-            if arr.ndim == 2 and arr.shape[1] == 3:
-                out.append(np.asarray(arr, dtype=np.float32))
-            elif arr.ndim == 2 and arr.shape[1] == 2:
-                conf = np.zeros((arr.shape[0],), dtype=np.float32)
-                out.append(np.column_stack((arr.astype(np.float32), conf)))
-            else:
-                out.append(None)
-        if len(out) < batch_size:
-            out.extend([None] * (batch_size - len(out)))
-        return out[:batch_size]
 
-    # Raw ndarray output.
+def _normalize_dict_xy_conf(
+    xy: np.ndarray, conf: Optional[np.ndarray], batch_size: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Normalize xy/conf arrays from dict output to batch-leading shape."""
+    if xy.ndim == 2 and xy.shape[1] == 2:
+        xy = xy[None, :, :]
+        if conf is not None and conf.ndim == 1:
+            conf = conf[None, :]
+    elif xy.ndim == 3 and xy.shape[-1] == 2:
+        if int(xy.shape[0]) != int(batch_size):
+            xy = xy[None, :, :, :]
+            if conf is not None and conf.ndim == 2:
+                conf = conf[None, :, :]
+    elif xy.ndim == 4 and xy.shape[-1] == 2:
+        pass
+    else:
+        return None, None
+    return xy, conf
+
+
+def _coerce_list_prediction(
+    pred_out: Sequence[Any], batch_size: int
+) -> List[Optional[np.ndarray]]:
+    """Coerce list-style predictor output (one entry per crop)."""
+    out: List[Optional[np.ndarray]] = []
+    for item in list(pred_out)[:batch_size]:
+        out.append(_coerce_single_list_item(item))
+    return _pad_to_batch(out, batch_size)
+
+
+def _coerce_single_list_item(item: Any) -> Optional[np.ndarray]:
+    """Coerce a single item from list-style predictor output."""
+    if isinstance(item, dict):
+        parsed = coerce_prediction_batch(item, 1)
+        return parsed[0] if parsed else None
+    arr = as_array(item)
+    if arr is None:
+        return None
+    if arr.ndim == 2 and arr.shape[1] == 3:
+        return np.asarray(arr, dtype=np.float32)
+    if arr.ndim == 2 and arr.shape[1] == 2:
+        conf = np.zeros((arr.shape[0],), dtype=np.float32)
+        return np.column_stack((arr.astype(np.float32), conf))
+    return None
+
+
+def _coerce_raw_array(pred_out: Any, batch_size: int) -> List[Optional[np.ndarray]]:
+    """Coerce raw ndarray predictor output."""
+    empty = [None] * batch_size
     arr = as_array(pred_out)
     if arr is None:
         return empty
@@ -284,12 +297,27 @@ def coerce_prediction_batch(
             np.asarray(arr[i], dtype=np.float32)
             for i in range(min(batch_size, arr.shape[0]))
         ]
-        if len(out) < batch_size:
-            out.extend([None] * (batch_size - len(out)))
-        return out[:batch_size]
+        return _pad_to_batch(out, batch_size)
     if arr.ndim == 2 and arr.shape[1] == 3 and batch_size == 1:
         return [np.asarray(arr, dtype=np.float32)]
     return empty
+
+
+def coerce_prediction_batch(
+    pred_out: Any, batch_size: int
+) -> List[Optional[np.ndarray]]:
+    """Convert predictor output into per-crop Nx3 arrays (x, y, conf)."""
+    empty = [None] * int(max(0, batch_size))
+    if pred_out is None or batch_size <= 0:
+        return empty
+
+    if isinstance(pred_out, dict):
+        return _coerce_dict_prediction(pred_out, batch_size)
+
+    if isinstance(pred_out, (list, tuple)):
+        return _coerce_list_prediction(pred_out, batch_size)
+
+    return _coerce_raw_array(pred_out, batch_size)
 
 
 # ==============================================================================

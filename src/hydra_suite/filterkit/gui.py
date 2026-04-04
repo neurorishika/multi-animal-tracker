@@ -1092,7 +1092,11 @@ class FilterKitWindow(QMainWindow):
         self.btn_rollback.setEnabled(images_path.exists() and all_images_path.exists())
 
     def load_dataset_dialog(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
+        from hydra_suite.paths import get_projects_dir
+
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Dataset Folder", str(get_projects_dir())
+        )
         if not folder:
             return
 

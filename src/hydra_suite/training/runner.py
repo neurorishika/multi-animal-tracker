@@ -187,32 +187,10 @@ def _iter_classify_samples(
                 yield img, cls_idx
 
 
-def _train_tiny_classify(
-    spec: TrainingRunSpec,
-    run_dir: Path,
-    log_cb: LogCallback | None = None,
-    progress_cb: ProgressCallback | None = None,
-    should_cancel: CancelCheck | None = None,
-) -> dict:
-    """Train a tiny N-class CNN classifier from an image-folder dataset."""
-    try:
-        import cv2
-        import torch
-        import torch.nn as nn
-        from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-    except Exception as exc:
-        raise RuntimeError(f"Tiny classify training requires torch/cv2: {exc}") from exc
-
-    dataset_dir = Path(spec.derived_dataset_dir).expanduser().resolve()
-    device = _pick_torch_device(spec.device)
-    _safe_log(log_cb, f"Tiny classify device: {device}")
-
-    class_to_idx = _build_class_to_idx(dataset_dir)
-    train_samples = list(_iter_classify_samples(dataset_dir, "train", class_to_idx))
-    val_samples = list(_iter_classify_samples(dataset_dir, "val", class_to_idx))
+def _validate_tiny_samples(class_to_idx, train_samples):
+    """Validate that train samples meet minimum requirements for tiny classify."""
     if len(train_samples) < 2:
         raise RuntimeError("Tiny classify training requires at least 2 train samples.")
-
     num_classes = len(class_to_idx)
     if num_classes < 2:
         raise RuntimeError("Need at least 2 classes in train split.")
@@ -221,9 +199,11 @@ def _train_tiny_classify(
         raise RuntimeError(
             "Need at least 2 classes represented in train split for tiny classify."
         )
+    return num_classes
 
-    input_w = int(spec.tiny_params.input_width)
-    input_h = int(spec.tiny_params.input_height)
+
+def _parse_tiny_rebalance_params(spec):
+    """Extract rebalance mode, power, and label smoothing from spec."""
     rebalance_mode = (
         str(getattr(spec.tiny_params, "class_rebalance_mode", "none") or "none")
         .strip()
@@ -235,13 +215,16 @@ def _train_tiny_classify(
     label_smoothing = float(
         min(0.4, max(0.0, getattr(spec.tiny_params, "label_smoothing", 0.0)))
     )
+    return rebalance_mode, rebalance_power, label_smoothing
 
+
+def _compute_class_weights(train_samples, num_classes, rebalance_mode, rebalance_power):
+    """Compute inverse-frequency class weights for rebalancing."""
     class_counts = [0] * num_classes
     for _p, lbl in train_samples:
         if 0 <= int(lbl) < num_classes:
             class_counts[int(lbl)] += 1
 
-    # Inverse-frequency reweighting; power controls strength.
     class_weight_values = [1.0] * num_classes
     if rebalance_mode in {"weighted_loss", "weighted_sampler", "both"}:
         max_count = max(class_counts) if class_counts else 1
@@ -251,13 +234,14 @@ def _train_tiny_classify(
         mean_w = sum(class_weight_values) / max(1, len(class_weight_values))
         if mean_w > 0:
             class_weight_values = [w / mean_w for w in class_weight_values]
+    return class_weight_values
 
-    _safe_log(
-        log_cb,
-        "tiny classify options: "
-        f"rebalance={rebalance_mode}, power={rebalance_power:.2f}, "
-        f"label_smoothing={label_smoothing:.2f}",
-    )
+
+def _build_tiny_dataset_class(input_w, input_h):
+    """Build and return a TinyDataset class closed over the input dimensions."""
+    import cv2
+    import torch
+    from torch.utils.data import Dataset
 
     class TinyDataset(Dataset):
         def __init__(self, items, augment=False, profile=None):
@@ -274,22 +258,7 @@ def _train_tiny_classify(
             if img is None:
                 raise RuntimeError(f"Could not read image: {path}")
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-            if self.augment and self.profile and self.profile.enabled:
-                # Flip UD
-                if self.profile.flipud > 0 and random.random() < self.profile.flipud:
-                    img = cv2.flip(img, 0)
-                # Flip LR
-                if self.profile.fliplr > 0 and random.random() < self.profile.fliplr:
-                    img = cv2.flip(img, 1)
-                # Rotation
-                if self.profile.rotate > 0:
-                    angle = random.uniform(-self.profile.rotate, self.profile.rotate)
-                    M = cv2.getRotationMatrix2D(
-                        (img.shape[1] // 2, img.shape[0] // 2), angle, 1.0
-                    )
-                    img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
-
+            img = _apply_tiny_augmentation(img, self.augment, self.profile)
             if img.shape[1] != input_w or img.shape[0] != input_h:
                 img = cv2.resize(
                     img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
@@ -298,22 +267,33 @@ def _train_tiny_classify(
             y = torch.tensor(label, dtype=torch.long)
             return x, y
 
-    from .tiny_model import _build_tiny_classifier_class
+    return TinyDataset
 
-    _TinyClassifier = _build_tiny_classifier_class()
 
-    class _TinyClassifierCompat(_TinyClassifier):
-        """Thin wrapper accepting a params object instead of kwargs."""
+def _apply_tiny_augmentation(img, augment, profile):
+    """Apply optional flip/rotation augmentations to an image."""
+    import cv2
 
-        def __init__(self, n_classes, params):
-            super().__init__(
-                n_classes=n_classes,
-                hidden_layers=params.hidden_layers,
-                hidden_dim=params.hidden_dim,
-                dropout=params.dropout,
-            )
+    if not (augment and profile and profile.enabled):
+        return img
+    if profile.flipud > 0 and random.random() < profile.flipud:
+        img = cv2.flip(img, 0)
+    if profile.fliplr > 0 and random.random() < profile.fliplr:
+        img = cv2.flip(img, 1)
+    if profile.rotate > 0:
+        angle = random.uniform(-profile.rotate, profile.rotate)
+        M = cv2.getRotationMatrix2D((img.shape[1] // 2, img.shape[0] // 2), angle, 1.0)
+        img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+    return img
 
-    model = _TinyClassifierCompat(num_classes, spec.tiny_params).to(device)
+
+def _create_tiny_data_loaders(
+    TinyDataset, train_samples, val_samples, spec, rebalance_mode, class_weight_values
+):
+    """Create train and val DataLoaders with optional weighted sampling."""
+    import torch
+    from torch.utils.data import DataLoader, WeightedRandomSampler
+
     train_sampler = None
     if rebalance_mode in {"weighted_sampler", "both"}:
         sample_weights = [class_weight_values[int(lbl)] for _p, lbl in train_samples]
@@ -339,26 +319,28 @@ def _train_tiny_classify(
         if val_samples
         else None
     )
+    return train_loader, val_loader
 
-    opt = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(spec.tiny_params.lr),
-        weight_decay=float(spec.tiny_params.weight_decay),
-    )
-    class_weight_tensor = None
-    if rebalance_mode in {"weighted_loss", "both"}:
-        class_weight_tensor = torch.as_tensor(
-            class_weight_values, dtype=torch.float32, device=device
-        )
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weight_tensor,
-        label_smoothing=label_smoothing,
-    )
 
+def _run_tiny_training_loop(
+    model,
+    train_loader,
+    val_loader,
+    criterion,
+    opt,
+    device,
+    epochs,
+    patience,
+    log_cb,
+    progress_cb,
+    should_cancel,
+):
+    """Run the training/validation loop.
+
+    Returns (best_state, best_val_acc, history).
+    """
     best_val_acc = -1.0
     best_state = None
-    epochs = max(1, int(spec.tiny_params.epochs))
-    patience = max(1, int(spec.tiny_params.patience))
     patience_counter = 0
     history = []
 
@@ -377,17 +359,7 @@ def _train_tiny_classify(
             train_loss += float(loss.item()) * len(ys)
             train_n += len(ys)
 
-        val_acc = 0.0
-        if val_loader:
-            model.eval()
-            correct, total = 0, 0
-            with torch.inference_mode():
-                for xs, ys in val_loader:
-                    xs, ys = xs.to(device), ys.to(device)
-                    preds = model(xs).argmax(dim=1)
-                    correct += int((preds == ys).sum().item())
-                    total += len(ys)
-            val_acc = correct / max(1, total)
+        val_acc = _run_tiny_validation(model, val_loader, device)
 
         mean_loss = train_loss / max(1, train_n)
         history.append(
@@ -414,57 +386,73 @@ def _train_tiny_classify(
             _safe_log(log_cb, f"Early stopping triggered at epoch {epoch + 1}")
             break
 
-    if best_state is not None:
-        model.load_state_dict(best_state, strict=True)
+    return best_state, best_val_acc, history
+
+
+def _run_tiny_validation(model, val_loader, device):
+    """Evaluate model on validation set and return accuracy."""
+    import torch
+
+    if not val_loader:
+        return 0.0
+    model.eval()
+    correct, total = 0, 0
+    with torch.inference_mode():
+        for xs, ys in val_loader:
+            xs, ys = xs.to(device), ys.to(device)
+            preds = model(xs).argmax(dim=1)
+            correct += int((preds == ys).sum().item())
+            total += len(ys)
+    return correct / max(1, total)
+
+
+def _save_tiny_checkpoint(
+    model,
+    spec,
+    run_dir,
+    class_to_idx,
+    num_classes,
+    input_w,
+    input_h,
+    best_val_acc,
+    history,
+    log_cb,
+):
+    """Save .pth checkpoint, attempt ONNX export, and write metrics JSON.
+
+    Returns (artifact_path, onnx_path, metrics_path).
+    """
+    import json as _json
+
+    import torch
 
     weights_dir = run_dir / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build a descriptive filename: classkit_{role}_{N}cls_{classes}_{rundir_stem}.pth
     _role_slug = (
         spec.role.value.replace("classify_", "")
         .replace("_tiny", "_tiny")
         .replace("_yolo", "_yolo")
     )
-    _class_slug = "-".join(
-        name for name, _idx in sorted(class_to_idx.items(), key=lambda kv: int(kv[1]))
-    )
+    sorted_class_items = sorted(class_to_idx.items(), key=lambda kv: int(kv[1]))
+    _class_slug = "-".join(name for name, _idx in sorted_class_items)
     if len(_class_slug) > 48:
         _class_slug = f"{num_classes}cls"
-    _run_stem = (
-        run_dir.parent.name
-    )  # e.g. flat_tiny_20260309_123456 / run → parent stem
+    _run_stem = run_dir.parent.name
     _model_filename = f"classkit_{_role_slug}_{_class_slug}_{_run_stem}.pth"
     out_ckpt = weights_dir / _model_filename
-
-    import json as _json
 
     _ckpt_dict = {
         "model_state_dict": model.state_dict(),
         "input_size": [input_w, input_h],
         "num_classes": num_classes,
-        "class_names": [
-            name
-            for name, _idx in sorted(class_to_idx.items(), key=lambda kv: int(kv[1]))
-        ],
+        "class_names": [name for name, _idx in sorted_class_items],
         "best_val_acc": float(best_val_acc),
         "history": history,
     }
     torch.save(_ckpt_dict, out_ckpt)
 
-    # Auto-export ONNX alongside .pth for runtime-flexible inference (ONNX/TensorRT).
-    _onnx_path: Path | None = None
-    try:
-        from hydra_suite.training.tiny_model import export_tiny_to_onnx
-
-        _onnx_candidate = out_ckpt.with_suffix(".onnx")
-        export_tiny_to_onnx(model, _ckpt_dict, _onnx_candidate)
-        _onnx_path = _onnx_candidate
-        _safe_log(log_cb, f"ONNX exported: {_onnx_candidate.name}")
-    except Exception as _onnx_exc:
-        _safe_log(
-            log_cb, f"ONNX export skipped ({type(_onnx_exc).__name__}: {_onnx_exc})"
-        )
+    _onnx_path = _try_onnx_export(model, _ckpt_dict, out_ckpt, log_cb)
 
     metrics_path = run_dir / "tiny_metrics.json"
     metrics_path.write_text(
@@ -472,6 +460,140 @@ def _train_tiny_classify(
             {"best_val_acc": float(best_val_acc), "history": history}, indent=2
         ),
         encoding="utf-8",
+    )
+
+    return out_ckpt, _onnx_path, metrics_path
+
+
+def _try_onnx_export(model, ckpt_dict, out_ckpt, log_cb):
+    """Attempt ONNX export alongside .pth; return path or None."""
+    try:
+        from hydra_suite.training.tiny_model import export_tiny_to_onnx
+
+        _onnx_candidate = out_ckpt.with_suffix(".onnx")
+        export_tiny_to_onnx(model, ckpt_dict, _onnx_candidate)
+        _safe_log(log_cb, f"ONNX exported: {_onnx_candidate.name}")
+        return _onnx_candidate
+    except Exception as _onnx_exc:
+        _safe_log(
+            log_cb, f"ONNX export skipped ({type(_onnx_exc).__name__}: {_onnx_exc})"
+        )
+        return None
+
+
+def _train_tiny_classify(
+    spec: TrainingRunSpec,
+    run_dir: Path,
+    log_cb: LogCallback | None = None,
+    progress_cb: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+) -> dict:
+    """Train a tiny N-class CNN classifier from an image-folder dataset."""
+    try:
+        import torch
+        import torch.nn as nn
+    except Exception as exc:
+        raise RuntimeError(f"Tiny classify training requires torch/cv2: {exc}") from exc
+
+    dataset_dir = Path(spec.derived_dataset_dir).expanduser().resolve()
+    device = _pick_torch_device(spec.device)
+    _safe_log(log_cb, f"Tiny classify device: {device}")
+
+    class_to_idx = _build_class_to_idx(dataset_dir)
+    train_samples = list(_iter_classify_samples(dataset_dir, "train", class_to_idx))
+    val_samples = list(_iter_classify_samples(dataset_dir, "val", class_to_idx))
+    num_classes = _validate_tiny_samples(class_to_idx, train_samples)
+
+    input_w = int(spec.tiny_params.input_width)
+    input_h = int(spec.tiny_params.input_height)
+    rebalance_mode, rebalance_power, label_smoothing = _parse_tiny_rebalance_params(
+        spec
+    )
+    class_weight_values = _compute_class_weights(
+        train_samples, num_classes, rebalance_mode, rebalance_power
+    )
+
+    _safe_log(
+        log_cb,
+        "tiny classify options: "
+        f"rebalance={rebalance_mode}, power={rebalance_power:.2f}, "
+        f"label_smoothing={label_smoothing:.2f}",
+    )
+
+    TinyDataset = _build_tiny_dataset_class(input_w, input_h)
+
+    from .tiny_model import _build_tiny_classifier_class
+
+    _TinyClassifier = _build_tiny_classifier_class()
+
+    class _TinyClassifierCompat(_TinyClassifier):
+        """Thin wrapper accepting a params object instead of kwargs."""
+
+        def __init__(self, n_classes, params):
+            super().__init__(
+                n_classes=n_classes,
+                hidden_layers=params.hidden_layers,
+                hidden_dim=params.hidden_dim,
+                dropout=params.dropout,
+            )
+
+    model = _TinyClassifierCompat(num_classes, spec.tiny_params).to(device)
+
+    train_loader, val_loader = _create_tiny_data_loaders(
+        TinyDataset,
+        train_samples,
+        val_samples,
+        spec,
+        rebalance_mode,
+        class_weight_values,
+    )
+
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(spec.tiny_params.lr),
+        weight_decay=float(spec.tiny_params.weight_decay),
+    )
+    class_weight_tensor = None
+    if rebalance_mode in {"weighted_loss", "both"}:
+        class_weight_tensor = torch.as_tensor(
+            class_weight_values, dtype=torch.float32, device=device
+        )
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weight_tensor,
+        label_smoothing=label_smoothing,
+    )
+
+    epochs = max(1, int(spec.tiny_params.epochs))
+    patience = max(1, int(spec.tiny_params.patience))
+
+    best_state, best_val_acc, history = _run_tiny_training_loop(
+        model,
+        train_loader,
+        val_loader,
+        criterion,
+        opt,
+        device,
+        epochs,
+        patience,
+        log_cb,
+        progress_cb,
+        should_cancel,
+    )
+
+    if best_state is not None:
+        model.load_state_dict(best_state, strict=True)
+
+    out_ckpt, _onnx_path, metrics_path = _save_tiny_checkpoint(
+        model,
+        spec,
+        run_dir,
+        class_to_idx,
+        num_classes,
+        input_w,
+        input_h,
+        best_val_acc,
+        history,
+        log_cb,
     )
 
     return {

@@ -600,16 +600,669 @@ class InterpolatedCropsWorker(QThread):
 
         return None, None
 
+    def _init_pose_backend(self, output_dir):
+        """Initialize pose estimation backend. Returns (backend, kpt_source_names, kpt_labels)."""
+        if not bool(self.params.get("ENABLE_POSE_EXTRACTOR", False)):
+            return None, [], []
+        from hydra_suite.core.identity.pose.api import (
+            build_runtime_config,
+            create_pose_backend_from_config,
+        )
+
+        try:
+            pose_config = build_runtime_config(
+                self.params, out_root=str(Path(output_dir).expanduser())
+            )
+            backend = create_pose_backend_from_config(pose_config)
+            backend.warmup()
+            kpt_source_names = list(getattr(backend, "output_keypoint_names", []) or [])
+            kpt_labels = build_pose_keypoint_labels(
+                kpt_source_names, len(kpt_source_names)
+            )
+            return backend, kpt_source_names, kpt_labels
+        except Exception as exc:
+            logger.warning(
+                "Interpolated pose analysis disabled (backend init failed): %s",
+                exc,
+            )
+            return None, [], []
+
+    def _init_apriltag_detector(self):
+        """Initialize AprilTag detector if configured. Returns detector or None."""
+        apriltag_enabled = (
+            bool(self.params.get("USE_APRILTAGS", False))
+            or str(self.params.get("IDENTITY_METHOD", "")).lower() == "apriltags"
+        )
+        if not apriltag_enabled:
+            return None
+        try:
+            from hydra_suite.core.identity.classification.apriltag import (
+                AprilTagConfig,
+                AprilTagDetector,
+            )
+
+            return AprilTagDetector(AprilTagConfig.from_params(self.params))
+        except Exception as exc:
+            logger.warning("Interpolated AprilTag analysis disabled: %s", exc)
+            return None
+
+    def _init_cnn_backends(self):
+        """Initialize CNN identity backends. Returns (backends_list, labels_list)."""
+        cnn_backends = []
+        cnn_labels = []
+        cnn_classifiers_cfg = self.params.get("CNN_CLASSIFIERS", [])
+        if not cnn_classifiers_cfg:
+            return cnn_backends, cnn_labels
+        try:
+            from hydra_suite.core.identity.classification.cnn import (
+                CNNIdentityBackend,
+                CNNIdentityConfig,
+            )
+
+            compute_rt = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
+            for cnn_cfg_dict in cnn_classifiers_cfg:
+                model_path = str(cnn_cfg_dict.get("model_path", ""))
+                if not model_path or not os.path.exists(model_path):
+                    continue
+                label = str(cnn_cfg_dict.get("label", "cnn_identity"))
+                cnn_cfg = CNNIdentityConfig(
+                    model_path=model_path,
+                    confidence=float(cnn_cfg_dict.get("confidence", 0.5)),
+                    batch_size=int(cnn_cfg_dict.get("batch_size", 64)),
+                )
+                try:
+                    backend = CNNIdentityBackend(
+                        cnn_cfg,
+                        model_path=model_path,
+                        compute_runtime=compute_rt,
+                    )
+                    cnn_backends.append(backend)
+                    cnn_labels.append(label)
+                except Exception as exc:
+                    logger.warning(
+                        "Interpolated CNN identity '%s' disabled: %s",
+                        label,
+                        exc,
+                    )
+        except Exception as exc:
+            logger.warning("Interpolated CNN identity analysis disabled: %s", exc)
+        return cnn_backends, cnn_labels
+
+    def _init_headtail_analyzer(self):
+        """Initialize head-tail direction analyzer. Returns analyzer or None."""
+        headtail_model_path = str(self.params.get("YOLO_HEADTAIL_MODEL_PATH", ""))
+        if not headtail_model_path or not os.path.exists(headtail_model_path):
+            return None
+        try:
+            from hydra_suite.core.identity.classification.headtail import (
+                HeadTailAnalyzer,
+            )
+
+            _ht_device = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
+            if _ht_device not in ("cpu", "cuda", "mps"):
+                _ht_device = "cpu"
+            analyzer = HeadTailAnalyzer(
+                model_path=headtail_model_path,
+                device=_ht_device,
+                conf_threshold=float(
+                    self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.5)
+                ),
+                reference_aspect_ratio=float(
+                    self.params.get("REFERENCE_ASPECT_RATIO", 2.0)
+                ),
+            )
+            if not analyzer.is_available:
+                analyzer.close()
+                return None
+            return analyzer
+        except Exception as exc:
+            logger.warning("Interpolated head-tail analysis disabled: %s", exc)
+            return None
+
+    def _load_and_validate_csv(self):
+        """Load CSV and validate required columns. Returns DataFrame or None."""
+        df = pd.read_csv(self.csv_path)
+        if "FrameID" not in df.columns and "Frame" in df.columns:
+            df = df.rename(columns={"Frame": "FrameID"})
+        if "TrajectoryID" not in df.columns and "Trajectory" in df.columns:
+            df = df.rename(columns={"Trajectory": "TrajectoryID"})
+        if df.empty or "FrameID" not in df.columns or "State" not in df.columns:
+            return None
+        for col in ("FrameID", "X", "Y", "Theta"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+
+    def _detect_interpolation_gaps(
+        self, df, detection_cache, position_scale, size_scale
+    ):
+        """Scan trajectories for occluded gaps and build per-frame task lists.
+
+        Returns (frame_tasks, occluded_rows, interp_runs, interp_gaps) or None if stopped.
+        """
+        occluded_rows = 0
+        interp_gaps = 0
+        interp_runs = 0
+        frame_tasks = defaultdict(list)
+
+        for traj_id, group in df.groupby("TrajectoryID"):
+            if self._should_stop():
+                return None
+            group = group.sort_values("FrameID").reset_index(drop=True)
+            states = group["State"].astype(str).str.strip().str.lower()
+            states = states.where(
+                ~states.str.contains("occluded", na=False), "occluded"
+            )
+            occluded_rows += int((states == "occluded").sum())
+
+            last_valid_idx = None
+            i = 0
+            while i < len(group):
+                if self._should_stop():
+                    return None
+                if states[i] != "occluded":
+                    if not pd.isna(group.at[i, "X"]) and not pd.isna(group.at[i, "Y"]):
+                        last_valid_idx = i
+                    i += 1
+                    continue
+
+                if last_valid_idx is None:
+                    i += 1
+                    continue
+
+                j = i
+                while j < len(group) and states[j] == "occluded":
+                    j += 1
+                if j >= len(group):
+                    break
+
+                prev_row = group.iloc[last_valid_idx]
+                next_row = group.iloc[j]
+                if (
+                    pd.isna(prev_row["X"])
+                    or pd.isna(prev_row["Y"])
+                    or pd.isna(next_row["X"])
+                    or pd.isna(next_row["Y"])
+                ):
+                    i = j
+                    continue
+
+                f0 = int(prev_row["FrameID"])
+                f1 = int(next_row["FrameID"])
+                if f1 - f0 <= 1:
+                    i = j
+                    continue
+                interp_runs += 1
+
+                interp_total = max(0, f1 - f0 - 1)
+                interp_gaps += interp_total
+
+                det_id_prev = (
+                    prev_row["DetectionID"] if "DetectionID" in group.columns else None
+                )
+                det_id_next = (
+                    next_row["DetectionID"] if "DetectionID" in group.columns else None
+                )
+
+                w0, h0 = self._get_detection_size(detection_cache, f0, det_id_prev)
+                w1, h1 = self._get_detection_size(detection_cache, f1, det_id_next)
+
+                if w0 is None or h0 is None or w1 is None or h1 is None:
+                    ref_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
+                    w0 = w0 or ref_size * 2.2
+                    h0 = h0 or ref_size * 0.8
+                    w1 = w1 or ref_size * 2.2
+                    h1 = h1 or ref_size * 0.8
+
+                for k in range(i, j):
+                    if self._should_stop():
+                        return None
+                    row = group.iloc[k]
+                    f = int(row["FrameID"])
+                    t = (f - f0) / (f1 - f0)
+                    cx = float(prev_row["X"]) + t * (
+                        float(next_row["X"]) - float(prev_row["X"])
+                    )
+                    cy = float(prev_row["Y"]) + t * (
+                        float(next_row["Y"]) - float(prev_row["Y"])
+                    )
+                    theta = self._interp_angle(
+                        float(prev_row["Theta"]), float(next_row["Theta"]), t
+                    )
+                    w = w0 + t * (w1 - w0)
+                    h = h0 + t * (h1 - h0)
+
+                    interp_index = max(1, f - f0)
+
+                    frame_tasks[f].append(
+                        {
+                            "frame_id": f,
+                            "cx": cx * position_scale,
+                            "cy": cy * position_scale,
+                            "w": w * size_scale,
+                            "h": h * size_scale,
+                            "theta": theta,
+                            "traj_id": traj_id,
+                            "interp_from": (f0, f1),
+                            "interp_index": interp_index,
+                            "interp_total": interp_total,
+                        }
+                    )
+
+                i = j
+                continue
+
+        return frame_tasks, occluded_rows, interp_runs, interp_gaps
+
+    def _flush_pose_batch(
+        self,
+        pose_backend,
+        pending_crops,
+        pending_entries,
+        interp_pose_rows,
+        pose_kpt_source_names,
+        pose_kpt_labels,
+        profiler,
+    ):
+        """Run pose inference on accumulated crops and append results."""
+        from hydra_suite.core.canonicalization.crop import (
+            invert_keypoints as _invert_kpts,
+        )
+
+        profiler.tick("interp_pose_inference")
+        pose_results = pose_backend.predict_batch(pending_crops)
+        profiler.tock("interp_pose_inference")
+        for pidx, entry in enumerate(pending_entries):
+            pose_out = pose_results[pidx] if pidx < len(pose_results) else None
+            pose_mean_conf = 0.0
+            pose_valid_fraction = 0.0
+            pose_num_valid = 0
+            pose_num_keypoints = 0
+            pose_wide = {}
+            if pose_out is not None:
+                pose_mean_conf = float(getattr(pose_out, "mean_conf", 0.0))
+                pose_valid_fraction = float(getattr(pose_out, "valid_fraction", 0.0))
+                pose_num_valid = int(getattr(pose_out, "num_valid", 0))
+                pose_num_keypoints = int(getattr(pose_out, "num_keypoints", 0))
+                keypoints = getattr(pose_out, "keypoints", None)
+                crop_info = entry.get("crop_info") or {}
+                if keypoints is not None and len(keypoints) > 0:
+                    gkpts = np.asarray(keypoints, dtype=np.float32).copy()
+                    _M_inv = crop_info.get("M_inverse")
+                    if _M_inv is not None and crop_info.get("canonical"):
+                        gkpts = _invert_kpts(gkpts, _M_inv).astype(np.float32)
+                    else:
+                        crop_bbox = crop_info.get("crop_bbox")
+                        if crop_bbox is not None and len(crop_bbox) >= 2:
+                            gkpts[:, 0] += float(crop_bbox[0])
+                            gkpts[:, 1] += float(crop_bbox[1])
+                    if len(gkpts) > len(pose_kpt_labels):
+                        pose_kpt_labels[:] = build_pose_keypoint_labels(
+                            pose_kpt_source_names, len(gkpts)
+                        )
+                    pose_wide = flatten_pose_keypoints_row(gkpts, pose_kpt_labels)
+
+            pose_row = {
+                "frame_id": int(entry["task"]["frame_id"]),
+                "trajectory_id": int(entry["task"]["traj_id"]),
+                "filename": entry["filename"],
+                "PoseMeanConf": pose_mean_conf,
+                "PoseValidFraction": pose_valid_fraction,
+                "PoseNumValid": pose_num_valid,
+                "PoseNumKeypoints": pose_num_keypoints,
+            }
+            pose_row.update(pose_wide)
+            interp_pose_rows.append(pose_row)
+        pending_crops.clear()
+        pending_entries.clear()
+
+    @staticmethod
+    def _flush_cnn_batch(
+        cnn_backends,
+        cnn_labels,
+        pending_cnn_crops,
+        pending_cnn_entries,
+        interp_cnn_rows,
+        profiler,
+    ):
+        """Run CNN identity inference on accumulated crops and append results."""
+        profiler.tick("interp_cnn_inference")
+        for _bi, _cnn_be in enumerate(cnn_backends):
+            _cnn_label = cnn_labels[_bi]
+            try:
+                _cnn_preds = _cnn_be.predict_batch(pending_cnn_crops)
+                for _pi, _pred in enumerate(_cnn_preds):
+                    if _pi >= len(pending_cnn_entries):
+                        break
+                    _ce = pending_cnn_entries[_pi]
+                    interp_cnn_rows[_cnn_label].append(
+                        {
+                            "frame_id": int(_ce["task"]["frame_id"]),
+                            "trajectory_id": int(_ce["task"]["traj_id"]),
+                            "class_name": (
+                                _pred.class_name if _pred.class_name else ""
+                            ),
+                            "confidence": float(_pred.confidence),
+                        }
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Interp CNN '%s' batch failed: %s",
+                    _cnn_label,
+                    exc,
+                )
+        profiler.tock("interp_cnn_inference")
+        pending_cnn_crops.clear()
+        pending_cnn_entries.clear()
+
+    @staticmethod
+    def _detect_apriltags_in_frame(
+        apriltag_detector,
+        frame,
+        frame_tasks_f,
+        all_corners,
+        params,
+        interp_tag_rows,
+    ):
+        """Detect AprilTags in all interpolated crops for one frame."""
+        from hydra_suite.core.tracking.pose_pipeline import (
+            extract_one_crop as _extract_aabb_crop,
+        )
+
+        _tag_crops = []
+        _tag_offsets = []
+        _tag_det_indices = []
+        _tag_tasks = []
+        _crop_padding = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+        _suppress_foreign = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
+        _bg_color = tuple(params.get("INDIVIDUAL_BACKGROUND_COLOR", (0, 0, 0)))
+        for ti, task in enumerate(frame_tasks_f):
+            aabb_result = _extract_aabb_crop(
+                frame,
+                all_corners[ti],
+                ti,
+                _crop_padding,
+                all_corners,
+                _suppress_foreign,
+                _bg_color,
+            )
+            if aabb_result is not None:
+                crop, offset, _ = aabb_result
+                _tag_crops.append(crop)
+                _tag_offsets.append(offset)
+                _tag_det_indices.append(ti)
+                _tag_tasks.append(task)
+        if _tag_crops:
+            tag_obs = apriltag_detector.detect_in_crops(
+                _tag_crops,
+                _tag_offsets,
+                det_indices=_tag_det_indices,
+            )
+            for obs in tag_obs:
+                _ti = obs.det_index
+                _ttask = _tag_tasks[_ti] if _ti < len(_tag_tasks) else _tag_tasks[0]
+                interp_tag_rows.append(
+                    {
+                        "frame_id": int(_ttask["frame_id"]),
+                        "trajectory_id": int(_ttask["traj_id"]),
+                        "tag_id": int(obs.tag_id),
+                        "center_x": float(obs.center_xy[0]),
+                        "center_y": float(obs.center_xy[1]),
+                        "hamming": int(obs.hamming),
+                    }
+                )
+
+    @staticmethod
+    def _detect_headtail_in_frame(
+        headtail_analyzer,
+        frame,
+        frame_tasks_f,
+        all_corners,
+        interp_headtail_rows,
+    ):
+        """Detect head-tail directions for all interpolated detections in one frame."""
+        ht_results = headtail_analyzer.analyze_crops([frame], [all_corners])
+        if ht_results and ht_results[0]:
+            for ti, (heading, conf, directed) in enumerate(ht_results[0]):
+                task = frame_tasks_f[ti]
+                interp_headtail_rows.append(
+                    {
+                        "frame_id": int(task["frame_id"]),
+                        "trajectory_id": int(task["traj_id"]),
+                        "heading_rad": float(heading),
+                        "heading_conf": float(conf),
+                        "heading_directed": int(directed),
+                    }
+                )
+
+    @staticmethod
+    def _write_interpolation_artifacts(
+        gen,
+        save_interpolated_outputs,
+        cache_interpolated_artifacts,
+        interp_rows,
+        roi_rows,
+        roi_corners,
+        interp_pose_rows,
+        interp_tag_rows,
+        interp_cnn_rows,
+        interp_headtail_rows,
+        pose_kpt_labels,
+    ):
+        """Write all interpolation CSV/NPZ artifacts to disk.
+
+        Returns dict of artifact paths.
+        """
+        mapping_path = None
+        roi_csv_path = None
+        roi_npz_path = None
+        pose_csv_path = None
+        tag_csv_path = None
+        cnn_csv_paths = {}
+        headtail_csv_path = None
+
+        if save_interpolated_outputs and interp_rows and gen.crops_dir is not None:
+            mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
+            try:
+                with open(mapping_path, "w", newline="") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=[
+                            "frame_id",
+                            "trajectory_id",
+                            "filename",
+                            "interp_from_start",
+                            "interp_from_end",
+                            "interp_index",
+                            "interp_total",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(interp_rows)
+            except Exception:
+                pass
+        if cache_interpolated_artifacts and roi_rows and gen.crops_dir is not None:
+            roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
+            try:
+                with open(roi_csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=[
+                            "frame_id",
+                            "trajectory_id",
+                            "filename",
+                            "cx",
+                            "cy",
+                            "w",
+                            "h",
+                            "theta",
+                            "interp_from_start",
+                            "interp_from_end",
+                            "interp_index",
+                            "interp_total",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(roi_rows)
+            except Exception:
+                pass
+            roi_npz_path = gen.crops_dir.parent / "interpolated_rois.npz"
+            try:
+                np.savez_compressed(
+                    str(roi_npz_path),
+                    frame_id=np.array(
+                        [r["frame_id"] for r in roi_rows], dtype=np.int64
+                    ),
+                    trajectory_id=np.array(
+                        [r["trajectory_id"] for r in roi_rows], dtype=np.int64
+                    ),
+                    filename=np.array([r["filename"] for r in roi_rows], dtype=object),
+                    cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
+                    cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
+                    w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
+                    h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
+                    theta=np.array([r["theta"] for r in roi_rows], dtype=np.float32),
+                    interp_from_start=np.array(
+                        [r["interp_from_start"] for r in roi_rows], dtype=np.int64
+                    ),
+                    interp_from_end=np.array(
+                        [r["interp_from_end"] for r in roi_rows], dtype=np.int64
+                    ),
+                    interp_index=np.array(
+                        [r["interp_index"] for r in roi_rows], dtype=np.int64
+                    ),
+                    interp_total=np.array(
+                        [r["interp_total"] for r in roi_rows], dtype=np.int64
+                    ),
+                    obb_corners=(
+                        np.stack(roi_corners).astype(np.float32)
+                        if roi_corners
+                        else np.zeros((0, 4, 2), dtype=np.float32)
+                    ),
+                )
+            except Exception:
+                pass
+        if save_interpolated_outputs and interp_pose_rows and gen.crops_dir is not None:
+            pose_csv_path = gen.crops_dir.parent / "interpolated_pose.csv"
+            try:
+                pose_fieldnames = [
+                    "frame_id",
+                    "trajectory_id",
+                    "filename",
+                    *POSE_SUMMARY_COLUMNS,
+                    *pose_wide_columns_for_labels(pose_kpt_labels),
+                ]
+                with open(pose_csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=pose_fieldnames)
+                    writer.writeheader()
+                    writer.writerows(interp_pose_rows)
+            except Exception:
+                pose_csv_path = None
+        if interp_tag_rows and gen.crops_dir is not None:
+            tag_csv_path = gen.crops_dir.parent / "interpolated_tags.csv"
+            try:
+                with open(tag_csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=[
+                            "frame_id",
+                            "trajectory_id",
+                            "tag_id",
+                            "center_x",
+                            "center_y",
+                            "hamming",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(interp_tag_rows)
+            except Exception:
+                tag_csv_path = None
+        for _cnn_label, _cnn_rows in interp_cnn_rows.items():
+            if _cnn_rows and gen.crops_dir is not None:
+                _cnn_path = gen.crops_dir.parent / f"interpolated_cnn_{_cnn_label}.csv"
+                try:
+                    with open(_cnn_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "class_name",
+                                "confidence",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(_cnn_rows)
+                    cnn_csv_paths[_cnn_label] = str(_cnn_path)
+                except Exception:
+                    pass
+        if interp_headtail_rows and gen.crops_dir is not None:
+            headtail_csv_path = gen.crops_dir.parent / "interpolated_headtail.csv"
+            try:
+                with open(headtail_csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=[
+                            "frame_id",
+                            "trajectory_id",
+                            "heading_rad",
+                            "heading_conf",
+                            "heading_directed",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(interp_headtail_rows)
+            except Exception:
+                headtail_csv_path = None
+
+        return {
+            "mapping_path": mapping_path,
+            "roi_csv_path": roi_csv_path,
+            "roi_npz_path": roi_npz_path,
+            "pose_csv_path": pose_csv_path,
+            "tag_csv_path": tag_csv_path,
+            "cnn_csv_paths": cnn_csv_paths,
+            "headtail_csv_path": headtail_csv_path,
+        }
+
+    @staticmethod
+    def _cleanup_backends(
+        cap,
+        detection_cache,
+        pose_backend,
+        apriltag_detector,
+        cnn_backends,
+        headtail_analyzer,
+    ):
+        """Safely close all backends and resources."""
+        for resource in (
+            cap,
+            detection_cache,
+            pose_backend,
+            apriltag_detector,
+            headtail_analyzer,
+        ):
+            if resource is not None:
+                try:
+                    if hasattr(resource, "release"):
+                        resource.release()
+                    elif hasattr(resource, "close"):
+                        resource.close()
+                except Exception:
+                    pass
+        for _be in cnn_backends or []:
+            try:
+                _be.close()
+            except Exception:
+                pass
+
     def run(self: object) -> object:
-        """run method documentation."""
+        """Generate interpolated crops for occluded trajectory gaps."""
         from hydra_suite.core.canonicalization.crop import (
             compute_native_scale_affine as _compute_native_scale,
         )
         from hydra_suite.core.canonicalization.crop import (
             extract_canonical_crop as _extract_canonical,
-        )
-        from hydra_suite.core.canonicalization.crop import (
-            invert_keypoints as _invert_kpts,
         )
         from hydra_suite.core.tracking.profiler import TrackingProfiler
 
@@ -619,6 +1272,9 @@ class InterpolatedCropsWorker(QThread):
         pose_backend = None
         detection_cache = None
         cap = None
+        cnn_backends = []
+        apriltag_detector = None
+        headtail_analyzer = None
         try:
             if self._should_stop():
                 return
@@ -634,18 +1290,10 @@ class InterpolatedCropsWorker(QThread):
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
 
-            df = pd.read_csv(self.csv_path)
-            if "FrameID" not in df.columns and "Frame" in df.columns:
-                df = df.rename(columns={"Frame": "FrameID"})
-            if "TrajectoryID" not in df.columns and "Trajectory" in df.columns:
-                df = df.rename(columns={"Trajectory": "TrajectoryID"})
-            if df.empty or "FrameID" not in df.columns or "State" not in df.columns:
+            df = self._load_and_validate_csv()
+            if df is None:
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
-            # Normalize numeric columns
-            for col in ("FrameID", "X", "Y", "Theta"):
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
             resize_factor = self.params.get("RESIZE_FACTOR", 1.0)
             position_scale = 1.0
@@ -654,8 +1302,6 @@ class InterpolatedCropsWorker(QThread):
             if self.detection_cache_path and os.path.exists(self.detection_cache_path):
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
 
-            # Respect runtime save toggle: if disabled, run interpolation/pose without writing
-            # interpolated crops or related metadata artifacts to disk.
             save_interpolated_outputs = bool(
                 self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
             )
@@ -675,128 +1321,15 @@ class InterpolatedCropsWorker(QThread):
             )
             gen.enabled = cache_interpolated_artifacts
 
-            # Canonical crop parameters (mirrored from the generator so that
-            # interpolated crops match the forward-pass canonical framework).
             _canonical_ref_ar = gen._canonical_ref_ar
             _canonical_padding = gen._canonical_padding
 
-            pose_enabled = bool(self.params.get("ENABLE_POSE_EXTRACTOR", False))
-            pose_kpt_source_names = []
-            pose_kpt_labels = []
-            if pose_enabled:
-                from hydra_suite.core.identity.pose.api import (
-                    build_runtime_config,
-                    create_pose_backend_from_config,
-                )
-
-                try:
-                    pose_config = build_runtime_config(
-                        self.params, out_root=str(Path(output_dir).expanduser())
-                    )
-                    pose_backend = create_pose_backend_from_config(pose_config)
-                    pose_backend.warmup()
-                    pose_kpt_source_names = list(
-                        getattr(pose_backend, "output_keypoint_names", []) or []
-                    )
-                    pose_kpt_labels = build_pose_keypoint_labels(
-                        pose_kpt_source_names, len(pose_kpt_source_names)
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Interpolated pose analysis disabled (backend init failed): %s",
-                        exc,
-                    )
-                    pose_backend = None
-
-            # --- AprilTag detector (reuse precompute config) ---
-            apriltag_detector = None
-            apriltag_enabled = (
-                bool(self.params.get("USE_APRILTAGS", False))
-                or str(self.params.get("IDENTITY_METHOD", "")).lower() == "apriltags"
+            pose_backend, pose_kpt_source_names, pose_kpt_labels = (
+                self._init_pose_backend(output_dir)
             )
-            if apriltag_enabled:
-                try:
-                    from hydra_suite.core.identity.classification.apriltag import (
-                        AprilTagConfig,
-                        AprilTagDetector,
-                    )
-
-                    apriltag_detector = AprilTagDetector(
-                        AprilTagConfig.from_params(self.params)
-                    )
-                except Exception as exc:
-                    logger.warning("Interpolated AprilTag analysis disabled: %s", exc)
-                    apriltag_detector = None
-
-            # --- CNN identity backends ---
-            cnn_backends = []
-            cnn_labels = []
-            cnn_classifiers_cfg = self.params.get("CNN_CLASSIFIERS", [])
-            if cnn_classifiers_cfg:
-                try:
-                    from hydra_suite.core.identity.classification.cnn import (
-                        CNNIdentityBackend,
-                        CNNIdentityConfig,
-                    )
-
-                    compute_rt = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
-                    for cnn_cfg_dict in cnn_classifiers_cfg:
-                        model_path = str(cnn_cfg_dict.get("model_path", ""))
-                        if not model_path or not os.path.exists(model_path):
-                            continue
-                        label = str(cnn_cfg_dict.get("label", "cnn_identity"))
-                        cnn_cfg = CNNIdentityConfig(
-                            model_path=model_path,
-                            confidence=float(cnn_cfg_dict.get("confidence", 0.5)),
-                            batch_size=int(cnn_cfg_dict.get("batch_size", 64)),
-                        )
-                        try:
-                            backend = CNNIdentityBackend(
-                                cnn_cfg,
-                                model_path=model_path,
-                                compute_runtime=compute_rt,
-                            )
-                            cnn_backends.append(backend)
-                            cnn_labels.append(label)
-                        except Exception as exc:
-                            logger.warning(
-                                "Interpolated CNN identity '%s' disabled: %s",
-                                label,
-                                exc,
-                            )
-                except Exception as exc:
-                    logger.warning(
-                        "Interpolated CNN identity analysis disabled: %s", exc
-                    )
-
-            # --- Head-tail direction analyzer ---
-            headtail_analyzer = None
-            headtail_model_path = str(self.params.get("YOLO_HEADTAIL_MODEL_PATH", ""))
-            if headtail_model_path and os.path.exists(headtail_model_path):
-                try:
-                    from hydra_suite.core.identity.classification.headtail import (
-                        HeadTailAnalyzer,
-                    )
-
-                    _ht_device = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
-                    if _ht_device not in ("cpu", "cuda", "mps"):
-                        _ht_device = "cpu"
-                    headtail_analyzer = HeadTailAnalyzer(
-                        model_path=headtail_model_path,
-                        device=_ht_device,
-                        conf_threshold=float(
-                            self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.5)
-                        ),
-                        reference_aspect_ratio=float(
-                            self.params.get("REFERENCE_ASPECT_RATIO", 2.0)
-                        ),
-                    )
-                    if not headtail_analyzer.is_available:
-                        headtail_analyzer.close()
-                        headtail_analyzer = None
-                except Exception as exc:
-                    logger.warning("Interpolated head-tail analysis disabled: %s", exc)
-                    headtail_analyzer = None
+            apriltag_detector = self._init_apriltag_detector()
+            cnn_backends, cnn_labels = self._init_cnn_backends()
+            headtail_analyzer = self._init_headtail_analyzer()
 
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
@@ -819,9 +1352,6 @@ class InterpolatedCropsWorker(QThread):
                 position_scale = 1.0
 
             interp_saved = 0
-            interp_gaps = 0
-            occluded_rows = 0
-            interp_runs = 0
             interp_rows = []
             interp_pose_rows = []
             interp_tag_rows = []
@@ -829,7 +1359,6 @@ class InterpolatedCropsWorker(QThread):
             interp_headtail_rows = []
             roi_rows = []
             roi_corners = []
-            frame_tasks = defaultdict(list)
             if "TrajectoryID" not in df.columns:
                 logger.warning("Interpolated crops skipped: CSV missing TrajectoryID.")
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
@@ -838,119 +1367,15 @@ class InterpolatedCropsWorker(QThread):
             profiler.phase_end("interp_setup")
             profiler.phase_start("interp_gap_detection")
 
-            for traj_id, group in df.groupby("TrajectoryID"):
-                if self._should_stop():
-                    return
-                group = group.sort_values("FrameID").reset_index(drop=True)
-                states = group["State"].astype(str).str.strip().str.lower()
-                # Treat any value containing 'occluded' as occluded
-                states = states.where(
-                    ~states.str.contains("occluded", na=False), "occluded"
-                )
-                occluded_rows += int((states == "occluded").sum())
-
-                last_valid_idx = None
-                i = 0
-                while i < len(group):
-                    if self._should_stop():
-                        return
-                    if states[i] != "occluded":
-                        if not pd.isna(group.at[i, "X"]) and not pd.isna(
-                            group.at[i, "Y"]
-                        ):
-                            last_valid_idx = i
-                        i += 1
-                        continue
-
-                    if last_valid_idx is None:
-                        i += 1
-                        continue
-
-                    j = i
-                    while j < len(group) and states[j] == "occluded":
-                        j += 1
-                    if j >= len(group):
-                        break
-
-                    prev_row = group.iloc[last_valid_idx]
-                    next_row = group.iloc[j]
-                    if (
-                        pd.isna(prev_row["X"])
-                        or pd.isna(prev_row["Y"])
-                        or pd.isna(next_row["X"])
-                        or pd.isna(next_row["Y"])
-                    ):
-                        i = j
-                        continue
-
-                    f0 = int(prev_row["FrameID"])
-                    f1 = int(next_row["FrameID"])
-                    if f1 - f0 <= 1:
-                        i = j
-                        continue
-                    interp_runs += 1
-
-                    interp_total = max(0, f1 - f0 - 1)
-                    interp_gaps += interp_total
-
-                    det_id_prev = (
-                        prev_row["DetectionID"]
-                        if "DetectionID" in group.columns
-                        else None
-                    )
-                    det_id_next = (
-                        next_row["DetectionID"]
-                        if "DetectionID" in group.columns
-                        else None
-                    )
-
-                    w0, h0 = self._get_detection_size(detection_cache, f0, det_id_prev)
-                    w1, h1 = self._get_detection_size(detection_cache, f1, det_id_next)
-
-                    if w0 is None or h0 is None or w1 is None or h1 is None:
-                        ref_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
-                        w0 = w0 or ref_size * 2.2
-                        h0 = h0 or ref_size * 0.8
-                        w1 = w1 or ref_size * 2.2
-                        h1 = h1 or ref_size * 0.8
-
-                    for k in range(i, j):
-                        if self._should_stop():
-                            return
-                        row = group.iloc[k]
-                        f = int(row["FrameID"])
-                        t = (f - f0) / (f1 - f0)
-                        cx = float(prev_row["X"]) + t * (
-                            float(next_row["X"]) - float(prev_row["X"])
-                        )
-                        cy = float(prev_row["Y"]) + t * (
-                            float(next_row["Y"]) - float(prev_row["Y"])
-                        )
-                        theta = self._interp_angle(
-                            float(prev_row["Theta"]), float(next_row["Theta"]), t
-                        )
-                        w = w0 + t * (w1 - w0)
-                        h = h0 + t * (h1 - h0)
-
-                        interp_index = max(1, f - f0)
-
-                        frame_tasks[f].append(
-                            {
-                                "frame_id": f,
-                                "cx": cx * position_scale,
-                                "cy": cy * position_scale,
-                                "w": w * size_scale,
-                                "h": h * size_scale,
-                                "theta": theta,
-                                "traj_id": traj_id,
-                                "interp_from": (f0, f1),
-                                "interp_index": interp_index,
-                                "interp_total": interp_total,
-                            }
-                        )
-
-                    i = j
-                    continue
+            gap_result = self._detect_interpolation_gaps(
+                df,
+                detection_cache,
+                position_scale,
+                size_scale,
+            )
+            if gap_result is None:
+                return
+            frame_tasks, occluded_rows, interp_runs, interp_gaps = gap_result
 
             logger.info(
                 f"Interpolated occlusion rows: {occluded_rows} "
@@ -965,29 +1390,15 @@ class InterpolatedCropsWorker(QThread):
             if frame_tasks:
                 needed_frames = sorted(frame_tasks.keys())
                 total_frames = len(needed_frames)
-                # Accumulate pose crops across multiple frames before running
-                # inference.  One large batch call is far faster than one
-                # predict_batch call per frame (GPU utilisation is the bottleneck).
                 _pose_batch_size = int(
                     self.params.get("INTERP_POSE_INFERENCE_BATCH_SIZE", 64)
                 )
                 _pending_crops: list = []
                 _pending_entries: list = []
-
-                # CNN identity accumulator (shared batch across frames)
                 _cnn_batch_size = 64
                 _pending_cnn_crops: list = []
                 _pending_cnn_entries: list = []
 
-                # Use a background thread to prefetch frames while the main
-                # thread processes crops.  This overlaps I/O (seek + decode)
-                # with the crop extraction / pose inference work.
-                #
-                # Strategy selection: sequential forward scan vs. sparse seeking.
-                # Sequential scan reads every frame in the range (no seeks) —
-                # far faster when many frames are needed.  Sparse seeking is
-                # better only when very few frames are scattered across
-                # a huge range.
                 from hydra_suite.utils.frame_prefetcher import (
                     SequentialScanPrefetcher,
                     SparseFramePrefetcher,
@@ -995,8 +1406,6 @@ class InterpolatedCropsWorker(QThread):
 
                 _frame_range = needed_frames[-1] - needed_frames[0] + 1
                 _density = total_frames / max(_frame_range, 1)
-                # Use sequential scan when ≥5 % of the range is needed, or
-                # the average gap between needed frames is under 100.
                 _use_sequential = (
                     _density >= 0.05 or (_frame_range / max(total_frames, 1)) < 100
                 )
@@ -1033,8 +1442,6 @@ class InterpolatedCropsWorker(QThread):
                     f, ret, frame = _pf_item
                     if not ret or frame is None:
                         continue
-                    # Pre-compute all OBB corners for this frame so that
-                    # foreign-OBB masking can exclude overlapping animals.
                     from hydra_suite.core.identity.geometry import (
                         ellipse_to_obb_corners as _e2obb,
                     )
@@ -1043,9 +1450,6 @@ class InterpolatedCropsWorker(QThread):
                         _e2obb(t["cx"], t["cy"], t["w"], t["h"], t["theta"])
                         for t in frame_tasks[f]
                     ]
-                    # Pre-compute canonical affines for each interpolated
-                    # detection so that both saved crops and pose crops
-                    # use the canonical crop framework.
                     _frame_affines = []
                     for _c in _frame_all_corners:
                         try:
@@ -1162,223 +1566,75 @@ class InterpolatedCropsWorker(QThread):
                                         "crop_info": pose_crop_info,
                                     }
                                 )
-                            # CNN identity reuses the same canonical/OBB crop
                             if (
                                 cnn_backends
                                 and pose_crop is not None
                                 and pose_crop.size > 0
                             ):
                                 _pending_cnn_crops.append(pose_crop)
-                                _pending_cnn_entries.append(
-                                    {
-                                        "task": task,
-                                    }
-                                )
+                                _pending_cnn_entries.append({"task": task})
 
-                    # ----- AprilTag: extract AABB crops per frame and detect -----
                     if apriltag_detector is not None and frame_tasks[f]:
-                        from hydra_suite.core.tracking.pose_pipeline import (
-                            extract_one_crop as _extract_aabb_crop,
+                        self._detect_apriltags_in_frame(
+                            apriltag_detector,
+                            frame,
+                            frame_tasks[f],
+                            _frame_all_corners,
+                            self.params,
+                            interp_tag_rows,
                         )
 
-                        _tag_crops = []
-                        _tag_offsets = []
-                        _tag_det_indices = []
-                        _tag_tasks = []
-                        _crop_padding = float(
-                            self.params.get("INDIVIDUAL_CROP_PADDING", 0.1)
-                        )
-                        _suppress_foreign = bool(
-                            self.params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True)
-                        )
-                        _bg_color = tuple(
-                            self.params.get("INDIVIDUAL_BACKGROUND_COLOR", (0, 0, 0))
-                        )
-                        for ti, task in enumerate(frame_tasks[f]):
-                            aabb_result = _extract_aabb_crop(
-                                frame,
-                                _frame_all_corners[ti],
-                                ti,
-                                _crop_padding,
-                                _frame_all_corners,
-                                _suppress_foreign,
-                                _bg_color,
-                            )
-                            if aabb_result is not None:
-                                crop, offset, _ = aabb_result
-                                _tag_crops.append(crop)
-                                _tag_offsets.append(offset)
-                                _tag_det_indices.append(ti)
-                                _tag_tasks.append(task)
-                        if _tag_crops:
-                            tag_obs = apriltag_detector.detect_in_crops(
-                                _tag_crops,
-                                _tag_offsets,
-                                det_indices=_tag_det_indices,
-                            )
-                            for obs in tag_obs:
-                                _ti = obs.det_index
-                                _ttask = (
-                                    _tag_tasks[_ti]
-                                    if _ti < len(_tag_tasks)
-                                    else _tag_tasks[0]
-                                )
-                                interp_tag_rows.append(
-                                    {
-                                        "frame_id": int(_ttask["frame_id"]),
-                                        "trajectory_id": int(_ttask["traj_id"]),
-                                        "tag_id": int(obs.tag_id),
-                                        "center_x": float(obs.center_xy[0]),
-                                        "center_y": float(obs.center_xy[1]),
-                                        "hamming": int(obs.hamming),
-                                    }
-                                )
-
-                    # ----- Head-tail: analyse all detections in this frame -----
                     if (
                         headtail_analyzer is not None
                         and frame_tasks[f]
                         and _frame_all_corners
                     ):
-                        ht_results = headtail_analyzer.analyze_crops(
-                            [frame], [_frame_all_corners]
+                        self._detect_headtail_in_frame(
+                            headtail_analyzer,
+                            frame,
+                            frame_tasks[f],
+                            _frame_all_corners,
+                            interp_headtail_rows,
                         )
-                        if ht_results and ht_results[0]:
-                            for ti, (heading, conf, directed) in enumerate(
-                                ht_results[0]
-                            ):
-                                task = frame_tasks[f][ti]
-                                interp_headtail_rows.append(
-                                    {
-                                        "frame_id": int(task["frame_id"]),
-                                        "trajectory_id": int(task["traj_id"]),
-                                        "heading_rad": float(heading),
-                                        "heading_conf": float(conf),
-                                        "heading_directed": int(directed),
-                                    }
-                                )
 
-                    # Flush the pose batch when it reaches the target size or on the
-                    # last frame so we never carry unprocessed crops past finalization.
-                    _flush_batch = (
+                    # Flush pose batch when full or on last frame
+                    if (
                         pose_backend is not None
                         and _pending_crops
                         and (
                             len(_pending_crops) >= _pose_batch_size
                             or idx == total_frames
                         )
-                    )
-                    if _flush_batch:
+                    ):
                         if self._should_stop():
                             return
-                        profiler.tick("interp_pose_inference")
-                        pose_results = pose_backend.predict_batch(_pending_crops)
-                        profiler.tock("interp_pose_inference")
-                        for pidx, entry in enumerate(_pending_entries):
-                            pose_out = (
-                                pose_results[pidx] if pidx < len(pose_results) else None
-                            )
-                            pose_mean_conf = 0.0
-                            pose_valid_fraction = 0.0
-                            pose_num_valid = 0
-                            pose_num_keypoints = 0
-                            pose_wide = {}
-                            if pose_out is not None:
-                                pose_mean_conf = float(
-                                    getattr(pose_out, "mean_conf", 0.0)
-                                )
-                                pose_valid_fraction = float(
-                                    getattr(pose_out, "valid_fraction", 0.0)
-                                )
-                                pose_num_valid = int(getattr(pose_out, "num_valid", 0))
-                                pose_num_keypoints = int(
-                                    getattr(pose_out, "num_keypoints", 0)
-                                )
-                                keypoints = getattr(pose_out, "keypoints", None)
-                                crop_info = entry.get("crop_info") or {}
-                                if keypoints is not None and len(keypoints) > 0:
-                                    gkpts = np.asarray(
-                                        keypoints, dtype=np.float32
-                                    ).copy()
-                                    _M_inv = crop_info.get("M_inverse")
-                                    if _M_inv is not None and crop_info.get(
-                                        "canonical"
-                                    ):
-                                        gkpts = _invert_kpts(gkpts, _M_inv).astype(
-                                            np.float32
-                                        )
-                                    else:
-                                        crop_bbox = crop_info.get("crop_bbox")
-                                        if (
-                                            crop_bbox is not None
-                                            and len(crop_bbox) >= 2
-                                        ):
-                                            gkpts[:, 0] += float(crop_bbox[0])
-                                            gkpts[:, 1] += float(crop_bbox[1])
-                                    if len(gkpts) > len(pose_kpt_labels):
-                                        pose_kpt_labels = build_pose_keypoint_labels(
-                                            pose_kpt_source_names, len(gkpts)
-                                        )
-                                    pose_wide = flatten_pose_keypoints_row(
-                                        gkpts, pose_kpt_labels
-                                    )
+                        self._flush_pose_batch(
+                            pose_backend,
+                            _pending_crops,
+                            _pending_entries,
+                            interp_pose_rows,
+                            pose_kpt_source_names,
+                            pose_kpt_labels,
+                            profiler,
+                        )
 
-                            pose_row = {
-                                "frame_id": int(entry["task"]["frame_id"]),
-                                "trajectory_id": int(entry["task"]["traj_id"]),
-                                "filename": entry["filename"],
-                                "PoseMeanConf": pose_mean_conf,
-                                "PoseValidFraction": pose_valid_fraction,
-                                "PoseNumValid": pose_num_valid,
-                                "PoseNumKeypoints": pose_num_keypoints,
-                            }
-                            pose_row.update(pose_wide)
-                            interp_pose_rows.append(pose_row)
-                        _pending_crops.clear()
-                        _pending_entries.clear()
-
-                    # ----- Flush CNN identity batch -----
-                    _flush_cnn = (
+                    # Flush CNN identity batch
+                    if (
                         cnn_backends
                         and _pending_cnn_crops
                         and (
                             len(_pending_cnn_crops) >= _cnn_batch_size
                             or idx == total_frames
                         )
-                    )
-                    if _flush_cnn:
-                        profiler.tick("interp_cnn_inference")
-                        for _bi, _cnn_be in enumerate(cnn_backends):
-                            _cnn_label = cnn_labels[_bi]
-                            try:
-                                _cnn_preds = _cnn_be.predict_batch(_pending_cnn_crops)
-                                for _pi, _pred in enumerate(_cnn_preds):
-                                    if _pi >= len(_pending_cnn_entries):
-                                        break
-                                    _ce = _pending_cnn_entries[_pi]
-                                    interp_cnn_rows[_cnn_label].append(
-                                        {
-                                            "frame_id": int(_ce["task"]["frame_id"]),
-                                            "trajectory_id": int(
-                                                _ce["task"]["traj_id"]
-                                            ),
-                                            "class_name": (
-                                                _pred.class_name
-                                                if _pred.class_name
-                                                else ""
-                                            ),
-                                            "confidence": float(_pred.confidence),
-                                        }
-                                    )
-                            except Exception as exc:
-                                logger.warning(
-                                    "Interp CNN '%s' batch failed: %s",
-                                    _cnn_label,
-                                    exc,
-                                )
-                        profiler.tock("interp_cnn_inference")
-                        _pending_cnn_crops.clear()
-                        _pending_cnn_entries.clear()
+                    ):
+                        self._flush_cnn_batch(
+                            cnn_backends,
+                            cnn_labels,
+                            _pending_cnn_crops,
+                            _pending_cnn_entries,
+                            interp_cnn_rows,
+                            profiler,
+                        )
 
                     if idx % 25 == 0 or idx == total_frames:
                         progress = int((idx / total_frames) * 100)
@@ -1389,185 +1645,22 @@ class InterpolatedCropsWorker(QThread):
                         del frame
                 _prefetcher.stop()
 
-            mapping_path = None
-            roi_csv_path = None
-            roi_npz_path = None
-            pose_csv_path = None
-            tag_csv_path = None
-            cnn_csv_paths = {}
-            headtail_csv_path = None
-
             profiler.phase_end("interp_crop_extraction")
             profiler.phase_start("interp_finalize")
-            if save_interpolated_outputs and interp_rows and gen.crops_dir is not None:
-                mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
-                try:
-                    with open(mapping_path, "w", newline="") as f:
-                        writer = csv.DictWriter(
-                            f,
-                            fieldnames=[
-                                "frame_id",
-                                "trajectory_id",
-                                "filename",
-                                "interp_from_start",
-                                "interp_from_end",
-                                "interp_index",
-                                "interp_total",
-                            ],
-                        )
-                        writer.writeheader()
-                        writer.writerows(interp_rows)
-                except Exception:
-                    pass
-            if cache_interpolated_artifacts and roi_rows and gen.crops_dir is not None:
-                roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
-                try:
-                    with open(roi_csv_path, "w", newline="") as f:
-                        writer = csv.DictWriter(
-                            f,
-                            fieldnames=[
-                                "frame_id",
-                                "trajectory_id",
-                                "filename",
-                                "cx",
-                                "cy",
-                                "w",
-                                "h",
-                                "theta",
-                                "interp_from_start",
-                                "interp_from_end",
-                                "interp_index",
-                                "interp_total",
-                            ],
-                        )
-                        writer.writeheader()
-                        writer.writerows(roi_rows)
-                except Exception:
-                    pass
-                roi_npz_path = gen.crops_dir.parent / "interpolated_rois.npz"
-                try:
-                    np.savez_compressed(
-                        str(roi_npz_path),
-                        frame_id=np.array(
-                            [r["frame_id"] for r in roi_rows], dtype=np.int64
-                        ),
-                        trajectory_id=np.array(
-                            [r["trajectory_id"] for r in roi_rows], dtype=np.int64
-                        ),
-                        filename=np.array(
-                            [r["filename"] for r in roi_rows], dtype=object
-                        ),
-                        cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
-                        cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
-                        w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
-                        h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
-                        theta=np.array(
-                            [r["theta"] for r in roi_rows], dtype=np.float32
-                        ),
-                        interp_from_start=np.array(
-                            [r["interp_from_start"] for r in roi_rows], dtype=np.int64
-                        ),
-                        interp_from_end=np.array(
-                            [r["interp_from_end"] for r in roi_rows], dtype=np.int64
-                        ),
-                        interp_index=np.array(
-                            [r["interp_index"] for r in roi_rows], dtype=np.int64
-                        ),
-                        interp_total=np.array(
-                            [r["interp_total"] for r in roi_rows], dtype=np.int64
-                        ),
-                        obb_corners=(
-                            np.stack(roi_corners).astype(np.float32)
-                            if roi_corners
-                            else np.zeros((0, 4, 2), dtype=np.float32)
-                        ),
-                    )
-                except Exception:
-                    pass
-            if (
-                save_interpolated_outputs
-                and interp_pose_rows
-                and gen.crops_dir is not None
-            ):
-                pose_csv_path = gen.crops_dir.parent / "interpolated_pose.csv"
-                try:
-                    pose_fieldnames = [
-                        "frame_id",
-                        "trajectory_id",
-                        "filename",
-                        *POSE_SUMMARY_COLUMNS,
-                        *pose_wide_columns_for_labels(pose_kpt_labels),
-                    ]
-                    with open(pose_csv_path, "w", newline="") as f:
-                        writer = csv.DictWriter(
-                            f,
-                            fieldnames=pose_fieldnames,
-                        )
-                        writer.writeheader()
-                        writer.writerows(interp_pose_rows)
-                except Exception:
-                    pose_csv_path = None
-            # --- Write interpolated AprilTag CSV ---
-            if interp_tag_rows and gen.crops_dir is not None:
-                tag_csv_path = gen.crops_dir.parent / "interpolated_tags.csv"
-                try:
-                    with open(tag_csv_path, "w", newline="") as f:
-                        writer = csv.DictWriter(
-                            f,
-                            fieldnames=[
-                                "frame_id",
-                                "trajectory_id",
-                                "tag_id",
-                                "center_x",
-                                "center_y",
-                                "hamming",
-                            ],
-                        )
-                        writer.writeheader()
-                        writer.writerows(interp_tag_rows)
-                except Exception:
-                    tag_csv_path = None
-            # --- Write interpolated CNN identity CSVs ---
-            for _cnn_label, _cnn_rows in interp_cnn_rows.items():
-                if _cnn_rows and gen.crops_dir is not None:
-                    _cnn_path = (
-                        gen.crops_dir.parent / f"interpolated_cnn_{_cnn_label}.csv"
-                    )
-                    try:
-                        with open(_cnn_path, "w", newline="") as f:
-                            writer = csv.DictWriter(
-                                f,
-                                fieldnames=[
-                                    "frame_id",
-                                    "trajectory_id",
-                                    "class_name",
-                                    "confidence",
-                                ],
-                            )
-                            writer.writeheader()
-                            writer.writerows(_cnn_rows)
-                        cnn_csv_paths[_cnn_label] = str(_cnn_path)
-                    except Exception:
-                        pass
-            # --- Write interpolated head-tail CSV ---
-            if interp_headtail_rows and gen.crops_dir is not None:
-                headtail_csv_path = gen.crops_dir.parent / "interpolated_headtail.csv"
-                try:
-                    with open(headtail_csv_path, "w", newline="") as f:
-                        writer = csv.DictWriter(
-                            f,
-                            fieldnames=[
-                                "frame_id",
-                                "trajectory_id",
-                                "heading_rad",
-                                "heading_conf",
-                                "heading_directed",
-                            ],
-                        )
-                        writer.writeheader()
-                        writer.writerows(interp_headtail_rows)
-                except Exception:
-                    headtail_csv_path = None
+
+            artifact_paths = self._write_interpolation_artifacts(
+                gen,
+                save_interpolated_outputs,
+                cache_interpolated_artifacts,
+                interp_rows,
+                roi_rows,
+                roi_corners,
+                interp_pose_rows,
+                interp_tag_rows,
+                interp_cnn_rows,
+                interp_headtail_rows,
+                pose_kpt_labels,
+            )
             if cache_interpolated_artifacts:
                 gen.finalize()
 
@@ -1581,33 +1674,65 @@ class InterpolatedCropsWorker(QThread):
                     {
                         "saved": interp_saved,
                         "gaps": interp_gaps,
-                        "mapping_path": str(mapping_path) if mapping_path else None,
-                        "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
-                        "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
-                        "pose_csv_path": str(pose_csv_path) if pose_csv_path else None,
+                        "mapping_path": (
+                            str(artifact_paths["mapping_path"])
+                            if artifact_paths["mapping_path"]
+                            else None
+                        ),
+                        "roi_csv_path": (
+                            str(artifact_paths["roi_csv_path"])
+                            if artifact_paths["roi_csv_path"]
+                            else None
+                        ),
+                        "roi_npz_path": (
+                            str(artifact_paths["roi_npz_path"])
+                            if artifact_paths["roi_npz_path"]
+                            else None
+                        ),
+                        "pose_csv_path": (
+                            str(artifact_paths["pose_csv_path"])
+                            if artifact_paths["pose_csv_path"]
+                            else None
+                        ),
                         "pose_rows": (
                             interp_pose_rows
                             if (interp_pose_rows and not save_interpolated_outputs)
                             else None
                         ),
-                        "tag_csv_path": (str(tag_csv_path) if tag_csv_path else None),
-                        "tag_rows": (
-                            interp_tag_rows
-                            if (interp_tag_rows and not tag_csv_path)
+                        "tag_csv_path": (
+                            str(artifact_paths["tag_csv_path"])
+                            if artifact_paths["tag_csv_path"]
                             else None
                         ),
-                        "cnn_csv_paths": cnn_csv_paths if cnn_csv_paths else None,
+                        "tag_rows": (
+                            interp_tag_rows
+                            if (interp_tag_rows and not artifact_paths["tag_csv_path"])
+                            else None
+                        ),
+                        "cnn_csv_paths": (
+                            artifact_paths["cnn_csv_paths"]
+                            if artifact_paths["cnn_csv_paths"]
+                            else None
+                        ),
                         "cnn_rows": (
                             interp_cnn_rows
-                            if (any(interp_cnn_rows.values()) and not cnn_csv_paths)
+                            if (
+                                any(interp_cnn_rows.values())
+                                and not artifact_paths["cnn_csv_paths"]
+                            )
                             else None
                         ),
                         "headtail_csv_path": (
-                            str(headtail_csv_path) if headtail_csv_path else None
+                            str(artifact_paths["headtail_csv_path"])
+                            if artifact_paths["headtail_csv_path"]
+                            else None
                         ),
                         "headtail_rows": (
                             interp_headtail_rows
-                            if (interp_headtail_rows and not headtail_csv_path)
+                            if (
+                                interp_headtail_rows
+                                and not artifact_paths["headtail_csv_path"]
+                            )
                             else None
                         ),
                     }
@@ -1615,36 +1740,14 @@ class InterpolatedCropsWorker(QThread):
         except Exception:
             self.finished_signal.emit({"saved": 0, "gaps": 0})
         finally:
-            if cap is not None:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-            if detection_cache is not None:
-                try:
-                    detection_cache.close()
-                except Exception:
-                    pass
-            if pose_backend is not None:
-                try:
-                    pose_backend.close()
-                except Exception:
-                    pass
-            if apriltag_detector is not None:
-                try:
-                    apriltag_detector.close()
-                except Exception:
-                    pass
-            for _be in cnn_backends:
-                try:
-                    _be.close()
-                except Exception:
-                    pass
-            if headtail_analyzer is not None:
-                try:
-                    headtail_analyzer.close()
-                except Exception:
-                    pass
+            self._cleanup_backends(
+                cap,
+                detection_cache,
+                pose_backend,
+                apriltag_detector,
+                cnn_backends,
+                headtail_analyzer,
+            )
 
 
 class OrientedTrackVideoWorker(QThread):
@@ -4189,7 +4292,7 @@ class MainWindow(QMainWindow):
         self._recents_store = store
 
         config = WelcomeConfig(
-            logo_svg="hydra.svg",
+            logo_svg="trackerkit.svg",
             tagline="Track  |  Analyze  |  Refine",
             buttons=[
                 ButtonDef(label="Load Video\u2026", callback=self.select_file),
@@ -10637,8 +10740,12 @@ class MainWindow(QMainWindow):
 
     def select_file(self: object) -> object:
         """Select video file via file dialog."""
+        from hydra_suite.paths import get_projects_dir
+
+        start_fp = self.file_line.text().strip() if hasattr(self, "file_line") else ""
+        start_dir = os.path.dirname(start_fp) if start_fp else str(get_projects_dir())
         fp, _ = QFileDialog.getOpenFileName(
-            self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
+            self, "Select Video", start_dir, "Video Files (*.mp4 *.avi *.mov)"
         )
         if fp:
             # If batch mode is checked, update the keystone
@@ -10780,10 +10887,17 @@ class MainWindow(QMainWindow):
 
     def _add_videos_to_batch(self):
         """Add additional videos to the batch list."""
+        from hydra_suite.paths import get_projects_dir
+
+        start_dir = (
+            os.path.dirname(self.batch_videos[0])
+            if self.batch_videos
+            else str(get_projects_dir())
+        )
         fps, _ = QFileDialog.getOpenFileNames(
             self,
             "Select Additional Videos",
-            "",
+            start_dir,
             "Video Files (*.mp4 *.avi *.mov *.mkv)",
         )
         if fps:
@@ -13589,7 +13703,7 @@ class MainWindow(QMainWindow):
 
             from hydra_suite.paths import get_brand_icon_bytes
 
-            logo_data = get_brand_icon_bytes("hydra.svg")
+            logo_data = get_brand_icon_bytes("trackerkit.svg")
             vw = max(640, self.scroll.viewport().width())
             vh = max(420, self.scroll.viewport().height())
             canvas = QPixmap(vw, vh)

@@ -247,7 +247,11 @@ class MainWindow(QMainWindow):
 
     def new_project(self) -> None:
         """Create a new DetectKit project via directory + class name dialogs."""
-        directory = QFileDialog.getExistingDirectory(self, "Select Project Directory")
+        from hydra_suite.paths import get_projects_dir
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Project Directory", str(get_projects_dir())
+        )
         if not directory:
             return
 
@@ -282,7 +286,11 @@ class MainWindow(QMainWindow):
 
     def open_project_dialog(self) -> None:
         """Open an existing project via directory picker."""
-        directory = QFileDialog.getExistingDirectory(self, "Open DetectKit Project")
+        from hydra_suite.paths import get_projects_dir
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "Open DetectKit Project", str(get_projects_dir())
+        )
         if not directory:
             return
 

@@ -349,12 +349,12 @@ class TestInvertKeypoints:
 
 class TestComposeAffine:
     def test_identity_composition(self):
-        I = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
+        eye = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
         M = np.array([[2, 0, 10], [0, 3, 20]], dtype=np.float64)
-        result = _compose_affine(I, M)
+        result = _compose_affine(eye, M)
         np.testing.assert_allclose(result, M, atol=1e-10)
 
-        result2 = _compose_affine(M, I)
+        result2 = _compose_affine(M, eye)
         np.testing.assert_allclose(result2, M, atol=1e-10)
 
     def test_translation_composes(self):

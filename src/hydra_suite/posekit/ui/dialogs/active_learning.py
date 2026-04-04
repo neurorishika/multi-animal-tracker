@@ -144,6 +144,134 @@ class ActiveLearningWorker(QObject):
             self.progress.emit(i + 1, total)
         return preds
 
+    def _run_eval_error_strategy(self, paths: List[Path]) -> None:
+        """Score candidate frames by evaluation CSV error (highest first)."""
+        if not self.eval_csv or not Path(self.eval_csv).exists():
+            self.failed.emit("Eval CSV not found.")
+            return
+        path_set = {str(p.resolve()) for p in paths}
+        path_set.update({str(p) for p in paths})
+
+        rows: list = []
+        with Path(self.eval_csv).open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+
+        scores: list = []
+        for row in rows:
+            raw = row.get("image_path", "")
+            if not raw:
+                continue
+            p = Path(raw)
+            if not p.is_absolute():
+                p = (Path(self.eval_csv).parent / p).resolve()
+            else:
+                p = p.resolve()
+
+            if str(p) in path_set:
+                path_str = str(p)
+            elif raw in path_set:
+                path_str = raw
+            else:
+                continue
+
+            score = float(row.get("mean_error_norm", 0.0) or 0.0)
+            scores.append((path_str, score))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        self.finished.emit(scores)
+
+    def _load_predictions(self, paths: List[Path]):
+        """Load or compute predictions for model A (and B for disagreement).
+
+        Returns ``(preds_a, preds_b)`` or ``None`` on failure (error already emitted).
+        """
+        preds_a = None
+        if self.strategy in ("lowest_conf", "lowest_conf_kpt", "disagreement"):
+            if not self.preds_cache_a:
+                if not self.weights_a:
+                    self.failed.emit("Weights not found.")
+                    return None
+                preds_a = self._predict_keypoints(self.weights_a, paths)
+                if preds_a is None:
+                    return None
+
+        preds_b = None
+        if self.strategy == "disagreement":
+            if not self.preds_cache_b:
+                if not self.weights_b:
+                    self.failed.emit("Weights B not found.")
+                    return None
+                preds_b = self._predict_keypoints(self.weights_b, paths)
+                if preds_b is None:
+                    return None
+
+        return preds_a, preds_b
+
+    @staticmethod
+    def _get_pred(target_path, cache, computed_dict):
+        """Retrieve prediction arrays for a single path from cache or dict."""
+        if computed_dict:
+            return computed_dict.get(str(target_path))
+        if cache:
+            val = cache.get(str(target_path)) or cache.get(str(target_path.resolve()))
+            if not val:
+                return None
+            xy = np.array([[x, y] for x, y, _ in val], dtype=np.float32)
+            conf = np.array([c for _, _, c in val], dtype=np.float32)
+            return (xy, conf)
+        return None
+
+    def _score_lowest_conf(self, p, preds_a):
+        ret = self._get_pred(p, self.preds_cache_a, preds_a)
+        if ret and ret[1] is not None:
+            return float(np.mean(ret[1]))
+        return 0.0
+
+    def _score_lowest_conf_kpt(self, p, preds_a):
+        ret = self._get_pred(p, self.preds_cache_a, preds_a)
+        ki = self.keypoint_index
+        if ret and ret[1] is not None and 0 <= ki < len(ret[1]):
+            return float(ret[1][ki])
+        return 0.0
+
+    def _score_disagreement(self, p, preds_a, preds_b):
+        ret_a = self._get_pred(p, self.preds_cache_a, preds_a)
+        ret_b = self._get_pred(p, self.preds_cache_b, preds_b)
+        if ret_a and ret_b and ret_a[0] is not None and ret_b[0] is not None:
+            diff = ret_a[0] - ret_b[0]
+            dists = np.linalg.norm(diff, axis=1)
+            return float(np.mean(dists)) if dists.size else 0.0
+        # High priority when one model fails to predict.
+        return 1e9
+
+    def _run_prediction_strategy(self, paths: List[Path]) -> None:
+        """Score candidates using prediction-based strategies."""
+        result = self._load_predictions(paths)
+        if result is None:
+            return
+        preds_a, preds_b = result
+
+        scores = []
+        for p in paths:
+            if self.strategy == "lowest_conf":
+                score = self._score_lowest_conf(p, preds_a)
+            elif self.strategy == "lowest_conf_kpt":
+                score = self._score_lowest_conf_kpt(p, preds_a)
+            elif self.strategy == "disagreement":
+                score = self._score_disagreement(p, preds_a, preds_b)
+            else:
+                score = 0.0
+            scores.append((str(p), score))
+
+        if self.strategy == "disagreement":
+            scores.sort(key=lambda x: x[1], reverse=True)
+        else:
+            scores.sort(key=lambda x: x[1])  # Low confidence first
+
+        self.finished.emit(scores)
+
     def run(self):
         try:
             paths = [self.image_paths[i] for i in self.candidate_indices]
@@ -151,128 +279,10 @@ class ActiveLearningWorker(QObject):
                 self.failed.emit("No candidate frames.")
                 return
 
-            # Strategy: Eval error (requires CSV)
             if self.strategy == "eval_error":
-                if not self.eval_csv or not Path(self.eval_csv).exists():
-                    self.failed.emit("Eval CSV not found.")
-                    return
-                path_set = {str(p.resolve()) for p in paths}
-                path_set.update({str(p) for p in paths})  # check both
-
-                rows = []
-                with Path(self.eval_csv).open("r", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        rows.append(row)
-                scores = []
-                for row in rows:
-                    raw = row.get("image_path", "")
-                    if not raw:
-                        continue
-                    p = Path(raw)
-                    # Try to resolve path relative to csv or absolute
-                    if not p.is_absolute():
-                        p = (Path(self.eval_csv).parent / p).resolve()
-                    else:
-                        p = p.resolve()
-
-                    if str(p) in path_set:
-                        path_str = str(p)
-                    elif raw in path_set:  # unlikely but possible
-                        path_str = raw
-                    else:
-                        continue
-
-                    score = float(row.get("mean_error_norm", 0.0) or 0.0)
-                    scores.append((path_str, score))
-
-                scores.sort(key=lambda x: x[1], reverse=True)
-                self.finished.emit(scores)
-                return
-
-            preds_a = None
-            if self.strategy in ("lowest_conf", "lowest_conf_kpt", "disagreement"):
-                # Load A
-                if self.preds_cache_a:
-                    pass  # handled later per-item lookup
-                else:
-                    if not self.weights_a:  # Missing weights
-                        self.failed.emit("Weights not found.")
-                        return
-                    preds_a_dict = self._predict_keypoints(self.weights_a, paths)
-                    if preds_a_dict is None:
-                        return
-                    preds_a = preds_a_dict
-
-            preds_b = None
-            if self.strategy == "disagreement":
-                # Load B
-                if self.preds_cache_b:
-                    pass
-                else:
-                    if not self.weights_b:
-                        self.failed.emit("Weights B not found.")
-                        return
-                    preds_b_dict = self._predict_keypoints(self.weights_b, paths)
-                    if preds_b_dict is None:
-                        return
-                    preds_b = preds_b_dict
-
-            # Helper to get pred for path
-            def get_pred(target_path, cache, computed_dict, _is_b=False):
-                if computed_dict:
-                    return computed_dict.get(str(target_path))
-                if cache:
-                    val = cache.get(str(target_path)) or cache.get(
-                        str(target_path.resolve())
-                    )
-                    if not val:
-                        return None
-                    # convert cache (list of tuples) to (xy, conf)
-                    xy = np.array([[x, y] for x, y, _ in val], dtype=np.float32)
-                    conf = np.array([c for _, _, c in val], dtype=np.float32)
-                    return (xy, conf)
-                return None
-
-            scores = []
-            for p in paths:
-                score = 0.0
-                if self.strategy == "lowest_conf":
-                    ret = get_pred(p, self.preds_cache_a, preds_a)
-                    if ret and ret[1] is not None:
-                        score = float(np.mean(ret[1]))
-
-                elif self.strategy == "lowest_conf_kpt":
-                    ret = get_pred(p, self.preds_cache_a, preds_a)
-                    ki = self.keypoint_index
-                    if ret and ret[1] is not None and 0 <= ki < len(ret[1]):
-                        score = float(ret[1][ki])
-
-                elif self.strategy == "disagreement":
-                    ret_a = get_pred(p, self.preds_cache_a, preds_a)
-                    ret_b = get_pred(p, self.preds_cache_b, preds_b)
-                    if (
-                        ret_a
-                        and ret_b
-                        and ret_a[0] is not None
-                        and ret_b[0] is not None
-                    ):
-                        diff = ret_a[0] - ret_b[0]
-                        dists = np.linalg.norm(diff, axis=1)
-                        score = float(np.mean(dists)) if dists.size else 0.0
-                    else:
-                        score = 1e9  # Penalty for missing prediction if disagreement strategy? Or 0?
-                        # Usually if one model fails to predict, disagreement is undefined or max?
-                        # Let's say high priority if one fails.
-
-                scores.append((str(p), score))
-
-            if self.strategy == "disagreement":
-                scores.sort(key=lambda x: x[1], reverse=True)
+                self._run_eval_error_strategy(paths)
             else:
-                scores.sort(key=lambda x: x[1])  # Low confidence first
-
-            self.finished.emit(scores)
+                self._run_prediction_strategy(paths)
 
         except Exception as e:
             self.failed.emit(str(e))

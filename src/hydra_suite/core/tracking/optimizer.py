@@ -161,23 +161,195 @@ class TrackingOptimizer(QThread):
     def stop(self):
         self._stop_requested = True
 
-    def run(self):
+    # ------------------------------------------------------------------
+    # run() helpers
+    # ------------------------------------------------------------------
+
+    def _open_and_validate_cache(self) -> bool:
+        """Open the detection cache and validate compatibility.
+
+        Returns True if the cache is ready for use, False on failure
+        (after emitting appropriate error signals).
+        """
         try:
             self.cache = DetectionCache(self.detection_cache_path, mode="r")
             if not self.cache.is_compatible():
                 self.progress_signal.emit(0, "Error: Incompatible detection cache.")
                 self.cache.close()
-                return
+                return False
         except Exception as e:
             self.progress_signal.emit(0, f"Error loading cache: {str(e)}")
-            return
+            return False
 
-        # Validate that the cache covers the requested frame range before wasting time
         if not self.cache.covers_frame_range(self.start_frame, self.end_frame):
             missing = self.cache.get_missing_frames(self.start_frame, self.end_frame)
-            msg = f"Error: Cache does not cover frames {self.start_frame}-{self.end_frame}. Missing: {missing}"
+            msg = (
+                f"Error: Cache does not cover frames "
+                f"{self.start_frame}-{self.end_frame}. Missing: {missing}"
+            )
             self.progress_signal.emit(0, msg)
             self.cache.close()
+            return False
+        return True
+
+    def _preload_pose_data(self) -> None:
+        """Pre-load pose keypoints into memory so per-trial loops stay fast."""
+        self._pose_run_context = (None, [], [], [], False)
+        self._pose_frame_cache: dict = {}
+        _pose_ctx = _pf_load_pose_context(self.base_params)
+        if _pose_ctx[0] is not None and _pose_ctx[4]:
+            _tmp_cache, _ant, _post, _ign, _enabled = _pose_ctx
+            self._pose_run_context = (None, _ant, _post, _ign, _enabled)
+            for _fi in range(self.start_frame, self.end_frame + 1):
+                self._pose_frame_cache[_fi] = _pf_build_keypoint_map(_tmp_cache, _fi)
+            try:
+                _tmp_cache.close()
+            except Exception:
+                pass
+            logger.info(
+                "Optimizer: pre-loaded pose keypoints for %d frames into memory.",
+                len(self._pose_frame_cache),
+            )
+        else:
+            if _pose_ctx[0] is not None:
+                try:
+                    _pose_ctx[0].close()
+                except Exception:
+                    pass
+
+    _SEED_DEFAULTS: Dict[str, Any] = {
+        "YOLO_CONFIDENCE_THRESHOLD": 0.25,
+        "YOLO_IOU_THRESHOLD": 0.7,
+        "MAX_DISTANCE_MULTIPLIER": 3.0,
+        "KALMAN_NOISE_COVARIANCE": 0.03,
+        "KALMAN_MEASUREMENT_NOISE_COVARIANCE": 0.1,
+        "W_POSITION": 1.0,
+        "W_ORIENTATION": 0.5,
+        "W_AREA": 0.2,
+        "W_ASPECT": 0.2,
+        "KALMAN_DAMPING": 0.95,
+        "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": 5.0,
+        "KALMAN_INITIAL_VELOCITY_RETENTION": 0.2,
+        "KALMAN_YOUNG_GATE_MULTIPLIER": 1.5,
+        "LOST_THRESHOLD_FRAMES": 10,
+        "KALMAN_MATURITY_AGE": 5,
+    }
+
+    def _build_seed_trial(self) -> Dict[str, Any]:
+        """Build the initial seed trial from the user's current parameters.
+
+        Values are clamped to each parameter's valid range so that base_params
+        with zero or out-of-range entries never produce an invalid enqueued
+        trial -- especially critical for log-scale params where the value must
+        be strictly positive.
+        """
+        seed_params: Dict[str, Any] = {}
+        for key, (ptype, low, high) in self._PARAM_RANGES.items():
+            if not self.tuning_config.get(key):
+                continue
+            raw = self.base_params.get(key, self._SEED_DEFAULTS.get(key, low))
+            if ptype == "int":
+                seed_params[key] = int(np.clip(int(raw), low, high))
+            else:
+                seed_params[key] = float(np.clip(float(raw), low, high))
+        return seed_params
+
+    def _perturb_near_base(self, rng, scale: float) -> dict:
+        """Sample a parameter point perturbed around base_params.
+
+        Works in the natural space for each parameter type:
+        - log_float: Normal(log(base), scale*(log(high)-log(low))), then exp.
+        - float    : Normal(base, scale*(high-low)), clipped to [low, high].
+        - int      : same as float, then rounded and clipped.
+
+        ``scale`` is the fraction of the total range used as sigma.  A scale of 0.1
+        stays close to the current settings; 0.3 allows more exploration.
+        """
+        pt: Dict[str, Any] = {}
+        for key, (ptype, low, high) in self._PARAM_RANGES.items():
+            if not self.tuning_config.get(key):
+                continue
+            base_val = self.base_params.get(key)
+            if ptype == "log_float":
+                log_low, log_high = np.log(low), np.log(high)
+                log_center = (
+                    np.log(float(base_val))
+                    if base_val is not None
+                    else (log_low + log_high) / 2.0
+                )
+                sigma = scale * (log_high - log_low)
+                pt[key] = float(
+                    np.exp(np.clip(rng.normal(log_center, sigma), log_low, log_high))
+                )
+            elif ptype == "float":
+                center = float(base_val) if base_val is not None else (low + high) / 2.0
+                sigma = scale * (high - low)
+                pt[key] = float(np.clip(rng.normal(center, sigma), low, high))
+            else:  # int
+                center = float(base_val) if base_val is not None else (low + high) / 2.0
+                sigma = scale * (high - low)
+                pt[key] = int(np.clip(round(rng.normal(center, sigma)), low, high))
+        return pt
+
+    def _random_from_ranges(self, rng) -> dict:
+        """Uniform-random point across the full search space (used for plateau restarts)."""
+        pt: Dict[str, Any] = {}
+        for key, (ptype, low, high) in self._PARAM_RANGES.items():
+            if not self.tuning_config.get(key):
+                continue
+            if ptype == "log_float":
+                pt[key] = float(np.exp(rng.uniform(np.log(low), np.log(high))))
+            elif ptype == "float":
+                pt[key] = float(rng.uniform(low, high))
+            else:  # int
+                pt[key] = int(rng.integers(low, high + 1))
+        return pt
+
+    def _suggest_trial_params(self, trial, scaled_body_size: float) -> Dict[str, Any]:
+        """Use the Optuna trial to suggest values for all enabled parameters."""
+        trial_params: Dict[str, Any] = {}
+
+        # Map of param_name -> (suggest_method, args, kwargs)
+        _SUGGEST_SPEC = {
+            "YOLO_CONFIDENCE_THRESHOLD": ("suggest_float", (0.05, 0.8), {}),
+            "YOLO_IOU_THRESHOLD": ("suggest_float", (0.1, 0.9), {}),
+            "MAX_DISTANCE_MULTIPLIER": ("suggest_float", (0.5, 3.0), {}),
+            "KALMAN_NOISE_COVARIANCE": ("suggest_float", (0.001, 0.2), {"log": True}),
+            "KALMAN_MEASUREMENT_NOISE_COVARIANCE": (
+                "suggest_float",
+                (0.01, 1.0),
+                {"log": True},
+            ),
+            "W_POSITION": ("suggest_float", (0.1, 5.0), {}),
+            "W_ORIENTATION": ("suggest_float", (0.0, 5.0), {}),
+            "W_AREA": ("suggest_float", (0.0, 2.0), {}),
+            "W_ASPECT": ("suggest_float", (0.0, 2.0), {}),
+            "KALMAN_DAMPING": ("suggest_float", (0.70, 0.999), {}),
+            "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": ("suggest_float", (1.0, 20.0), {}),
+            "KALMAN_INITIAL_VELOCITY_RETENTION": ("suggest_float", (0.0, 1.0), {}),
+            "KALMAN_YOUNG_GATE_MULTIPLIER": ("suggest_float", (1.0, 4.0), {}),
+            "LOST_THRESHOLD_FRAMES": ("suggest_int", (2, 25), {}),
+            "KALMAN_MATURITY_AGE": ("suggest_int", (1, 20), {}),
+        }
+
+        for name, (method, args, kwargs) in _SUGGEST_SPEC.items():
+            if self.tuning_config.get(name):
+                trial_params[name] = getattr(trial, method)(name, *args, **kwargs)
+
+        # Derived parameter: MAX_DISTANCE_THRESHOLD from multiplier
+        if "MAX_DISTANCE_MULTIPLIER" in trial_params:
+            trial_params["MAX_DISTANCE_THRESHOLD"] = (
+                trial_params["MAX_DISTANCE_MULTIPLIER"] * scaled_body_size
+            )
+
+        return trial_params
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def run(self):
+        if not self._open_and_validate_cache():
             return
 
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -192,147 +364,22 @@ class TrackingOptimizer(QThread):
         resize_f = self.base_params.get("RESIZE_FACTOR", 1.0)
         scaled_body_size = ref_size * resize_f
 
-        # Pre-load pose data once so _run_tracking_loop never touches the NPZ.
-        # Opening and reading the pose cache per-trial (and per-frame) is the
-        # dominant cost when pose is enabled; the data never changes between trials.
-        self._pose_run_context = (
-            None,
-            [],
-            [],
-            [],
-            False,
-        )  # (cache, ant, post, ign, enabled)
-        self._pose_frame_cache: dict = {}  # {frame_idx: {det_id: keypoints}}
-        _pose_ctx = _pf_load_pose_context(self.base_params)
-        if (
-            _pose_ctx[0] is not None and _pose_ctx[4]
-        ):  # cache opened and direction enabled
-            _tmp_cache, _ant, _post, _ign, _enabled = _pose_ctx
-            self._pose_run_context = (None, _ant, _post, _ign, _enabled)
-            for _fi in range(self.start_frame, self.end_frame + 1):
-                self._pose_frame_cache[_fi] = _pf_build_keypoint_map(_tmp_cache, _fi)
-            try:
-                _tmp_cache.close()
-            except Exception:
-                pass
-            logger.info(
-                "Optimizer: pre-loaded pose keypoints for %d frames into memory.",
-                len(self._pose_frame_cache),
-            )
-        else:
-            # Pose disabled or cache absent — release any opened file immediately.
-            if _pose_ctx[0] is not None:
-                try:
-                    _pose_ctx[0].close()
-                except Exception:
-                    pass
+        self._preload_pose_data()
 
-        # Seed the first trial with the user's current production settings so the
-        # surrogate model has an immediate reference point and explores outward from it.
-        # Values are clamped to each parameter's valid range so that base_params with
-        # zero or out-of-range entries (e.g. KALMAN_NOISE_COVARIANCE = 0.0) never
-        # produce an invalid enqueued trial — especially critical for log-scale params
-        # where the value must be strictly positive.
-        _DEFAULTS = {
-            "YOLO_CONFIDENCE_THRESHOLD": 0.25,
-            "YOLO_IOU_THRESHOLD": 0.7,
-            "MAX_DISTANCE_MULTIPLIER": 3.0,
-            "KALMAN_NOISE_COVARIANCE": 0.03,
-            "KALMAN_MEASUREMENT_NOISE_COVARIANCE": 0.1,
-            "W_POSITION": 1.0,
-            "W_ORIENTATION": 0.5,
-            "W_AREA": 0.2,
-            "W_ASPECT": 0.2,
-            "KALMAN_DAMPING": 0.95,
-            "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": 5.0,
-            "KALMAN_INITIAL_VELOCITY_RETENTION": 0.2,
-            "KALMAN_YOUNG_GATE_MULTIPLIER": 1.5,
-            "LOST_THRESHOLD_FRAMES": 10,
-            "KALMAN_MATURITY_AGE": 5,
-        }
-        seed_params: Dict[str, Any] = {}
-        for key, (ptype, low, high) in self._PARAM_RANGES.items():
-            if not self.tuning_config.get(key):
-                continue
-            raw = self.base_params.get(key, _DEFAULTS.get(key, low))
-            if ptype == "int":
-                seed_params[key] = int(np.clip(int(raw), low, high))
-            else:
-                # For log_float, clamp to [low, high] so value is strictly positive.
-                seed_params[key] = float(np.clip(float(raw), low, high))
+        # Seed the first trial with the user's current production settings.
+        seed_params = self._build_seed_trial()
         if seed_params:
             study.enqueue_trial(seed_params)
 
         # Additional diversity seeds: random points spread across the full search space.
-        # A deterministic RNG (seed=42) makes seeds reproducible.  Each extra seed
-        # gives TPE a different region to model from, reducing local-optima risk.
         _rng_seeds = np.random.default_rng(42)
 
-        def _perturb_near_base(rng, scale: float) -> dict:
-            """Sample a parameter point perturbed around base_params.
-
-            Works in the natural space for each parameter type:
-            - log_float: Normal(log(base), scale*(log(high)-log(low))), then exp.
-            - float    : Normal(base, scale*(high-low)), clipped to [low, high].
-            - int      : same as float, then rounded and clipped.
-
-            ``scale`` is the fraction of the total range used as σ.  A scale of 0.1
-            stays close to the current settings; 0.3 allows more exploration.
-            """
-            pt: Dict[str, Any] = {}
-            for key, (ptype, low, high) in self._PARAM_RANGES.items():
-                if not self.tuning_config.get(key):
-                    continue
-                base_val = self.base_params.get(key)
-                if ptype == "log_float":
-                    log_low, log_high = np.log(low), np.log(high)
-                    log_center = (
-                        np.log(float(base_val))
-                        if base_val is not None
-                        else (log_low + log_high) / 2.0
-                    )
-                    sigma = scale * (log_high - log_low)
-                    pt[key] = float(
-                        np.exp(
-                            np.clip(rng.normal(log_center, sigma), log_low, log_high)
-                        )
-                    )
-                elif ptype == "float":
-                    center = (
-                        float(base_val) if base_val is not None else (low + high) / 2.0
-                    )
-                    sigma = scale * (high - low)
-                    pt[key] = float(np.clip(rng.normal(center, sigma), low, high))
-                else:  # int
-                    center = (
-                        float(base_val) if base_val is not None else (low + high) / 2.0
-                    )
-                    sigma = scale * (high - low)
-                    pt[key] = int(np.clip(round(rng.normal(center, sigma)), low, high))
-            return pt
-
-        def _random_from_ranges(rng) -> dict:
-            """Uniform-random point across the full search space (used for plateau restarts)."""
-            pt: Dict[str, Any] = {}
-            for key, (ptype, low, high) in self._PARAM_RANGES.items():
-                if not self.tuning_config.get(key):
-                    continue
-                if ptype == "log_float":
-                    pt[key] = float(np.exp(rng.uniform(np.log(low), np.log(high))))
-                elif ptype == "float":
-                    pt[key] = float(rng.uniform(low, high))
-                else:  # int
-                    pt[key] = int(rng.integers(low, high + 1))
-            return pt
-
         # Diversity seeds fan out from base_params: tight for early seeds, wider for
-        # later ones.  σ grows linearly from 10 % to 30 % of each parameter's range
-        # so the initial probes respect domain knowledge while still giving the
-        # surrogate model spread.
+        # later ones.  sigma grows linearly from 10 % to 30 % of each parameter's range.
         n_extra = self.n_seeds - 1
         for i in range(n_extra):
             scale = 0.10 + 0.20 * (i / max(1, n_extra - 1)) if n_extra > 1 else 0.15
-            extra_seed = _perturb_near_base(_rng_seeds, scale)
+            extra_seed = self._perturb_near_base(_rng_seeds, scale)
             if extra_seed:
                 study.enqueue_trial(extra_seed)
 
@@ -350,87 +397,7 @@ class TrackingOptimizer(QThread):
             if self._stop_requested:
                 raise optuna.TrialPruned()
 
-            trial_params = {}
-
-            # Suggest only selected parameters
-            if self.tuning_config.get("YOLO_CONFIDENCE_THRESHOLD"):
-                trial_params["YOLO_CONFIDENCE_THRESHOLD"] = trial.suggest_float(
-                    "YOLO_CONFIDENCE_THRESHOLD", 0.05, 0.8
-                )
-
-            # The detection cache stores low-confidence, pre-NMS raw detections.
-            # Both YOLO_CONFIDENCE_THRESHOLD and YOLO_IOU_THRESHOLD are applied
-            # post-hoc via DetectionFilter, so both can be meaningfully tuned.
-            if self.tuning_config.get("YOLO_IOU_THRESHOLD"):
-                trial_params["YOLO_IOU_THRESHOLD"] = trial.suggest_float(
-                    "YOLO_IOU_THRESHOLD", 0.1, 0.9
-                )
-
-            if self.tuning_config.get("MAX_DISTANCE_MULTIPLIER"):
-                trial_params["MAX_DISTANCE_MULTIPLIER"] = trial.suggest_float(
-                    "MAX_DISTANCE_MULTIPLIER", 0.5, 3.0
-                )
-                trial_params["MAX_DISTANCE_THRESHOLD"] = (
-                    trial_params["MAX_DISTANCE_MULTIPLIER"] * scaled_body_size
-                )
-
-            if self.tuning_config.get("KALMAN_NOISE_COVARIANCE"):
-                trial_params["KALMAN_NOISE_COVARIANCE"] = trial.suggest_float(
-                    "KALMAN_NOISE_COVARIANCE", 0.001, 0.2, log=True
-                )
-
-            if self.tuning_config.get("KALMAN_MEASUREMENT_NOISE_COVARIANCE"):
-                trial_params["KALMAN_MEASUREMENT_NOISE_COVARIANCE"] = (
-                    trial.suggest_float(
-                        "KALMAN_MEASUREMENT_NOISE_COVARIANCE", 0.01, 1.0, log=True
-                    )
-                )
-
-            if self.tuning_config.get("W_POSITION"):
-                trial_params["W_POSITION"] = trial.suggest_float("W_POSITION", 0.1, 5.0)
-
-            if self.tuning_config.get("W_ORIENTATION"):
-                trial_params["W_ORIENTATION"] = trial.suggest_float(
-                    "W_ORIENTATION", 0.0, 5.0
-                )
-
-            if self.tuning_config.get("W_AREA"):
-                trial_params["W_AREA"] = trial.suggest_float("W_AREA", 0.0, 2.0)
-
-            if self.tuning_config.get("W_ASPECT"):
-                trial_params["W_ASPECT"] = trial.suggest_float("W_ASPECT", 0.0, 2.0)
-
-            if self.tuning_config.get("KALMAN_DAMPING"):
-                trial_params["KALMAN_DAMPING"] = trial.suggest_float(
-                    "KALMAN_DAMPING", 0.70, 0.999
-                )
-
-            if self.tuning_config.get("KALMAN_LONGITUDINAL_NOISE_MULTIPLIER"):
-                trial_params["KALMAN_LONGITUDINAL_NOISE_MULTIPLIER"] = (
-                    trial.suggest_float(
-                        "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER", 1.0, 20.0
-                    )
-                )
-
-            if self.tuning_config.get("KALMAN_INITIAL_VELOCITY_RETENTION"):
-                trial_params["KALMAN_INITIAL_VELOCITY_RETENTION"] = trial.suggest_float(
-                    "KALMAN_INITIAL_VELOCITY_RETENTION", 0.0, 1.0
-                )
-
-            if self.tuning_config.get("KALMAN_YOUNG_GATE_MULTIPLIER"):
-                trial_params["KALMAN_YOUNG_GATE_MULTIPLIER"] = trial.suggest_float(
-                    "KALMAN_YOUNG_GATE_MULTIPLIER", 1.0, 4.0
-                )
-
-            if self.tuning_config.get("LOST_THRESHOLD_FRAMES"):
-                trial_params["LOST_THRESHOLD_FRAMES"] = trial.suggest_int(
-                    "LOST_THRESHOLD_FRAMES", 2, 25
-                )
-
-            if self.tuning_config.get("KALMAN_MATURITY_AGE"):
-                trial_params["KALMAN_MATURITY_AGE"] = trial.suggest_int(
-                    "KALMAN_MATURITY_AGE", 1, 20
-                )
+            trial_params = self._suggest_trial_params(trial, scaled_body_size)
 
             # Merge into full param set
             current_params = self.base_params.copy()
@@ -456,9 +423,7 @@ class TrackingOptimizer(QThread):
                 _no_improve_count += 1
                 if _no_improve_count >= _PLATEAU_PATIENCE:
                     if self.on_plateau == "restart":
-                        # Inject a random restart so the study continues exploring
-                        # instead of grinding in the same neighbourhood.
-                        restart_pt = _random_from_ranges(_rng_restart)
+                        restart_pt = self._random_from_ranges(_rng_restart)
                         if restart_pt:
                             study.enqueue_trial(restart_pt)
                         _no_improve_count = 0
