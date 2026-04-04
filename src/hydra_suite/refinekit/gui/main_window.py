@@ -33,6 +33,7 @@ from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
 from hydra_suite.refinekit.gui.widgets.suspicion_queue import SuspicionQueueWidget
 from hydra_suite.refinekit.gui.widgets.timeline_panel import TimelinePanelWidget
 from hydra_suite.refinekit.gui.widgets.video_player import VideoPlayerWidget
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 logger = logging.getLogger(__name__)
 

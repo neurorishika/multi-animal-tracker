@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ...training.torchvision_model import BACKBONE_DISPLAY_NAMES, TORCHVISION_BACKBONES
 from ..cluster.clustering_backend import probe_clustering_backend
 
@@ -3276,4 +3278,5 @@ class AprilTagAutoLabelDialog(QDialog):
 
     def get_threshold(self) -> float:
         """Return the confidence threshold (0.0–1.0)."""
+        return self._thresh_slider.value() / 100.0
         return self._thresh_slider.value() / 100.0

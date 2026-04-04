@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hydra_suite.detectkit.ui.models import DetectKitProject, OBBSource
+from hydra_suite.detectkit.gui.models import DetectKitProject, OBBSource
 
 
 def test_project_roundtrip(tmp_path: Path):

@@ -99,6 +99,22 @@ def get_projects_dir() -> Path:
     return _user_projects_dir()
 
 
+def get_data_dir() -> Path:
+    """Return (and create) the root data directory.
+
+    Respects the ``HYDRA_DATA_DIR`` environment variable override.
+    """
+    return _user_data_dir()
+
+
+def get_config_dir() -> Path:
+    """Return (and create) the root config directory.
+
+    Respects the ``HYDRA_CONFIG_DIR`` environment variable override.
+    """
+    return _user_config_dir()
+
+
 def get_app_data_dir(app_name: str) -> Path:
     """Return (and create) a per-app subdirectory under the data directory.
 

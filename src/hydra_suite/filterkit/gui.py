@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from .core import FilterKitCore
 
 
@@ -1670,4 +1672,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     main()

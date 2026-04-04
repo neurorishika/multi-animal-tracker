@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from .canvas import OBBCanvas
 from .models import DetectKitProject
 from .panels.dataset_panel import DatasetPanel
@@ -384,4 +386,5 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):  # noqa: N802
         """Auto-save the project on close."""
         self._save_current_project()
+        super().closeEvent(event)
         super().closeEvent(event)

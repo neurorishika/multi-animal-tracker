@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ..models import OBBSource
 from ..utils import list_images_in_source
 
@@ -430,4 +432,5 @@ class DatasetPanel(QWidget):
         self._try_xlabel_convert(source_path)
         self._validate_source(source_path)
         # Refresh image list
+        self._on_source_changed(self.source_list.currentRow())
         self._on_source_changed(self.source_list.currentRow())

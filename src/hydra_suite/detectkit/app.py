@@ -29,7 +29,7 @@ def main() -> None:
     except Exception:
         pass
 
-    from hydra_suite.detectkit.ui.main_window import MainWindow
+    from hydra_suite.detectkit.gui.main_window import MainWindow
 
     window = MainWindow()
     window.resize(1600, 1000)

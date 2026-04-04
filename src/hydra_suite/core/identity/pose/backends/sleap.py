@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import shutil
-import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -360,10 +360,8 @@ class SleapServiceBackend:
             self.out_root, self.output_keypoint_names, self.skeleton_edges
         )
         self._service_started_here = False
-        self._tmp_root = (
-            self.out_root / "posekit" / "tmp" / f"runtime_{uuid.uuid4().hex}"
-        )
-        self._tmp_root.mkdir(parents=True, exist_ok=True)
+        self._tmp_dir = tempfile.TemporaryDirectory(prefix="hydra_posekit_")
+        self._tmp_root = Path(self._tmp_dir.name)
 
     @property
     def preferred_input_size(self) -> int:
@@ -451,10 +449,7 @@ class SleapServiceBackend:
                     "Failed to stop SLEAP service from backend close.", exc_info=True
                 )
             self._service_started_here = False
-        if self._tmp_root.exists():
-            try:
-                for p in self._tmp_root.glob("*.png"):
-                    p.unlink(missing_ok=True)
-                self._tmp_root.rmdir()
-            except Exception:
-                pass
+        try:
+            self._tmp_dir.cleanup()
+        except Exception:
+            pass

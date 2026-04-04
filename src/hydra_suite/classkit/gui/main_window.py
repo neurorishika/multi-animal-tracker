@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from .color_utils import best_text_color, build_category_color_map, to_hex
 
 
@@ -5529,4 +5531,5 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self._threadpool_start(worker)
         self._threadpool_start(worker)
