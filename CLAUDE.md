@@ -117,7 +117,7 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 
 | Layer | Package | Role |
 |---|---|---|
-| MAT App | `hydra_suite.tracker` | MAT launcher, GUI, dialogs, widgets |
+| MAT App | `hydra_suite.trackerkit` | MAT launcher, GUI, dialogs, widgets |
 | PoseKit | `hydra_suite.posekit` | Pose-labeling application |
 | ClassKit | `hydra_suite.classkit` | Classification/embedding toolkit |
 | RefineKit | `hydra_suite.refinekit` | Interactive proofreading |
