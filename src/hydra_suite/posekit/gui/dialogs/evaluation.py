@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ...core.extensions import list_labeled_indices, load_yolo_pose_label
 from .utils import (
     _load_dialog_settings,
@@ -738,4 +740,5 @@ class EvaluationDashboardDialog(QDialog):
             self._thread.quit()
             self._thread.wait()
         self._thread = None
+        self.btn_run.setEnabled(True)
         self.btn_run.setEnabled(True)

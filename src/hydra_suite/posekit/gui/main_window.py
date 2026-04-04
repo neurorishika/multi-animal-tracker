@@ -49,6 +49,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from .canvas import FrameListDelegate, PoseCanvas
 
 # Local refactored modules
@@ -91,10 +93,10 @@ try:
         build_yolo_pose_dataset,
         cluster_stratified_split,
     )
-    from hydra_suite.posekit.ui.dialogs.active_learning import ActiveLearningDialog
-    from hydra_suite.posekit.ui.dialogs.evaluation import EvaluationDashboardDialog
-    from hydra_suite.posekit.ui.dialogs.exploration import SmartSelectDialog
-    from hydra_suite.posekit.ui.dialogs.training import TrainingRunnerDialog
+    from hydra_suite.posekit.gui.dialogs.active_learning import ActiveLearningDialog
+    from hydra_suite.posekit.gui.dialogs.evaluation import EvaluationDashboardDialog
+    from hydra_suite.posekit.gui.dialogs.exploration import SmartSelectDialog
+    from hydra_suite.posekit.gui.dialogs.training import TrainingRunnerDialog
 except ImportError:
     # Try alternate path if running standalone script?
     # Assuming standard package structure for now
@@ -5219,5 +5221,6 @@ class MainWindow(QMainWindow):
                 cluster_ids.append(mapping[key])
             else:
                 cluster_ids.append(-1)
+        return cluster_ids
         return cluster_ids
         return cluster_ids

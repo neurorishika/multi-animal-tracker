@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ..constants import DEFAULT_DATASET_IMAGES_DIR, DEFAULT_POSEKIT_PROJECT_DIR
 from ..models import Project
 from ..utils import get_default_skeleton_dir, list_images
@@ -527,4 +529,5 @@ class ProjectWizard(QDialog):
             self.sources_modified = True
             self._refresh_sources_list()
         except Exception as exc:
+            QMessageBox.critical(self, "Add Source Failed", str(exc))
             QMessageBox.critical(self, "Add Source Failed", str(exc))

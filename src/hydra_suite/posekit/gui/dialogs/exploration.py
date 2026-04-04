@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ...core.extensions import (
     EmbeddingWorker,
     cluster_embeddings_cosine,
@@ -1144,5 +1146,6 @@ class UMAPWorker(QObject):
                 return
             self.finished.emit(projection.astype(np.float32))
         except Exception as exc:
+            self.failed.emit(str(exc))
             self.failed.emit(str(exc))
             self.failed.emit(str(exc))

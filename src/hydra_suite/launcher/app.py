@@ -130,7 +130,7 @@ APP_CATALOG = [
     {
         "name": "PoseKit",
         "icon": "posekit.svg",
-        "entry": "hydra_suite.posekit.ui.main:main",
+        "entry": "hydra_suite.posekit.gui.main:main",
         "description": (
             "Pose-labeling tool for creating and editing keypoint "
             "annotations on image datasets."

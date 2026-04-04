@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 
 class SkeletonEditorDialog(QDialog):
     """Dialog to edit keypoint names and skeleton edge topology."""

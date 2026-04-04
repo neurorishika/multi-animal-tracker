@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from .utils import (
     _load_dialog_settings,
     _save_dialog_settings,
@@ -870,4 +872,5 @@ class ActiveLearningDialog(QDialog):
             return
         if hasattr(self.parent(), "_add_indices_to_labeling"):
             self.parent()._add_indices_to_labeling(indices, "Active learning")
+        self.accept()
         self.accept()

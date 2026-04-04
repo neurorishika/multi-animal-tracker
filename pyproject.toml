@@ -103,7 +103,7 @@ Issues = "https://github.com/neurorishika/hydra-suite/issues"
 [project.scripts]
 hydra = "hydra_suite.launcher.app:main"
 trackerkit = "hydra_suite.trackerkit.app:main"
-posekit = "hydra_suite.posekit.ui.main:main"
+posekit = "hydra_suite.posekit.gui.main:main"
 filterkit = "hydra_suite.filterkit.gui:main"
 classkit = "hydra_suite.classkit.app:main"
 refinekit = "hydra_suite.refinekit.app:main"

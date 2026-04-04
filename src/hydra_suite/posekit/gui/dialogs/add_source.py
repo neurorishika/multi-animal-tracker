@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ..constants import DEFAULT_DATASET_IMAGES_DIR, LARGE_DATASET_SIEVE_THRESHOLD
 from ..utils import list_images
 
@@ -195,4 +197,5 @@ class AddSourceDialog(QDialog):
 
     @property
     def description(self) -> str:
+        return self._le_desc.text().strip()
         return self._le_desc.text().strip()

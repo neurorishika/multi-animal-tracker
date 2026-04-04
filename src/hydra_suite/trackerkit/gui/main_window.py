@@ -126,7 +126,7 @@ from .dialogs.bg_parameter_helper import BgParameterHelperDialog
 from .dialogs.parameter_helper import ParameterHelperDialog
 
 try:
-    from hydra_suite.posekit.ui.dialogs.utils import get_available_devices
+    from hydra_suite.posekit.gui.dialogs.utils import get_available_devices
 except ImportError:
 
     def get_available_devices():
@@ -8924,7 +8924,7 @@ class MainWindow(QMainWindow):
         import sys
 
         try:
-            # The labeler lives in the posekit.ui.main module.
+            # The labeler lives in the posekit.gui.main module.
             gui_dir = Path(__file__).parent
             package_root = gui_dir.parent
             labeler_dir = package_root / "posekit" / "ui"
@@ -8944,7 +8944,7 @@ class MainWindow(QMainWindow):
                 [
                     sys.executable,
                     "-m",
-                    "hydra_suite.posekit.ui.main",
+                    "hydra_suite.posekit.gui.main",
                     str(dataset_root),
                 ],
                 cwd=str(package_root.parent),  # root where hydra_suite package lives

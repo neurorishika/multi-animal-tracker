@@ -45,6 +45,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
 from ...core.extensions import (
     build_coco_keypoints_dataset,
     build_yolo_pose_dataset,
@@ -1519,4 +1521,5 @@ class TrainingRunnerDialog(QDialog):
             self.lbl_loss_plot.setPixmap(pix)
 
         except Exception:
+            pass
             pass
