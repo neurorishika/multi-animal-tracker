@@ -1,9 +1,7 @@
-"""GUI for FilterKit."""
+"""FilterKit main window."""
 
-import argparse
 import json
 import shutil
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -34,9 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.filterkit.core import FilterKitCore
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
-
-from .core import FilterKitCore
 
 
 class SieveWorker(QThread):
@@ -1635,42 +1632,3 @@ class FilterKitWindow(QMainWindow):
 
         except Exception as exc:
             QMessageBox.critical(self, "Rollback Error", str(exc))
-
-
-def parse_args():
-    ap = argparse.ArgumentParser(description="FilterKit dataset subsampling UI")
-    ap.add_argument(
-        "dataset",
-        nargs="?",
-        default=None,
-        help="Optional dataset root containing images/ (or pass the images/ folder directly)",
-    )
-    return ap.parse_args()
-
-
-def main():
-    args = parse_args()
-    app = QApplication(sys.argv)
-    app.setApplicationName("FilterKit")
-    app.setApplicationDisplayName("FilterKit")
-    app.setOrganizationName("NeuroRishika")
-
-    try:
-        from hydra_suite.paths import get_brand_qicon
-
-        icon = get_brand_qicon("filterkit.svg")
-        if icon and not icon.isNull():
-            app.setWindowIcon(icon)
-    except Exception:
-        pass
-
-    window = FilterKitWindow()
-    if args.dataset:
-        window.load_dataset_root(Path(args.dataset), show_errors=True)
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
-    main()
