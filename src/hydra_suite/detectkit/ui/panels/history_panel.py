@@ -93,7 +93,7 @@ class HistoryPanel(QWidget):
         registry_path = str(get_registry_path())
 
         try:
-            from hydra_suite.tracker.gui.dialogs.run_history_dialog import (
+            from hydra_suite.trackerkit.gui.dialogs.run_history_dialog import (
                 load_run_history,
             )
         except ImportError:

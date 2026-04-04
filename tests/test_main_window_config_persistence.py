@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from hydra_suite.tracker.gui.main_window import MainWindow
+from hydra_suite.trackerkit.gui.main_window import MainWindow
 
 
 @pytest.fixture(scope="module")

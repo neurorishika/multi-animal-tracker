@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hydra_suite.tracker.gui.dialogs.run_history_dialog import load_run_history
+from hydra_suite.trackerkit.gui.dialogs.run_history_dialog import load_run_history
 
 
 def test_load_run_history_empty(tmp_path: Path):

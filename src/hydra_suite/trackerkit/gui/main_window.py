@@ -101,6 +101,7 @@ from hydra_suite.runtime.compute_runtime import (
     infer_compute_runtime_from_legacy,
     runtime_label,
 )
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.geometry import fit_circle_to_points, wrap_angle_degs
 from hydra_suite.utils.gpu_utils import (
     MPS_AVAILABLE,
@@ -9389,7 +9390,7 @@ class MainWindow(QMainWindow):
             self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
 
-        from hydra_suite.tracker.gui.dialogs import CNNIdentityImportDialog
+        from hydra_suite.trackerkit.gui.dialogs import CNNIdentityImportDialog
 
         dlg = CNNIdentityImportDialog(meta, parent=self)
         if dlg.exec() != QDialog.Accepted:

@@ -148,7 +148,7 @@ def main() -> object:
         # Import GUI components (after dependency check)
         from hydra_suite.utils.gpu_utils import log_device_info
 
-        from ..gui.main_window import MainWindow
+        from .gui.main_window import MainWindow
 
         # Log GPU/acceleration availability
         log_device_info()

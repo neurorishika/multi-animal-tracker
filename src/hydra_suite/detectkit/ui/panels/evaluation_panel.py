@@ -154,7 +154,7 @@ class EvaluationPanel(QWidget):
 
     def _quick_test(self) -> None:
         try:
-            from hydra_suite.tracker.gui.dialogs.model_test_dialog import (
+            from hydra_suite.trackerkit.gui.dialogs.model_test_dialog import (
                 ModelTestDialog,
             )
         except ImportError:

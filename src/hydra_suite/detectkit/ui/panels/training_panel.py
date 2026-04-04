@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.tracker.gui.widgets.loss_plot_widget import LossPlotWidget
+from hydra_suite.trackerkit.gui.widgets.loss_plot_widget import LossPlotWidget
 from hydra_suite.training import (
     AugmentationProfile,
     PublishPolicy,
@@ -40,6 +40,7 @@ from hydra_suite.training import (
     TrainingRunSpec,
 )
 from hydra_suite.training.validation import format_validation_report
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
@@ -1174,7 +1175,7 @@ class TrainingPanel(QWidget):
 
     def _quick_test(self):
         """Open ModelTestDialog for the last successful training result."""
-        from hydra_suite.tracker.gui.dialogs.model_test_dialog import ModelTestDialog
+        from hydra_suite.trackerkit.gui.dialogs.model_test_dialog import ModelTestDialog
 
         results = getattr(self, "_last_training_results", [])
         succeeded = [r for r in results if r.get("success")]
@@ -1227,7 +1228,9 @@ class TrainingPanel(QWidget):
 
     def _show_history(self):
         """Open the training run history viewer dialog."""
-        from hydra_suite.tracker.gui.dialogs.run_history_dialog import RunHistoryDialog
+        from hydra_suite.trackerkit.gui.dialogs.run_history_dialog import (
+            RunHistoryDialog,
+        )
 
         dlg = RunHistoryDialog(parent=self)
         dlg.exec()

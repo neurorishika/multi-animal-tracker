@@ -27,11 +27,11 @@ except Exception:
 __author__ = "Rishika Mohanta"
 __email__ = "neurorishika@gmail.com"
 
-from .tracker.app.launcher import main, parse_arguments, setup_logging
+from .trackerkit.app import main, parse_arguments, setup_logging
 
 try:
     from .core.tracking.worker import TrackingWorker
-    from .tracker.gui.main_window import MainWindow
+    from .trackerkit.gui.main_window import MainWindow
 
     __all__ = [
         "main",

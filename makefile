@@ -120,7 +120,7 @@ env-remove-rocm:
 
 test:
 	@echo "Testing package installation..."
-	python -c "from hydra_suite.tracker.app.launcher import main; print('✅ Import successful')"
+	python -c "from hydra_suite.trackerkit.app import main; print('✅ Import successful')"
 	@echo "✅ All tests passed!"
 
 pytest:

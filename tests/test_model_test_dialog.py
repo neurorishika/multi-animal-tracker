@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hydra_suite.tracker.gui.dialogs.model_test_dialog import build_test_params
+from hydra_suite.trackerkit.gui.dialogs.model_test_dialog import build_test_params
 
 
 def test_build_test_params_direct_mode():
