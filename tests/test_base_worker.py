@@ -2,19 +2,23 @@
 import sys
 
 import pytest
-from PySide6.QtCore import QCoreApplication
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def qapp():
-    app = QCoreApplication.instance()
+    """Provide a QApplication for worker tests."""
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
     if app is None:
-        app = QCoreApplication(sys.argv[:1])
+        app = QApplication(sys.argv)
     return app
 
 
 def test_base_worker_execute_called(qapp):
     """execute() is called when worker is started."""
+    from PySide6.QtCore import QCoreApplication
+
     from hydra_suite.widgets.workers import BaseWorker
 
     class _EchoWorker(BaseWorker):
@@ -34,6 +38,8 @@ def test_base_worker_execute_called(qapp):
 
 def test_base_worker_finished_always_fires(qapp):
     """finished signal fires even when execute raises."""
+    from PySide6.QtCore import QCoreApplication
+
     from hydra_suite.widgets.workers import BaseWorker
 
     class _CrashWorker(BaseWorker):
@@ -55,6 +61,8 @@ def test_base_worker_finished_always_fires(qapp):
 
 def test_base_worker_error_emitted_on_exception(qapp):
     """error signal carries the exception message."""
+    from PySide6.QtCore import QCoreApplication
+
     from hydra_suite.widgets.workers import BaseWorker
 
     class _BadWorker(BaseWorker):
@@ -74,6 +82,8 @@ def test_base_worker_error_emitted_on_exception(qapp):
 
 def test_base_worker_no_error_on_success(qapp):
     """error signal is not emitted when execute succeeds, but finished is."""
+    from PySide6.QtCore import QCoreApplication
+
     from hydra_suite.widgets.workers import BaseWorker
 
     class _OkWorker(BaseWorker):
@@ -95,7 +105,7 @@ def test_base_worker_no_error_on_success(qapp):
 
 def test_base_worker_subclass_extra_signals(qapp):
     """Subclasses can add extra signals beyond the base set."""
-    from PySide6.QtCore import Signal
+    from PySide6.QtCore import QCoreApplication, Signal
 
     from hydra_suite.widgets.workers import BaseWorker
 
