@@ -8,11 +8,12 @@
 
 **Tech Stack:** PySide6 (`QThread`, `Signal`), pytest
 
-**Scope note:** This slice targets QThread workers only.
+**Scope note:** This slice targets QThread workers in app-layer packages only.
 - `CSVWriterThread` (`threading.Thread`) — excluded, different model.
 - posekit workers (`QObject` with moveToThread) — excluded, different model.
 - classkit workers (`QRunnable`/thread pool) — excluded, different model.
 - Private helpers (`_PrefetchThread`, `_PlaybackThread`, `_MultiCropLoader`, `_FrameLoader`, `_TestWorker`) — excluded, tightly coupled to single widgets.
+- **`core/` workers excluded** — `TrackingWorker`, `TrackingOptimizer`, `DetectionCacheBuilderWorker`, `TrackingPreviewWorker`, `BgSubtractionOptimizer`, `BgDetectionPreviewWorker` live in `hydra_suite.core` which must not import from `hydra_suite.widgets` (app-layer boundary per CLAUDE.md). These workers already have well-defined signal interfaces and are not migrated in this slice.
 
 ---
 
