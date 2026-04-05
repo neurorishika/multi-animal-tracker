@@ -4188,9 +4188,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_data, "Clean Results")
 
         # Tab 6: Dataset Generation (Active Learning)
-        self.tab_dataset = QWidget()
-        self.setup_dataset_ui()
-        self.tabs.addTab(self.tab_dataset, "Build Dataset")
+        from hydra_suite.trackerkit.gui.panels.dataset_panel import DatasetPanel
+
+        self._dataset_panel = DatasetPanel(
+            main_window=self, config=self.config, parent=self
+        )
+        self.tabs.addTab(self._dataset_panel, "Build Dataset")
+        # Populate conda environments now that the panel (and its combo widget) exists
+        self._refresh_xanylabeling_envs()
 
         right_layout.addWidget(self.tabs, stretch=1)
 
@@ -7445,386 +7450,6 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_dataset_ui(self: object) -> object:
-        """Tab 6: Dataset Generation for Active Learning."""
-        layout = QVBoxLayout(self.tab_dataset)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # Add scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content = QWidget()
-        form = QVBoxLayout(content)
-        form.setContentsMargins(6, 6, 6, 6)
-        form.setSpacing(8)
-        self._set_compact_scroll_layout(form)
-
-        # ============================================================
-        # Active Learning Dataset Section
-        # ============================================================
-        self.g_active_learning = QGroupBox(
-            "Do you want to generate a detection dataset?"
-        )
-        self._set_compact_section_widget(self.g_active_learning)
-        vl_active = QVBoxLayout(self.g_active_learning)
-        vl_active.addWidget(
-            self._create_help_label(
-                "Automatically identify challenging frames during tracking and export them for annotation.\n\n"
-                "Workflow: Run tracking → Review/correct in X-AnyLabeling → Train improved YOLO model"
-            )
-        )
-
-        # Enable checkbox
-        self.chk_enable_dataset_gen = QCheckBox(
-            "Enable Dataset Generation for Active Learning"
-        )
-        self.chk_enable_dataset_gen.setChecked(False)
-        self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
-        vl_active.addWidget(self.chk_enable_dataset_gen)
-
-        # Content container for all configuration options
-        self.active_learning_content = QWidget()
-        vl_content = QVBoxLayout(self.active_learning_content)
-
-        # Dataset configuration
-        self.g_dataset_config = QGroupBox("How should the dataset be configured?")
-        self._set_compact_section_widget(self.g_dataset_config)
-        f_config = QFormLayout(self.g_dataset_config)
-        f_config.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # Class name
-        self.line_dataset_class_name = QLineEdit()
-        self.line_dataset_class_name.setPlaceholderText("e.g., ant")
-        self.line_dataset_class_name.setText("object")
-        self.line_dataset_class_name.setToolTip(
-            "Name of the object class being tracked.\n"
-            "This will be used in the classes.txt file for YOLO training.\n"
-            "Examples: ant, bee, mouse, fish, etc."
-        )
-        f_config.addRow("Class label", self.line_dataset_class_name)
-
-        vl_content.addWidget(self.g_dataset_config)
-
-        # Frame selection parameters
-        self.g_frame_selection = QGroupBox("How should frames be selected?")
-        self._set_compact_section_widget(self.g_frame_selection)
-        f_selection = QFormLayout(self.g_frame_selection)
-        f_selection.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # Number of frames to export
-        self.spin_dataset_max_frames = QSpinBox()
-        self.spin_dataset_max_frames.setRange(10, 1000)
-        self.spin_dataset_max_frames.setValue(100)
-        self.spin_dataset_max_frames.setToolTip(
-            "Maximum number of frames to export (10-1000).\n"
-            "Higher values provide more training data but increase annotation time.\n"
-            "Recommended: 50-200 frames for initial improvement."
-        )
-        f_selection.addRow("Maximum frames to export", self.spin_dataset_max_frames)
-
-        # Frame quality scoring threshold (used DURING TRACKING to identify problematic frames)
-        self.spin_dataset_conf_threshold = QDoubleSpinBox()
-        self.spin_dataset_conf_threshold.setRange(0.0, 1.0)
-        self.spin_dataset_conf_threshold.setSingleStep(0.05)
-        self.spin_dataset_conf_threshold.setDecimals(2)
-        self.spin_dataset_conf_threshold.setValue(0.5)
-        self.spin_dataset_conf_threshold.setToolTip(
-            "[FRAME SELECTION] Confidence threshold for identifying problematic frames DURING TRACKING.\n\n"
-            "Frames with detections below this confidence are scored as 'challenging'\n"
-            "and prioritized for export to improve training data.\n\n"
-            "• Lower (0.3-0.4): Only flag very uncertain detections\n"
-            "• Higher (0.5-0.7): Flag moderately uncertain detections too\n\n"
-            "Recommended: 0.5 (default) - captures frames that need model improvement"
-        )
-        f_selection.addRow("Quality threshold", self.spin_dataset_conf_threshold)
-
-        # Add help label explaining advanced options
-        advanced_help = self._create_help_label(
-            "Note: YOLO detection sensitivity for export (confidence=0.05, IOU=0.5) can be "
-            "customized in advanced_config.json. These are separate from tracking parameters and "
-            "optimized for annotation (detect everything, manual review corrects errors).",
-            attach_to_title=False,
-        )
-        f_selection.addRow(advanced_help)
-
-        # Visual diversity window
-        self.spin_dataset_diversity_window = QSpinBox()
-        self.spin_dataset_diversity_window.setRange(10, 500)
-        self.spin_dataset_diversity_window.setValue(30)
-        self.spin_dataset_diversity_window.setToolTip(
-            "Minimum frame separation for visual diversity (10-500 frames).\n"
-            "Prevents selecting too many consecutive similar frames.\n"
-            "Higher = more spread out frames, more visual variety.\n"
-            "Recommended: 20-50 frames (depends on video frame rate)."
-        )
-        f_selection.addRow(
-            "Diversity window (frames)",
-            self.spin_dataset_diversity_window,
-        )
-
-        # Include context frames
-        self.chk_dataset_include_context = QCheckBox(
-            "Include neighboring frames (+/-1)"
-        )
-        self.chk_dataset_include_context.setChecked(True)
-        self.chk_dataset_include_context.setToolTip(
-            "Export the frame before and after each selected frame.\n"
-            "Provides temporal context which can improve annotation quality.\n"
-            "Increases dataset size by 3x."
-        )
-        self.chk_dataset_probabilistic = QCheckBox("Probabilistic Sampling")
-        self.chk_dataset_probabilistic.setChecked(True)
-        self.chk_dataset_probabilistic.setToolTip(
-            "Use rank-based probabilistic sampling instead of greedy selection.\n"
-            "Probabilistic: Higher quality scores = higher probability (more variety).\n"
-            "Greedy: Always select absolute worst frames first (may be too extreme).\n"
-            "Recommended: Enabled for better training data diversity."
-        )
-        _sel_chk_row = QHBoxLayout()
-        _sel_chk_row.addWidget(self.chk_dataset_include_context)
-        _sel_chk_row.addWidget(self.chk_dataset_probabilistic)
-        f_selection.addRow(_sel_chk_row)
-
-        vl_content.addWidget(self.g_frame_selection)
-
-        # Quality metrics
-        self.g_quality_metrics = QGroupBox("Which quality checks should be applied?")
-        self._set_compact_section_widget(self.g_quality_metrics)
-        v_metrics = QVBoxLayout(self.g_quality_metrics)
-
-        self.chk_metric_low_confidence = QCheckBox("Flag low detection confidence")
-        self.chk_metric_low_confidence.setChecked(True)
-        self.chk_metric_low_confidence.setToolTip(
-            "Flag frames where YOLO confidence is below threshold."
-        )
-        self.chk_metric_count_mismatch = QCheckBox("Flag detection count mismatch")
-        self.chk_metric_count_mismatch.setChecked(True)
-        self.chk_metric_count_mismatch.setToolTip(
-            "Flag frames where detected count doesn't match expected number of animals."
-        )
-        self.chk_metric_high_assignment_cost = QCheckBox(
-            "Flag uncertain track assignment"
-        )
-        self.chk_metric_high_assignment_cost.setChecked(True)
-        self.chk_metric_high_assignment_cost.setToolTip(
-            "Flag frames where tracker struggles to match detections to tracks."
-        )
-        self.chk_metric_track_loss = QCheckBox("Flag frequent track loss")
-        self.chk_metric_track_loss.setChecked(True)
-        self.chk_metric_track_loss.setToolTip(
-            "Flag frames where tracks are frequently lost."
-        )
-        self.chk_metric_high_uncertainty = QCheckBox("Flag high position uncertainty")
-        self.chk_metric_high_uncertainty.setChecked(False)
-        self.chk_metric_high_uncertainty.setToolTip(
-            "Flag frames where Kalman filter is very uncertain about positions."
-        )
-        _m_row1 = QHBoxLayout()
-        _m_row1.addWidget(self.chk_metric_low_confidence)
-        _m_row1.addWidget(self.chk_metric_count_mismatch)
-        _m_row2 = QHBoxLayout()
-        _m_row2.addWidget(self.chk_metric_high_assignment_cost)
-        _m_row2.addWidget(self.chk_metric_track_loss)
-        v_metrics.addLayout(_m_row1)
-        v_metrics.addLayout(_m_row2)
-        v_metrics.addWidget(self.chk_metric_high_uncertainty)
-
-        vl_content.addWidget(self.g_quality_metrics)
-
-        # X-AnyLabeling Integration
-        self.g_xanylabeling = QGroupBox("How should X-AnyLabeling be integrated?")
-        self._set_compact_section_widget(self.g_xanylabeling)
-        vl_xany = QVBoxLayout(self.g_xanylabeling)
-
-        # Conda environment selection
-        h_env = QHBoxLayout()
-        h_env.addWidget(QLabel("Conda environment"))
-        self.combo_xanylabeling_env = QComboBox()
-        self.combo_xanylabeling_env.setToolTip(
-            "Select a conda environment with X-AnyLabeling installed.\n"
-            "Environment names should start with 'x-anylabeling-' to be detected."
-        )
-        self.combo_xanylabeling_env.currentTextChanged.connect(
-            self._on_xanylabeling_env_changed
-        )
-        h_env.addWidget(self.combo_xanylabeling_env, 1)
-        self.btn_refresh_envs = QPushButton("🔄")
-        self.btn_refresh_envs.setMaximumWidth(40)
-        self.btn_refresh_envs.setToolTip("Refresh conda environments list")
-        self.btn_refresh_envs.clicked.connect(self._refresh_xanylabeling_envs)
-        h_env.addWidget(self.btn_refresh_envs)
-        vl_xany.addLayout(h_env)
-
-        # Open in X-AnyLabeling button
-        self.btn_open_xanylabeling = QPushButton(
-            "Open Active Learning Dataset in X-AnyLabeling"
-        )
-        self.btn_open_xanylabeling.setToolTip(
-            "Browse for a dataset directory and open it in X-AnyLabeling.\n"
-            "Directory must contain: classes.txt, images/, and labels/"
-        )
-        self.btn_open_xanylabeling.clicked.connect(self._open_in_xanylabeling)
-        self.btn_open_xanylabeling.setEnabled(False)
-        vl_xany.addWidget(self.btn_open_xanylabeling)
-
-        # X-AnyLabeling integration is now separate from Active Learning content
-
-        # Add content to main group box
-        vl_active.addWidget(self.active_learning_content)
-
-        # Add main group box to form
-        form.addWidget(self.g_active_learning)
-
-        # ============================================================
-        # X-AnyLabeling Integration (separate section)
-        # ============================================================
-        form.addWidget(self.g_xanylabeling)
-
-        # Populate conda environments on startup
-        self._refresh_xanylabeling_envs()
-
-        # Initially hide content (checkbox starts unchecked)
-        self.active_learning_content.setVisible(False)
-
-        # ============================================================
-        # Individual Dataset Generator Section (Real-time OBB crops)
-        # ============================================================
-        self.g_individual_dataset = QGroupBox(
-            "Should individual crops be collected in real time?"
-        )
-        self._set_compact_section_widget(self.g_individual_dataset)
-        vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
-        vl_ind_dataset.addWidget(
-            self._create_help_label(
-                "Persist individual-analysis crop images to disk.\n\n"
-                "• This save option depends on Analyze Individuals pipeline being enabled\n"
-                "• Crops contain only the detected animal (OBB-masked)\n"
-                "• Intended for downstream labeling/training workflows\n\n"
-                "Note: Available only in YOLO OBB mode."
-            )
-        )
-
-        self.chk_enable_individual_dataset = QCheckBox(
-            "Save Individual Analysis Images to Disk"
-        )
-        self.chk_enable_individual_dataset.toggled.connect(
-            self._on_individual_dataset_toggled
-        )
-        vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
-
-        self.chk_generate_individual_track_videos = QCheckBox(
-            "Generate orientation-fixed videos for final tracks after cleanup"
-        )
-        self.chk_generate_individual_track_videos.setChecked(False)
-        self.chk_generate_individual_track_videos.setToolTip(
-            "After final cleaning completes, export one orientation-fixed video per\n"
-            "final TrajectoryID by streaming the source video and using the detection\n"
-            "cache plus interpolated ROI cache. Independent from saved crop files."
-        )
-        vl_ind_dataset.addWidget(self.chk_generate_individual_track_videos)
-
-        # Output Configuration
-        self.ind_output_group = QGroupBox(
-            "Where should individual-analysis outputs go?"
-        )
-        ind_output_layout = QFormLayout(self.ind_output_group)
-        ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # Output format
-        self.combo_individual_format = QComboBox()
-        self.combo_individual_format.addItems(["PNG", "JPEG"])
-        self.combo_individual_format.setCurrentText("PNG")
-        self.combo_individual_format.setToolTip(
-            "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
-        )
-        # Save interval
-        self.spin_individual_interval = QSpinBox()
-        self.spin_individual_interval.setRange(1, 100)
-        self.spin_individual_interval.setValue(1)
-        self.spin_individual_interval.setSingleStep(1)
-        self.spin_individual_interval.setToolTip(
-            "Save crops every N frames.\n"
-            "1 = every frame, 10 = every 10th frame, etc."
-        )
-        _ind_fmt_row = QHBoxLayout()
-        _ind_fmt_row.addWidget(QLabel("Format"))
-        _ind_fmt_row.addWidget(self.combo_individual_format)
-        _ind_fmt_row.addWidget(QLabel("Save every N frames"))
-        _ind_fmt_row.addWidget(self.spin_individual_interval)
-        ind_output_layout.addRow(_ind_fmt_row)
-
-        vl_ind_dataset.addWidget(
-            self._create_help_label(
-                "Interpolation, padding, and crop background settings are configured in:\n"
-                "Analyze Individuals -> Individual Analysis Pipeline Settings"
-            )
-        )
-
-        vl_ind_dataset.addWidget(self.ind_output_group)
-
-        self.chk_suppress_foreign_obb_dataset = QCheckBox(
-            "Suppress foreign animal regions in saved crops"
-        )
-        self.chk_suppress_foreign_obb_dataset.setChecked(False)
-        self.chk_suppress_foreign_obb_dataset.setToolTip(
-            "Fill overlapping animals' OBB areas with the background color before\n"
-            "saving each individual crop image.\n"
-            "\n"
-            "Prevents other animals from appearing in a detection's crop, which\n"
-            "can confuse downstream labeling or training.\n"
-            "Only applies to YOLO OBB detections (no effect in background-subtraction mode)."
-        )
-        vl_ind_dataset.addWidget(self.chk_suppress_foreign_obb_dataset)
-
-        # Info label about filtering
-        self.lbl_individual_info = self._create_help_label(
-            "Note: Crops use detections already filtered by ROI and size settings.\n"
-            "No additional filtering parameters needed.",
-            attach_to_title=False,
-        )
-        vl_ind_dataset.addWidget(self.lbl_individual_info)
-
-        form.addWidget(self.g_individual_dataset)
-
-        # ============================================================
-        # Pose Label UI Integration (Top-level section)
-        # ============================================================
-        self.g_pose_label = QGroupBox("Do you want to launch PoseKit labeler?")
-        self._set_compact_section_widget(self.g_pose_label)
-        vl_pose = QVBoxLayout(self.g_pose_label)
-        vl_pose.addWidget(
-            self._create_help_label(
-                "Open an individual dataset folder in PoseKit Labeler for keypoint annotation.\n"
-                "Select a dataset root that contains an `images/` directory."
-            )
-        )
-
-        # Open in Pose Label button
-        self.btn_open_pose_label = QPushButton(
-            "Open Individual Dataset in PoseKit Labeler"
-        )
-        self.btn_open_pose_label.setToolTip(
-            "Browse for a dataset directory and open it in PoseKit Labeler.\n"
-            "Directory must contain: images/\n"
-            "PoseKit project data will be stored in: posekit_project/"
-        )
-        self.btn_open_pose_label.clicked.connect(self._open_pose_label_ui)
-        self.btn_open_pose_label.setEnabled(True)
-        vl_pose.addWidget(self.btn_open_pose_label)
-
-        form.addWidget(self.g_pose_label)
-
-        # Initially hide individual dataset widgets (checkbox starts unchecked)
-        self.g_individual_dataset.setVisible(False)
-        self.ind_output_group.setVisible(False)
-        self.lbl_individual_info.setVisible(False)
-        self.chk_generate_individual_track_videos.setVisible(False)
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-
     def setup_individual_analysis_ui(self: object) -> object:
         """Tab 7: Individual Analysis - Real-time Identity & Post-hoc Pose Analysis."""
         layout = QVBoxLayout(self.tab_individual)
@@ -8325,7 +7950,7 @@ class MainWindow(QMainWindow):
     def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
         # Hide/show entire content container
-        self.active_learning_content.setVisible(enabled)
+        self._dataset_panel.active_learning_content.setVisible(enabled)
 
     def _find_or_plan_optimizer_cache_path(
         self, video_path: str, params: dict, start_frame: int, end_frame: int
@@ -8652,7 +8277,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
-        self.combo_xanylabeling_env.clear()
+        self._dataset_panel.combo_xanylabeling_env.clear()
         preferred = str(self.advanced_config.get("xanylabeling_env", "")).strip()
 
         try:
@@ -8677,38 +8302,44 @@ class MainWindow(QMainWindow):
                                 envs.append(env_name)
 
                 if envs:
-                    self.combo_xanylabeling_env.addItems(envs)
+                    self._dataset_panel.combo_xanylabeling_env.addItems(envs)
                     if preferred in envs:
-                        self.combo_xanylabeling_env.setCurrentText(preferred)
-                    self.btn_open_xanylabeling.setEnabled(True)
+                        self._dataset_panel.combo_xanylabeling_env.setCurrentText(
+                            preferred
+                        )
+                    self._dataset_panel.btn_open_xanylabeling.setEnabled(True)
                     logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
                 else:
-                    self.combo_xanylabeling_env.addItem("No X-AnyLabeling envs found")
-                    self.btn_open_xanylabeling.setEnabled(False)
+                    self._dataset_panel.combo_xanylabeling_env.addItem(
+                        "No X-AnyLabeling envs found"
+                    )
+                    self._dataset_panel.btn_open_xanylabeling.setEnabled(False)
                     logger.warning(
                         "No conda environments starting with 'x-anylabeling-' found. "
                         "Create one with: conda create -n x-anylabeling-env python=3.10 && "
                         "conda activate x-anylabeling-env && pip install x-anylabeling"
                     )
             else:
-                self.combo_xanylabeling_env.addItem("Conda not available")
-                self.btn_open_xanylabeling.setEnabled(False)
+                self._dataset_panel.combo_xanylabeling_env.addItem(
+                    "Conda not available"
+                )
+                self._dataset_panel.btn_open_xanylabeling.setEnabled(False)
                 logger.warning("Could not detect conda environments")
 
         except FileNotFoundError:
-            self.combo_xanylabeling_env.addItem("Conda not installed")
-            self.btn_open_xanylabeling.setEnabled(False)
+            self._dataset_panel.combo_xanylabeling_env.addItem("Conda not installed")
+            self._dataset_panel.btn_open_xanylabeling.setEnabled(False)
             logger.warning("Conda not found in PATH")
         except Exception as e:
-            self.combo_xanylabeling_env.addItem("Error detecting envs")
-            self.btn_open_xanylabeling.setEnabled(False)
+            self._dataset_panel.combo_xanylabeling_env.addItem("Error detecting envs")
+            self._dataset_panel.btn_open_xanylabeling.setEnabled(False)
             logger.error(f"Error detecting conda environments: {e}")
 
     def _selected_xanylabeling_env(self) -> str:
         """Return the selected X-AnyLabeling env or an empty string."""
-        if not hasattr(self, "combo_xanylabeling_env"):
+        if not hasattr(self, "_dataset_panel"):
             return ""
-        env_name = self.combo_xanylabeling_env.currentText().strip()
+        env_name = self._dataset_panel.combo_xanylabeling_env.currentText().strip()
         invalid_prefixes = (
             "no x-anylabeling envs",
             "conda not available",
@@ -8732,7 +8363,7 @@ class MainWindow(QMainWindow):
     def _open_in_xanylabeling(self):
         """Open a dataset directory in X-AnyLabeling."""
         # Get selected conda environment
-        env_name = self.combo_xanylabeling_env.currentText()
+        env_name = self._dataset_panel.combo_xanylabeling_env.currentText()
         if (
             not env_name
             or env_name.startswith("No ")
@@ -10370,7 +10001,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "chk_enable_individual_dataset"):
             return False
         return bool(
-            self.chk_enable_individual_dataset.isChecked()
+            self._dataset_panel.chk_enable_individual_dataset.isChecked()
             and self._is_individual_pipeline_enabled()
         )
 
@@ -10379,7 +10010,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "chk_generate_individual_track_videos"):
             return False
         return bool(
-            self.chk_generate_individual_track_videos.isChecked()
+            self._dataset_panel.chk_generate_individual_track_videos.isChecked()
             and self._is_individual_pipeline_enabled()
         )
 
@@ -10441,35 +10072,43 @@ class MainWindow(QMainWindow):
             self.g_individual_pipeline_common.setVisible(pipeline_enabled)
             self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
         if hasattr(self, "g_individual_dataset"):
-            self.g_individual_dataset.setVisible(pipeline_enabled)
-            self.g_individual_dataset.setEnabled(pipeline_enabled)
+            self._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
+            self._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
         self._sync_identity_method_ui()
         self._sync_pose_analysis_ui()
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
-            self.chk_enable_individual_dataset.setEnabled(pipeline_enabled)
+            self._dataset_panel.chk_enable_individual_dataset.setEnabled(
+                pipeline_enabled
+            )
 
         save_enabled = self._is_individual_image_save_enabled()
         if hasattr(self, "ind_output_group"):
-            self.ind_output_group.setVisible(save_enabled)
-            self.ind_output_group.setEnabled(save_enabled)
+            self._dataset_panel.ind_output_group.setVisible(save_enabled)
+            self._dataset_panel.ind_output_group.setEnabled(save_enabled)
         if hasattr(self, "lbl_individual_info"):
-            self.lbl_individual_info.setVisible(save_enabled)
+            self._dataset_panel.lbl_individual_info.setVisible(save_enabled)
         if hasattr(self, "chk_generate_individual_track_videos"):
-            self.chk_generate_individual_track_videos.setVisible(pipeline_enabled)
+            self._dataset_panel.chk_generate_individual_track_videos.setVisible(
+                pipeline_enabled
+            )
             has_headtail = bool(
                 str(self._get_selected_yolo_headtail_model_path() or "").strip()
             )
             oriented_enabled = pipeline_enabled and has_headtail
-            self.chk_generate_individual_track_videos.setEnabled(oriented_enabled)
+            self._dataset_panel.chk_generate_individual_track_videos.setEnabled(
+                oriented_enabled
+            )
             if not oriented_enabled:
-                self.chk_generate_individual_track_videos.setChecked(False)
-                self.chk_generate_individual_track_videos.setToolTip(
+                self._dataset_panel.chk_generate_individual_track_videos.setChecked(
+                    False
+                )
+                self._dataset_panel.chk_generate_individual_track_videos.setToolTip(
                     "Requires a head-tail model to be configured."
                 )
             else:
-                self.chk_generate_individual_track_videos.setToolTip(
+                self._dataset_panel.chk_generate_individual_track_videos.setToolTip(
                     "After final cleaning completes, export one orientation-fixed video per\n"
                     "final TrajectoryID by streaming the source video and using the detection\n"
                     "cache plus interpolated ROI cache. Independent from saved crop files."
@@ -13772,10 +13411,10 @@ class MainWindow(QMainWindow):
     def _apply_ui_state(self, state: str):
         if state == "no_video":
             extra_allowed = [
-                self.combo_xanylabeling_env,
-                self.btn_refresh_envs,
-                self.btn_open_xanylabeling,
-                self.btn_open_pose_label,
+                self._dataset_panel.combo_xanylabeling_env,
+                self._dataset_panel.btn_refresh_envs,
+                self._dataset_panel.btn_open_xanylabeling,
+                self._dataset_panel.btn_open_pose_label,
             ]
             self._set_interactive_widgets_enabled(
                 False,
@@ -14476,7 +14115,7 @@ class MainWindow(QMainWindow):
                 self._resolve_source_video_fps(),
                 max(0.0, padding_fraction),
                 tuple(int(c) for c in self._background_color),
-                bool(self.chk_suppress_foreign_obb_dataset.isChecked()),
+                bool(self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked()),
             )
             self.oriented_video_worker.progress_signal.connect(self.on_progress_update)
             self.oriented_video_worker.finished_signal.connect(
@@ -15950,7 +15589,7 @@ class MainWindow(QMainWindow):
         )
 
         # Generate dataset if enabled (BEFORE cleanup so files are still available)
-        if self.chk_enable_dataset_gen.isChecked():
+        if self._dataset_panel.chk_enable_dataset_gen.isChecked():
             self._generate_training_dataset(override_csv_path=final_csv_path)
             self._dataset_was_started = True
 
@@ -17077,9 +16716,9 @@ class MainWindow(QMainWindow):
             * scaled_body_size,
             "MIN_OVERLAP_FRAMES": self.spin_min_overlap_frames.value(),
             # Dataset generation parameters
-            "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
+            "ENABLE_DATASET_GENERATION": self._dataset_panel.chk_enable_dataset_gen.isChecked(),
             "DATASET_NAME": "",
-            "DATASET_CLASS_NAME": self.line_dataset_class_name.text(),
+            "DATASET_CLASS_NAME": self._dataset_panel.line_dataset_class_name.text(),
             "DATASET_OUTPUT_DIR": (
                 os.path.join(
                     os.path.dirname(self.current_video_path),
@@ -17089,8 +16728,8 @@ class MainWindow(QMainWindow):
                 if self.current_video_path
                 else ""
             ),
-            "DATASET_MAX_FRAMES": self.spin_dataset_max_frames.value(),
-            "DATASET_CONF_THRESHOLD": self.spin_dataset_conf_threshold.value(),
+            "DATASET_MAX_FRAMES": self._dataset_panel.spin_dataset_max_frames.value(),
+            "DATASET_CONF_THRESHOLD": self._dataset_panel.spin_dataset_conf_threshold.value(),
             # Dataset-specific YOLO parameters from advanced config (for export, not tracking)
             "DATASET_YOLO_CONFIDENCE_THRESHOLD": self.advanced_config.get(
                 "dataset_yolo_confidence_threshold", 0.05
@@ -17098,14 +16737,14 @@ class MainWindow(QMainWindow):
             "DATASET_YOLO_IOU_THRESHOLD": self.advanced_config.get(
                 "dataset_yolo_iou_threshold", 0.5
             ),
-            "DATASET_DIVERSITY_WINDOW": self.spin_dataset_diversity_window.value(),
-            "DATASET_INCLUDE_CONTEXT": self.chk_dataset_include_context.isChecked(),
-            "DATASET_PROBABILISTIC_SAMPLING": self.chk_dataset_probabilistic.isChecked(),
-            "METRIC_LOW_CONFIDENCE": self.chk_metric_low_confidence.isChecked(),
-            "METRIC_COUNT_MISMATCH": self.chk_metric_count_mismatch.isChecked(),
-            "METRIC_HIGH_ASSIGNMENT_COST": self.chk_metric_high_assignment_cost.isChecked(),
-            "METRIC_TRACK_LOSS": self.chk_metric_track_loss.isChecked(),
-            "METRIC_HIGH_UNCERTAINTY": self.chk_metric_high_uncertainty.isChecked(),
+            "DATASET_DIVERSITY_WINDOW": self._dataset_panel.spin_dataset_diversity_window.value(),
+            "DATASET_INCLUDE_CONTEXT": self._dataset_panel.chk_dataset_include_context.isChecked(),
+            "DATASET_PROBABILISTIC_SAMPLING": self._dataset_panel.chk_dataset_probabilistic.isChecked(),
+            "METRIC_LOW_CONFIDENCE": self._dataset_panel.chk_metric_low_confidence.isChecked(),
+            "METRIC_COUNT_MISMATCH": self._dataset_panel.chk_metric_count_mismatch.isChecked(),
+            "METRIC_HIGH_ASSIGNMENT_COST": self._dataset_panel.chk_metric_high_assignment_cost.isChecked(),
+            "METRIC_TRACK_LOSS": self._dataset_panel.chk_metric_track_loss.isChecked(),
+            "METRIC_HIGH_UNCERTAINTY": self._dataset_panel.chk_metric_high_uncertainty.isChecked(),
             # Individual analysis parameters
             "ENABLE_IDENTITY_ANALYSIS": individual_pipeline_enabled,
             "ENABLE_INDIVIDUAL_PIPELINE": individual_pipeline_enabled,
@@ -17170,15 +16809,15 @@ class MainWindow(QMainWindow):
                 if self.current_video_path
                 else ""
             ),
-            "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
-            "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
+            "INDIVIDUAL_OUTPUT_FORMAT": self._dataset_panel.combo_individual_format.currentText().lower(),
+            "INDIVIDUAL_SAVE_INTERVAL": self._dataset_panel.spin_individual_interval.value(),
             "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self.chk_individual_interpolate.isChecked(),
             "INDIVIDUAL_CROP_PADDING": self.spin_individual_padding.value(),
             "INDIVIDUAL_BACKGROUND_COLOR": [
                 int(c) for c in self._background_color
             ],  # Ensure JSON serializable
             "SUPPRESS_FOREIGN_OBB_REGIONS": self.chk_suppress_foreign_obb.isChecked(),
-            "SUPPRESS_FOREIGN_OBB_DATASET": self.chk_suppress_foreign_obb_dataset.isChecked(),
+            "SUPPRESS_FOREIGN_OBB_DATASET": self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked(),
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
             "ENABLE_CONFIDENCE_DENSITY_MAP": self.chk_enable_confidence_density_map.isChecked(),
             "DENSITY_GAUSSIAN_SIGMA_SCALE": self.spin_density_gaussian_sigma_scale.value(),
@@ -17987,16 +17626,16 @@ class MainWindow(QMainWindow):
             self.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
 
             # === DATASET GENERATION ===
-            self.chk_enable_dataset_gen.setChecked(
+            self._dataset_panel.chk_enable_dataset_gen.setChecked(
                 get_cfg("enable_dataset_generation", default=False)
             )
-            self.line_dataset_class_name.setText(
+            self._dataset_panel.line_dataset_class_name.setText(
                 get_cfg("dataset_class_name", default="object")
             )
-            self.spin_dataset_max_frames.setValue(
+            self._dataset_panel.spin_dataset_max_frames.setValue(
                 get_cfg("dataset_max_frames", default=100)
             )
-            self.spin_dataset_conf_threshold.setValue(
+            self._dataset_panel.spin_dataset_conf_threshold.setValue(
                 get_cfg(
                     "dataset_confidence_threshold",
                     "dataset_conf_threshold",
@@ -18004,28 +17643,28 @@ class MainWindow(QMainWindow):
                 )
             )
             # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
-            self.spin_dataset_diversity_window.setValue(
+            self._dataset_panel.spin_dataset_diversity_window.setValue(
                 get_cfg("dataset_diversity_window", default=30)
             )
-            self.chk_dataset_include_context.setChecked(
+            self._dataset_panel.chk_dataset_include_context.setChecked(
                 get_cfg("dataset_include_context", default=True)
             )
-            self.chk_dataset_probabilistic.setChecked(
+            self._dataset_panel.chk_dataset_probabilistic.setChecked(
                 get_cfg("dataset_probabilistic_sampling", default=True)
             )
-            self.chk_metric_low_confidence.setChecked(
+            self._dataset_panel.chk_metric_low_confidence.setChecked(
                 get_cfg("metric_low_confidence", default=True)
             )
-            self.chk_metric_count_mismatch.setChecked(
+            self._dataset_panel.chk_metric_count_mismatch.setChecked(
                 get_cfg("metric_count_mismatch", default=True)
             )
-            self.chk_metric_high_assignment_cost.setChecked(
+            self._dataset_panel.chk_metric_high_assignment_cost.setChecked(
                 get_cfg("metric_high_assignment_cost", default=True)
             )
-            self.chk_metric_track_loss.setChecked(
+            self._dataset_panel.chk_metric_track_loss.setChecked(
                 get_cfg("metric_track_loss", default=True)
             )
-            self.chk_metric_high_uncertainty.setChecked(
+            self._dataset_panel.chk_metric_high_uncertainty.setChecked(
                 get_cfg("metric_high_uncertainty", default=False)
             )
 
@@ -18189,24 +17828,26 @@ class MainWindow(QMainWindow):
             self.spin_pose_batch.setValue(shared_pose_batch)
 
             # === REAL-TIME INDIVIDUAL DATASET ===
-            self.chk_suppress_foreign_obb_dataset.setChecked(
+            self._dataset_panel.chk_suppress_foreign_obb_dataset.setChecked(
                 get_cfg("suppress_foreign_obb_dataset", default=False)
             )
-            self.chk_enable_individual_dataset.setChecked(
+            self._dataset_panel.chk_enable_individual_dataset.setChecked(
                 get_cfg(
                     "enable_individual_image_save",
                     "enable_individual_dataset",
                     default=False,
                 )
             )
-            self.chk_generate_individual_track_videos.setChecked(
+            self._dataset_panel.chk_generate_individual_track_videos.setChecked(
                 get_cfg("generate_oriented_track_videos", default=False)
             )
             format_text = get_cfg("individual_output_format", default="png").upper()
-            format_idx = self.combo_individual_format.findText(format_text)
+            format_idx = self._dataset_panel.combo_individual_format.findText(
+                format_text
+            )
             if format_idx >= 0:
-                self.combo_individual_format.setCurrentIndex(format_idx)
-            self.spin_individual_interval.setValue(
+                self._dataset_panel.combo_individual_format.setCurrentIndex(format_idx)
+            self._dataset_panel.spin_individual_interval.setValue(
                 get_cfg("individual_save_interval", default=1)
             )
             self.chk_individual_interpolate.setChecked(
@@ -18585,24 +18226,24 @@ class MainWindow(QMainWindow):
         cfg.update(
             {
                 # === DATASET GENERATION ===
-                "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
-                "dataset_class_name": self.line_dataset_class_name.text(),
-                "dataset_max_frames": self.spin_dataset_max_frames.value(),
+                "enable_dataset_generation": self._dataset_panel.chk_enable_dataset_gen.isChecked(),
+                "dataset_class_name": self._dataset_panel.line_dataset_class_name.text(),
+                "dataset_max_frames": self._dataset_panel.spin_dataset_max_frames.value(),
             }
         )
 
         cfg.update(
             {
-                "dataset_confidence_threshold": self.spin_dataset_conf_threshold.value(),
+                "dataset_confidence_threshold": self._dataset_panel.spin_dataset_conf_threshold.value(),
                 # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
-                "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
-                "dataset_include_context": self.chk_dataset_include_context.isChecked(),
-                "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
-                "metric_low_confidence": self.chk_metric_low_confidence.isChecked(),
-                "metric_count_mismatch": self.chk_metric_count_mismatch.isChecked(),
-                "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
-                "metric_track_loss": self.chk_metric_track_loss.isChecked(),
-                "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
+                "dataset_diversity_window": self._dataset_panel.spin_dataset_diversity_window.value(),
+                "dataset_include_context": self._dataset_panel.chk_dataset_include_context.isChecked(),
+                "dataset_probabilistic_sampling": self._dataset_panel.chk_dataset_probabilistic.isChecked(),
+                "metric_low_confidence": self._dataset_panel.chk_metric_low_confidence.isChecked(),
+                "metric_count_mismatch": self._dataset_panel.chk_metric_count_mismatch.isChecked(),
+                "metric_high_assignment_cost": self._dataset_panel.chk_metric_high_assignment_cost.isChecked(),
+                "metric_track_loss": self._dataset_panel.chk_metric_track_loss.isChecked(),
+                "metric_high_uncertainty": self._dataset_panel.chk_metric_high_uncertainty.isChecked(),
                 # === INDIVIDUAL ANALYSIS ===
                 "enable_identity_analysis": self._is_individual_pipeline_enabled(),
                 "enable_individual_pipeline": self._is_individual_pipeline_enabled(),
@@ -18658,22 +18299,22 @@ class MainWindow(QMainWindow):
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._is_individual_image_save_enabled(),
                 "generate_oriented_track_videos": bool(
-                    self.chk_generate_individual_track_videos.isChecked()
+                    self._dataset_panel.chk_generate_individual_track_videos.isChecked()
                 ),
-                "individual_output_format": self.combo_individual_format.currentText().lower(),
+                "individual_output_format": self._dataset_panel.combo_individual_format.currentText().lower(),
             }
         )
 
         cfg.update(
             {
-                "individual_save_interval": self.spin_individual_interval.value(),
+                "individual_save_interval": self._dataset_panel.spin_individual_interval.value(),
                 "individual_interpolate_occlusions": self.chk_individual_interpolate.isChecked(),
                 "individual_crop_padding": self.spin_individual_padding.value(),
                 "individual_background_color": [
                     int(c) for c in self._background_color
                 ],  # Ensure JSON serializable
                 "suppress_foreign_obb_regions": self.chk_suppress_foreign_obb.isChecked(),
-                "suppress_foreign_obb_dataset": self.chk_suppress_foreign_obb_dataset.isChecked(),
+                "suppress_foreign_obb_dataset": self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked(),
             }
         )
 
@@ -18894,13 +18535,15 @@ class MainWindow(QMainWindow):
 
             # Get parameters
             params = self.get_parameters_dict()
-            max_frames = self.spin_dataset_max_frames.value()
-            diversity_window = self.spin_dataset_diversity_window.value()
-            include_context = self.chk_dataset_include_context.isChecked()
-            probabilistic = self.chk_dataset_probabilistic.isChecked()
+            max_frames = self._dataset_panel.spin_dataset_max_frames.value()
+            diversity_window = self._dataset_panel.spin_dataset_diversity_window.value()
+            include_context = (
+                self._dataset_panel.chk_dataset_include_context.isChecked()
+            )
+            probabilistic = self._dataset_panel.chk_dataset_probabilistic.isChecked()
 
             # Get class name
-            class_name = self.line_dataset_class_name.text().strip()
+            class_name = self._dataset_panel.line_dataset_class_name.text().strip()
             if not class_name:
                 class_name = "object"
 

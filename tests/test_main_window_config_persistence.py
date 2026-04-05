@@ -109,9 +109,12 @@ def test_xanylabeling_env_preference_restores_and_updates(
 
     window = MainWindow()
 
-    assert window.combo_xanylabeling_env.currentText() == "x-anylabeling-beta"
+    assert (
+        window._dataset_panel.combo_xanylabeling_env.currentText()
+        == "x-anylabeling-beta"
+    )
 
-    window.combo_xanylabeling_env.setCurrentText("x-anylabeling-alpha")
+    window._dataset_panel.combo_xanylabeling_env.setCurrentText("x-anylabeling-alpha")
 
     assert window._selected_xanylabeling_env() == "x-anylabeling-alpha"
     assert window.advanced_config["xanylabeling_env"] == "x-anylabeling-alpha"

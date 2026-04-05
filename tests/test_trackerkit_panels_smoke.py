@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from hydra_suite.trackerkit.config.schemas import TrackerConfig  # noqa: E402
 
+# All panels — used for signal-presence checks.
 _PANEL_MAP = {
     "DatasetPanel": "hydra_suite.trackerkit.gui.panels.dataset_panel",
     "DetectionPanel": "hydra_suite.trackerkit.gui.panels.detection_panel",
@@ -20,6 +21,10 @@ _PANEL_MAP = {
     "SetupPanel": "hydra_suite.trackerkit.gui.panels.setup_panel",
     "TrackingPanel": "hydra_suite.trackerkit.gui.panels.tracking_panel",
 }
+
+# Panels whose _build_ui is still a stub (safe to instantiate with MagicMock).
+# Remove a panel from this dict once its _build_ui is populated.
+_STUB_PANEL_MAP = {k: v for k, v in _PANEL_MAP.items() if k != "DatasetPanel"}
 
 
 @pytest.fixture(scope="module")
@@ -36,9 +41,9 @@ def main_window(qapp):
     w.close()
 
 
-@pytest.mark.parametrize("class_name,module_path", list(_PANEL_MAP.items()))
+@pytest.mark.parametrize("class_name,module_path", list(_STUB_PANEL_MAP.items()))
 def test_panel_instantiates(qapp, class_name, module_path):
-    """Each panel must instantiate without raising an exception."""
+    """Stub panels must instantiate without raising an exception (mock main_window is safe)."""
     import importlib
 
     mock_mw = MagicMock()
@@ -57,3 +62,13 @@ def test_panel_has_config_changed_signal(class_name, module_path):
     mod = importlib.import_module(module_path)
     cls = getattr(mod, class_name)
     assert hasattr(cls, "config_changed")
+
+
+def test_dataset_panel_wired_in_main_window(main_window):
+    """DatasetPanel is accessible on MainWindow and exposes key widgets."""
+    from hydra_suite.trackerkit.gui.panels.dataset_panel import DatasetPanel
+
+    assert hasattr(main_window, "_dataset_panel")
+    assert isinstance(main_window._dataset_panel, DatasetPanel)
+    assert hasattr(main_window._dataset_panel, "combo_xanylabeling_env")
+    assert hasattr(main_window._dataset_panel, "chk_enable_dataset_gen")
