@@ -42,18 +42,25 @@ Methods that set up "tracking controls", "detection config", "identity config", 
 
 - [ ] **Step 3: Map panels**
 
-Based on steps 1–2, update the table in this plan with the actual method boundaries you found:
+Based on the audit, the file has 6 distinct setup methods (matching 6 UI tabs):
 
 | Panel file | Methods/responsibilities to move | Approx lines |
 |-----------|----------------------------------|--------------|
-| `panels/tracking_panel.py` | (fill in from audit) | ? |
-| `panels/detection_panel.py` | (fill in from audit) | ? |
-| `panels/identity_panel.py` | (fill in from audit) | ? |
-| `panels/postprocess_panel.py` | (fill in from audit) | ? |
+| `panels/setup_panel.py` | `setup_setup_ui()` (4341–5037) + preset/video/display/ROI methods | ~700 |
+| `panels/detection_panel.py` | `setup_detection_ui()` (5038–6051) + detection handler methods (11 methods) | ~1100 |
+| `panels/tracking_panel.py` | `setup_tracking_ui()` (6052–6846) + video/playback methods (14 methods) + tracking toggle | ~900 |
+| `panels/postprocess_panel.py` | `setup_data_ui()` (6847–7447) + merge/relink/interpolation methods (6 methods) | ~700 |
+| `panels/dataset_panel.py` | `setup_dataset_ui()` (7448–8324) + dataset generation handlers | ~900 |
+| `panels/identity_panel.py` | `setup_individual_analysis_ui()` (7828–8323) + identity/pose methods (22 methods) | ~600 |
+
+Note: Only `parameters_changed: Signal = Signal(dict)` is defined at MainWindow class level — all other signals live in the worker classes. Panels communicate up via `parameters_changed` or new panel-specific signals wired in MainWindow.
 
 - [ ] **Step 4: Note signal wiring**
 
-List every `Signal` defined at class level in `MainWindow`. These stay in `MainWindow` — panels communicate up via signals.
+Only one Signal at MainWindow class level:
+- `parameters_changed: Signal = Signal(dict)` (line 3510)
+
+Worker signals (progress_signal, finished_signal, error_signal) live in the worker classes (MergeWorker, InterpolatedCropsWorker, OrientedTrackVideoWorker, DatasetGenerationWorker, PreviewDetectionWorker) which are still in main_window.py at lines 289–3504. These stay with their workers and are not moved to panels.
 
 ---
 
