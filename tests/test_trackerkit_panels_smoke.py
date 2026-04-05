@@ -27,7 +27,7 @@ _PANEL_MAP = {
 _STUB_PANEL_MAP = {
     k: v
     for k, v in _PANEL_MAP.items()
-    if k not in {"DatasetPanel", "SetupPanel", "TrackingPanel"}
+    if k not in {"DatasetPanel", "SetupPanel", "TrackingPanel", "PostProcessPanel"}
 }
 
 
@@ -96,3 +96,13 @@ def test_tracking_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._tracking_panel, TrackingPanel)
     assert hasattr(main_window._tracking_panel, "g_density")
     assert hasattr(main_window._tracking_panel, "chk_enable_confidence_density_map")
+
+
+def test_postprocess_panel_wired_in_main_window(main_window):
+    """PostProcessPanel is accessible on MainWindow and exposes key widgets."""
+    from hydra_suite.trackerkit.gui.panels.postprocess_panel import PostProcessPanel
+
+    assert hasattr(main_window, "_postprocess_panel")
+    assert isinstance(main_window._postprocess_panel, PostProcessPanel)
+    assert hasattr(main_window._postprocess_panel, "enable_postprocessing")
+    assert hasattr(main_window._postprocess_panel, "combo_interpolation_method")

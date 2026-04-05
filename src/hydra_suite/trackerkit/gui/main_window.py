@@ -4193,9 +4193,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tracking_panel, "Track Movement")
 
         # Tab 5: Data (Post-proc)
-        self.tab_data = QWidget()
-        self.setup_data_ui()
-        self.tabs.addTab(self.tab_data, "Clean Results")
+        from hydra_suite.trackerkit.gui.panels.postprocess_panel import PostProcessPanel
+
+        self._postprocess_panel = PostProcessPanel(
+            main_window=self, config=self.config, parent=self
+        )
+        self.tabs.addTab(self._postprocess_panel, "Clean Results")
 
         # Tab 6: Dataset Generation (Active Learning)
         from hydra_suite.trackerkit.gui.panels.dataset_panel import DatasetPanel
@@ -5363,607 +5366,6 @@ class MainWindow(QMainWindow):
 
         vl_filters.addLayout(f_filters)
         vbox.addWidget(g_filters)
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-
-    def setup_data_ui(self: object) -> object:
-        """Tab 4: Post-Processing."""
-        layout = QVBoxLayout(self.tab_data)
-        layout.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content = QWidget()
-        vbox = QVBoxLayout(content)
-        vbox.setContentsMargins(6, 6, 6, 6)
-        vbox.setSpacing(8)
-        self._set_compact_scroll_layout(vbox)
-
-        # Post-Processing
-        g_pp = QGroupBox("How should tracks be cleaned after tracking?")
-        self._set_compact_section_widget(g_pp)
-        vl_pp = QVBoxLayout(g_pp)
-        vl_pp.addWidget(
-            self._create_help_label(
-                "Clean trajectories after tracking by removing outliers and splitting at identity swaps. "
-                "Velocity/distance breaks detect unrealistic jumps that indicate ID switching."
-            )
-        )
-        f_pp = QFormLayout(None)
-        f_pp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.enable_postprocessing = QCheckBox("Auto-clean trajectories")
-        self.enable_postprocessing.setChecked(True)
-        self.enable_postprocessing.setToolTip(
-            "Automatically clean trajectories by removing outliers and fragments.\n"
-            "Uses velocity and distance thresholds to detect anomalies.\n"
-            "Recommended: Enable for cleaner data output."
-        )
-        self.enable_postprocessing.stateChanged.connect(self._on_cleaning_toggled)
-        f_pp.addRow(self.enable_postprocessing)
-
-        self.spin_min_trajectory_length = QDoubleSpinBox()
-        self.spin_min_trajectory_length.setRange(0.01, 60.0)
-        self.spin_min_trajectory_length.setSingleStep(0.1)
-        self.spin_min_trajectory_length.setDecimals(2)
-        self.spin_min_trajectory_length.setValue(0.33)
-        self.spin_min_trajectory_length.setToolTip(
-            "Remove trajectories shorter than this (seconds).\n"
-            "Converted to frames using the acquisition frame rate.\n"
-            "Filters out brief false detections and transient tracks.\n"
-            "Recommended: 0.15-1.0 s depending on video length."
-        )
-        self.lbl_min_trajectory_length = QLabel("Minimum trajectory length (seconds)")
-        f_pp.addRow(self.lbl_min_trajectory_length, self.spin_min_trajectory_length)
-
-        self.spin_max_velocity_break = QDoubleSpinBox()
-        self.spin_max_velocity_break.setRange(1.0, 500.0)
-        self.spin_max_velocity_break.setSingleStep(5.0)
-        self.spin_max_velocity_break.setDecimals(1)
-        self.spin_max_velocity_break.setValue(50.0)
-        self.spin_max_velocity_break.setToolTip(
-            "Maximum velocity (body-sizes/second) before breaking trajectory.\n"
-            "Splits tracks at unrealistic speed jumps (likely identity swaps).\n"
-            "Independent of frame rate - automatically scaled by FPS.\n"
-            "Recommended: 30-100 body-sizes/s for typical animal motion."
-        )
-        self.lbl_max_velocity_break = QLabel(
-            "Break trajectory above speed (body lengths/sec)"
-        )
-        f_pp.addRow(self.lbl_max_velocity_break, self.spin_max_velocity_break)
-
-        self.spin_max_occlusion_gap = QDoubleSpinBox()
-        self.spin_max_occlusion_gap.setRange(0.0, 10.0)
-        self.spin_max_occlusion_gap.setSingleStep(0.1)
-        self.spin_max_occlusion_gap.setDecimals(2)
-        self.spin_max_occlusion_gap.setValue(1.0)
-        self.spin_max_occlusion_gap.setToolTip(
-            "Maximum occlusion duration before splitting trajectory (seconds).\n"
-            "Converted to frames using the acquisition frame rate.\n"
-            "Prevents unreliable interpolation across long gaps.\n"
-            "Set to 0 to disable occlusion-based splitting.\n"
-            "Recommended: 0.5-2.0 s for typical tracking scenarios."
-        )
-        self.lbl_max_occlusion_gap = QLabel("Maximum occlusion gap (seconds)")
-        f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
-
-        self.chk_enable_tracklet_relinking = QCheckBox(
-            "Relink fragments after pose interpolation"
-        )
-        self.chk_enable_tracklet_relinking.setChecked(False)
-        self.chk_enable_tracklet_relinking.setToolTip(
-            "⚠ USE WITH CAUTION — disabled by default.\n"
-            "\n"
-            "Reconnect short trajectory fragments after pose/interpolation completes.\n"
-            "In dense multi-animal scenes this can cause identity swaps by incorrectly\n"
-            "merging fragments from different animals into one trajectory.\n"
-            "\n"
-            "Bidirectional tracking (forward + backward pass) already handles most\n"
-            "occlusion recovery. Enable relinking only if you see fragmented trajectories\n"
-            "that bidirectional tracking could not repair, and verify results carefully."
-        )
-        self.lbl_enable_tracklet_relinking = QLabel("Enable relinking")
-        f_pp.addRow(
-            self.lbl_enable_tracklet_relinking, self.chk_enable_tracklet_relinking
-        )
-
-        self.spin_relink_pose_max_distance = QDoubleSpinBox()
-        self.spin_relink_pose_max_distance.setRange(0.05, 5.0)
-        self.spin_relink_pose_max_distance.setSingleStep(0.05)
-        self.spin_relink_pose_max_distance.setDecimals(2)
-        self.spin_relink_pose_max_distance.setValue(0.45)
-        self.spin_relink_pose_max_distance.setToolTip(
-            "Maximum normalized same-keypoint pose distance allowed when relinking fragments.\n"
-            "Lower values are stricter and reduce risky merges."
-        )
-        self.lbl_relink_pose_max_distance = QLabel("Max normalized pose distance")
-        f_pp.addRow(
-            self.lbl_relink_pose_max_distance, self.spin_relink_pose_max_distance
-        )
-
-        self.spin_pose_export_min_valid_fraction = QDoubleSpinBox()
-        self.spin_pose_export_min_valid_fraction.setRange(0.0, 1.0)
-        self.spin_pose_export_min_valid_fraction.setSingleStep(0.05)
-        self.spin_pose_export_min_valid_fraction.setDecimals(2)
-        self.spin_pose_export_min_valid_fraction.setValue(0.5)
-        self.spin_pose_export_min_valid_fraction.setToolTip(
-            "Minimum fraction of valid keypoints required for a pose row to be accepted.\n"
-            "Rows below this threshold have all confidence values zeroed but are kept\n"
-            "in the output with quality flags. Only active when pose extraction is enabled.\n"
-            "Range: 0.0–1.0. Recommended: 0.3–0.6."
-        )
-        self.lbl_pose_export_min_valid_fraction = QLabel("Min valid keypoint fraction")
-        f_pp.addRow(
-            self.lbl_pose_export_min_valid_fraction,
-            self.spin_pose_export_min_valid_fraction,
-        )
-
-        self.spin_pose_export_min_valid_keypoints = QSpinBox()
-        self.spin_pose_export_min_valid_keypoints.setRange(1, 50)
-        self.spin_pose_export_min_valid_keypoints.setValue(3)
-        self.spin_pose_export_min_valid_keypoints.setToolTip(
-            "Minimum absolute count of valid keypoints required for a pose row to be accepted.\n"
-            "Both this threshold and the fraction threshold must be satisfied."
-        )
-        self.lbl_pose_export_min_valid_keypoints = QLabel("Min valid keypoints (count)")
-        f_pp.addRow(
-            self.lbl_pose_export_min_valid_keypoints,
-            self.spin_pose_export_min_valid_keypoints,
-        )
-
-        self.spin_relink_min_pose_quality = QDoubleSpinBox()
-        self.spin_relink_min_pose_quality.setRange(0.0, 1.0)
-        self.spin_relink_min_pose_quality.setSingleStep(0.05)
-        self.spin_relink_min_pose_quality.setDecimals(2)
-        self.spin_relink_min_pose_quality.setValue(0.6)
-        self.spin_relink_min_pose_quality.setToolTip(
-            "Minimum pose quality score required at both endpoints of a candidate\n"
-            "fragment pair before pose distance contributes to relinking score.\n"
-            "Below this threshold, relinking uses motion-only scoring.\n"
-            "Higher values (0.6+) are strongly recommended — motion-only relinking\n"
-            "in dense scenes is likely to merge fragments from different animals."
-        )
-        self.lbl_relink_min_pose_quality = QLabel("Min pose quality for relinking")
-        f_pp.addRow(
-            self.lbl_relink_min_pose_quality,
-            self.spin_relink_min_pose_quality,
-        )
-
-        self.spin_pose_postproc_max_gap = QSpinBox()
-        self.spin_pose_postproc_max_gap.setRange(0, 50)
-        self.spin_pose_postproc_max_gap.setValue(5)
-        self.spin_pose_postproc_max_gap.setToolTip(
-            "Maximum consecutive missing frames to gap-fill via linear interpolation\n"
-            "during pose temporal post-processing. Set to 0 to disable gap-filling."
-        )
-        self.lbl_pose_postproc_max_gap = QLabel("Pose postproc max gap (frames)")
-        f_pp.addRow(
-            self.lbl_pose_postproc_max_gap,
-            self.spin_pose_postproc_max_gap,
-        )
-
-        self.spin_pose_temporal_outlier_zscore = QDoubleSpinBox()
-        self.spin_pose_temporal_outlier_zscore.setRange(0.0, 20.0)
-        self.spin_pose_temporal_outlier_zscore.setSingleStep(0.5)
-        self.spin_pose_temporal_outlier_zscore.setDecimals(1)
-        self.spin_pose_temporal_outlier_zscore.setValue(3.0)
-        self.spin_pose_temporal_outlier_zscore.setToolTip(
-            "Rolling z-score threshold for temporal keypoint outlier suppression.\n"
-            "Keypoint positions deviating beyond this threshold from their local\n"
-            "rolling mean are zeroed. Set to 0.0 to disable. Recommended: 2.5–5.0."
-        )
-        self.lbl_pose_temporal_outlier_zscore = QLabel("Pose temporal outlier z-score")
-        f_pp.addRow(
-            self.lbl_pose_temporal_outlier_zscore,
-            self.spin_pose_temporal_outlier_zscore,
-        )
-
-        # Z-score based velocity breaking
-        self.spin_max_velocity_zscore = QDoubleSpinBox()
-        self.spin_max_velocity_zscore.setRange(0.0, 10.0)
-        self.spin_max_velocity_zscore.setSingleStep(0.5)
-        self.spin_max_velocity_zscore.setDecimals(1)
-        self.spin_max_velocity_zscore.setValue(0.0)  # 0 = disabled
-        self.spin_max_velocity_zscore.setToolTip(
-            "Z-score threshold for velocity-based trajectory breaking (0 = disabled).\n"
-            "Detects sudden, statistically anomalous velocity changes that often\n"
-            "indicate identity swaps or tracking errors.\n\n"
-            "Safeguards prevent false breaks when animals transition from rest to movement:\n"
-            "• Only triggers on substantial velocities (>2 px/frame)\n"
-            "• Uses regularized statistics to handle low-variability periods\n"
-            "• Filters out stationary noise from baseline calculations\n\n"
-            "Recommended: 3.0-5.0 for sensitive detection, 0 to disable."
-        )
-        self.lbl_max_velocity_zscore = QLabel("Velocity z-score threshold")
-        f_pp.addRow(self.lbl_max_velocity_zscore, self.spin_max_velocity_zscore)
-
-        self.spin_velocity_zscore_window = QDoubleSpinBox()
-        self.spin_velocity_zscore_window.setRange(0.1, 5.0)
-        self.spin_velocity_zscore_window.setSingleStep(0.1)
-        self.spin_velocity_zscore_window.setDecimals(2)
-        self.spin_velocity_zscore_window.setValue(0.33)
-        self.spin_velocity_zscore_window.setToolTip(
-            "Time window for z-score velocity calculation (seconds).\n"
-            "Converted to frames using the acquisition frame rate.\n"
-            "Larger windows = more stable statistics but less responsive.\n"
-            "Smaller windows = more sensitive but may be noisy.\n"
-            "Recommended: 0.3-0.7 s."
-        )
-        self.lbl_velocity_zscore_window = QLabel("Z-score window (seconds)")
-        f_pp.addRow(self.lbl_velocity_zscore_window, self.spin_velocity_zscore_window)
-
-        self.spin_velocity_zscore_min_vel = QDoubleSpinBox()
-        self.spin_velocity_zscore_min_vel.setRange(0.1, 50.0)
-        self.spin_velocity_zscore_min_vel.setSingleStep(0.5)
-        self.spin_velocity_zscore_min_vel.setDecimals(1)
-        self.spin_velocity_zscore_min_vel.setValue(2.0)
-        self.spin_velocity_zscore_min_vel.setToolTip(
-            "Minimum velocity for z-score breaking (body-sizes/second).\n"
-            "Prevents false breaks when animal starts moving from stationary state.\n"
-            "Z-score analysis only triggers when velocity exceeds this threshold.\n"
-            "Automatically scaled by body size and frame rate.\n"
-            "Recommended: 1.0-3.0 body-sizes/s depending on animal locomotion speed."
-        )
-        self.lbl_velocity_zscore_min_vel = QLabel(
-            "Minimum speed for z-score check (body lengths/sec)"
-        )
-        f_pp.addRow(self.lbl_velocity_zscore_min_vel, self.spin_velocity_zscore_min_vel)
-
-        # Interpolation settings
-        self.combo_interpolation_method = QComboBox()
-        self.combo_interpolation_method.addItems(["None", "Linear", "Cubic", "Spline"])
-        self.combo_interpolation_method.setCurrentText("None")
-        self.combo_interpolation_method.setToolTip(
-            "Interpolation method for filling gaps in trajectories:\n"
-            "• None: No interpolation (keep NaN values)\n"
-            "• Linear: Simple linear interpolation\n"
-            "• Cubic: Smooth cubic spline interpolation\n"
-            "• Spline: Smoothing spline with automatic smoothing\n"
-            "Applied to X, Y positions and heading (circular interpolation)."
-        )
-        self.lbl_interpolation_method = QLabel(
-            "Which interpolation method should be used?"
-        )
-        f_pp.addRow(self.lbl_interpolation_method, self.combo_interpolation_method)
-
-        self.spin_interpolation_max_gap = QDoubleSpinBox()
-        self.spin_interpolation_max_gap.setRange(0.01, 10.0)
-        self.spin_interpolation_max_gap.setSingleStep(0.1)
-        self.spin_interpolation_max_gap.setDecimals(2)
-        self.spin_interpolation_max_gap.setValue(0.33)
-        self.spin_interpolation_max_gap.setToolTip(
-            "Maximum gap duration to interpolate (seconds).\n"
-            "Converted to frames using the acquisition frame rate.\n"
-            "Gaps larger than this will remain as NaN.\n"
-            "Prevents interpolation across large occlusions.\n"
-            "Recommended: 0.15-0.50 s."
-        )
-        self.lbl_interpolation_max_gap = QLabel("Maximum interpolation gap (seconds)")
-        f_pp.addRow(self.lbl_interpolation_max_gap, self.spin_interpolation_max_gap)
-
-        self.spin_heading_flip_max_burst = QSpinBox()
-        self.spin_heading_flip_max_burst.setRange(1, 50)
-        self.spin_heading_flip_max_burst.setValue(5)
-        self.spin_heading_flip_max_burst.setToolTip(
-            "Maximum length (frames) of an isolated heading-flip burst that\n"
-            "post-processing will correct. Contiguous runs of ~180° flips\n"
-            "shorter than this are assumed to be classifier errors and are\n"
-            "reverted. Longer runs are kept as genuine orientation changes.\n"
-            "Increase if brief real flips are being suppressed; decrease if\n"
-            "extended flip artefacts survive. Recommended: 3–10."
-        )
-        self.lbl_heading_flip_max_burst = QLabel(
-            "Max heading-flip burst to correct (frames)"
-        )
-        f_pp.addRow(self.lbl_heading_flip_max_burst, self.spin_heading_flip_max_burst)
-
-        # Trajectory Merging Settings (Conservative Strategy)
-        self.spin_merge_overlap_multiplier = QDoubleSpinBox()
-        self.spin_merge_overlap_multiplier.setRange(0.1, 10.0)
-        self.spin_merge_overlap_multiplier.setSingleStep(0.1)
-        self.spin_merge_overlap_multiplier.setDecimals(2)
-        self.spin_merge_overlap_multiplier.setValue(0.5)
-        self.spin_merge_overlap_multiplier.setToolTip(
-            "Agreement distance for merging forward/backward trajectories (×body size).\n"
-            "Frames where both trajectories are within this distance are considered 'agreeing'.\n"
-            "Disagreeing frames cause trajectory splits for conservative identity handling.\n"
-            "Recommended: 0.3-0.7× body size."
-        )
-        self.lbl_merge_overlap_multiplier = QLabel(
-            "Merge agreement distance (body lengths)"
-        )
-        f_pp.addRow(
-            self.lbl_merge_overlap_multiplier, self.spin_merge_overlap_multiplier
-        )
-
-        self.spin_min_overlap_frames = QSpinBox()
-        self.spin_min_overlap_frames.setRange(1, 100)
-        self.spin_min_overlap_frames.setValue(5)
-        self.spin_min_overlap_frames.setToolTip(
-            "Minimum agreeing frames required to consider trajectories as merge candidates.\n"
-            "Forward/backward trajectory pairs need at least this many frames within\n"
-            "the agreement distance to be merged. Higher = more conservative.\n"
-            "Recommended: 5-15 frames."
-        )
-        self.lbl_min_overlap_frames = QLabel("Minimum overlap frames")
-        f_pp.addRow(self.lbl_min_overlap_frames, self.spin_min_overlap_frames)
-
-        # Cleanup option
-        self.chk_cleanup_temp_files = QCheckBox("Auto-cleanup temporary files")
-        self.chk_cleanup_temp_files.setChecked(True)
-        self.chk_cleanup_temp_files.setToolTip(
-            "Automatically delete temporary files after successful tracking:\n"
-            "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
-            "• Pose inference cache (posekit/ directory)\n"
-            "Keeps only final merged/processed output files."
-        )
-        f_pp.addRow("", self.chk_cleanup_temp_files)
-
-        vl_pp.addLayout(f_pp)
-        vbox.addWidget(g_pp)
-
-        # Video Export (from post-processed trajectories)
-        g_video = QGroupBox("What export video should be created?")
-        self._set_compact_section_widget(g_video)
-        vl_video = QVBoxLayout(g_video)
-        vl_video.addWidget(
-            self._create_help_label(
-                "Generate annotated video from final post-processed trajectories. "
-                "Video is created AFTER merging and interpolation, showing clean tracks with stable IDs. "
-                "This is recommended over real-time video output during tracking."
-            )
-        )
-        f_video = QFormLayout(None)
-        f_video.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        self.check_video_output = QCheckBox("Export trajectory video")
-        self.check_video_output.setChecked(False)
-        self.check_video_output.toggled.connect(self._on_video_output_toggled)
-        self.check_video_output.setToolTip(
-            "Generate annotated video showing post-processed trajectories.\n"
-            "Video is created from merged/interpolated tracks, not raw tracking.\n"
-            "Shows clean, stable trajectories with final IDs.\n"
-            "Recommended for publication and visualization."
-        )
-        f_video.addRow("", self.check_video_output)
-
-        self.btn_video_out = QPushButton("Select Video Output...")
-        self.btn_video_out.clicked.connect(self.select_video_output)
-        self.btn_video_out.setEnabled(False)
-        self.video_out_line = QLineEdit()
-        self.video_out_line.setPlaceholderText("Path for annotated video output")
-        self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.video_out_line.setEnabled(False)
-        self.lbl_video_path = QLabel("")
-        f_video.addRow(self.lbl_video_path, self.btn_video_out)
-        f_video.addRow("", self.video_out_line)
-
-        # Video Visualization Settings
-        f_video.addRow(QLabel(""))  # Spacer
-        self.lbl_video_viz_settings = QLabel("<b>Visualization Settings</b>")
-        f_video.addRow(self.lbl_video_viz_settings)
-
-        self.check_show_labels = QCheckBox("Show Track IDs")
-        self.check_show_labels.setChecked(True)
-        self.check_show_labels.setToolTip(
-            "Display trajectory ID labels next to each tracked animal."
-        )
-        f_video.addRow("", self.check_show_labels)
-
-        self.check_show_orientation = QCheckBox("Show Orientation Arrows")
-        self.check_show_orientation.setChecked(True)
-        self.check_show_orientation.setToolTip(
-            "Display arrows indicating heading direction."
-        )
-        f_video.addRow("", self.check_show_orientation)
-
-        self.check_show_trails = QCheckBox("Show Trajectory Trails")
-        self.check_show_trails.setChecked(False)
-        self.check_show_trails.setToolTip(
-            "Display past trajectory path as a fading trail."
-        )
-        f_video.addRow("", self.check_show_trails)
-
-        self.spin_trail_duration = QDoubleSpinBox()
-        self.spin_trail_duration.setRange(0.1, 10.0)
-        self.spin_trail_duration.setSingleStep(0.5)
-        self.spin_trail_duration.setDecimals(1)
-        self.spin_trail_duration.setValue(1.0)
-        self.spin_trail_duration.setToolTip(
-            "Duration of trail history in seconds (0.1-10.0).\n"
-            "Longer trails show more movement history.\n"
-            "Automatically converted to frames using video FPS."
-        )
-        self.lbl_trail_duration = QLabel("Trail duration (seconds)")
-        f_video.addRow(self.lbl_trail_duration, self.spin_trail_duration)
-
-        self.spin_marker_size = QDoubleSpinBox()
-        self.spin_marker_size.setRange(0.1, 300.0)
-        self.spin_marker_size.setSingleStep(0.1)
-        self.spin_marker_size.setDecimals(1)
-        self.spin_marker_size.setValue(0.3)
-        self.spin_marker_size.setToolTip(
-            "Size of position marker (0.1-5.0 × body size).\n"
-            "Scaled by reference body size for consistency."
-        )
-        self.lbl_marker_size = QLabel("Marker size (body lengths)")
-        f_video.addRow(self.lbl_marker_size, self.spin_marker_size)
-
-        self.spin_text_scale = QDoubleSpinBox()
-        self.spin_text_scale.setRange(0.3, 3.0)
-        self.spin_text_scale.setSingleStep(0.1)
-        self.spin_text_scale.setDecimals(1)
-        self.spin_text_scale.setValue(0.5)
-        self.spin_text_scale.setToolTip(
-            "Scale factor for ID labels (0.3-3.0).\n" "Larger values = bigger text."
-        )
-        self.lbl_text_scale = QLabel("Text scale")
-        f_video.addRow(self.lbl_text_scale, self.spin_text_scale)
-
-        self.spin_arrow_length = QDoubleSpinBox()
-        self.spin_arrow_length.setRange(0.5, 10.0)
-        self.spin_arrow_length.setSingleStep(0.5)
-        self.spin_arrow_length.setDecimals(1)
-        self.spin_arrow_length.setValue(0.7)
-        self.spin_arrow_length.setToolTip(
-            "Length of orientation arrow (0.5-10.0 × body size).\n"
-            "Scaled by reference body size."
-        )
-        self.lbl_arrow_length = QLabel("Arrow length (body lengths)")
-        f_video.addRow(self.lbl_arrow_length, self.spin_arrow_length)
-
-        f_video.addRow(QLabel(""))  # Spacer
-        self.lbl_video_pose_settings = QLabel("<b>Pose Overlay Settings</b>")
-        f_video.addRow(self.lbl_video_pose_settings)
-
-        self.check_video_show_pose = QCheckBox("Show Pose Keypoints/Skeleton")
-        self.check_video_show_pose.setChecked(
-            bool(self.advanced_config.get("video_show_pose", True))
-        )
-        self.check_video_show_pose.setToolTip(
-            "Overlay pose keypoints/skeleton in exported video.\n"
-            "Requires pose inference to be enabled in Analyze Individuals."
-        )
-        self.check_video_show_pose.toggled.connect(
-            self._sync_video_pose_overlay_controls
-        )
-        f_video.addRow("", self.check_video_show_pose)
-
-        self.combo_video_pose_color_mode = QComboBox()
-        self.combo_video_pose_color_mode.addItems(["Track Color", "Fixed Color"])
-        color_mode = str(
-            self.advanced_config.get("video_pose_color_mode", "track")
-        ).strip()
-        self.combo_video_pose_color_mode.setCurrentIndex(
-            0 if color_mode == "track" else 1
-        )
-        self.combo_video_pose_color_mode.setToolTip(
-            "Pose color source for video overlay."
-        )
-        self.combo_video_pose_color_mode.currentIndexChanged.connect(
-            self._sync_video_pose_overlay_controls
-        )
-        self.lbl_video_pose_color_mode = QLabel("Pose color mode")
-        f_video.addRow(self.lbl_video_pose_color_mode, self.combo_video_pose_color_mode)
-
-        pose_color_row = QHBoxLayout()
-        self.btn_video_pose_color = QPushButton()
-        self.btn_video_pose_color.setMaximumWidth(60)
-        self.btn_video_pose_color.setMinimumHeight(28)
-        self.btn_video_pose_color.clicked.connect(self._select_video_pose_color)
-        self.lbl_video_pose_color = QLabel("")
-        pose_color_row.addWidget(self.btn_video_pose_color)
-        pose_color_row.addWidget(self.lbl_video_pose_color)
-        pose_color_cfg = self.advanced_config.get("video_pose_color", [255, 255, 255])
-        if isinstance(pose_color_cfg, (list, tuple)) and len(pose_color_cfg) == 3:
-            self._video_pose_color = tuple(
-                int(max(0, min(255, float(v)))) for v in pose_color_cfg
-            )
-        else:
-            self._video_pose_color = (255, 255, 255)
-        self._update_video_pose_color_button()
-        self.lbl_video_pose_color_label = QLabel("Fixed pose color (BGR)")
-        f_video.addRow(self.lbl_video_pose_color_label, pose_color_row)
-
-        self.spin_video_pose_point_radius = QSpinBox()
-        self.spin_video_pose_point_radius.setRange(1, 20)
-        self.spin_video_pose_point_radius.setValue(
-            int(self.advanced_config.get("video_pose_point_radius", 3))
-        )
-        self.spin_video_pose_point_radius.setToolTip(
-            "Radius of rendered pose keypoints in pixels."
-        )
-        self.lbl_video_pose_point_radius = QLabel("Pose keypoint radius (px)")
-        f_video.addRow(
-            self.lbl_video_pose_point_radius, self.spin_video_pose_point_radius
-        )
-
-        self.spin_video_pose_point_thickness = QSpinBox()
-        self.spin_video_pose_point_thickness.setRange(-1, 10)
-        self.spin_video_pose_point_thickness.setValue(
-            int(self.advanced_config.get("video_pose_point_thickness", -1))
-        )
-        self.spin_video_pose_point_thickness.setToolTip(
-            "Keypoint circle thickness (-1 fills circles)."
-        )
-        self.lbl_video_pose_point_thickness = QLabel("Pose keypoint thickness")
-        f_video.addRow(
-            self.lbl_video_pose_point_thickness, self.spin_video_pose_point_thickness
-        )
-
-        self.spin_video_pose_line_thickness = QSpinBox()
-        self.spin_video_pose_line_thickness.setRange(1, 12)
-        self.spin_video_pose_line_thickness.setValue(
-            int(self.advanced_config.get("video_pose_line_thickness", 2))
-        )
-        self.spin_video_pose_line_thickness.setToolTip(
-            "Skeleton edge line thickness in pixels."
-        )
-        self.lbl_video_pose_line_thickness = QLabel("Pose skeleton thickness (px)")
-        f_video.addRow(
-            self.lbl_video_pose_line_thickness, self.spin_video_pose_line_thickness
-        )
-
-        self.lbl_video_pose_disabled_hint = self._create_help_label(
-            "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings.",
-            attach_to_title=False,
-        )
-        f_video.addRow("", self.lbl_video_pose_disabled_hint)
-
-        vl_video.addLayout(f_video)
-        vbox.addWidget(g_video)
-
-        # Set initial visibility for video export widgets (hidden since checkbox starts unchecked)
-        self.btn_video_out.setVisible(False)
-        self.video_out_line.setVisible(False)
-        self.lbl_video_path.setVisible(False)
-        self.lbl_video_viz_settings.setVisible(False)
-        self.check_show_labels.setVisible(False)
-        self.check_show_orientation.setVisible(False)
-        self.check_show_trails.setVisible(False)
-        self.spin_trail_duration.setVisible(False)
-        self.lbl_trail_duration.setVisible(False)
-        self.spin_marker_size.setVisible(False)
-        self.lbl_marker_size.setVisible(False)
-        self.spin_text_scale.setVisible(False)
-        self.lbl_text_scale.setVisible(False)
-        self.spin_arrow_length.setVisible(False)
-        self.lbl_arrow_length.setVisible(False)
-        self.lbl_video_pose_settings.setVisible(False)
-        self.check_video_show_pose.setVisible(False)
-        self.lbl_video_pose_color_mode.setVisible(False)
-        self.combo_video_pose_color_mode.setVisible(False)
-        self.lbl_video_pose_color_label.setVisible(False)
-        self.btn_video_pose_color.setVisible(False)
-        self.lbl_video_pose_color.setVisible(False)
-        self.lbl_video_pose_point_radius.setVisible(False)
-        self.spin_video_pose_point_radius.setVisible(False)
-        self.lbl_video_pose_point_thickness.setVisible(False)
-        self.spin_video_pose_point_thickness.setVisible(False)
-        self.lbl_video_pose_line_thickness.setVisible(False)
-        self.spin_video_pose_line_thickness.setVisible(False)
-        self.lbl_video_pose_disabled_hint.setVisible(False)
-
-        # RefineKit launch button
-        g_refinekit = QGroupBox("Interactive Proofreading")
-        self._set_compact_section_widget(g_refinekit)
-        vl_refinekit = QVBoxLayout(g_refinekit)
-        vl_refinekit.addWidget(
-            self._create_help_label(
-                "Open completed tracking results in RefineKit for "
-                "interactive identity proofreading and swap correction."
-            )
-        )
-        self._btn_open_refinekit = QPushButton("Open in RefineKit")
-        self._btn_open_refinekit.setToolTip(
-            "Open completed tracking results in RefineKit for "
-            "interactive proofreading"
-        )
-        self._btn_open_refinekit.setEnabled(False)
-        self._btn_open_refinekit.clicked.connect(self._open_refinekit)
-        vl_refinekit.addWidget(self._btn_open_refinekit)
-        vbox.addWidget(g_refinekit)
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -8398,43 +7800,48 @@ class MainWindow(QMainWindow):
             return
 
         video_visible = bool(
-            hasattr(self, "check_video_output") and self.check_video_output.isChecked()
+            hasattr(self, "_postprocess_panel")
+            and self._postprocess_panel.check_video_output.isChecked()
         )
         pose_enabled = self._is_pose_inference_enabled()
         enabled = bool(video_visible and pose_enabled)
 
-        self.check_video_show_pose.setEnabled(enabled)
-        show_pose = bool(enabled and self.check_video_show_pose.isChecked())
-        fixed_color_mode = self.combo_video_pose_color_mode.currentIndex() == 1
+        self._postprocess_panel.check_video_show_pose.setEnabled(enabled)
+        show_pose = bool(
+            enabled and self._postprocess_panel.check_video_show_pose.isChecked()
+        )
+        fixed_color_mode = (
+            self._postprocess_panel.combo_video_pose_color_mode.currentIndex() == 1
+        )
 
         # Show detailed controls only when pose overlay is on.
-        self.lbl_video_pose_color_mode.setVisible(show_pose)
-        self.combo_video_pose_color_mode.setVisible(show_pose)
-        self.lbl_video_pose_point_radius.setVisible(show_pose)
-        self.spin_video_pose_point_radius.setVisible(show_pose)
-        self.lbl_video_pose_point_thickness.setVisible(show_pose)
-        self.spin_video_pose_point_thickness.setVisible(show_pose)
-        self.lbl_video_pose_line_thickness.setVisible(show_pose)
-        self.spin_video_pose_line_thickness.setVisible(show_pose)
+        self._postprocess_panel.lbl_video_pose_color_mode.setVisible(show_pose)
+        self._postprocess_panel.combo_video_pose_color_mode.setVisible(show_pose)
+        self._postprocess_panel.lbl_video_pose_point_radius.setVisible(show_pose)
+        self._postprocess_panel.spin_video_pose_point_radius.setVisible(show_pose)
+        self._postprocess_panel.lbl_video_pose_point_thickness.setVisible(show_pose)
+        self._postprocess_panel.spin_video_pose_point_thickness.setVisible(show_pose)
+        self._postprocess_panel.lbl_video_pose_line_thickness.setVisible(show_pose)
+        self._postprocess_panel.spin_video_pose_line_thickness.setVisible(show_pose)
 
         show_fixed_color = bool(show_pose and fixed_color_mode)
-        self.lbl_video_pose_color_label.setVisible(show_fixed_color)
-        self.btn_video_pose_color.setVisible(show_fixed_color)
-        self.lbl_video_pose_color.setVisible(show_fixed_color)
+        self._postprocess_panel.lbl_video_pose_color_label.setVisible(show_fixed_color)
+        self._postprocess_panel.btn_video_pose_color.setVisible(show_fixed_color)
+        self._postprocess_panel.lbl_video_pose_color.setVisible(show_fixed_color)
 
-        self.combo_video_pose_color_mode.setEnabled(show_pose)
-        self.spin_video_pose_point_radius.setEnabled(show_pose)
-        self.spin_video_pose_point_thickness.setEnabled(show_pose)
-        self.spin_video_pose_line_thickness.setEnabled(show_pose)
-        self.btn_video_pose_color.setEnabled(show_fixed_color)
+        self._postprocess_panel.combo_video_pose_color_mode.setEnabled(show_pose)
+        self._postprocess_panel.spin_video_pose_point_radius.setEnabled(show_pose)
+        self._postprocess_panel.spin_video_pose_point_thickness.setEnabled(show_pose)
+        self._postprocess_panel.spin_video_pose_line_thickness.setEnabled(show_pose)
+        self._postprocess_panel.btn_video_pose_color.setEnabled(show_fixed_color)
 
-        self.lbl_video_pose_disabled_hint.setVisible(video_visible)
+        self._postprocess_panel.lbl_video_pose_disabled_hint.setVisible(video_visible)
         if enabled:
-            self.lbl_video_pose_disabled_hint.setText(
+            self._postprocess_panel.lbl_video_pose_disabled_hint.setText(
                 "Pose overlay will use keypoints from pose-augmented tracking output."
             )
         else:
-            self.lbl_video_pose_disabled_hint.setText(
+            self._postprocess_panel.lbl_video_pose_disabled_hint.setText(
                 "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
             )
 
@@ -8664,21 +8071,27 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QColor
         from PySide6.QtWidgets import QColorDialog
 
-        b, g, r = self._video_pose_color
+        b, g, r = self._postprocess_panel._video_pose_color
         initial_color = QColor(r, g, b)
         color = QColorDialog.getColor(initial_color, self, "Choose Pose Overlay Color")
         if color.isValid():
-            self._video_pose_color = (color.blue(), color.green(), color.red())
+            self._postprocess_panel._video_pose_color = (
+                color.blue(),
+                color.green(),
+                color.red(),
+            )
             self._update_video_pose_color_button()
 
     def _update_video_pose_color_button(self):
         """Update fixed pose-color preview button and text label."""
-        b, g, r = self._video_pose_color
-        self.btn_video_pose_color.setStyleSheet(
+        b, g, r = self._postprocess_panel._video_pose_color
+        self._postprocess_panel.btn_video_pose_color.setStyleSheet(
             f"background-color: rgb({r}, {g}, {b}); "
             f"border: 1px solid #333; border-radius: 2px;"
         )
-        self.lbl_video_pose_color.setText(f"{self._video_pose_color}")
+        self._postprocess_panel.lbl_video_pose_color.setText(
+            f"{self._postprocess_panel._video_pose_color}"
+        )
 
     def _update_background_color_button(self):
         """Update the color button display and label."""
@@ -8819,71 +8232,89 @@ class MainWindow(QMainWindow):
 
     def _on_cleaning_toggled(self, state):
         """Enable/disable trajectory cleaning controls based on checkbox."""
-        enabled = self.enable_postprocessing.isChecked()
+        enabled = self._postprocess_panel.enable_postprocessing.isChecked()
 
         # Hide/show all cleaning parameter widgets
-        self.spin_min_trajectory_length.setVisible(enabled)
-        self.lbl_min_trajectory_length.setVisible(enabled)
-        self.spin_max_velocity_break.setVisible(enabled)
-        self.lbl_max_velocity_break.setVisible(enabled)
-        self.spin_max_occlusion_gap.setVisible(enabled)
-        self.lbl_max_occlusion_gap.setVisible(enabled)
-        self.chk_enable_tracklet_relinking.setVisible(enabled)
-        self.lbl_enable_tracklet_relinking.setVisible(enabled)
-        self.spin_relink_pose_max_distance.setVisible(enabled)
-        self.lbl_relink_pose_max_distance.setVisible(enabled)
-        self.spin_max_velocity_zscore.setVisible(enabled)
-        self.lbl_max_velocity_zscore.setVisible(enabled)
-        self.spin_velocity_zscore_window.setVisible(enabled)
-        self.lbl_velocity_zscore_window.setVisible(enabled)
-        self.spin_velocity_zscore_min_vel.setVisible(enabled)
-        self.lbl_velocity_zscore_min_vel.setVisible(enabled)
-        self.combo_interpolation_method.setVisible(enabled)
-        self.lbl_interpolation_method.setVisible(enabled)
-        self.spin_interpolation_max_gap.setVisible(enabled)
-        self.lbl_interpolation_max_gap.setVisible(enabled)
-        self.spin_heading_flip_max_burst.setVisible(enabled)
-        self.lbl_heading_flip_max_burst.setVisible(enabled)
-        self.spin_merge_overlap_multiplier.setVisible(enabled)
-        self.lbl_merge_overlap_multiplier.setVisible(enabled)
-        self.spin_min_overlap_frames.setVisible(enabled)
-        self.lbl_min_overlap_frames.setVisible(enabled)
-        self.chk_cleanup_temp_files.setVisible(enabled)
+        self._postprocess_panel.spin_min_trajectory_length.setVisible(enabled)
+        self._postprocess_panel.lbl_min_trajectory_length.setVisible(enabled)
+        self._postprocess_panel.spin_max_velocity_break.setVisible(enabled)
+        self._postprocess_panel.lbl_max_velocity_break.setVisible(enabled)
+        self._postprocess_panel.spin_max_occlusion_gap.setVisible(enabled)
+        self._postprocess_panel.lbl_max_occlusion_gap.setVisible(enabled)
+        self._postprocess_panel.chk_enable_tracklet_relinking.setVisible(enabled)
+        self._postprocess_panel.lbl_enable_tracklet_relinking.setVisible(enabled)
+        self._postprocess_panel.spin_relink_pose_max_distance.setVisible(enabled)
+        self._postprocess_panel.lbl_relink_pose_max_distance.setVisible(enabled)
+        self._postprocess_panel.spin_max_velocity_zscore.setVisible(enabled)
+        self._postprocess_panel.lbl_max_velocity_zscore.setVisible(enabled)
+        self._postprocess_panel.spin_velocity_zscore_window.setVisible(enabled)
+        self._postprocess_panel.lbl_velocity_zscore_window.setVisible(enabled)
+        self._postprocess_panel.spin_velocity_zscore_min_vel.setVisible(enabled)
+        self._postprocess_panel.lbl_velocity_zscore_min_vel.setVisible(enabled)
+        self._postprocess_panel.combo_interpolation_method.setVisible(enabled)
+        self._postprocess_panel.lbl_interpolation_method.setVisible(enabled)
+        self._postprocess_panel.spin_interpolation_max_gap.setVisible(enabled)
+        self._postprocess_panel.lbl_interpolation_max_gap.setVisible(enabled)
+        self._postprocess_panel.spin_heading_flip_max_burst.setVisible(enabled)
+        self._postprocess_panel.lbl_heading_flip_max_burst.setVisible(enabled)
+        self._postprocess_panel.spin_merge_overlap_multiplier.setVisible(enabled)
+        self._postprocess_panel.lbl_merge_overlap_multiplier.setVisible(enabled)
+        self._postprocess_panel.spin_min_overlap_frames.setVisible(enabled)
+        self._postprocess_panel.lbl_min_overlap_frames.setVisible(enabled)
+        self._postprocess_panel.chk_cleanup_temp_files.setVisible(enabled)
 
         # Also control enable state
-        self.spin_min_trajectory_length.setEnabled(enabled)
-        self.spin_max_velocity_break.setEnabled(enabled)
-        self.spin_max_occlusion_gap.setEnabled(enabled)
-        self.chk_enable_tracklet_relinking.setEnabled(enabled)
-        self.spin_relink_pose_max_distance.setEnabled(enabled)
-        self.spin_max_velocity_zscore.setEnabled(enabled)
-        self.spin_velocity_zscore_window.setEnabled(enabled)
-        self.spin_velocity_zscore_min_vel.setEnabled(enabled)
-        self.combo_interpolation_method.setEnabled(enabled)
-        self.spin_interpolation_max_gap.setEnabled(enabled)
-        self.spin_heading_flip_max_burst.setEnabled(enabled)
-        self.spin_merge_overlap_multiplier.setEnabled(enabled)
-        self.spin_min_overlap_frames.setEnabled(enabled)
-        self.chk_cleanup_temp_files.setEnabled(enabled)
+        self._postprocess_panel.spin_min_trajectory_length.setEnabled(enabled)
+        self._postprocess_panel.spin_max_velocity_break.setEnabled(enabled)
+        self._postprocess_panel.spin_max_occlusion_gap.setEnabled(enabled)
+        self._postprocess_panel.chk_enable_tracklet_relinking.setEnabled(enabled)
+        self._postprocess_panel.spin_relink_pose_max_distance.setEnabled(enabled)
+        self._postprocess_panel.spin_max_velocity_zscore.setEnabled(enabled)
+        self._postprocess_panel.spin_velocity_zscore_window.setEnabled(enabled)
+        self._postprocess_panel.spin_velocity_zscore_min_vel.setEnabled(enabled)
+        self._postprocess_panel.combo_interpolation_method.setEnabled(enabled)
+        self._postprocess_panel.spin_interpolation_max_gap.setEnabled(enabled)
+        self._postprocess_panel.spin_heading_flip_max_burst.setEnabled(enabled)
+        self._postprocess_panel.spin_merge_overlap_multiplier.setEnabled(enabled)
+        self._postprocess_panel.spin_min_overlap_frames.setEnabled(enabled)
+        self._postprocess_panel.chk_cleanup_temp_files.setEnabled(enabled)
 
         # Pose quality widgets — visible only when post-processing AND pose export are active
         pose_enabled = enabled and self._is_pose_export_enabled()
-        self.spin_pose_export_min_valid_fraction.setVisible(pose_enabled)
-        self.lbl_pose_export_min_valid_fraction.setVisible(pose_enabled)
-        self.spin_pose_export_min_valid_keypoints.setVisible(pose_enabled)
-        self.lbl_pose_export_min_valid_keypoints.setVisible(pose_enabled)
-        self.spin_relink_min_pose_quality.setVisible(pose_enabled)
-        self.lbl_relink_min_pose_quality.setVisible(pose_enabled)
-        self.spin_pose_postproc_max_gap.setVisible(pose_enabled)
-        self.lbl_pose_postproc_max_gap.setVisible(pose_enabled)
-        self.spin_pose_temporal_outlier_zscore.setVisible(pose_enabled)
-        self.lbl_pose_temporal_outlier_zscore.setVisible(pose_enabled)
+        self._postprocess_panel.spin_pose_export_min_valid_fraction.setVisible(
+            pose_enabled
+        )
+        self._postprocess_panel.lbl_pose_export_min_valid_fraction.setVisible(
+            pose_enabled
+        )
+        self._postprocess_panel.spin_pose_export_min_valid_keypoints.setVisible(
+            pose_enabled
+        )
+        self._postprocess_panel.lbl_pose_export_min_valid_keypoints.setVisible(
+            pose_enabled
+        )
+        self._postprocess_panel.spin_relink_min_pose_quality.setVisible(pose_enabled)
+        self._postprocess_panel.lbl_relink_min_pose_quality.setVisible(pose_enabled)
+        self._postprocess_panel.spin_pose_postproc_max_gap.setVisible(pose_enabled)
+        self._postprocess_panel.lbl_pose_postproc_max_gap.setVisible(pose_enabled)
+        self._postprocess_panel.spin_pose_temporal_outlier_zscore.setVisible(
+            pose_enabled
+        )
+        self._postprocess_panel.lbl_pose_temporal_outlier_zscore.setVisible(
+            pose_enabled
+        )
 
-        self.spin_pose_export_min_valid_fraction.setEnabled(pose_enabled)
-        self.spin_pose_export_min_valid_keypoints.setEnabled(pose_enabled)
-        self.spin_relink_min_pose_quality.setEnabled(pose_enabled)
-        self.spin_pose_postproc_max_gap.setEnabled(pose_enabled)
-        self.spin_pose_temporal_outlier_zscore.setEnabled(pose_enabled)
+        self._postprocess_panel.spin_pose_export_min_valid_fraction.setEnabled(
+            pose_enabled
+        )
+        self._postprocess_panel.spin_pose_export_min_valid_keypoints.setEnabled(
+            pose_enabled
+        )
+        self._postprocess_panel.spin_relink_min_pose_quality.setEnabled(pose_enabled)
+        self._postprocess_panel.spin_pose_postproc_max_gap.setEnabled(pose_enabled)
+        self._postprocess_panel.spin_pose_temporal_outlier_zscore.setEnabled(
+            pose_enabled
+        )
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -8963,8 +8394,8 @@ class MainWindow(QMainWindow):
 
         # Auto-populate video output and enable it
         video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
-        self.video_out_line.setText(video_out_path)
-        self.check_video_output.setChecked(True)
+        self._postprocess_panel.video_out_line.setText(video_out_path)
+        self._postprocess_panel.check_video_output.setChecked(True)
 
         # Enable preview detection button
         self.btn_test_detection.setEnabled(True)
@@ -9244,7 +8675,7 @@ class MainWindow(QMainWindow):
             self, "Select Video Output", "", "Video Files (*.mp4 *.avi)"
         )
         if fp:
-            self.video_out_line.setText(fp)
+            self._postprocess_panel.video_out_line.setText(fp)
 
     # =========================================================================
     # VIDEO PLAYER FUNCTIONS
@@ -9732,39 +9163,39 @@ class MainWindow(QMainWindow):
     def _on_video_output_toggled(self, checked):
         """Enable/disable video output controls."""
         # Hide/show all video output widgets
-        self.btn_video_out.setVisible(checked)
-        self.video_out_line.setVisible(checked)
-        self.lbl_video_path.setVisible(checked)
-        self.lbl_video_viz_settings.setVisible(checked)
-        self.check_show_labels.setVisible(checked)
-        self.check_show_orientation.setVisible(checked)
-        self.check_show_trails.setVisible(checked)
-        self.spin_trail_duration.setVisible(checked)
-        self.lbl_trail_duration.setVisible(checked)
-        self.spin_marker_size.setVisible(checked)
-        self.lbl_marker_size.setVisible(checked)
-        self.spin_text_scale.setVisible(checked)
-        self.lbl_text_scale.setVisible(checked)
-        self.spin_arrow_length.setVisible(checked)
-        self.lbl_arrow_length.setVisible(checked)
-        self.lbl_video_pose_settings.setVisible(checked)
-        self.check_video_show_pose.setVisible(checked)
-        self.lbl_video_pose_color_mode.setVisible(checked)
-        self.combo_video_pose_color_mode.setVisible(checked)
-        self.lbl_video_pose_color_label.setVisible(checked)
-        self.btn_video_pose_color.setVisible(checked)
-        self.lbl_video_pose_color.setVisible(checked)
-        self.lbl_video_pose_point_radius.setVisible(checked)
-        self.spin_video_pose_point_radius.setVisible(checked)
-        self.lbl_video_pose_point_thickness.setVisible(checked)
-        self.spin_video_pose_point_thickness.setVisible(checked)
-        self.lbl_video_pose_line_thickness.setVisible(checked)
-        self.spin_video_pose_line_thickness.setVisible(checked)
-        self.lbl_video_pose_disabled_hint.setVisible(checked)
+        self._postprocess_panel.btn_video_out.setVisible(checked)
+        self._postprocess_panel.video_out_line.setVisible(checked)
+        self._postprocess_panel.lbl_video_path.setVisible(checked)
+        self._postprocess_panel.lbl_video_viz_settings.setVisible(checked)
+        self._postprocess_panel.check_show_labels.setVisible(checked)
+        self._postprocess_panel.check_show_orientation.setVisible(checked)
+        self._postprocess_panel.check_show_trails.setVisible(checked)
+        self._postprocess_panel.spin_trail_duration.setVisible(checked)
+        self._postprocess_panel.lbl_trail_duration.setVisible(checked)
+        self._postprocess_panel.spin_marker_size.setVisible(checked)
+        self._postprocess_panel.lbl_marker_size.setVisible(checked)
+        self._postprocess_panel.spin_text_scale.setVisible(checked)
+        self._postprocess_panel.lbl_text_scale.setVisible(checked)
+        self._postprocess_panel.spin_arrow_length.setVisible(checked)
+        self._postprocess_panel.lbl_arrow_length.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_settings.setVisible(checked)
+        self._postprocess_panel.check_video_show_pose.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_color_mode.setVisible(checked)
+        self._postprocess_panel.combo_video_pose_color_mode.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_color_label.setVisible(checked)
+        self._postprocess_panel.btn_video_pose_color.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_color.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_point_radius.setVisible(checked)
+        self._postprocess_panel.spin_video_pose_point_radius.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_point_thickness.setVisible(checked)
+        self._postprocess_panel.spin_video_pose_point_thickness.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_line_thickness.setVisible(checked)
+        self._postprocess_panel.spin_video_pose_line_thickness.setVisible(checked)
+        self._postprocess_panel.lbl_video_pose_disabled_hint.setVisible(checked)
 
         # Also control enable state
-        self.btn_video_out.setEnabled(checked)
-        self.video_out_line.setEnabled(checked)
+        self._postprocess_panel.btn_video_out.setEnabled(checked)
+        self._postprocess_panel.video_out_line.setEnabled(checked)
         self._sync_video_pose_overlay_controls()
 
     def _update_preview_display(self):
@@ -12371,15 +11802,19 @@ class MainWindow(QMainWindow):
 
         current_params = self.get_parameters_dict()
         resize_factor = self._setup_panel.spin_resize.value()
-        interp_method = self.combo_interpolation_method.currentText().lower()
+        interp_method = (
+            self._postprocess_panel.combo_interpolation_method.currentText().lower()
+        )
         max_gap = max(
             1,
             round(
-                self.spin_interpolation_max_gap.value()
+                self._postprocess_panel.spin_interpolation_max_gap.value()
                 * self._setup_panel.spin_fps.value()
             ),
         )
-        heading_flip_max_burst = self.spin_heading_flip_max_burst.value()
+        heading_flip_max_burst = (
+            self._postprocess_panel.spin_heading_flip_max_burst.value()
+        )
 
         # Show progress bar
         self.progress_bar.setVisible(True)
@@ -12831,7 +12266,7 @@ class MainWindow(QMainWindow):
             if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
                 # Track initial tracking CSV as temporary (only if cleanup enabled)
                 if (
-                    self.chk_cleanup_temp_files.isChecked()
+                    self._postprocess_panel.chk_cleanup_temp_files.isChecked()
                     and raw_csv_path not in self.temporary_files
                 ):
                     self.temporary_files.append(raw_csv_path)
@@ -12864,7 +12299,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         video_path = self._setup_panel.file_line.text()
-        output_path = self.video_out_line.text()
+        output_path = self._postprocess_panel.video_out_line.text()
 
         def _complete_after_video():
             if finalize_on_complete:
@@ -12934,16 +12369,16 @@ class MainWindow(QMainWindow):
         reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
 
         # Get video visualization settings
-        show_labels = self.check_show_labels.isChecked()
-        show_orientation = self.check_show_orientation.isChecked()
-        show_trails = self.check_show_trails.isChecked()
-        trail_duration_sec = self.spin_trail_duration.value()
+        show_labels = self._postprocess_panel.check_show_labels.isChecked()
+        show_orientation = self._postprocess_panel.check_show_orientation.isChecked()
+        show_trails = self._postprocess_panel.check_show_trails.isChecked()
+        trail_duration_sec = self._postprocess_panel.spin_trail_duration.value()
         trail_duration_frames = int(
             trail_duration_sec * fps
         )  # Convert seconds to frames
-        marker_size = self.spin_marker_size.value()
-        text_scale = self.spin_text_scale.value()
-        arrow_length = self.spin_arrow_length.value()
+        marker_size = self._postprocess_panel.spin_marker_size.value()
+        text_scale = self._postprocess_panel.spin_text_scale.value()
+        arrow_length = self._postprocess_panel.spin_arrow_length.value()
         advanced_config = params.get("ADVANCED_CONFIG", {})
 
         # NOTE: Trajectories in merged CSV are already scaled to original coordinates
@@ -13429,7 +12864,7 @@ class MainWindow(QMainWindow):
             is_backward_enabled = self._tracking_panel.chk_enable_backward.isChecked()
 
             processed_trajectories = full_traj
-            if self.enable_postprocessing.isChecked():
+            if self._postprocess_panel.enable_postprocessing.isChecked():
                 params = self.get_parameters_dict()
                 raw_csv_path = self._setup_panel.csv_line.text()
 
@@ -13479,7 +12914,7 @@ class MainWindow(QMainWindow):
                     # Track intermediate forward CSV as temporary (only if cleanup enabled)
                     forward_csv = f"{base}_forward{ext}"
                     if (
-                        self.chk_cleanup_temp_files.isChecked()
+                        self._postprocess_panel.chk_cleanup_temp_files.isChecked()
                         and forward_csv not in self.temporary_files
                     ):
                         self.temporary_files.append(forward_csv)
@@ -13490,7 +12925,7 @@ class MainWindow(QMainWindow):
                     # Otherwise, this IS the final file.
                     if (
                         is_backward_enabled
-                        and self.chk_cleanup_temp_files.isChecked()
+                        and self._postprocess_panel.chk_cleanup_temp_files.isChecked()
                         and processed_csv_path not in self.temporary_files
                     ):
                         self.temporary_files.append(processed_csv_path)
@@ -13515,18 +12950,18 @@ class MainWindow(QMainWindow):
                 else:
                     # Forward-only mode: Apply interpolation here (no merge step)
                     interp_method = (
-                        self.combo_interpolation_method.currentText().lower()
+                        self._postprocess_panel.combo_interpolation_method.currentText().lower()
                     )
                     if interp_method != "none":
                         max_gap = max(
                             1,
                             round(
-                                self.spin_interpolation_max_gap.value()
+                                self._postprocess_panel.spin_interpolation_max_gap.value()
                                 * self._setup_panel.spin_fps.value()
                             ),
                         )
                         heading_flip_max_burst = (
-                            self.spin_heading_flip_max_burst.value()
+                            self._postprocess_panel.spin_heading_flip_max_burst.value()
                         )
                         processed_trajectories = interpolate_trajectories(
                             processed_trajectories,
@@ -13552,7 +12987,7 @@ class MainWindow(QMainWindow):
                         )
                         # Track initial tracking CSV as temporary (only if cleanup enabled)
                         if (
-                            self.chk_cleanup_temp_files.isChecked()
+                            self._postprocess_panel.chk_cleanup_temp_files.isChecked()
                             and raw_csv_path not in self.temporary_files
                         ):
                             self.temporary_files.append(raw_csv_path)
@@ -13568,7 +13003,7 @@ class MainWindow(QMainWindow):
                     # Track intermediate backward CSV as temporary (only if cleanup enabled)
                     backward_csv = f"{base}_backward{ext}"
                     if (
-                        self.chk_cleanup_temp_files.isChecked()
+                        self._postprocess_panel.chk_cleanup_temp_files.isChecked()
                         and backward_csv not in self.temporary_files
                     ):
                         self.temporary_files.append(backward_csv)
@@ -13576,7 +13011,7 @@ class MainWindow(QMainWindow):
                     processed_csv_path = f"{base}_backward_processed{ext}"
                     # Track processed CSV as temporary (only if cleanup enabled)
                     if (
-                        self.chk_cleanup_temp_files.isChecked()
+                        self._postprocess_panel.chk_cleanup_temp_files.isChecked()
                         and processed_csv_path not in self.temporary_files
                     ):
                         self.temporary_files.append(processed_csv_path)
@@ -14132,8 +13567,8 @@ class MainWindow(QMainWindow):
         self._pending_video_csv_path = final_csv_path
         self._pending_video_generation = bool(
             final_csv_path
-            and self.check_video_output.isChecked()
-            and self.video_out_line.text().strip()
+            and self._postprocess_panel.check_video_output.isChecked()
+            and self._postprocess_panel.video_out_line.text().strip()
         )
 
         # Generate dataset if enabled (BEFORE cleanup so files are still available)
@@ -15035,7 +14470,9 @@ class MainWindow(QMainWindow):
             self._tracking_panel.spin_velocity.value() * scaled_body_size / fps
         )
         max_velocity_break_pixels_per_frame = (
-            self.spin_max_velocity_break.value() * scaled_body_size / fps
+            self._postprocess_panel.spin_max_velocity_break.value()
+            * scaled_body_size
+            / fps
         )
 
         # Convert time-based durations (seconds) to frame counts
@@ -15060,13 +14497,13 @@ class MainWindow(QMainWindow):
             self._tracking_panel.spin_min_track.value()
         )
         min_trajectory_length = _seconds_to_frames(
-            self.spin_min_trajectory_length.value()
+            self._postprocess_panel.spin_min_trajectory_length.value()
         )
         max_occlusion_gap = _seconds_to_frames(
-            self.spin_max_occlusion_gap.value(), min_frames=0
+            self._postprocess_panel.spin_max_occlusion_gap.value(), min_frames=0
         )
         velocity_zscore_window = _seconds_to_frames(
-            self.spin_velocity_zscore_window.value(), min_frames=5
+            self._postprocess_panel.spin_velocity_zscore_window.value(), min_frames=5
         )
         # YOLO Batching settings from UI (overrides advanced_config defaults)
         advanced_config = self.advanced_config.copy()
@@ -15077,23 +14514,27 @@ class MainWindow(QMainWindow):
             "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
         )
         advanced_config["yolo_manual_batch_size"] = self.spin_yolo_batch_size.value()
-        advanced_config["video_show_pose"] = self.check_video_show_pose.isChecked()
+        advanced_config["video_show_pose"] = (
+            self._postprocess_panel.check_video_show_pose.isChecked()
+        )
         advanced_config["video_pose_point_radius"] = (
-            self.spin_video_pose_point_radius.value()
+            self._postprocess_panel.spin_video_pose_point_radius.value()
         )
         advanced_config["video_pose_point_thickness"] = (
-            self.spin_video_pose_point_thickness.value()
+            self._postprocess_panel.spin_video_pose_point_thickness.value()
         )
         advanced_config["video_pose_line_thickness"] = (
-            self.spin_video_pose_line_thickness.value()
+            self._postprocess_panel.spin_video_pose_line_thickness.value()
         )
         advanced_config["video_pose_color_mode"] = (
-            "track" if self.combo_video_pose_color_mode.currentIndex() == 0 else "fixed"
+            "track"
+            if self._postprocess_panel.combo_video_pose_color_mode.currentIndex() == 0
+            else "fixed"
         )
         advanced_config["video_pose_color"] = [
-            int(self._video_pose_color[0]),
-            int(self._video_pose_color[1]),
-            int(self._video_pose_color[2]),
+            int(self._postprocess_panel._video_pose_color[0]),
+            int(self._postprocess_panel._video_pose_color[1]),
+            int(self._postprocess_panel._video_pose_color[2]),
         ]
         # Canonical crop / aspect ratio params (from UI widgets)
         advanced_config["reference_aspect_ratio"] = (
@@ -15182,20 +14623,20 @@ class MainWindow(QMainWindow):
             "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
             "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
             "MAX_DISTANCE_MULTIPLIER": self._tracking_panel.spin_max_dist.value(),
-            "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
+            "ENABLE_POSTPROCESSING": self._postprocess_panel.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": min_trajectory_length,
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
             "MAX_OCCLUSION_GAP": max_occlusion_gap,
-            "ENABLE_TRACKLET_RELINKING": self.chk_enable_tracklet_relinking.isChecked(),
-            "RELINK_POSE_MAX_DISTANCE": self.spin_relink_pose_max_distance.value(),
-            "POSE_EXPORT_MIN_VALID_FRACTION": self.spin_pose_export_min_valid_fraction.value(),
-            "POSE_EXPORT_MIN_VALID_KEYPOINTS": self.spin_pose_export_min_valid_keypoints.value(),
-            "RELINK_MIN_POSE_QUALITY": self.spin_relink_min_pose_quality.value(),
-            "POSE_POSTPROC_MAX_GAP": self.spin_pose_postproc_max_gap.value(),
-            "POSE_TEMPORAL_OUTLIER_ZSCORE": self.spin_pose_temporal_outlier_zscore.value(),
-            "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
+            "ENABLE_TRACKLET_RELINKING": self._postprocess_panel.chk_enable_tracklet_relinking.isChecked(),
+            "RELINK_POSE_MAX_DISTANCE": self._postprocess_panel.spin_relink_pose_max_distance.value(),
+            "POSE_EXPORT_MIN_VALID_FRACTION": self._postprocess_panel.spin_pose_export_min_valid_fraction.value(),
+            "POSE_EXPORT_MIN_VALID_KEYPOINTS": self._postprocess_panel.spin_pose_export_min_valid_keypoints.value(),
+            "RELINK_MIN_POSE_QUALITY": self._postprocess_panel.spin_relink_min_pose_quality.value(),
+            "POSE_POSTPROC_MAX_GAP": self._postprocess_panel.spin_pose_postproc_max_gap.value(),
+            "POSE_TEMPORAL_OUTLIER_ZSCORE": self._postprocess_panel.spin_pose_temporal_outlier_zscore.value(),
+            "MAX_VELOCITY_ZSCORE": self._postprocess_panel.spin_max_velocity_zscore.value(),
             "VELOCITY_ZSCORE_WINDOW": velocity_zscore_window,
-            "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
+            "VELOCITY_ZSCORE_MIN_VELOCITY": self._postprocess_panel.spin_velocity_zscore_min_vel.value()
             * scaled_body_size
             / fps,
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
@@ -15280,9 +14721,9 @@ class MainWindow(QMainWindow):
             # These are used in resolve_trajectories() for bidirectional merging
             # AGREEMENT_DISTANCE: max distance for frames to be considered "agreeing"
             # MIN_OVERLAP_FRAMES: minimum agreeing frames to consider merge candidates
-            "AGREEMENT_DISTANCE": self.spin_merge_overlap_multiplier.value()
+            "AGREEMENT_DISTANCE": self._postprocess_panel.spin_merge_overlap_multiplier.value()
             * scaled_body_size,
-            "MIN_OVERLAP_FRAMES": self.spin_min_overlap_frames.value(),
+            "MIN_OVERLAP_FRAMES": self._postprocess_panel.spin_min_overlap_frames.value(),
             # Dataset generation parameters
             "ENABLE_DATASET_GENERATION": self._dataset_panel.chk_enable_dataset_gen.isChecked(),
             "DATASET_NAME": "",
@@ -15480,12 +14921,15 @@ class MainWindow(QMainWindow):
                         self._setup_video_file(video_path, skip_config_load=True)
                 if not self._setup_panel.csv_line.text().strip():
                     self._setup_panel.csv_line.setText(get_cfg("csv_path", default=""))
-                self.check_video_output.setChecked(
+                self._postprocess_panel.check_video_output.setChecked(
                     get_cfg("video_output_enabled", default=False)
                 )
                 saved_video_path = get_cfg("video_output_path", default="")
-                if saved_video_path and not self.video_out_line.text().strip():
-                    self.video_out_line.setText(saved_video_path)
+                if (
+                    saved_video_path
+                    and not self._postprocess_panel.video_out_line.text().strip()
+                ):
+                    self._postprocess_panel.video_out_line.setText(saved_video_path)
 
             # === REFERENCE PARAMETERS ===
             # Only load video-specific reference parameters from configs (not presets)
@@ -15994,45 +15438,45 @@ class MainWindow(QMainWindow):
             )
 
             # === POST-PROCESSING ===
-            self.enable_postprocessing.setChecked(
+            self._postprocess_panel.enable_postprocessing.setChecked(
                 get_cfg("enable_postprocessing", default=True)
             )
-            self.spin_min_trajectory_length.setValue(
+            self._postprocess_panel.spin_min_trajectory_length.setValue(
                 get_cfg_time(
                     "min_trajectory_length_seconds",
                     "min_trajectory_length",
                     default_seconds=0.33,
                 )
             )
-            self.spin_max_velocity_break.setValue(
+            self._postprocess_panel.spin_max_velocity_break.setValue(
                 get_cfg("max_velocity_break", default=50.0)
             )
-            self.spin_max_occlusion_gap.setValue(
+            self._postprocess_panel.spin_max_occlusion_gap.setValue(
                 get_cfg_time(
                     "max_occlusion_gap_seconds",
                     "max_occlusion_gap",
                     default_seconds=1.0,
                 )
             )
-            self.chk_enable_tracklet_relinking.setChecked(
+            self._postprocess_panel.chk_enable_tracklet_relinking.setChecked(
                 get_cfg("enable_tracklet_relinking", default=False)
             )
-            self.spin_relink_pose_max_distance.setValue(
+            self._postprocess_panel.spin_relink_pose_max_distance.setValue(
                 get_cfg("relink_pose_max_distance", default=0.45)
             )
-            self.spin_pose_export_min_valid_fraction.setValue(
+            self._postprocess_panel.spin_pose_export_min_valid_fraction.setValue(
                 get_cfg("pose_export_min_valid_fraction", default=0.5)
             )
-            self.spin_pose_export_min_valid_keypoints.setValue(
+            self._postprocess_panel.spin_pose_export_min_valid_keypoints.setValue(
                 get_cfg("pose_export_min_valid_keypoints", default=3)
             )
-            self.spin_relink_min_pose_quality.setValue(
+            self._postprocess_panel.spin_relink_min_pose_quality.setValue(
                 get_cfg("relink_min_pose_quality", default=0.6)
             )
-            self.spin_pose_postproc_max_gap.setValue(
+            self._postprocess_panel.spin_pose_postproc_max_gap.setValue(
                 get_cfg("pose_postproc_max_gap", default=5)
             )
-            self.spin_pose_temporal_outlier_zscore.setValue(
+            self._postprocess_panel.spin_pose_temporal_outlier_zscore.setValue(
                 get_cfg("pose_temporal_outlier_zscore", default=3.0)
             )
             self._tracking_panel.chk_enable_confidence_density_map.setChecked(
@@ -16062,65 +15506,71 @@ class MainWindow(QMainWindow):
             self._on_confidence_density_map_toggled(
                 self._tracking_panel.chk_enable_confidence_density_map.checkState()
             )
-            self.spin_max_velocity_zscore.setValue(
+            self._postprocess_panel.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
             )
-            self.spin_velocity_zscore_window.setValue(
+            self._postprocess_panel.spin_velocity_zscore_window.setValue(
                 get_cfg_time(
                     "velocity_zscore_window_seconds",
                     "velocity_zscore_window",
                     default_seconds=0.33,
                 )
             )
-            self.spin_velocity_zscore_min_vel.setValue(
+            self._postprocess_panel.spin_velocity_zscore_min_vel.setValue(
                 get_cfg("velocity_zscore_min_velocity", default=2.0)
             )
             interp_method = get_cfg("interpolation_method", default="None")
-            idx = self.combo_interpolation_method.findText(
+            idx = self._postprocess_panel.combo_interpolation_method.findText(
                 interp_method, Qt.MatchFixedString
             )
             if idx >= 0:
-                self.combo_interpolation_method.setCurrentIndex(idx)
-            self.spin_interpolation_max_gap.setValue(
+                self._postprocess_panel.combo_interpolation_method.setCurrentIndex(idx)
+            self._postprocess_panel.spin_interpolation_max_gap.setValue(
                 get_cfg_time(
                     "interpolation_max_gap_seconds",
                     "interpolation_max_gap",
                     default_seconds=0.33,
                 )
             )
-            self.spin_heading_flip_max_burst.setValue(
+            self._postprocess_panel.spin_heading_flip_max_burst.setValue(
                 int(get_cfg("heading_flip_max_burst", default=5))
             )
-            self.chk_cleanup_temp_files.setChecked(
+            self._postprocess_panel.chk_cleanup_temp_files.setChecked(
                 get_cfg("cleanup_temp_files", default=True)
             )
 
             # === TRAJECTORY MERGING (Conservative Strategy) ===
             # Agreement distance and min overlap frames for conservative merging
-            self.spin_merge_overlap_multiplier.setValue(
+            self._postprocess_panel.spin_merge_overlap_multiplier.setValue(
                 get_cfg("merge_agreement_distance_multiplier", default=0.5)
             )
-            self.spin_min_overlap_frames.setValue(
+            self._postprocess_panel.spin_min_overlap_frames.setValue(
                 get_cfg("min_overlap_frames", default=5)
             )
 
             # === VIDEO VISUALIZATION ===
-            self.check_show_labels.setChecked(
+            self._postprocess_panel.check_show_labels.setChecked(
                 get_cfg("video_show_labels", default=True)
             )
-            self.check_show_orientation.setChecked(
+            self._postprocess_panel.check_show_orientation.setChecked(
                 get_cfg("video_show_orientation", default=True)
             )
-            self.check_show_trails.setChecked(
+            self._postprocess_panel.check_show_trails.setChecked(
                 get_cfg("video_show_trails", default=False)
             )
-            self.spin_trail_duration.setValue(
+            self._postprocess_panel.spin_trail_duration.setValue(
                 get_cfg("video_trail_duration", default=1.0)
             )
-            self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.3))
-            self.spin_text_scale.setValue(get_cfg("video_text_scale", default=0.5))
-            self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=0.7))
-            self.check_video_show_pose.setChecked(
+            self._postprocess_panel.spin_marker_size.setValue(
+                get_cfg("video_marker_size", default=0.3)
+            )
+            self._postprocess_panel.spin_text_scale.setValue(
+                get_cfg("video_text_scale", default=0.5)
+            )
+            self._postprocess_panel.spin_arrow_length.setValue(
+                get_cfg("video_arrow_length", default=0.7)
+            )
+            self._postprocess_panel.check_video_show_pose.setChecked(
                 get_cfg(
                     "video_show_pose",
                     default=bool(self.advanced_config.get("video_show_pose", True)),
@@ -16132,10 +15582,10 @@ class MainWindow(QMainWindow):
                     default=self.advanced_config.get("video_pose_color_mode", "track"),
                 )
             ).strip()
-            self.combo_video_pose_color_mode.setCurrentIndex(
+            self._postprocess_panel.combo_video_pose_color_mode.setCurrentIndex(
                 0 if pose_color_mode == "track" else 1
             )
-            self.spin_video_pose_point_radius.setValue(
+            self._postprocess_panel.spin_video_pose_point_radius.setValue(
                 int(
                     get_cfg(
                         "video_pose_point_radius",
@@ -16143,7 +15593,7 @@ class MainWindow(QMainWindow):
                     )
                 )
             )
-            self.spin_video_pose_point_thickness.setValue(
+            self._postprocess_panel.spin_video_pose_point_thickness.setValue(
                 int(
                     get_cfg(
                         "video_pose_point_thickness",
@@ -16153,7 +15603,7 @@ class MainWindow(QMainWindow):
                     )
                 )
             )
-            self.spin_video_pose_line_thickness.setValue(
+            self._postprocess_panel.spin_video_pose_line_thickness.setValue(
                 int(
                     get_cfg(
                         "video_pose_line_thickness",
@@ -16168,7 +15618,7 @@ class MainWindow(QMainWindow):
                 default=self.advanced_config.get("video_pose_color", [255, 255, 255]),
             )
             if isinstance(pose_color, (list, tuple)) and len(pose_color) == 3:
-                self._video_pose_color = tuple(
+                self._postprocess_panel._video_pose_color = tuple(
                     int(max(0, min(255, float(v)))) for v in pose_color
                 )
                 self._update_video_pose_color_button()
@@ -16536,8 +15986,8 @@ class MainWindow(QMainWindow):
                 {
                     "file_path": self._setup_panel.file_line.text(),
                     "csv_path": self._setup_panel.csv_line.text(),
-                    "video_output_enabled": self.check_video_output.isChecked(),
-                    "video_output_path": self.video_out_line.text(),
+                    "video_output_enabled": self._postprocess_panel.check_video_output.isChecked(),
+                    "video_output_path": self._postprocess_panel.video_out_line.text(),
                     # Video-specific reference parameters
                     "fps": self._setup_panel.spin_fps.value(),
                     "reference_body_size": self.spin_reference_body_size.value(),
@@ -16735,17 +16185,17 @@ class MainWindow(QMainWindow):
                 "min_detect_seconds": self._tracking_panel.spin_min_detect.value(),
                 "min_track_seconds": self._tracking_panel.spin_min_track.value(),
                 # === POST-PROCESSING ===
-                "enable_postprocessing": self.enable_postprocessing.isChecked(),
-                "min_trajectory_length_seconds": self.spin_min_trajectory_length.value(),
-                "max_velocity_break": self.spin_max_velocity_break.value(),
-                "max_occlusion_gap_seconds": self.spin_max_occlusion_gap.value(),
-                "enable_tracklet_relinking": self.chk_enable_tracklet_relinking.isChecked(),
-                "relink_pose_max_distance": self.spin_relink_pose_max_distance.value(),
-                "pose_export_min_valid_fraction": self.spin_pose_export_min_valid_fraction.value(),
-                "pose_export_min_valid_keypoints": self.spin_pose_export_min_valid_keypoints.value(),
-                "relink_min_pose_quality": self.spin_relink_min_pose_quality.value(),
-                "pose_postproc_max_gap": self.spin_pose_postproc_max_gap.value(),
-                "pose_temporal_outlier_zscore": self.spin_pose_temporal_outlier_zscore.value(),
+                "enable_postprocessing": self._postprocess_panel.enable_postprocessing.isChecked(),
+                "min_trajectory_length_seconds": self._postprocess_panel.spin_min_trajectory_length.value(),
+                "max_velocity_break": self._postprocess_panel.spin_max_velocity_break.value(),
+                "max_occlusion_gap_seconds": self._postprocess_panel.spin_max_occlusion_gap.value(),
+                "enable_tracklet_relinking": self._postprocess_panel.chk_enable_tracklet_relinking.isChecked(),
+                "relink_pose_max_distance": self._postprocess_panel.spin_relink_pose_max_distance.value(),
+                "pose_export_min_valid_fraction": self._postprocess_panel.spin_pose_export_min_valid_fraction.value(),
+                "pose_export_min_valid_keypoints": self._postprocess_panel.spin_pose_export_min_valid_keypoints.value(),
+                "relink_min_pose_quality": self._postprocess_panel.spin_relink_min_pose_quality.value(),
+                "pose_postproc_max_gap": self._postprocess_panel.spin_pose_postproc_max_gap.value(),
+                "pose_temporal_outlier_zscore": self._postprocess_panel.spin_pose_temporal_outlier_zscore.value(),
                 "enable_confidence_density_map": self._tracking_panel.chk_enable_confidence_density_map.isChecked(),
                 "density_gaussian_sigma_scale": self._tracking_panel.spin_density_gaussian_sigma_scale.value(),
                 "density_temporal_sigma": self._tracking_panel.spin_density_temporal_sigma.value(),
@@ -16754,39 +16204,40 @@ class MainWindow(QMainWindow):
                 "density_min_frame_duration": self._tracking_panel.spin_density_min_duration.value(),
                 "density_min_area_bodies": self._tracking_panel.spin_density_min_area_bodies.value(),
                 "density_downsample_factor": self._tracking_panel.spin_density_downsample_factor.value(),
-                "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
-                "velocity_zscore_window_seconds": self.spin_velocity_zscore_window.value(),
-                "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
-                "interpolation_method": self.combo_interpolation_method.currentText(),
-                "interpolation_max_gap_seconds": self.spin_interpolation_max_gap.value(),
-                "heading_flip_max_burst": self.spin_heading_flip_max_burst.value(),
-                "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
+                "max_velocity_zscore": self._postprocess_panel.spin_max_velocity_zscore.value(),
+                "velocity_zscore_window_seconds": self._postprocess_panel.spin_velocity_zscore_window.value(),
+                "velocity_zscore_min_velocity": self._postprocess_panel.spin_velocity_zscore_min_vel.value(),
+                "interpolation_method": self._postprocess_panel.combo_interpolation_method.currentText(),
+                "interpolation_max_gap_seconds": self._postprocess_panel.spin_interpolation_max_gap.value(),
+                "heading_flip_max_burst": self._postprocess_panel.spin_heading_flip_max_burst.value(),
+                "cleanup_temp_files": self._postprocess_panel.chk_cleanup_temp_files.isChecked(),
                 # === TRAJECTORY MERGING (Conservative Strategy) ===
                 # Agreement distance and min overlap frames for conservative merging
-                "merge_agreement_distance_multiplier": self.spin_merge_overlap_multiplier.value(),
-                "min_overlap_frames": self.spin_min_overlap_frames.value(),
+                "merge_agreement_distance_multiplier": self._postprocess_panel.spin_merge_overlap_multiplier.value(),
+                "min_overlap_frames": self._postprocess_panel.spin_min_overlap_frames.value(),
                 # === VIDEO VISUALIZATION ===
-                "video_show_labels": self.check_show_labels.isChecked(),
-                "video_show_orientation": self.check_show_orientation.isChecked(),
-                "video_show_trails": self.check_show_trails.isChecked(),
-                "video_trail_duration": self.spin_trail_duration.value(),
-                "video_marker_size": self.spin_marker_size.value(),
-                "video_text_scale": self.spin_text_scale.value(),
-                "video_arrow_length": self.spin_arrow_length.value(),
-                "video_show_pose": self.check_video_show_pose.isChecked(),
+                "video_show_labels": self._postprocess_panel.check_show_labels.isChecked(),
+                "video_show_orientation": self._postprocess_panel.check_show_orientation.isChecked(),
+                "video_show_trails": self._postprocess_panel.check_show_trails.isChecked(),
+                "video_trail_duration": self._postprocess_panel.spin_trail_duration.value(),
+                "video_marker_size": self._postprocess_panel.spin_marker_size.value(),
+                "video_text_scale": self._postprocess_panel.spin_text_scale.value(),
+                "video_arrow_length": self._postprocess_panel.spin_arrow_length.value(),
+                "video_show_pose": self._postprocess_panel.check_video_show_pose.isChecked(),
                 "video_pose_color_mode": (
                     "track"
-                    if self.combo_video_pose_color_mode.currentIndex() == 0
+                    if self._postprocess_panel.combo_video_pose_color_mode.currentIndex()
+                    == 0
                     else "fixed"
                 ),
                 "video_pose_color": [
-                    int(self._video_pose_color[0]),
-                    int(self._video_pose_color[1]),
-                    int(self._video_pose_color[2]),
+                    int(self._postprocess_panel._video_pose_color[0]),
+                    int(self._postprocess_panel._video_pose_color[1]),
+                    int(self._postprocess_panel._video_pose_color[2]),
                 ],
-                "video_pose_point_radius": self.spin_video_pose_point_radius.value(),
-                "video_pose_point_thickness": self.spin_video_pose_point_thickness.value(),
-                "video_pose_line_thickness": self.spin_video_pose_line_thickness.value(),
+                "video_pose_point_radius": self._postprocess_panel.spin_video_pose_point_radius.value(),
+                "video_pose_point_thickness": self._postprocess_panel.spin_video_pose_point_thickness.value(),
+                "video_pose_line_thickness": self._postprocess_panel.spin_video_pose_line_thickness.value(),
                 # === VISUALIZATION OVERLAYS ===
                 "show_track_markers": self._setup_panel.chk_show_circles.isChecked(),
                 "show_orientation_lines": self._setup_panel.chk_show_orientation.isChecked(),
@@ -17303,7 +16754,7 @@ class MainWindow(QMainWindow):
 
         # --- Pipelines run ---
         pipelines = []
-        if self.enable_postprocessing.isChecked():
+        if self._postprocess_panel.enable_postprocessing.isChecked():
             pipelines.append("Post-processing")
         if self._tracking_panel.chk_enable_backward.isChecked():
             pipelines.append("Backward tracking")
@@ -17338,7 +16789,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Tracking Complete", "\n".join(lines))
 
         # Offer to open RefineKit for interactive proofreading
-        self._btn_open_refinekit.setEnabled(bool(self.current_video_path))
+        self._postprocess_panel._btn_open_refinekit.setEnabled(
+            bool(self.current_video_path)
+        )
         if self.current_video_path:
             reply = QMessageBox.question(
                 self,
@@ -17413,7 +16866,7 @@ class MainWindow(QMainWindow):
 
     def _cleanup_temporary_files(self):
         """Remove temporary files if cleanup is enabled."""
-        if not self.chk_cleanup_temp_files.isChecked():
+        if not self._postprocess_panel.chk_cleanup_temp_files.isChecked():
             logger.info("Temporary file cleanup disabled, keeping intermediate files.")
             return
 
@@ -18151,8 +17604,8 @@ class MainWindow(QMainWindow):
                     video_out_path = os.path.join(
                         video_dir, f"{video_name}_tracking.mp4"
                     )
-                    self.video_out_line.setText(video_out_path)
-                    self.check_video_output.setChecked(True)
+                    self._postprocess_panel.video_out_line.setText(video_out_path)
+                    self._postprocess_panel.check_video_output.setChecked(True)
 
                     # Enable preview detection button
                     self.btn_test_detection.setEnabled(True)
