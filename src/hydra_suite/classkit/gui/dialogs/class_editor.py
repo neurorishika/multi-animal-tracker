@@ -1,0 +1,427 @@
+"""ClassEditorDialog — polished two-panel labeling class / multi-factor scheme editor."""
+
+from typing import List, Optional
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from hydra_suite.classkit.gui.dialogs._helpers import _LabelRow
+
+_DARK_STYLE = """
+    QDialog { background-color: #1e1e1e; }
+    QGroupBox {
+        border: 1px solid #3e3e42; border-radius: 6px;
+        margin-top: 12px; padding-top: 12px; color: #cccccc;
+    }
+    QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
+    QLabel { color: #cccccc; }
+    QLineEdit, QTextEdit, QPlainTextEdit, QListWidget {
+        background-color: #252526; color: #e0e0e0;
+        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
+    }
+    QLineEdit:focus, QTextEdit:focus { border: 1px solid #007acc; }
+    QComboBox, QSpinBox, QDoubleSpinBox {
+        background-color: #252526; color: #e0e0e0;
+        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
+    }
+    QComboBox:focus, QSpinBox:focus { border: 1px solid #007acc; }
+    QCheckBox { color: #cccccc; }
+    QPushButton {
+        background-color: #0e639c; color: #ffffff;
+        border: none; border-radius: 4px;
+        padding: 8px 16px; font-weight: 500;
+    }
+    QPushButton:hover { background-color: #1177bb; }
+    QPushButton:pressed { background-color: #0d5a8f; }
+    QPushButton:disabled { background-color: #3e3e42; color: #888888; }
+"""
+
+_BTN_ADD = (
+    "QPushButton { background-color:#1a4a1a; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#235a23; }"
+)
+_BTN_DEL = (
+    "QPushButton { background-color:#4a1a1a; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#6b2424; }"
+)
+_BTN_NEUTRAL = (
+    "QPushButton { background-color:#3e3e42; color:#e0e0e0; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#555558; }"
+)
+
+
+class ClassEditorDialog(QDialog):
+    """Polished two-panel labeling class / multi-factor scheme editor."""
+
+    _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
+    _PRESETS = {
+        "head_tail": [
+            {
+                "name": "direction",
+                "labels": ["left", "right", "up", "down"],
+                "shortcuts": ["A", "D", "W", "S"],
+            },
+        ],
+        "color_tag_1": [
+            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
+        ],
+        "color_tag_2": [
+            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
+            {"name": "tag_2", "labels": _DEFAULT_COLORS, "shortcuts": []},
+        ],
+        "color_tag_3": [
+            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
+            {"name": "tag_2", "labels": _DEFAULT_COLORS, "shortcuts": []},
+            {"name": "tag_3", "labels": _DEFAULT_COLORS, "shortcuts": []},
+        ],
+        "age": [
+            {"name": "age", "labels": ["young", "old"], "shortcuts": []},
+        ],
+    }
+
+    def __init__(
+        self,
+        classes: Optional[List[str]] = None,
+        scheme_dict: Optional[dict] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Classes and Labeling Scheme")
+        self.resize(820, 540)
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(400)
+        self.setStyleSheet(_DARK_STYLE)
+
+        self._factors: List[dict] = []
+
+        if scheme_dict and scheme_dict.get("factors"):
+            self._factors = [
+                {
+                    "name": f.get("name", f"factor_{i}"),
+                    "labels": list(f.get("labels", [])),
+                    "shortcuts": list(f.get("shortcut_keys", [])),
+                }
+                for i, f in enumerate(scheme_dict["factors"])
+            ]
+        elif classes:
+            self._factors = [
+                {"name": "class", "labels": list(classes), "shortcuts": []}
+            ]
+        else:
+            self._factors = [
+                {"name": "class", "labels": ["class_1", "class_2"], "shortcuts": []}
+            ]
+
+        outer = QVBoxLayout(self)
+        outer.setSpacing(8)
+
+        preset_bar = QHBoxLayout()
+        lbl_preset = QLabel("Quick preset:")
+        lbl_preset.setStyleSheet("color:#888; font-size:11px;")
+        preset_bar.addWidget(lbl_preset)
+        self._preset_combo = QComboBox()
+        self._preset_combo.setMaximumWidth(320)
+        self._preset_combo.addItem("\u2014 choose preset \u2014", None)
+        self._preset_combo.addItem(
+            "Head / Tail  (4 directions \u00b7 A D W S)", "head_tail"
+        )
+        self._preset_combo.addItem(
+            "Color tag \u2014 1 factor  (5 colors)", "color_tag_1"
+        )
+        self._preset_combo.addItem(
+            "Color tag \u2014 2 factors  (25 composites)", "color_tag_2"
+        )
+        self._preset_combo.addItem(
+            "Color tag \u2014 3 factors  (125 composites)", "color_tag_3"
+        )
+        self._preset_combo.addItem("Age  (young / old)", "age")
+        preset_bar.addWidget(self._preset_combo)
+        btn_apply_preset = QPushButton("Apply")
+        btn_apply_preset.setMaximumWidth(70)
+        btn_apply_preset.clicked.connect(self._apply_preset)
+        preset_bar.addWidget(btn_apply_preset)
+        preset_bar.addStretch(1)
+        outer.addLayout(preset_bar)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(4)
+        splitter.setStyleSheet("QSplitter::handle { background-color:#3e3e42; }")
+        outer.addWidget(splitter, 1)
+
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 4, 0)
+        left_layout.setSpacing(6)
+
+        left_header = QLabel("<b>Factors</b>")
+        left_layout.addWidget(left_header)
+
+        self._factor_list = QListWidget()
+        self._factor_list.setMinimumWidth(150)
+        self._factor_list.setMaximumWidth(220)
+        self._factor_list.setStyleSheet(
+            "QListWidget { background:#252526; border:1px solid #3e3e42; border-radius:4px; }"
+            "QListWidget::item { padding:6px 10px; color:#cccccc; }"
+            "QListWidget::item:selected { background-color:#094771; color:#ffffff; }"
+        )
+        self._factor_list.currentRowChanged.connect(self._on_factor_selected)
+        left_layout.addWidget(self._factor_list, 1)
+
+        left_btn_row = QHBoxLayout()
+        btn_add_factor = QPushButton("+ Factor")
+        btn_add_factor.setStyleSheet(_BTN_ADD)
+        btn_add_factor.clicked.connect(self._add_factor)
+        btn_add_factor.setToolTip("Add a new factor")
+        left_btn_row.addWidget(btn_add_factor)
+        self._btn_del_factor = QPushButton("\u2212 Factor")
+        self._btn_del_factor.setStyleSheet(_BTN_DEL)
+        self._btn_del_factor.clicked.connect(self._remove_selected_factor)
+        self._btn_del_factor.setToolTip("Remove selected factor")
+        left_btn_row.addWidget(self._btn_del_factor)
+        left_layout.addLayout(left_btn_row)
+        splitter.addWidget(left_widget)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(4, 0, 0, 0)
+        right_layout.setSpacing(6)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Factor name:"))
+        self._factor_name_edit = QLineEdit()
+        self._factor_name_edit.setPlaceholderText("e.g. direction")
+        self._factor_name_edit.setMaximumWidth(200)
+        self._factor_name_edit.textChanged.connect(self._on_name_edited)
+        name_row.addWidget(self._factor_name_edit)
+        name_row.addStretch(1)
+        right_layout.addLayout(name_row)
+
+        lbl_header = QHBoxLayout()
+        lbl_header.addWidget(QLabel("<b>Labels</b>"))
+        lbl_header.addWidget(
+            QLabel(
+                "<i style='color:#777; font-size:11px;'>"
+                "  Key: letter, digit, arrow (\u2191\u2193\u2190\u2192), symbol (+  \u2212  Space \u2026)</i>"
+            )
+        )
+        lbl_header.addStretch(1)
+        btn_add_label = QPushButton("+ Label")
+        btn_add_label.setStyleSheet(_BTN_ADD)
+        btn_add_label.setMaximumWidth(80)
+        btn_add_label.clicked.connect(self._add_label_row)
+        lbl_header.addWidget(btn_add_label)
+        right_layout.addLayout(lbl_header)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet(
+            "QScrollArea { border:1px solid #3e3e42; border-radius:4px; background:#252526; }"
+        )
+        self._labels_container = QWidget()
+        self._labels_layout = QVBoxLayout(self._labels_container)
+        self._labels_layout.setContentsMargins(8, 8, 8, 8)
+        self._labels_layout.setSpacing(4)
+        self._labels_layout.addStretch(1)
+        scroll_area.setWidget(self._labels_container)
+        right_layout.addWidget(scroll_area, 1)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([180, 600])
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._do_accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+        self._current_factor_idx: int = -1
+        self._label_rows: List[_LabelRow] = []
+        self._populating = False
+        self._populate_factor_list()
+        if self._factors:
+            self._factor_list.setCurrentRow(0)
+
+    def _populate_factor_list(self):
+        self._factor_list.blockSignals(True)
+        self._factor_list.clear()
+        for f in self._factors:
+            self._factor_list.addItem(f.get("name", "factor"))
+        self._factor_list.blockSignals(False)
+
+    def _on_factor_selected(self, row: int):
+        if row < 0 or row >= len(self._factors):
+            self._factor_name_edit.clear()
+            self._clear_label_rows()
+            self._current_factor_idx = -1
+            return
+        self._flush_current_factor()
+        self._current_factor_idx = row
+        self._load_factor_into_panel(self._factors[row])
+
+    def _flush_current_factor(self):
+        idx = self._current_factor_idx
+        if idx < 0 or idx >= len(self._factors):
+            return
+        self._factors[idx]["name"] = self._factor_name_edit.text().strip() or "factor"
+        self._factors[idx]["labels"] = [
+            r.label() for r in self._label_rows if r.label()
+        ]
+        self._factors[idx]["shortcuts"] = [
+            r.shortcut() for r in self._label_rows if r.label()
+        ]
+        item = self._factor_list.item(idx)
+        if item:
+            item.setText(self._factors[idx]["name"])
+
+    def _load_factor_into_panel(self, factor: dict):
+        self._populating = True
+        self._factor_name_edit.setText(factor.get("name", ""))
+        self._clear_label_rows()
+        labels = factor.get("labels", [])
+        shortcuts = factor.get("shortcuts", [])
+        for i, lbl in enumerate(labels):
+            key = shortcuts[i] if i < len(shortcuts) else ""
+            self._append_label_row(lbl, key)
+        self._populating = False
+
+    def _on_name_edited(self, text: str):
+        idx = self._current_factor_idx
+        if idx < 0 or self._populating:
+            return
+        if idx < len(self._factors):
+            self._factors[idx]["name"] = text.strip() or "factor"
+        item = self._factor_list.item(idx)
+        if item:
+            item.setText(text.strip() or "factor")
+
+    def _add_factor(self):
+        self._flush_current_factor()
+        new_name = f"factor_{len(self._factors) + 1}"
+        self._factors.append(
+            {"name": new_name, "labels": ["label_1"], "shortcuts": [""]}
+        )
+        self._populate_factor_list()
+        self._factor_list.setCurrentRow(len(self._factors) - 1)
+
+    def _remove_selected_factor(self):
+        idx = self._factor_list.currentRow()
+        if idx < 0 or len(self._factors) <= 1:
+            QMessageBox.information(
+                self, "Cannot Remove", "A scheme must have at least one factor."
+            )
+            return
+        self._flush_current_factor()
+        self._factors.pop(idx)
+        self._current_factor_idx = -1
+        self._populate_factor_list()
+        new_row = min(idx, len(self._factors) - 1)
+        self._factor_list.setCurrentRow(new_row)
+
+    def _clear_label_rows(self):
+        for row in self._label_rows:
+            row.setParent(None)
+        self._label_rows = []
+
+    def _append_label_row(self, label: str = "", shortcut: str = ""):
+        row = _LabelRow(label, shortcut, self._labels_container)
+        insert_pos = max(0, self._labels_layout.count() - 1)
+        self._labels_layout.insertWidget(insert_pos, row)
+        self._label_rows.append(row)
+        row.delete_button().clicked.connect(lambda: self._remove_label_row(row))
+
+    def _add_label_row(self):
+        self._append_label_row("", "")
+
+    def _remove_label_row(self, row: "_LabelRow"):
+        if len(self._label_rows) <= 1:
+            QMessageBox.information(
+                self, "Cannot Remove", "A factor must have at least one label."
+            )
+            return
+        self._label_rows.remove(row)
+        row.setParent(None)
+
+    def _apply_preset(self):
+        key = self._preset_combo.currentData()
+        if key is None:
+            return
+        preset = self._PRESETS.get(key)
+        if preset is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Apply Preset",
+            f"Replace current scheme with the '{key}' preset?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._current_factor_idx = -1
+        self._factors = [dict(f) for f in preset]
+        self._populate_factor_list()
+        self._clear_label_rows()
+        if self._factors:
+            self._factor_list.setCurrentRow(0)
+
+    def _do_accept(self):
+        self._flush_current_factor()
+        for i, f in enumerate(self._factors):
+            if not f.get("labels"):
+                QMessageBox.warning(
+                    self,
+                    "Empty Labels",
+                    f"Factor '{f.get('name', i + 1)}' has no labels. "
+                    "Add at least one label or remove the factor.",
+                )
+                return
+        self.accept()
+
+    @property
+    def flat_classes(self) -> List[str]:
+        if not self._factors:
+            return ["class_1", "class_2"]
+        return self._factors[0].get("labels", [])
+
+    def get_scheme_dict(self) -> Optional[dict]:
+        factors = self._factors
+        if len(factors) == 1:
+            f = factors[0]
+            return {
+                "name": f.get("name", "custom"),
+                "description": "Custom 1-factor labeling scheme",
+                "factors": [
+                    {
+                        "name": f.get("name", "class"),
+                        "labels": f.get("labels", []),
+                        "shortcut_keys": f.get("shortcuts", []),
+                    }
+                ],
+                "training_modes": ["flat_tiny", "flat_yolo"],
+            }
+        modes = ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]
+        return {
+            "name": "_".join(f.get("name", "f") for f in factors),
+            "description": f"{len(factors)}-factor labeling scheme",
+            "factors": [
+                {
+                    "name": f.get("name", f"factor_{i}"),
+                    "labels": f.get("labels", []),
+                    "shortcut_keys": f.get("shortcuts", []),
+                }
+                for i, f in enumerate(factors)
+            ],
+            "training_modes": modes,
+        }

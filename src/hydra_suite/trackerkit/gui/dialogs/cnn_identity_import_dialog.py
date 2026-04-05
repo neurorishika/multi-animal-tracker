@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit
+from PySide6.QtWidgets import QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QWidget
+
+from hydra_suite.widgets import BaseDialog
 
 
-class CNNIdentityImportDialog(QDialog):
+class CNNIdentityImportDialog(BaseDialog):
     """Pre-filled dialog for user to verify and annotate CNN identity model import."""
 
     def __init__(self, meta: dict, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Import CNN Identity Model")
-        layout = QFormLayout(self)
+        super().__init__(
+            "Import CNN Identity Model",
+            parent=parent,
+            buttons=QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+        )
+
+        form_widget = QWidget()
+        layout = QFormLayout(form_widget)
 
         # Read-only metadata display
         layout.addRow("Architecture:", QLabel(str(meta.get("arch", "—"))))
@@ -32,13 +40,7 @@ class CNNIdentityImportDialog(QDialog):
         self._label_edit.setPlaceholderText("e.g. apriltag, colortag (optional)")
         layout.addRow("Classification label:", self._label_edit)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-            parent=self,
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        self.add_content(form_widget)
 
     def species(self) -> str:
         return self._species_edit.text().strip() or "unknown"
