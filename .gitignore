@@ -410,3 +410,4 @@ posekit/
 test_classkit.db
 
 .VSCodeCounter/
+.worktrees/
