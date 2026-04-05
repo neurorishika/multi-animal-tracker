@@ -45,6 +45,40 @@ def _normalize_path(root, p):
     return p if os.path.isabs(p) else os.path.join(root, p)
 
 
+def _detect_layout_from_yaml(root_dir: str) -> dict[str, tuple[str, str]]:
+    """Try to detect layout from dataset.yaml; return splits dict (may be empty)."""
+    yaml_path = os.path.join(root_dir, "dataset.yaml")
+    if not os.path.exists(yaml_path):
+        return {}
+    data = _read_dataset_yaml(yaml_path)
+    splits = {}
+    for split_name in ("train", "val", "test"):
+        path = _normalize_path(root_dir, data.get(split_name))
+        if path:
+            splits[split_name] = (path, _labels_dir_for_images(path))
+    return splits
+
+
+def _detect_layout_from_dirs(root_dir: str) -> dict[str, tuple[str, str]]:
+    """Try to detect layout from standard images/labels directories."""
+    images_root = os.path.join(root_dir, "images")
+    labels_root = os.path.join(root_dir, "labels")
+    if not (os.path.isdir(images_root) and os.path.isdir(labels_root)):
+        return {}
+
+    # Check for split subfolders
+    if any(os.path.isdir(os.path.join(images_root, s)) for s in ["train", "val"]):
+        splits = {}
+        for s in ["train", "val"]:
+            img_dir = os.path.join(images_root, s)
+            lbl_dir = os.path.join(labels_root, s)
+            if os.path.isdir(img_dir):
+                splits[s] = (img_dir, lbl_dir)
+        return splits
+    # Unsplit
+    return {"all": (images_root, labels_root)}
+
+
 def detect_dataset_layout(root_dir: str | Path) -> dict[str, tuple[str, str]]:
     """Detect supported dataset folder layout.
 
@@ -58,42 +92,14 @@ def detect_dataset_layout(root_dir: str | Path) -> dict[str, tuple[str, str]]:
         RuntimeError: If no recognized dataset structure is found.
     """
     root_dir = str(root_dir)
-    yaml_path = os.path.join(root_dir, "dataset.yaml")
-    splits = {}
 
-    if os.path.exists(yaml_path):
-        data = _read_dataset_yaml(yaml_path)
-        train = _normalize_path(root_dir, data.get("train"))
-        val = _normalize_path(root_dir, data.get("val"))
-        test = _normalize_path(root_dir, data.get("test"))
-        if train:
-            splits["train"] = (train, _labels_dir_for_images(train))
-        if val:
-            splits["val"] = (val, _labels_dir_for_images(val))
-        if test:
-            splits["test"] = (test, _labels_dir_for_images(test))
-        if splits:
-            return splits
+    splits = _detect_layout_from_yaml(root_dir)
+    if splits:
+        return splits
 
-    # Try standard structure
-    images_root = os.path.join(root_dir, "images")
-    labels_root = os.path.join(root_dir, "labels")
-    xany_label_root = os.path.join(root_dir, "labels")
-    if os.path.isdir(images_root) and (
-        os.path.isdir(labels_root) or os.path.isdir(xany_label_root)
-    ):
-        if not os.path.isdir(labels_root) and os.path.isdir(xany_label_root):
-            labels_root = xany_label_root
-        # split subfolders
-        if any(os.path.isdir(os.path.join(images_root, s)) for s in ["train", "val"]):
-            for s in ["train", "val"]:
-                img_dir = os.path.join(images_root, s)
-                lbl_dir = os.path.join(labels_root, s)
-                if os.path.isdir(img_dir):
-                    splits[s] = (img_dir, lbl_dir)
-            return splits
-        # unsplit
-        return {"all": (images_root, labels_root)}
+    splits = _detect_layout_from_dirs(root_dir)
+    if splits:
+        return splits
 
     raise RuntimeError(f"No valid dataset layout found in {root_dir}")
 

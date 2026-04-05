@@ -1103,6 +1103,56 @@ class MainWindow(QMainWindow):
         self._flush_pending_label_updates(force=True)
         self.status.showMessage("Project saved", 2000)
 
+    def _load_project_config(self) -> dict:
+        """Load project.json if present, otherwise return an empty config."""
+        project_config_path = self.project_path / "project.json"
+        if not project_config_path.exists():
+            return {}
+        with open(project_config_path, "r") as f:
+            return json.load(f)
+
+    def _apply_project_config(self, config: dict) -> None:
+        """Apply persisted project settings to the current UI state."""
+        self.classes = config.get("classes", []) or ["class_1", "class_2"]
+
+        autosave_interval = int(
+            config.get("autosave_interval_ms", self._autosave_interval_ms)
+        )
+        self._autosave_interval_ms = max(1000, min(300000, autosave_interval))
+        self._autosave_timer.setInterval(self._autosave_interval_ms)
+        if hasattr(self, "autosave_spin"):
+            self.autosave_spin.blockSignals(True)
+            self.autosave_spin.setValue(self._autosave_interval_ms // 1000)
+            self.autosave_spin.blockSignals(False)
+
+        saved_shortcuts = config.get("custom_shortcuts", {})
+        if isinstance(saved_shortcuts, dict):
+            self._custom_shortcuts = saved_shortcuts
+
+        self.clahe_clip = float(config.get("clahe_clip", 2.0))
+        self.clahe_grid = tuple(config.get("clahe_grid", [8, 8]))
+        if hasattr(self, "preview_canvas"):
+            self.preview_canvas.set_clahe_params(self.clahe_clip, self.clahe_grid)
+
+    def _finalize_project_load(self, db) -> None:
+        """Refresh derived UI state after database-backed project data loads."""
+        self.rebuild_label_buttons()
+        self.setup_label_shortcuts()
+        self._refresh_shortcut_help()
+        self.request_refresh_label_history_strip()
+        self._pending_label_updates = {}
+        self._autosave_last_save_time = None
+        self._update_autosave_heartbeat_text()
+        self.try_autoload_cached_artifacts(db)
+        self.update_explorer_plot()
+
+        if hasattr(self, "_autolabel_apriltag_action"):
+            self._autolabel_apriltag_action.setEnabled(self.project_path is not None)
+        if hasattr(self, "_recents_store"):
+            self._recents_store.add(str(self.project_path))
+        if hasattr(self, "_stacked"):
+            self._stacked.setCurrentIndex(1)
+
     def load_project_data(self):
         """Load project data from database."""
         if not self.db_path:
@@ -1124,59 +1174,17 @@ class MainWindow(QMainWindow):
             self.image_labels = db.get_all_labels()
             self.image_confidences = [None] * len(self.image_paths)
 
-            # Load class names from project config
-            project_config_path = self.project_path / "project.json"
-            if project_config_path.exists():
-                with open(project_config_path, "r") as f:
-                    config = json.load(f)
-                self.classes = config.get("classes", []) or ["class_1", "class_2"]
-                autosave_interval = int(
-                    config.get("autosave_interval_ms", self._autosave_interval_ms)
-                )
-                autosave_interval = max(1000, min(300000, autosave_interval))
-                self._autosave_interval_ms = autosave_interval
-                self._autosave_timer.setInterval(self._autosave_interval_ms)
-                if hasattr(self, "autosave_spin"):
-                    self.autosave_spin.blockSignals(True)
-                    self.autosave_spin.setValue(self._autosave_interval_ms // 1000)
-                    self.autosave_spin.blockSignals(False)
-                # Load saved custom shortcuts
-                saved_shortcuts = config.get("custom_shortcuts", {})
-                if isinstance(saved_shortcuts, dict):
-                    self._custom_shortcuts = saved_shortcuts
-
-                # Load CLAHE settings
-                self.clahe_clip = float(config.get("clahe_clip", 2.0))
-                self.clahe_grid = tuple(config.get("clahe_grid", [8, 8]))
-                if hasattr(self, "preview_canvas"):
-                    self.preview_canvas.set_clahe_params(
-                        self.clahe_clip, self.clahe_grid
-                    )
+            config = self._load_project_config()
+            if config:
+                self._apply_project_config(config)
             else:
                 self.classes = ["class_1", "class_2"]
 
-            self.rebuild_label_buttons()
-            self.setup_label_shortcuts()
-            self._refresh_shortcut_help()
-            self.request_refresh_label_history_strip()
-            self._pending_label_updates = {}
-            self._autosave_last_save_time = None
-            self._update_autosave_heartbeat_text()
-            self.try_autoload_cached_artifacts(db)
-            self.update_explorer_plot()
-
-            if hasattr(self, "_autolabel_apriltag_action"):
-                self._autolabel_apriltag_action.setEnabled(
-                    self.project_path is not None
-                )
+            self._finalize_project_load(db)
 
             self.status.showMessage(
                 f"Loaded {len(self.image_paths):,} images from database"
             )
-            if hasattr(self, "_recents_store"):
-                self._recents_store.add(str(self.project_path))
-            if hasattr(self, "_stacked"):
-                self._stacked.setCurrentIndex(1)  # reveal working UI
         except Exception as e:
             QMessageBox.warning(
                 self, "Load Error", f"Failed to load project data:\\n{e}"
@@ -1392,6 +1400,150 @@ class MainWindow(QMainWindow):
 
         self._update_autosave_heartbeat_text()
 
+    def _autoload_cached_analysis(self, db):
+        """Offer to load cached embeddings, clusters, UMAP, and candidates."""
+        cached_embeddings = db.get_most_recent_embeddings()
+        if cached_embeddings is not None and self.embeddings is None:
+            embeddings, metadata = cached_embeddings
+            if self._ask_yes_no(
+                "Load Cached Embeddings",
+                "Most recent embeddings cache found. Load it now?\n\n"
+                f"Model: {metadata.get('model_name', 'unknown')}\n"
+                f"Timestamp: {metadata.get('timestamp', 'unknown')}\n"
+                f"Shape: {embeddings.shape[0]:,} × {embeddings.shape[1]}",
+            ):
+                self.embeddings = embeddings
+
+        cached_cluster = db.get_most_recent_cluster_cache()
+        if (
+            cached_cluster is not None
+            and self.cluster_assignments is None
+            and self._ask_yes_no(
+                "Load Cached Clusters",
+                "Most recent cluster cache found. Load it now?\n\n"
+                f"Method: {cached_cluster.get('method', 'unknown')}\n"
+                f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}\n"
+                f"Clusters: {cached_cluster.get('n_clusters', 'unknown')}",
+            )
+        ):
+            self.cluster_assignments = cached_cluster["assignments"]
+
+        cached_umap = db.get_most_recent_umap_cache()
+        if (
+            cached_umap is not None
+            and self.umap_coords is None
+            and self._ask_yes_no(
+                "Load Cached UMAP",
+                "Most recent UMAP cache found. Load it now?\n\n"
+                f"Timestamp: {cached_umap.get('timestamp', 'unknown')}\n"
+                f"n_neighbors: {cached_umap.get('n_neighbors', 'unknown')}\n"
+                f"min_dist: {cached_umap.get('min_dist', 'unknown')}",
+            )
+        ):
+            self.umap_coords = cached_umap["coords"]
+            self.last_umap_params = {
+                "n_neighbors": cached_umap.get("n_neighbors", 15),
+                "min_dist": cached_umap.get("min_dist", 0.1),
+            }
+
+        cached_candidates = db.get_most_recent_candidate_cache()
+        if (
+            cached_candidates is not None
+            and not self.candidate_indices
+            and self._ask_yes_no(
+                "Load Cached Candidates",
+                "Most recent labeling candidate set found. Load it now?\n\n"
+                f"Timestamp: {cached_candidates.get('timestamp', 'unknown')}\n"
+                f"Count: {len(cached_candidates['candidate_indices'])} images",
+            )
+        ):
+            self.candidate_indices = cached_candidates["candidate_indices"]
+            self.set_explorer_mode("labeling")
+            self.status.showMessage(f"Loaded {len(self.candidate_indices)} candidates")
+
+    def _apply_cached_predictions(self, cached_preds, db):
+        """Apply cached prediction data and restore model-space projections."""
+        self._model_probs = cached_preds["probs"]
+        self._model_class_names = cached_preds["class_names"]
+        self._active_model_mode = cached_preds.get("active_model_mode", "yolo")
+        self.image_confidences = list(self._model_probs.max(axis=1).astype(float))
+        self._set_model_projection_buttons_enabled(True)
+        self._update_al_status()
+        cached_mumap = db.get_most_recent_umap_cache(kind="model")
+        if cached_mumap:
+            self.umap_model_coords = cached_mumap["coords"]
+        cached_mpca = db.get_most_recent_umap_cache(kind="model_pca")
+        if cached_mpca:
+            self.pca_model_coords = cached_mpca["coords"]
+
+    def _autoload_yolo_classifier(self, db):
+        """Offer to load a published YOLO classifier from the project directory."""
+        if not self.project_path:
+            return False
+        yolo_ckpt = self.project_path / "models" / "yolo_classifier_latest.pt"
+        if not yolo_ckpt.exists():
+            return False
+        if self._yolo_model_path is not None or self._model_probs is not None:
+            return False
+
+        cached_preds = db.get_most_recent_prediction_cache()
+        if cached_preds and self._ask_yes_no(
+            "Load Cached Predictions",
+            f"Cached predictions found from last session.\n"
+            f"Mode: {cached_preds.get('active_model_mode', '?')}  |  "
+            f"Classes: {len(cached_preds.get('class_names', []))}\n"
+            f"Saved: {str(cached_preds.get('timestamp', ''))[:19]}\n\n"
+            "Load predictions without re-running inference?",
+        ):
+            self._apply_cached_predictions(cached_preds, db)
+            return False
+
+        if self._ask_yes_no(
+            "Load Trained YOLO Model",
+            f"A published YOLO classifier was found.\n"
+            f"Load it and run inference?\n\n{yolo_ckpt}",
+        ):
+            self._yolo_model_path = yolo_ckpt
+            self._active_model_mode = "yolo"
+            QTimer.singleShot(200, lambda p=yolo_ckpt: self._run_yolo_inference(p))
+            return True  # signal caller to skip DB model check
+        return False
+
+    def _autoload_model_from_db(self):
+        """Offer to load the most recent model or predictions from the project DB."""
+        if not self.db_path or self._model_probs is not None:
+            return
+        try:
+            from ..store.db import ClassKitDB as _CKDb
+
+            _db2 = _CKDb(self.db_path)
+            cached_preds = _db2.get_most_recent_prediction_cache()
+            if cached_preds and self._ask_yes_no(
+                "Load Cached Predictions",
+                f"Cached predictions found from last session.\n"
+                f"Mode: {cached_preds.get('active_model_mode', '?')}  |  "
+                f"Classes: {len(cached_preds.get('class_names', []))}\n"
+                f"Saved: {str(cached_preds.get('timestamp', ''))[:19]}\n\n"
+                "Load predictions without re-running inference?",
+            ):
+                self._apply_cached_predictions(cached_preds, _db2)
+            else:
+                _recent = _db2.get_most_recent_model_cache()
+                if _recent and self._ask_yes_no(
+                    "Load Trained Model",
+                    f"A trained model was found in the project records.\n"
+                    f"Mode: {_recent.get('mode', '?')}  |  "
+                    f"Classes: {', '.join(_recent.get('class_names') or [])}\n"
+                    f"Trained: {str(_recent.get('timestamp', ''))[:19]}\n\n"
+                    "Load it and run inference?",
+                ):
+                    QTimer.singleShot(
+                        200,
+                        lambda e=_recent: self._load_model_from_cache_entry(e),
+                    )
+        except Exception:
+            pass
+
     def try_autoload_cached_artifacts(self, db=None):
         """Offer to autoload latest embeddings, cluster assignments, and UMAP."""
         if not self.db_path:
@@ -1403,260 +1555,107 @@ class MainWindow(QMainWindow):
             db = ClassKitDB(self.db_path)
 
         try:
-            cached_embeddings = db.get_most_recent_embeddings()
-            if cached_embeddings is not None and self.embeddings is None:
-                embeddings, metadata = cached_embeddings
-                if self._ask_yes_no(
-                    "Load Cached Embeddings",
-                    "Most recent embeddings cache found. Load it now?\n\n"
-                    f"Model: {metadata.get('model_name', 'unknown')}\n"
-                    f"Timestamp: {metadata.get('timestamp', 'unknown')}\n"
-                    f"Shape: {embeddings.shape[0]:,} × {embeddings.shape[1]}",
-                ):
-                    self.embeddings = embeddings
+            self._autoload_cached_analysis(db)
 
-            cached_cluster = db.get_most_recent_cluster_cache()
-            if cached_cluster is not None and self.cluster_assignments is None:
-                if self._ask_yes_no(
-                    "Load Cached Clusters",
-                    "Most recent cluster cache found. Load it now?\n\n"
-                    f"Method: {cached_cluster.get('method', 'unknown')}\n"
-                    f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}\n"
-                    f"Clusters: {cached_cluster.get('n_clusters', 'unknown')}",
-                ):
-                    self.cluster_assignments = cached_cluster["assignments"]
+            if self._autoload_yolo_classifier(db):
+                return  # skip DB check after filesystem hit
 
-            cached_umap = db.get_most_recent_umap_cache()
-            if cached_umap is not None and self.umap_coords is None:
-                if self._ask_yes_no(
-                    "Load Cached UMAP",
-                    "Most recent UMAP cache found. Load it now?\n\n"
-                    f"Timestamp: {cached_umap.get('timestamp', 'unknown')}\n"
-                    f"n_neighbors: {cached_umap.get('n_neighbors', 'unknown')}\n"
-                    f"min_dist: {cached_umap.get('min_dist', 'unknown')}",
-                ):
-                    self.umap_coords = cached_umap["coords"]
-                    self.last_umap_params = {
-                        "n_neighbors": cached_umap.get("n_neighbors", 15),
-                        "min_dist": cached_umap.get("min_dist", 0.1),
-                    }
-
-            cached_candidates = db.get_most_recent_candidate_cache()
-            if cached_candidates is not None and not self.candidate_indices:
-                if self._ask_yes_no(
-                    "Load Cached Candidates",
-                    "Most recent labeling candidate set found. Load it now?\n\n"
-                    f"Timestamp: {cached_candidates.get('timestamp', 'unknown')}\n"
-                    f"Count: {len(cached_candidates['candidate_indices'])} images",
-                ):
-                    self.candidate_indices = cached_candidates["candidate_indices"]
-                    self.set_explorer_mode("labeling")
-                    self.status.showMessage(
-                        f"Loaded {len(self.candidate_indices)} candidates"
-                    )
-
-            # Auto-offer to load the published YOLO classifier
-            if self.project_path:
-                yolo_ckpt = self.project_path / "models" / "yolo_classifier_latest.pt"
-                if (
-                    yolo_ckpt.exists()
-                    and self._yolo_model_path is None
-                    and self._model_probs is None
-                ):
-                    # First try loading cached predictions so we don't rerun inference
-                    cached_preds = db.get_most_recent_prediction_cache()
-                    if cached_preds and self._ask_yes_no(
-                        "Load Cached Predictions",
-                        f"Cached predictions found from last session.\n"
-                        f"Mode: {cached_preds.get('active_model_mode', '?')}  |  "
-                        f"Classes: {len(cached_preds.get('class_names', []))}\n"
-                        f"Saved: {str(cached_preds.get('timestamp', ''))[:19]}\n\n"
-                        "Load predictions without re-running inference?",
-                    ):
-                        self._model_probs = cached_preds["probs"]
-                        self._model_class_names = cached_preds["class_names"]
-                        self._active_model_mode = cached_preds.get(
-                            "active_model_mode", "yolo"
-                        )
-                        self.image_confidences = list(
-                            self._model_probs.max(axis=1).astype(float)
-                        )
-                        self._set_model_projection_buttons_enabled(True)
-                        self._update_al_status()
-                        # Also restore model-space UMAP if available
-                        cached_mumap = db.get_most_recent_umap_cache(kind="model")
-                        if cached_mumap:
-                            self.umap_model_coords = cached_mumap["coords"]
-                        cached_mpca = db.get_most_recent_umap_cache(kind="model_pca")
-                        if cached_mpca:
-                            self.pca_model_coords = cached_mpca["coords"]
-                    elif self._ask_yes_no(
-                        "Load Trained YOLO Model",
-                        f"A published YOLO classifier was found.\n"
-                        f"Load it and run inference?\n\n{yolo_ckpt}",
-                    ):
-                        self._yolo_model_path = yolo_ckpt
-                        self._active_model_mode = "yolo"
-                        QTimer.singleShot(
-                            200, lambda p=yolo_ckpt: self._run_yolo_inference(p)
-                        )
-                        return  # skip DB check after filesystem hit
-
-            # Auto-offer to load the most recent model from the project DB
-            if self.db_path and self._model_probs is None:
-                try:
-                    from ..store.db import ClassKitDB as _CKDb
-
-                    _db2 = _CKDb(self.db_path)
-                    # Try loading cached predictions first
-                    cached_preds = _db2.get_most_recent_prediction_cache()
-                    if cached_preds and self._ask_yes_no(
-                        "Load Cached Predictions",
-                        f"Cached predictions found from last session.\n"
-                        f"Mode: {cached_preds.get('active_model_mode', '?')}  |  "
-                        f"Classes: {len(cached_preds.get('class_names', []))}\n"
-                        f"Saved: {str(cached_preds.get('timestamp', ''))[:19]}\n\n"
-                        "Load predictions without re-running inference?",
-                    ):
-                        self._model_probs = cached_preds["probs"]
-                        self._model_class_names = cached_preds["class_names"]
-                        self._active_model_mode = cached_preds.get(
-                            "active_model_mode", ""
-                        )
-                        self.image_confidences = list(
-                            self._model_probs.max(axis=1).astype(float)
-                        )
-                        self._set_model_projection_buttons_enabled(True)
-                        self._update_al_status()
-                        cached_mumap = _db2.get_most_recent_umap_cache(kind="model")
-                        if cached_mumap:
-                            self.umap_model_coords = cached_mumap["coords"]
-                        cached_mpca = _db2.get_most_recent_umap_cache(kind="model_pca")
-                        if cached_mpca:
-                            self.pca_model_coords = cached_mpca["coords"]
-                    else:
-                        _recent = _db2.get_most_recent_model_cache()
-                        if _recent and self._ask_yes_no(
-                            "Load Trained Model",
-                            f"A trained model was found in the project records.\n"
-                            f"Mode: {_recent.get('mode', '?')}  |  "
-                            f"Classes: {', '.join(_recent.get('class_names') or [])}\n"
-                            f"Trained: {str(_recent.get('timestamp', ''))[:19]}\n\n"
-                            "Load it and run inference?",
-                        ):
-                            QTimer.singleShot(
-                                200,
-                                lambda e=_recent: self._load_model_from_cache_entry(e),
-                            )
-                except Exception:
-                    pass
+            self._autoload_model_from_db()
 
             self.update_explorer_plot(force_fit=True)
             self.update_context_panel()
         except Exception:
             pass
 
-    def setup_label_shortcuts(self):
-        """Create keyboard shortcuts for labeling and mode switching."""
+    def _clear_label_shortcuts(self) -> None:
+        """Remove existing shortcut objects before rebuilding bindings."""
         for shortcut in self._label_shortcuts:
             shortcut.setParent(None)
         self._label_shortcuts = []
+
+    def _load_scheme_shortcuts(self) -> dict[str, str]:
+        """Load flat label shortcuts from the project scheme when available."""
+        scheme_shortcuts: dict[str, str] = {}
+        if not self.project_path:
+            return scheme_shortcuts
+        try:
+            scheme_path = self.project_path / "scheme.json"
+            if scheme_path.exists():
+                with open(scheme_path) as _f:
+                    scheme_dict = json.load(_f)
+                factors = scheme_dict.get("factors", [])
+                if factors:
+                    factor = factors[0]
+                    for label, key in zip(
+                        factor.get("labels", []), factor.get("shortcut_keys", [])
+                    ):
+                        if key:
+                            scheme_shortcuts[label] = key
+        except Exception:
+            return {}
+        return scheme_shortcuts
+
+    def _register_label_shortcut(self, key: str | QKeySequence, callback) -> None:
+        """Create one QShortcut and track it for later teardown."""
+        sequence = key if isinstance(key, QKeySequence) else QKeySequence(key)
+        shortcut = QShortcut(sequence, self)
+        shortcut.setAutoRepeat(False)
+        shortcut.activated.connect(callback)
+        self._label_shortcuts.append(shortcut)
+
+    def _install_label_assignment_shortcuts(
+        self, scheme_shortcuts: dict[str, str]
+    ) -> None:
+        """Install class-label shortcuts when not using the multi-factor stepper."""
+        if self._stepper is not None:
+            return
+
+        for i, class_name in enumerate(self.classes[:9], start=1):
+            if class_name not in scheme_shortcuts:
+                self._register_label_shortcut(
+                    str(i), lambda c=class_name: self.assign_label_to_selected(c)
+                )
+
+        for label, key in scheme_shortcuts.items():
+            self._register_label_shortcut(
+                key, lambda c=label: self.assign_label_to_selected(c)
+            )
+
+        self._register_label_shortcut(
+            "0", lambda: self.assign_label_to_selected("unknown")
+        )
+
+    def _install_global_navigation_shortcuts(
+        self, active: dict, defaults: dict
+    ) -> None:
+        """Install mode and navigation shortcuts shared across labeling modes."""
+
+        def _key(action: str) -> QKeySequence:
+            return QKeySequence(active.get(action, defaults.get(action, "")))
+
+        shortcut_actions = [
+            ("Explore mode", lambda: self.set_explorer_mode("explore")),
+            ("Labeling mode", lambda: self.set_explorer_mode("labeling")),
+            ("Predictions mode", lambda: self.set_explorer_mode("predictions")),
+            ("Sample next candidates", self.on_sample_next_triggered),
+            ("Previous unlabeled", self.on_prev_image),
+            ("Next unlabeled", self.on_next_image),
+            ("Undo last label (Ctrl+Z)", self.undo_last_assignment),
+        ]
+        for action_name, callback in shortcut_actions:
+            self._register_label_shortcut(_key(action_name), callback)
+
+    def setup_label_shortcuts(self):
+        """Create keyboard shortcuts for labeling and mode switching."""
+        self._clear_label_shortcuts()
 
         from .dialogs import ShortcutEditorDialog
 
         defaults = dict(ShortcutEditorDialog.DEFAULT_SHORTCUTS)
         active = {**defaults, **self._custom_shortcuts}
-
-        def _key(action: str) -> QKeySequence:
-            return QKeySequence(active.get(action, defaults.get(action, "")))
-
-        # Load scheme-specific shortcuts if available
-        scheme_shortcuts = {}
-        if self.project_path:
-            try:
-                scheme_path = self.project_path / "scheme.json"
-                if scheme_path.exists():
-                    with open(scheme_path) as _f:
-                        scheme_dict = json.load(_f)
-                        factors = scheme_dict.get("factors", [])
-                        if factors:
-                            # Use shortcuts from the first factor if it's a flat/single-factor scheme
-                            f = factors[0]
-                            labels = f.get("labels", [])
-                            keys = f.get("shortcut_keys", [])
-                            for lbl, k in zip(labels, keys):
-                                if k:
-                                    scheme_shortcuts[lbl] = k
-            except Exception:
-                pass
-
-        # Only install label shortcuts when NOT in stepper (multi-factor) mode.
-        # In stepper mode, key routing goes through the stepper's handle_key().
-        if self._stepper is None:
-            # 1) Try standard 1-9 fallback
-            for i, class_name in enumerate(self.classes[:9], start=1):
-                # Only use digit fallback if no explicit scheme shortcut exists for this class
-                if class_name not in scheme_shortcuts:
-                    shortcut = QShortcut(QKeySequence(str(i)), self)
-                    shortcut.setAutoRepeat(False)
-                    shortcut.activated.connect(
-                        lambda c=class_name: self.assign_label_to_selected(c)
-                    )
-                    self._label_shortcuts.append(shortcut)
-
-            # 2) Apply explicit scheme shortcuts (e.g. 'A', 'W', 'S', 'D' for head/tail)
-            for lbl, k in scheme_shortcuts.items():
-                shortcut = QShortcut(QKeySequence(k), self)
-                shortcut.setAutoRepeat(False)
-                shortcut.activated.connect(
-                    lambda c=lbl: self.assign_label_to_selected(c)
-                )
-                self._label_shortcuts.append(shortcut)
-
-            # Always register '0' for unknown
-            unknown_key = QShortcut(QKeySequence("0"), self)
-            unknown_key.setAutoRepeat(False)
-            unknown_key.activated.connect(
-                lambda: self.assign_label_to_selected("unknown")
-            )
-            self._label_shortcuts.append(unknown_key)
-
-        explore_shortcut = QShortcut(_key("Explore mode"), self)
-        explore_shortcut.setAutoRepeat(False)
-        explore_shortcut.activated.connect(lambda: self.set_explorer_mode("explore"))
-        self._label_shortcuts.append(explore_shortcut)
-
-        label_shortcut = QShortcut(_key("Labeling mode"), self)
-        label_shortcut.setAutoRepeat(False)
-        label_shortcut.activated.connect(lambda: self.set_explorer_mode("labeling"))
-        self._label_shortcuts.append(label_shortcut)
-
-        prediction_shortcut = QShortcut(_key("Predictions mode"), self)
-        prediction_shortcut.setAutoRepeat(False)
-        prediction_shortcut.activated.connect(
-            lambda: self.set_explorer_mode("predictions")
-        )
-        self._label_shortcuts.append(prediction_shortcut)
-
-        sample_shortcut = QShortcut(_key("Sample next candidates"), self)
-        sample_shortcut.setAutoRepeat(False)
-        sample_shortcut.activated.connect(self.on_sample_next_triggered)
-        self._label_shortcuts.append(sample_shortcut)
-
-        prev_shortcut = QShortcut(_key("Previous unlabeled"), self)
-        prev_shortcut.setAutoRepeat(False)
-        prev_shortcut.activated.connect(self.on_prev_image)
-        self._label_shortcuts.append(prev_shortcut)
-
-        next_shortcut = QShortcut(_key("Next unlabeled"), self)
-        next_shortcut.setAutoRepeat(False)
-        next_shortcut.activated.connect(self.on_next_image)
-        self._label_shortcuts.append(next_shortcut)
-
-        undo_shortcut = QShortcut(_key("Undo last label (Ctrl+Z)"), self)
-        undo_shortcut.setAutoRepeat(False)
-        undo_shortcut.activated.connect(self.undo_last_assignment)
-        self._label_shortcuts.append(undo_shortcut)
+        scheme_shortcuts = self._load_scheme_shortcuts()
+        self._install_label_assignment_shortcuts(scheme_shortcuts)
+        self._install_global_navigation_shortcuts(active, defaults)
 
     def _begin_command(self) -> bool:
         """Return False when command input should be ignored during active/cooldown windows."""
@@ -2007,108 +2006,125 @@ class MainWindow(QMainWindow):
             return self.candidate_indices
         return list(range(len(self.image_paths)))
 
-    def rebuild_label_buttons(self):
-        """Rebuild class buttons shown in the left settings panel."""
-        # Clear existing widgets from the grid layout
+    def _clear_label_buttons(self) -> None:
+        """Remove all existing widgets from the label button layout."""
         for i in reversed(range(self.label_buttons_layout.count())):
             widget = self.label_buttons_layout.itemAt(i).widget()
             if widget is not None:
                 widget.setParent(None)
 
-        # Determine if project uses a multi-factor labeling scheme
+    def _load_label_scheme(self):
+        """Load the project labeling scheme and first-factor shortcuts if available."""
         scheme = None
         scheme_shortcuts = {}
-        if self.project_path:
-            try:
-                from ..config.schemas import LabelingScheme
+        if not self.project_path:
+            return scheme, scheme_shortcuts
+        try:
+            from ..config.schemas import LabelingScheme
 
-                scheme_path = self.project_path / "scheme.json"
-                if scheme_path.exists():
-                    with open(scheme_path) as _f:
-                        scheme = LabelingScheme.from_dict(json.load(_f))
-                        factors = scheme.factors
-                        if factors:
-                            f = factors[0]
-                            for lbl, k in zip(f.labels, f.shortcut_keys):
-                                if k:
-                                    scheme_shortcuts[lbl] = k
-            except Exception:
-                scheme = None
+            scheme_path = self.project_path / "scheme.json"
+            if scheme_path.exists():
+                with open(scheme_path) as _f:
+                    scheme = LabelingScheme.from_dict(json.load(_f))
+                factors = scheme.factors
+                if factors:
+                    first_factor = factors[0]
+                    for label, key in zip(
+                        first_factor.labels, first_factor.shortcut_keys
+                    ):
+                        if key:
+                            scheme_shortcuts[label] = key
+        except Exception:
+            scheme = None
+        return scheme, scheme_shortcuts
 
-        if scheme is not None and len(scheme.factors) > 1:
-            # Multi-factor: use FactorStepperWidget
-            try:
-                from .widgets.factor_stepper import _build_qt_widget
+    def _build_stepper_label_buttons(self, scheme) -> None:
+        """Build multi-factor stepper UI for composite label schemes."""
+        from .widgets.factor_stepper import _build_qt_widget
 
-                FactorStepperWidget = _build_qt_widget(scheme)
-                stepper = FactorStepperWidget(
-                    scheme, parent=self.label_buttons_container
-                )
-                stepper.label_committed.connect(self._on_stepper_label_committed)
-                stepper.skipped.connect(self.on_next_image)
-                self.label_buttons_layout.addWidget(stepper, 0, 0, 1, 2)
-                self._stepper = stepper
-            except Exception:
-                self._stepper = None
-        else:
-            # Single-factor or free-form: flat buttons
-            self._stepper = None
-            class_color_map = build_category_color_map([*self.classes, "unknown"])
+        FactorStepperWidget = _build_qt_widget(scheme)
+        stepper = FactorStepperWidget(scheme, parent=self.label_buttons_container)
+        stepper.label_committed.connect(self._on_stepper_label_committed)
+        stepper.skipped.connect(self.on_next_image)
+        self.label_buttons_layout.addWidget(stepper, 0, 0, 1, 2)
+        self._stepper = stepper
 
-            # Use all project classes, not just first 9
-            for i, class_name in enumerate(self.classes):
-                # Determine display shortcut
-                shortcut = scheme_shortcuts.get(class_name)
-                if not shortcut and i < 9:
-                    shortcut = str(i + 1)
+    def _resolve_label_button_shortcut(
+        self, class_name: str, index: int, scheme_shortcuts: dict[str, str]
+    ) -> str | None:
+        """Return the display shortcut string for one flat class button."""
+        shortcut = scheme_shortcuts.get(class_name)
+        if not shortcut and index < 9:
+            return str(index + 1)
+        return shortcut
 
-                btn_text = f"[{shortcut}] {class_name}" if shortcut else class_name
-                button = QPushButton(btn_text)
-                bg = class_color_map.get(class_name)
-                if bg is None:
-                    bg = class_color_map.get(str(class_name), None)
-                if bg is None:
-                    bg = class_color_map.get("unknown")
-                fg = best_text_color(bg)
-                button.setStyleSheet(
-                    "text-align: left; padding: 4px; "
-                    f"background-color: {to_hex(bg)}; color: {to_hex(fg)};"
-                    "border: 1px solid #2f2f2f;"
-                )
-                button.clicked.connect(
-                    lambda checked=False, c=class_name: self.assign_label_to_selected(c)
-                )
-                # Store class name for filtering
-                button.setProperty("class_name", class_name)
+    @staticmethod
+    def _resolve_class_button_color(class_color_map, class_name: str):
+        """Resolve a stable button background color for a class name."""
+        bg = class_color_map.get(class_name)
+        if bg is None:
+            bg = class_color_map.get(str(class_name))
+        if bg is None:
+            bg = class_color_map.get("unknown")
+        return bg
 
-                row = i // 2
-                col = i % 2
-                self.label_buttons_layout.addWidget(button, row, col)
+    def _build_flat_label_buttons(self, scheme_shortcuts: dict[str, str]) -> None:
+        """Build one button per class plus the unknown class button."""
+        self._stepper = None
+        class_color_map = build_category_color_map([*self.classes, "unknown"])
 
-            # Always add 'unknown' button at the end
-            unknown_shortcut = "0"
-            unknown_btn = QPushButton(f"[{unknown_shortcut}] unknown")
-            unknown_bg = class_color_map.get("unknown")
-            unknown_fg = best_text_color(unknown_bg)
-            unknown_btn.setStyleSheet(
+        for i, class_name in enumerate(self.classes):
+            shortcut = self._resolve_label_button_shortcut(
+                class_name, i, scheme_shortcuts
+            )
+            btn_text = f"[{shortcut}] {class_name}" if shortcut else class_name
+            button = QPushButton(btn_text)
+            bg = self._resolve_class_button_color(class_color_map, class_name)
+            fg = best_text_color(bg)
+            button.setStyleSheet(
                 "text-align: left; padding: 4px; "
-                f"background-color: {to_hex(unknown_bg)}; color: {to_hex(unknown_fg)};"
+                f"background-color: {to_hex(bg)}; color: {to_hex(fg)};"
                 "border: 1px solid #2f2f2f;"
             )
-            unknown_btn.clicked.connect(
-                lambda checked=False: self.assign_label_to_selected("unknown")
+            button.clicked.connect(
+                lambda checked=False, c=class_name: self.assign_label_to_selected(c)
             )
-            unknown_btn.setProperty("class_name", "unknown")
+            button.setProperty("class_name", class_name)
+            self.label_buttons_layout.addWidget(button, i // 2, i % 2)
 
-            # Add to next available position
-            total_btns = len(self.classes)
-            self.label_buttons_layout.addWidget(
-                unknown_btn, total_btns // 2, total_btns % 2
-            )
+        unknown_btn = QPushButton("[0] unknown")
+        unknown_bg = class_color_map.get("unknown")
+        unknown_fg = best_text_color(unknown_bg)
+        unknown_btn.setStyleSheet(
+            "text-align: left; padding: 4px; "
+            f"background-color: {to_hex(unknown_bg)}; color: {to_hex(unknown_fg)};"
+            "border: 1px solid #2f2f2f;"
+        )
+        unknown_btn.clicked.connect(
+            lambda checked=False: self.assign_label_to_selected("unknown")
+        )
+        unknown_btn.setProperty("class_name", "unknown")
+        total_btns = len(self.classes)
+        self.label_buttons_layout.addWidget(
+            unknown_btn, total_btns // 2, total_btns % 2
+        )
 
-            # Initial filter update
-            if hasattr(self, "class_search"):
-                self.filter_label_buttons(self.class_search.text())
+        if hasattr(self, "class_search"):
+            self.filter_label_buttons(self.class_search.text())
+
+    def rebuild_label_buttons(self):
+        """Rebuild class buttons shown in the left settings panel."""
+        self._clear_label_buttons()
+        scheme, scheme_shortcuts = self._load_label_scheme()
+
+        if scheme is not None and len(scheme.factors) > 1:
+            try:
+                self._build_stepper_label_buttons(scheme)
+                return
+            except Exception:
+                self._stepper = None
+
+        self._build_flat_label_buttons(scheme_shortcuts)
 
     def filter_label_buttons(self, text: str):
         """Filter visible label buttons based on search text."""
@@ -2220,72 +2236,89 @@ class MainWindow(QMainWindow):
         self.set_explorer_mode("explore")
         self.status.showMessage("Candidates cleared")
 
+    def _ensure_candidate_sampling_ready(self) -> bool:
+        """Return True only when the project has the data needed for candidate sampling."""
+        if self.umap_coords is None or self.cluster_assignments is None:
+            QMessageBox.information(
+                self,
+                "Need UMAP + Clusters",
+                "Compute clustering and UMAP first, then sample candidate sets.",
+            )
+            return False
+        if not self.image_labels or len(self.image_labels) != len(self.image_paths):
+            self.image_labels = [None] * len(self.image_paths)
+        return True
+
+    @staticmethod
+    def _sample_cluster_candidates(assignments, labels, per_cluster: int) -> list[int]:
+        """Pick up to `per_cluster` unlabeled samples from each cluster."""
+        sampled: list[int] = []
+        for cluster_id in sorted(set(assignments)):
+            indices = [
+                idx
+                for idx, value in enumerate(assignments)
+                if value == cluster_id and (idx < len(labels) and not labels[idx])
+            ]
+            sampled.extend(indices[:per_cluster])
+        return sampled
+
+    def _merge_labeled_candidates(self, sampled: list[int], labels) -> list[int]:
+        """Keep already-labeled items from the current batch visible after resampling."""
+        seen = set(sampled)
+        for index in self.candidate_indices:
+            if index not in seen and index < len(labels) and labels[index]:
+                sampled.append(index)
+                seen.add(index)
+        return sampled
+
+    def _persist_candidate_indices(self) -> None:
+        """Store the current candidate set in the project DB when available."""
+        if not self.db_path:
+            return
+        try:
+            from ..store.db import ClassKitDB
+
+            db = ClassKitDB(self.db_path)
+            db.save_candidate_cache(self.candidate_indices)
+        except Exception:
+            pass
+
+    def _apply_sampled_candidates(self, assignments) -> None:
+        """Update UI state after sampling a new labeling candidate set."""
+        if self.candidate_indices:
+            self.set_explorer_mode("labeling")
+            self.selected_point_index = None
+            self.hover_locked = False
+            self.selection_info.setText(
+                "<div style='line-height:1.5;'>"
+                "<b>Selected Point:</b> none<br>"
+                "<b>Hovered Point:</b> none<br>"
+                "<b>Current Label:</b> unlabeled<br>"
+                "Hover over candidate points to preview, then click to select one for labeling."
+                "</div>"
+            )
+            self.status.showMessage(
+                f"Sampled {len(self.candidate_indices):,} unlabeled candidates across {len(set(assignments))} clusters"
+            )
+            return
+        self.status.showMessage("No unlabeled points left in current clusters")
+
     def sample_candidates_for_labeling(self):
         """Sample diverse unlabeled points from each cluster for fast labeling."""
         if not self._begin_command():
             return
         try:
-            if self.umap_coords is None or self.cluster_assignments is None:
-                QMessageBox.information(
-                    self,
-                    "Need UMAP + Clusters",
-                    "Compute clustering and UMAP first, then sample candidate sets.",
-                )
+            if not self._ensure_candidate_sampling_ready():
                 return
-
-            if not self.image_labels or len(self.image_labels) != len(self.image_paths):
-                self.image_labels = [None] * len(self.image_paths)
 
             per_cluster = self.sample_spin.value()
             assignments = list(self.cluster_assignments)
             labels = self.image_labels
 
-            sampled = []
-            for cluster_id in sorted(set(assignments)):
-                indices = [
-                    idx
-                    for idx, value in enumerate(assignments)
-                    if value == cluster_id and (idx < len(labels) and not labels[idx])
-                ]
-                sampled.extend(indices[:per_cluster])
-
-            # Preserve already-labeled candidates from the current set so they
-            # remain visible after re-sampling (don't hide work already done).
-            seen = set(sampled)
-            for i in self.candidate_indices:
-                if i not in seen and i < len(labels) and labels[i]:
-                    sampled.append(i)
-                    seen.add(i)
-
-            self.candidate_indices = sampled
-            # Do NOT clear round_labeled_indices — keep current-session progress.
-
-            if self.db_path:
-                try:
-                    from ..store.db import ClassKitDB
-
-                    db = ClassKitDB(self.db_path)
-                    db.save_candidate_cache(self.candidate_indices)
-                except Exception:
-                    pass
-
-            if self.candidate_indices:
-                self.set_explorer_mode("labeling")
-                self.selected_point_index = None
-                self.hover_locked = False
-                self.selection_info.setText(
-                    "<div style='line-height:1.5;'>"
-                    "<b>Selected Point:</b> none<br>"
-                    "<b>Hovered Point:</b> none<br>"
-                    "<b>Current Label:</b> unlabeled<br>"
-                    "Hover over candidate points to preview, then click to select one for labeling."
-                    "</div>"
-                )
-                self.status.showMessage(
-                    f"Sampled {len(self.candidate_indices):,} unlabeled candidates across {len(set(assignments))} clusters"
-                )
-            else:
-                self.status.showMessage("No unlabeled points left in current clusters")
+            sampled = self._sample_cluster_candidates(assignments, labels, per_cluster)
+            self.candidate_indices = self._merge_labeled_candidates(sampled, labels)
+            self._persist_candidate_indices()
+            self._apply_sampled_candidates(assignments)
 
             self.request_update_explorer_plot()
             self.request_update_context_panel()
@@ -2507,45 +2540,13 @@ class MainWindow(QMainWindow):
 
         next_action = None
         try:
-            if self.selected_point_index is None:
-                self.status.showMessage("Select a point first before assigning a label")
+            index = self._selected_index_for_assignment()
+            if index is None:
                 return
 
-            index = self.selected_point_index
-            if index < 0 or index >= len(self.image_paths):
-                return
-
-            previous_label = (
-                self.image_labels[index] if index < len(self.image_labels) else None
-            )
-            self.last_assigned_stack.append(
-                {
-                    "index": index,
-                    "previous_label": previous_label,
-                    "new_label": label,
-                }
-            )
-
-            self._set_label_for_index(index, label)
-            self.round_labeled_indices = [
-                i for i in self.round_labeled_indices if i != index
-            ]
-            self.round_labeled_indices.append(index)
-            self._remove_history_for_index(index)
-            self.label_history.append({"index": index, "label": label})
-            self.request_refresh_label_history_strip()
-
+            self._apply_selected_label(index, label)
             self.on_label_assigned(label)
-
-            # Drop from candidate list once labeled
-            self.candidate_indices = [i for i in self.candidate_indices if i != index]
-            labels = self.image_labels or []
-            next_unlabeled = None
-            for i in self.candidate_indices:
-                if i >= len(labels) or not labels[i]:
-                    next_unlabeled = i
-                    break
-
+            next_unlabeled = self._next_unlabeled_candidate_index(index)
             if next_unlabeled is not None:
                 self.selected_point_index = next_unlabeled
                 self.request_preview_for_index(
@@ -2570,6 +2571,48 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._build_al_batch)
         elif next_action == "train":
             QTimer.singleShot(0, self.train_classifier)
+
+    def _selected_index_for_assignment(self) -> int | None:
+        """Validate the current selection before applying a label."""
+        if self.selected_point_index is None:
+            self.status.showMessage("Select a point first before assigning a label")
+            return None
+        index = self.selected_point_index
+        if index < 0 or index >= len(self.image_paths):
+            return None
+        return index
+
+    def _apply_selected_label(self, index: int, label: str) -> None:
+        """Persist one explicit label assignment and update local history/state."""
+        previous_label = (
+            self.image_labels[index] if index < len(self.image_labels) else None
+        )
+        self.last_assigned_stack.append(
+            {
+                "index": index,
+                "previous_label": previous_label,
+                "new_label": label,
+            }
+        )
+        self._set_label_for_index(index, label)
+        self.round_labeled_indices = [
+            i for i in self.round_labeled_indices if i != index
+        ]
+        self.round_labeled_indices.append(index)
+        self._remove_history_for_index(index)
+        self.label_history.append({"index": index, "label": label})
+        self.request_refresh_label_history_strip()
+
+    def _next_unlabeled_candidate_index(self, current_index: int) -> int | None:
+        """Remove the labeled item from the candidate pool and return the next unlabeled one."""
+        self.candidate_indices = [
+            i for i in self.candidate_indices if i != current_index
+        ]
+        labels = self.image_labels or []
+        for index in self.candidate_indices:
+            if index >= len(labels) or not labels[index]:
+                return index
+        return None
 
     def _prompt_after_label_set_complete(self) -> str | None:
         """Prompt next step when all points in current sampled set are labeled."""
@@ -2626,16 +2669,15 @@ class MainWindow(QMainWindow):
             color_values = seeded_preds
             candidate_indices = []
 
-        if not force_fit:
-            if self.explorer.update_state(
-                labels=color_values,
-                confidences=self.image_confidences,
-                candidate_indices=candidate_indices,
-                round_labeled_indices=self.round_labeled_indices,
-                selected_index=self.selected_point_index,
-                labeling_mode=(self.explorer_mode == "labeling"),
-            ):
-                return
+        if not force_fit and self.explorer.update_state(
+            labels=color_values,
+            confidences=self.image_confidences,
+            candidate_indices=candidate_indices,
+            round_labeled_indices=self.round_labeled_indices,
+            selected_index=self.selected_point_index,
+            labeling_mode=(self.explorer_mode == "labeling"),
+        ):
+            return
 
         self.explorer.set_data(
             coords,
@@ -3146,20 +3188,19 @@ class MainWindow(QMainWindow):
 
         db = ClassKitDB(self.db_path)
         cached_cluster = db.get_most_recent_cluster_cache()
-        if cached_cluster is not None:
-            if self._ask_yes_no(
-                "Use Cached Clusters",
-                "Cached cluster assignments found. Load them?\n\n"
-                f"Method: {cached_cluster.get('method', 'unknown')}\n"
-                f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}",
-            ):
-                self.cluster_assignments = cached_cluster["assignments"]
-                self.status.showMessage("Loaded cached cluster assignments")
-                self.update_explorer_plot()
-                self.update_context_panel()
-                if callback:
-                    QTimer.singleShot(200, callback)
-                return
+        if cached_cluster is not None and self._ask_yes_no(
+            "Use Cached Clusters",
+            "Cached cluster assignments found. Load them?\n\n"
+            f"Method: {cached_cluster.get('method', 'unknown')}\n"
+            f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}",
+        ):
+            self.cluster_assignments = cached_cluster["assignments"]
+            self.status.showMessage("Loaded cached cluster assignments")
+            self.update_explorer_plot()
+            self.update_context_panel()
+            if callback:
+                QTimer.singleShot(200, callback)
+            return
 
         from .dialogs import ClusterDialog
 
@@ -3469,18 +3510,17 @@ class MainWindow(QMainWindow):
 
         db = ClassKitDB(self.db_path)
         cached_cluster = db.get_most_recent_cluster_cache()
-        if cached_cluster is not None:
-            if self._ask_yes_no(
-                "Use Cached Clusters",
-                "Most recent cluster assignments are available. Load them instead of reclustering?\n\n"
-                f"Method: {cached_cluster.get('method', 'unknown')}\n"
-                f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}",
-            ):
-                self.cluster_assignments = cached_cluster["assignments"]
-                self.status.showMessage("Loaded cached cluster assignments")
-                self.update_explorer_plot()
-                self.update_context_panel()
-                return
+        if cached_cluster is not None and self._ask_yes_no(
+            "Use Cached Clusters",
+            "Most recent cluster assignments are available. Load them instead of reclustering?\n\n"
+            f"Method: {cached_cluster.get('method', 'unknown')}\n"
+            f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}",
+        ):
+            self.cluster_assignments = cached_cluster["assignments"]
+            self.status.showMessage("Loaded cached cluster assignments")
+            self.update_explorer_plot()
+            self.update_context_panel()
+            return
 
         from .dialogs import ClusterDialog
 
@@ -3517,23 +3557,22 @@ class MainWindow(QMainWindow):
 
         db = ClassKitDB(self.db_path)
         cached_umap = db.get_most_recent_umap_cache()
-        if cached_umap is not None:
-            if self._ask_yes_no(
-                "Use Cached UMAP",
-                "Most recent UMAP projection is available. Load it instead of recomputing?\n\n"
-                f"Timestamp: {cached_umap.get('timestamp', 'unknown')}\n"
-                f"n_neighbors: {cached_umap.get('n_neighbors', 'unknown')}\n"
-                f"min_dist: {cached_umap.get('min_dist', 'unknown')}",
-            ):
-                self.umap_coords = cached_umap["coords"]
-                self.last_umap_params = {
-                    "n_neighbors": cached_umap.get("n_neighbors", 15),
-                    "min_dist": cached_umap.get("min_dist", 0.1),
-                }
-                self.status.showMessage("Loaded cached UMAP projection")
-                self.update_explorer_plot(force_fit=True)
-                self.update_context_panel()
-                return
+        if cached_umap is not None and self._ask_yes_no(
+            "Use Cached UMAP",
+            "Most recent UMAP projection is available. Load it instead of recomputing?\n\n"
+            f"Timestamp: {cached_umap.get('timestamp', 'unknown')}\n"
+            f"n_neighbors: {cached_umap.get('n_neighbors', 'unknown')}\n"
+            f"min_dist: {cached_umap.get('min_dist', 'unknown')}",
+        ):
+            self.umap_coords = cached_umap["coords"]
+            self.last_umap_params = {
+                "n_neighbors": cached_umap.get("n_neighbors", 15),
+                "min_dist": cached_umap.get("min_dist", 0.1),
+            }
+            self.status.showMessage("Loaded cached UMAP projection")
+            self.update_explorer_plot(force_fit=True)
+            self.update_context_panel()
+            return
 
         from ..jobs.task_workers import UMAPWorker
 
@@ -3550,17 +3589,264 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self._threadpool_start(worker)
 
-    def train_classifier(self):
-        """Open ClassKitTrainingDialog, export dataset, run training, offer publish."""
-        self._flush_pending_label_updates(force=True)
+    def _resolve_training_scheme(self):
+        """Load labeling scheme from project directory, or return None."""
+        if not self.project_path:
+            return None
+        try:
+            from ..config.schemas import LabelingScheme
 
+            scheme_path = self.project_path / "scheme.json"
+            if scheme_path.exists():
+                with open(scheme_path) as _f:
+                    return LabelingScheme.from_dict(json.load(_f))
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Failed to load scheme.json; proceeding without scheme",
+                exc_info=True,
+            )
+        return None
+
+    def _make_training_spec(self, settings, role, mode, is_yolo, dataset_dir):
+        """Build a TrainingRunSpec from dialog settings."""
+        import dataclasses
+
+        from ...training.contracts import (
+            AugmentationProfile,
+            CustomCNNParams,
+            TinyHeadTailParams,
+            TrainingHyperParams,
+            TrainingRunSpec,
+        )
+
+        aug = AugmentationProfile(
+            enabled=True,
+            flipud=settings.get("flipud", 0.0),
+            fliplr=settings.get("fliplr", 0.5),
+            rotate=settings.get("rotate", 0.0),
+            label_expansion=settings.get("label_expansion") or {},
+        )
+
+        spec = TrainingRunSpec(
+            role=role,
+            source_datasets=[],
+            derived_dataset_dir=str(dataset_dir),
+            base_model=settings.get("base_model", "") if is_yolo else "",
+            hyperparams=TrainingHyperParams(
+                epochs=settings.get("epochs", 50),
+                batch=settings.get("batch", 32),
+                lr0=settings.get("lr", 0.001),
+                patience=settings.get("patience", 10),
+            ),
+            tiny_params=TinyHeadTailParams(
+                epochs=settings.get("epochs", 50),
+                batch=settings.get("batch", 32),
+                lr=settings.get("lr", 0.001),
+                patience=settings.get("patience", 10),
+                hidden_layers=settings.get("tiny_layers", 1),
+                hidden_dim=settings.get("tiny_dim", 64),
+                dropout=settings.get("tiny_dropout", 0.2),
+                input_width=settings.get("tiny_width", 128),
+                input_height=settings.get("tiny_height", 64),
+                class_rebalance_mode=settings.get("tiny_rebalance_mode", "none"),
+                class_rebalance_power=settings.get("tiny_rebalance_power", 1.0),
+                label_smoothing=settings.get("tiny_label_smoothing", 0.0),
+            ),
+            device=settings.get("device", "cpu"),
+            training_space="original",
+            augmentation_profile=aug,
+        )
+        if mode in ("flat_custom", "multihead_custom"):
+            spec = dataclasses.replace(
+                spec,
+                custom_params=CustomCNNParams(
+                    backbone=settings.get("custom_backbone", "tinyclassifier"),
+                    trainable_layers=settings.get("custom_trainable_layers", 0),
+                    backbone_lr_scale=settings.get("custom_backbone_lr_scale", 0.1),
+                    input_size=settings.get("custom_input_size", 224),
+                    epochs=settings.get("epochs", 50),
+                    batch=settings.get("batch", 32),
+                    lr=settings.get("lr", 1e-3),
+                    patience=settings.get("patience", 10),
+                    weight_decay=1e-2,
+                    label_smoothing=settings.get("tiny_label_smoothing", 0.0),
+                    class_rebalance_mode=settings.get("tiny_rebalance_mode", "none"),
+                    class_rebalance_power=settings.get("tiny_rebalance_power", 1.0),
+                ),
+            )
+        return spec
+
+    def _save_training_results_to_db(self, results, mode, labels_str):
+        """Persist training results to the project model cache DB."""
+        if not self.db_path or not results:
+            return
+        try:
+            from ..store.db import ClassKitDB as _CKDb
+
+            _db = _CKDb(self.db_path)
+            artifact_paths = [
+                r.get("artifact_path", "")
+                for r in results
+                if r.get("artifact_path") and Path(r["artifact_path"]).exists()
+            ]
+            if not artifact_paths:
+                return
+            all_classes = sorted(set(labels_str))
+            acc_values = []
+            for r in results:
+                value = r.get("best_val_acc")
+                if value is None:
+                    continue
+                try:
+                    acc_values.append(float(value))
+                except Exception:
+                    continue
+            best_acc = max(acc_values) if acc_values else None
+            _db.save_model_cache(
+                mode=mode,
+                artifact_paths=artifact_paths,
+                class_names=all_classes,
+                best_val_acc=best_acc,
+                num_classes=len(all_classes),
+            )
+        except Exception:
+            pass  # non-fatal
+
+    def _run_post_training_inference(
+        self, results, is_yolo, multi_head, labels_str, dialog, on_done
+    ):
+        """Dispatch inference after training completes."""
+        if not results:
+            return
+        artifact = results[0].get("artifact_path", "")
+        if not artifact or not Path(artifact).exists():
+            return
+
+        if is_yolo:
+            if multi_head:
+                all_artifacts = [
+                    Path(r["artifact_path"])
+                    for r in results
+                    if r.get("artifact_path") and Path(r["artifact_path"]).exists()
+                ]
+                self._active_model_mode = "yolo_multihead"
+                dialog.append_log(
+                    f"Running multi-head YOLO inference ({len(all_artifacts)} models)..."
+                )
+                self._run_multihead_yolo_inference(all_artifacts, on_success=on_done)
+            else:
+                self._yolo_model_path = Path(artifact)
+                self._active_model_mode = "yolo"
+                dialog.append_log(f"Running YOLO inference: {Path(artifact).name}...")
+                self._run_yolo_inference(Path(artifact), on_success=on_done)
+        else:
+            # Custom CNN or Tiny CNN .pth -- dispatch based on arch field
+            import torch as _torch
+
+            _ckpt = _torch.load(str(artifact), map_location="cpu", weights_only=False)
+            _arch = (
+                _ckpt.get("arch", "tinyclassifier")
+                if isinstance(_ckpt, dict)
+                else "tinyclassifier"
+            )
+            _class_names = _ckpt.get("class_names") or sorted(set(labels_str))
+            self._active_model_mode = "tiny"
+            if _arch != "tinyclassifier":
+                _sz = _ckpt.get("input_size", (224, 224))
+                _sz = _sz[0] if isinstance(_sz, (list, tuple)) else int(_sz)
+                dialog.append_log(
+                    f"Running Custom CNN inference ({_arch}): {Path(artifact).name}..."
+                )
+                self._run_torchvision_inference(
+                    Path(artifact),
+                    class_names=_class_names,
+                    input_size=_sz,
+                    on_success=on_done,
+                )
+            else:
+                dialog.append_log(
+                    f"Running tiny CNN inference: {Path(artifact).name}..."
+                )
+                self._run_tiny_inference(
+                    Path(artifact),
+                    class_names=_class_names,
+                    on_success=on_done,
+                )
+
+    def _publish_training_results(self, dialog, scheme, scheme_name):
+        """Publish trained model artifacts to the models directory."""
+        results = getattr(dialog, "_train_results", None) or []
+        settings = dialog.get_settings()
+        mode = settings.get("mode") or "flat_tiny"
+        is_yolo = "yolo" in mode
+        multi_head = mode.startswith("multihead")
+        role_map = {
+            "flat_tiny": "classify_flat_tiny",
+            "flat_yolo": "classify_flat_yolo",
+            "multihead_tiny": "classify_multihead_tiny",
+            "multihead_yolo": "classify_multihead_yolo",
+            "flat_custom": "classify_flat_custom",
+            "multihead_custom": "classify_multihead_custom",
+        }
+        from ...training.contracts import TrainingRole
+        from ...training.model_publish import publish_trained_model
+
+        role_val = role_map.get(mode, "classify_flat_tiny")
+        role = TrainingRole(role_val)
+        for fi, result in enumerate(results):
+            artifact = result.get("artifact_path", "")
+            if not artifact:
+                continue
+            try:
+                publish_trained_model(
+                    role=role,
+                    artifact_path=artifact,
+                    size="tiny" if "tiny" in mode else "n",
+                    species=(
+                        self.project_path.name if self.project_path else "species"
+                    ),
+                    model_info=mode,
+                    trained_from_run_id="",
+                    dataset_fingerprint="",
+                    base_model=settings.get("base_model", "") if is_yolo else "",
+                    scheme_name=scheme_name,
+                    factor_index=fi if multi_head else None,
+                    factor_name=(
+                        scheme.factors[fi].name if (multi_head and scheme) else None
+                    ),
+                )
+                from pathlib import Path as _Path
+
+                dialog.append_log(f"Published: {_Path(artifact).name}")
+
+                # Copy single-head YOLO model to project models/ as the "official" latest
+                if is_yolo and not multi_head and fi == 0 and self.project_path:
+                    try:
+                        import shutil
+
+                        model_dir = self.project_path / "models"
+                        model_dir.mkdir(parents=True, exist_ok=True)
+                        dest = model_dir / "yolo_classifier_latest.pt"
+                        shutil.copy2(artifact, dest)
+                        self._yolo_model_path = dest
+                        dialog.append_log(f"Saved to project models: {dest.name}")
+                    except Exception as copy_exc:
+                        dialog.append_log(f"Model copy warning: {copy_exc}")
+
+            except Exception as exc:
+                dialog.append_log(f"Publish error: {exc}")
+
+    def _validate_training_pairs(self):
+        """Return labeled training pairs when training preconditions are satisfied."""
         if self.embeddings is None:
             QMessageBox.warning(
                 self,
                 "No Embeddings",
                 "Compute embeddings before training.",
             )
-            return
+            return None
 
         labeled_pairs = [
             (p, l) for p, l in zip(self.image_paths, self.image_labels) if l
@@ -3571,26 +3857,264 @@ class MainWindow(QMainWindow):
                 "Not Enough Labels",
                 "Need at least 4 labeled images.",
             )
+            return None
+        return labeled_pairs
+
+    @staticmethod
+    def _training_role_for_mode(mode):
+        """Resolve the training role enum for the selected training mode."""
+        from ...training.contracts import TrainingRole
+
+        role_map = {
+            "flat_tiny": TrainingRole.CLASSIFY_FLAT_TINY,
+            "flat_yolo": TrainingRole.CLASSIFY_FLAT_YOLO,
+            "multihead_tiny": TrainingRole.CLASSIFY_MULTIHEAD_TINY,
+            "multihead_yolo": TrainingRole.CLASSIFY_MULTIHEAD_YOLO,
+            "flat_custom": TrainingRole.CLASSIFY_FLAT_CUSTOM,
+            "multihead_custom": TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
+        }
+        return role_map.get(mode, TrainingRole.CLASSIFY_FLAT_TINY)
+
+    @staticmethod
+    def _prepare_training_labels(labeled_pairs):
+        """Convert labeled string labels into image paths and integer class ids."""
+        from pathlib import Path
+
+        images = [Path(path) for path, _ in labeled_pairs]
+        labels_str = [label for _, label in labeled_pairs]
+        unique = sorted(set(labels_str))
+        label_map_int = {label: i for i, label in enumerate(unique)}
+        int_labels = [label_map_int[label] for label in labels_str]
+        class_names_int = {i: label for label, i in label_map_int.items()}
+        return images, labels_str, int_labels, class_names_int
+
+    def _build_training_context(self, dialog, labeled_pairs):
+        """Build the immutable context used across export, train, and inference."""
+        from pathlib import Path
+
+        settings = dialog.get_settings()
+        self._last_training_settings = dict(settings)
+        mode = settings.get("mode") or "flat_tiny"
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        project_path = Path(self.project_path) if self.project_path else Path.cwd()
+        run_dir = project_path / ".classkit_runs" / f"{mode}_{timestamp}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        images, labels_str, int_labels, class_names_int = self._prepare_training_labels(
+            labeled_pairs
+        )
+        return {
+            "settings": settings,
+            "mode": mode,
+            "is_yolo": "yolo" in mode,
+            "multi_head": mode.startswith("multihead"),
+            "role": self._training_role_for_mode(mode),
+            "run_dir": run_dir,
+            "images": images,
+            "labels_str": labels_str,
+            "int_labels": int_labels,
+            "class_names_int": class_names_int,
+        }
+
+    def _build_training_specs(self, context, scheme):
+        """Build one or more training specs for the chosen training mode."""
+        settings = context["settings"]
+        role = context["role"]
+        mode = context["mode"]
+        is_yolo = context["is_yolo"]
+        run_dir = context["run_dir"]
+
+        if context["multi_head"] and scheme is not None:
+            return [
+                self._make_training_spec(
+                    settings,
+                    role,
+                    mode,
+                    is_yolo,
+                    run_dir / f"export_f{fi}",
+                )
+                for fi in range(len(scheme.factors))
+            ]
+        return [
+            self._make_training_spec(
+                settings,
+                role,
+                mode,
+                is_yolo,
+                run_dir / "export",
+            )
+        ]
+
+    def _on_training_progress(self, dialog, pct: int, msg: str) -> None:
+        """Update the training dialog progress UI from worker callbacks."""
+        if pct >= 0:
+            dialog.progress_bar.setValue(pct)
+        if msg:
+            dialog.append_log(msg)
+
+    def _on_training_error(self, dialog, err: str) -> None:
+        """Restore dialog controls after a training/export failure."""
+        dialog.append_log(f"ERROR: {err}")
+        dialog.start_btn.setEnabled(True)
+        dialog.cancel_btn.setEnabled(False)
+
+    def _after_training_inference(self, dialog, _result=None) -> None:
+        """Refresh metrics and model-space plots after post-training inference."""
+        self._evaluate_model_on_labeled()
+        dialog.append_log("Inference complete — Metrics tab updated.")
+        dialog.append_log("Auto-computing model-space UMAP...")
+        QTimer.singleShot(100, self._replot_umap_model_space)
+
+    def _on_training_success(self, dialog, context, results: list) -> None:
+        """Handle successful training completion before post-training inference."""
+        dialog._train_results = results
+        dialog.publish_btn.setEnabled(True)
+        dialog.append_log("Training complete.")
+        dialog.start_btn.setEnabled(True)
+        dialog.cancel_btn.setEnabled(False)
+
+        self._save_training_results_to_db(
+            results, context["mode"], context["labels_str"]
+        )
+        self._run_post_training_inference(
+            results,
+            context["is_yolo"],
+            context["multi_head"],
+            context["labels_str"],
+            dialog,
+            lambda result: self._after_training_inference(dialog, result),
+        )
+
+    def _on_training_export_success(self, dialog, context, scheme, _result) -> None:
+        """Start the actual training worker after dataset export finishes."""
+        from ..jobs.task_workers import ClassKitTrainingWorker
+
+        specs = self._build_training_specs(context, scheme)
+        train_worker = ClassKitTrainingWorker(
+            role=context["role"],
+            specs=specs,
+            run_dir=str(context["run_dir"]),
+            multi_head=context["multi_head"],
+        )
+        dialog._worker = train_worker
+        train_worker.signals.progress.connect(
+            lambda pct, msg: self._on_training_progress(dialog, pct, msg)
+        )
+        train_worker.signals.success.connect(
+            lambda results: self._on_training_success(dialog, context, results)
+        )
+        train_worker.signals.error.connect(
+            lambda err: self._on_training_error(dialog, err)
+        )
+        self._threadpool_start(train_worker)
+
+    @staticmethod
+    def _decode_factor_labels(scheme, labels_str, factor_index: int) -> list[str]:
+        """Decode one factor's labels from the composite label strings."""
+        return [scheme.decode_label(label)[factor_index] for label in labels_str]
+
+    def _create_multihead_export_worker(self, context, scheme):
+        """Create a background worker that exports one dataset per scheme factor."""
+        from pathlib import Path as _Path
+
+        from ..jobs.task_workers import ExportWorker
+
+        outer_self = self
+        exp_label_expansion = context["settings"].get("label_expansion") or {}
+
+        class MultiHeadExportWorker(ExportWorker):
+            def __init__(self, *args, **kwargs):
+                self.scheme = kwargs.pop("scheme")
+                self.labels_str = kwargs.pop("labels_str")
+                super().__init__(*args, **kwargs)
+
+            @Slot()
+            def run(self):
+                try:
+                    self.signals.started.emit()
+                    for fi, _factor in enumerate(self.scheme.factors):
+                        self.signals.progress.emit(0, f"Exporting factor {fi}...")
+                        factor_labels = outer_self._decode_factor_labels(
+                            self.scheme, self.labels_str, fi
+                        )
+                        unique = sorted(set(factor_labels))
+                        label_map = {label: i for i, label in enumerate(unique)}
+                        factor_int = [label_map[label] for label in factor_labels]
+                        factor_names = {i: label for label, i in label_map.items()}
+
+                        factor_dir = _Path(self.output_path) / f"export_f{fi}"
+                        sub_worker = ExportWorker(
+                            image_paths=self.image_paths,
+                            labels=factor_int,
+                            output_path=factor_dir,
+                            format="ultralytics",
+                            class_names=factor_names,
+                            val_fraction=self.val_fraction,
+                            label_expansion=exp_label_expansion,
+                        )
+                        sub_worker.run()
+
+                    self.signals.success.emit({})
+                except Exception as exc:
+                    self.signals.error.emit(str(exc))
+                finally:
+                    self.signals.finished.emit()
+
+        return MultiHeadExportWorker(
+            image_paths=context["images"],
+            labels=[0] * len(context["images"]),
+            output_path=context["run_dir"],
+            format="ultralytics",
+            val_fraction=context["settings"].get("val_fraction", 0.2),
+            scheme=scheme,
+            labels_str=context["labels_str"],
+        )
+
+    def _create_training_export_worker(self, context, scheme):
+        """Create the export worker used before training begins."""
+        from ..jobs.task_workers import ExportWorker
+
+        if context["multi_head"] and scheme is not None:
+            return self._create_multihead_export_worker(context, scheme)
+        return ExportWorker(
+            image_paths=context["images"],
+            labels=context["int_labels"],
+            output_path=context["run_dir"] / "export",
+            format="ultralytics",
+            class_names=context["class_names_int"],
+            val_fraction=context["settings"].get("val_fraction", 0.2),
+            label_expansion=context["settings"].get("label_expansion") or {},
+        )
+
+    def _start_training_from_dialog(self, dialog, labeled_pairs, scheme) -> None:
+        """Start dataset export for the training dialog's current settings."""
+        context = self._build_training_context(dialog, labeled_pairs)
+        worker = self._create_training_export_worker(context, scheme)
+        dialog._worker = worker
+        worker.signals.progress.connect(
+            lambda pct, msg: self._on_training_progress(dialog, pct, msg)
+        )
+        worker.signals.success.connect(
+            lambda result: self._on_training_export_success(
+                dialog, context, scheme, result
+            )
+        )
+        worker.signals.error.connect(lambda err: self._on_training_error(dialog, err))
+
+        dialog.start_btn.setEnabled(False)
+        dialog.cancel_btn.setEnabled(True)
+        dialog.append_log("Starting dataset export...")
+        self._threadpool_start(worker)
+
+    def train_classifier(self):
+        """Open ClassKitTrainingDialog, export dataset, run training, offer publish."""
+        self._flush_pending_label_updates(force=True)
+
+        labeled_pairs = self._validate_training_pairs()
+        if not labeled_pairs:
             return
 
-        # Resolve scheme from project directory (if present)
-        scheme = None
-        if self.project_path:
-            try:
-                from ..config.schemas import LabelingScheme
-
-                scheme_path = self.project_path / "scheme.json"
-                if scheme_path.exists():
-                    with open(scheme_path) as _f:
-                        scheme = LabelingScheme.from_dict(json.load(_f))
-            except Exception:
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "Failed to load scheme.json; proceeding without scheme",
-                    exc_info=True,
-                )
-                scheme = None
+        scheme = self._resolve_training_scheme()
 
         from .dialogs import ClassKitTrainingDialog
 
@@ -3605,417 +4129,14 @@ class MainWindow(QMainWindow):
             parent=self,
         )
 
-        def _do_train():
-            from pathlib import Path as _Path
-
-            from ...training.contracts import (
-                AugmentationProfile,
-                TinyHeadTailParams,
-                TrainingHyperParams,
-                TrainingRole,
-                TrainingRunSpec,
-            )
-            from ..jobs.task_workers import ClassKitTrainingWorker, ExportWorker
-
-            settings = dialog.get_settings()
-            # Persist latest training settings so post-train inference reuses
-            # the selected training device/runtime choices.
-            self._last_training_settings = dict(settings)
-            mode = settings.get("mode") or "flat_tiny"
-            is_yolo = "yolo" in mode
-            multi_head = mode.startswith("multihead")
-
-            role_map = {
-                "flat_tiny": TrainingRole.CLASSIFY_FLAT_TINY,
-                "flat_yolo": TrainingRole.CLASSIFY_FLAT_YOLO,
-                "multihead_tiny": TrainingRole.CLASSIFY_MULTIHEAD_TINY,
-                "multihead_yolo": TrainingRole.CLASSIFY_MULTIHEAD_YOLO,
-                "flat_custom": TrainingRole.CLASSIFY_FLAT_CUSTOM,
-                "multihead_custom": TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
-            }
-            role = role_map.get(mode, TrainingRole.CLASSIFY_FLAT_TINY)
-
-            project_path = (
-                _Path(self.project_path) if self.project_path else _Path.cwd()
-            )
-
-            # Use a unique run directory for this training session
-            timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-            run_dir = project_path / ".classkit_runs" / f"{mode}_{timestamp}"
-            run_dir.mkdir(parents=True, exist_ok=True)
-
-            images = [_Path(p) for p, _ in labeled_pairs]
-            labels_str = [lbl for _, lbl in labeled_pairs]
-            unique = sorted(set(labels_str))
-            label_map_int = {s: i for i, s in enumerate(unique)}
-            int_labels = [label_map_int[lbl] for lbl in labels_str]
-            class_names_int = {i: s for s, i in label_map_int.items()}
-
-            def _make_spec(dataset_dir):
-                import dataclasses
-
-                from ...training.contracts import CustomCNNParams
-
-                aug = AugmentationProfile(
-                    enabled=True,
-                    flipud=settings.get("flipud", 0.0),
-                    fliplr=settings.get("fliplr", 0.5),
-                    rotate=settings.get("rotate", 0.0),
-                    label_expansion=settings.get("label_expansion") or {},
-                )
-
-                spec = TrainingRunSpec(
-                    role=role,
-                    source_datasets=[],
-                    derived_dataset_dir=str(dataset_dir),
-                    base_model=settings.get("base_model", "") if is_yolo else "",
-                    hyperparams=TrainingHyperParams(
-                        epochs=settings.get("epochs", 50),
-                        batch=settings.get("batch", 32),
-                        lr0=settings.get("lr", 0.001),
-                        patience=settings.get("patience", 10),
-                    ),
-                    tiny_params=TinyHeadTailParams(
-                        epochs=settings.get("epochs", 50),
-                        batch=settings.get("batch", 32),
-                        lr=settings.get("lr", 0.001),
-                        patience=settings.get("patience", 10),
-                        hidden_layers=settings.get("tiny_layers", 1),
-                        hidden_dim=settings.get("tiny_dim", 64),
-                        dropout=settings.get("tiny_dropout", 0.2),
-                        input_width=settings.get("tiny_width", 128),
-                        input_height=settings.get("tiny_height", 64),
-                        class_rebalance_mode=settings.get(
-                            "tiny_rebalance_mode", "none"
-                        ),
-                        class_rebalance_power=settings.get("tiny_rebalance_power", 1.0),
-                        label_smoothing=settings.get("tiny_label_smoothing", 0.0),
-                    ),
-                    device=settings.get("device", "cpu"),
-                    training_space="original",
-                    augmentation_profile=aug,
-                )
-                if mode in ("flat_custom", "multihead_custom"):
-                    spec = dataclasses.replace(
-                        spec,
-                        custom_params=CustomCNNParams(
-                            backbone=settings.get("custom_backbone", "tinyclassifier"),
-                            trainable_layers=settings.get("custom_trainable_layers", 0),
-                            backbone_lr_scale=settings.get(
-                                "custom_backbone_lr_scale", 0.1
-                            ),
-                            input_size=settings.get("custom_input_size", 224),
-                            epochs=settings.get("epochs", 50),
-                            batch=settings.get("batch", 32),
-                            lr=settings.get("lr", 1e-3),
-                            patience=settings.get("patience", 10),
-                            weight_decay=1e-2,
-                            label_smoothing=settings.get("tiny_label_smoothing", 0.0),
-                            class_rebalance_mode=settings.get(
-                                "tiny_rebalance_mode", "none"
-                            ),
-                            class_rebalance_power=settings.get(
-                                "tiny_rebalance_power", 1.0
-                            ),
-                        ),
-                    )
-                return spec
-
-            # Start export → then chain to training
-            def _on_export_success(result):
-                specs = []
-                if multi_head and scheme is not None:
-                    # In multi-head, each factor gets its own spec pointing to its export folder
-                    for fi in range(len(scheme.factors)):
-                        factor_export_dir = run_dir / f"export_f{fi}"
-                        specs.append(_make_spec(factor_export_dir))
-                else:
-                    specs = [_make_spec(run_dir / "export")]
-
-                # Transition to training worker
-                train_worker = ClassKitTrainingWorker(
-                    role=role, specs=specs, run_dir=str(run_dir), multi_head=multi_head
-                )
-                dialog._worker = train_worker
-                train_worker.signals.progress.connect(_on_progress)
-                train_worker.signals.success.connect(_on_success)
-                train_worker.signals.error.connect(_on_error)
-                self._threadpool_start(train_worker)
-
-            def _on_progress(pct: int, msg: str) -> None:
-                if pct >= 0:
-                    dialog.progress_bar.setValue(pct)
-                if msg:
-                    dialog.append_log(msg)
-
-            def _on_success(results: list) -> None:
-                dialog._train_results = results
-                dialog.publish_btn.setEnabled(True)
-                dialog.append_log("Training complete.")
-                dialog.start_btn.setEnabled(True)
-                dialog.cancel_btn.setEnabled(False)
-
-                # ── Save to project model cache (DB) ──────────────────
-                if self.db_path and results:
-                    try:
-                        from ..store.db import ClassKitDB as _CKDb
-
-                        _db = _CKDb(self.db_path)
-                        artifact_paths = [
-                            r.get("artifact_path", "")
-                            for r in results
-                            if r.get("artifact_path")
-                            and Path(r["artifact_path"]).exists()
-                        ]
-                        if artifact_paths:
-                            all_classes = sorted(set(labels_str))
-                            acc_values = []
-                            for r in results:
-                                value = r.get("best_val_acc")
-                                if value is None:
-                                    continue
-                                try:
-                                    acc_values.append(float(value))
-                                except Exception:
-                                    continue
-                            best_acc = max(acc_values) if acc_values else None
-                            _db.save_model_cache(
-                                mode=mode,
-                                artifact_paths=artifact_paths,
-                                class_names=all_classes,
-                                best_val_acc=best_acc,
-                                num_classes=len(all_classes),
-                            )
-                    except Exception:
-                        pass  # non-fatal
-
-                # ── Auto-run inference + UMAP post-training ───────────
-                def _post_inference_chain(r):
-                    """After inference: update metrics, auto-compute model UMAP."""
-                    self._evaluate_model_on_labeled()
-                    dialog.append_log("Inference complete — Metrics tab updated.")
-                    dialog.append_log("Auto-computing model-space UMAP...")
-                    QTimer.singleShot(100, self._replot_umap_model_space)
-
-                if results:
-                    artifact = results[0].get("artifact_path", "")
-                    if artifact and Path(artifact).exists():
-                        if is_yolo:
-                            if multi_head:
-                                all_artifacts = [
-                                    Path(r["artifact_path"])
-                                    for r in results
-                                    if r.get("artifact_path")
-                                    and Path(r["artifact_path"]).exists()
-                                ]
-                                self._active_model_mode = "yolo_multihead"
-                                dialog.append_log(
-                                    f"Running multi-head YOLO inference ({len(all_artifacts)} models)..."
-                                )
-                                self._run_multihead_yolo_inference(
-                                    all_artifacts, on_success=_post_inference_chain
-                                )
-                            else:
-                                self._yolo_model_path = Path(artifact)
-                                self._active_model_mode = "yolo"
-                                dialog.append_log(
-                                    f"Running YOLO inference: {Path(artifact).name}..."
-                                )
-                                self._run_yolo_inference(
-                                    Path(artifact), on_success=_post_inference_chain
-                                )
-                        else:
-                            # Custom CNN or Tiny CNN .pth — dispatch based on arch field
-                            import torch as _torch
-
-                            _ckpt = _torch.load(
-                                str(artifact), map_location="cpu", weights_only=False
-                            )
-                            _arch = (
-                                _ckpt.get("arch", "tinyclassifier")
-                                if isinstance(_ckpt, dict)
-                                else "tinyclassifier"
-                            )
-                            _class_names = _ckpt.get("class_names") or sorted(
-                                set(labels_str)
-                            )
-                            self._active_model_mode = "tiny"
-                            if _arch != "tinyclassifier":
-                                _sz = _ckpt.get("input_size", (224, 224))
-                                _sz = (
-                                    _sz[0]
-                                    if isinstance(_sz, (list, tuple))
-                                    else int(_sz)
-                                )
-                                dialog.append_log(
-                                    f"Running Custom CNN inference ({_arch}): {Path(artifact).name}..."
-                                )
-                                self._run_torchvision_inference(
-                                    Path(artifact),
-                                    class_names=_class_names,
-                                    input_size=_sz,
-                                    on_success=_post_inference_chain,
-                                )
-                            else:
-                                dialog.append_log(
-                                    f"Running tiny CNN inference: {Path(artifact).name}..."
-                                )
-                                self._run_tiny_inference(
-                                    Path(artifact),
-                                    class_names=_class_names,
-                                    on_success=_post_inference_chain,
-                                )
-
-            def _on_error(err: str) -> None:
-                dialog.append_log(f"ERROR: {err}")
-                dialog.start_btn.setEnabled(True)
-                dialog.cancel_btn.setEnabled(False)
-
-            # Determine export path and mode
-            if multi_head and scheme is not None:
-                # Multi-head export is special: one folder per factor
-                # For now, let's keep it simple and implement multi-head export in a loop or specialized worker
-                # (Re-using logic from the old _do_train but in background)
-                _exp_label_expansion = settings.get("label_expansion") or {}
-
-                class MultiHeadExportWorker(ExportWorker):
-                    def __init__(self, *args, **kwargs):
-                        self.scheme = kwargs.pop("scheme")
-                        self.labels_str = kwargs.pop("labels_str")
-                        super().__init__(*args, **kwargs)
-
-                    @Slot()
-                    def run(self):
-                        try:
-                            self.signals.started.emit()
-                            for fi, factor in enumerate(self.scheme.factors):
-                                self.signals.progress.emit(
-                                    0, f"Exporting factor {fi}..."
-                                )
-                                f_labels_str = [
-                                    self.scheme.decode_label(lbl)[fi]
-                                    for lbl in self.labels_str
-                                ]
-                                f_unique = sorted(set(f_labels_str))
-                                f_map = {s: i for i, s in enumerate(f_unique)}
-                                f_int = [f_map[lbl] for lbl in f_labels_str]
-                                f_names = {i: s for s, i in f_map.items()}
-
-                                factor_dir = _Path(self.output_path) / f"export_f{fi}"
-                                sub_worker = ExportWorker(
-                                    image_paths=self.image_paths,
-                                    labels=f_int,
-                                    output_path=factor_dir,
-                                    format="ultralytics",
-                                    class_names=f_names,
-                                    val_fraction=self.val_fraction,
-                                    label_expansion=_exp_label_expansion,
-                                )
-                                # Run synchronously within this thread
-                                sub_worker.run()
-
-                            self.signals.success.emit({})
-                        except Exception as e:
-                            self.signals.error.emit(str(e))
-                        finally:
-                            self.signals.finished.emit()
-
-                worker = MultiHeadExportWorker(
-                    image_paths=images,
-                    labels=[0] * len(images),  # unused
-                    output_path=run_dir,
-                    format="ultralytics",
-                    val_fraction=settings.get("val_fraction", 0.2),
-                    scheme=scheme,
-                    labels_str=labels_str,
-                )
-            else:
-                worker = ExportWorker(
-                    image_paths=images,
-                    labels=int_labels,
-                    output_path=run_dir / "export",
-                    format="ultralytics",
-                    class_names=class_names_int,
-                    val_fraction=settings.get("val_fraction", 0.2),
-                    label_expansion=settings.get("label_expansion") or {},
-                )
-
-            dialog._worker = worker
-            worker.signals.progress.connect(_on_progress)
-            worker.signals.success.connect(_on_export_success)
-            worker.signals.error.connect(_on_error)
-
-            dialog.start_btn.setEnabled(False)
-            dialog.cancel_btn.setEnabled(True)
-            dialog.append_log("Starting dataset export...")
-            self._threadpool_start(worker)
-
         scheme_name = scheme.name if scheme else "classkit"
 
-        def _on_publish():
-            results = getattr(dialog, "_train_results", None) or []
-            settings = dialog.get_settings()
-            mode = settings.get("mode") or "flat_tiny"
-            is_yolo = "yolo" in mode
-            multi_head = mode.startswith("multihead")
-            role_map = {
-                "flat_tiny": "classify_flat_tiny",
-                "flat_yolo": "classify_flat_yolo",
-                "multihead_tiny": "classify_multihead_tiny",
-                "multihead_yolo": "classify_multihead_yolo",
-                "flat_custom": "classify_flat_custom",
-                "multihead_custom": "classify_multihead_custom",
-            }
-            from ...training.contracts import TrainingRole
-            from ...training.model_publish import publish_trained_model
-
-            role_val = role_map.get(mode, "classify_flat_tiny")
-            role = TrainingRole(role_val)
-            for fi, result in enumerate(results):
-                artifact = result.get("artifact_path", "")
-                if not artifact:
-                    continue
-                try:
-                    publish_trained_model(
-                        role=role,
-                        artifact_path=artifact,
-                        size="tiny" if "tiny" in mode else "n",
-                        species=(
-                            self.project_path.name if self.project_path else "species"
-                        ),
-                        model_info=mode,
-                        trained_from_run_id="",
-                        dataset_fingerprint="",
-                        base_model=settings.get("base_model", "") if is_yolo else "",
-                        scheme_name=scheme_name,
-                        factor_index=fi if multi_head else None,
-                        factor_name=(
-                            scheme.factors[fi].name if (multi_head and scheme) else None
-                        ),
-                    )
-                    from pathlib import Path as _Path
-
-                    dialog.append_log(f"Published: {_Path(artifact).name}")
-
-                    # Copy single-head YOLO model to project models/ as the "official" latest
-                    if is_yolo and not multi_head and fi == 0 and self.project_path:
-                        try:
-                            import shutil
-
-                            model_dir = self.project_path / "models"
-                            model_dir.mkdir(parents=True, exist_ok=True)
-                            dest = model_dir / "yolo_classifier_latest.pt"
-                            shutil.copy2(artifact, dest)
-                            self._yolo_model_path = dest
-                            dialog.append_log(f"Saved to project models: {dest.name}")
-                        except Exception as copy_exc:
-                            dialog.append_log(f"Model copy warning: {copy_exc}")
-
-                except Exception as exc:
-                    dialog.append_log(f"Publish error: {exc}")
-
-        dialog.start_btn.clicked.connect(_do_train)
-        dialog.publish_btn.clicked.connect(_on_publish)
+        dialog.start_btn.clicked.connect(
+            lambda: self._start_training_from_dialog(dialog, labeled_pairs, scheme)
+        )
+        dialog.publish_btn.clicked.connect(
+            lambda: self._publish_training_results(dialog, scheme, scheme_name)
+        )
         dialog.exec()
 
     def export_dataset(self):
@@ -4127,6 +4248,135 @@ class MainWindow(QMainWindow):
 
         self._load_checkpoint_from_path(selected_path)
 
+    def _load_embedding_head_checkpoint(self, path: Path, ckpt) -> None:
+        """Load a classic embedding-head checkpoint and recompute predictions."""
+        from ..train.trainer import EmbeddingHeadTrainer
+
+        input_dim = (
+            int(self.embeddings.shape[1]) if self.embeddings is not None else 768
+        )
+        trainer = EmbeddingHeadTrainer(
+            model_type=ckpt.get("model_type", "linear"),
+            input_dim=input_dim,
+            num_classes=max(2, len(self.classes)),
+            device=(self._last_training_settings or {}).get("device", "cpu"),
+        )
+        trainer.load(path)
+        self._trained_classifier = trainer
+        self.status.showMessage(f"Loaded embedding head: {path.name}")
+
+        if self.embeddings is not None:
+            probs = trainer.predict_proba(self.embeddings, calibrated=True)
+            self._model_probs = probs
+            self._model_class_names = list(self.classes)
+            self.umap_model_coords = None
+            self.pca_model_coords = None
+            self._show_model_umap = False
+            self._show_model_pca = False
+            self.btn_umap_embedding.setChecked(True)
+            self.btn_umap_model.setChecked(False)
+            if hasattr(self, "btn_pca_model"):
+                self.btn_pca_model.setChecked(False)
+            self.image_confidences = list(probs.max(axis=1).astype(float))
+            self.update_explorer_plot()
+            self._set_model_projection_buttons_enabled(True)
+            self._update_al_status()
+            self._evaluate_model_on_labeled()
+            QTimer.singleShot(100, self._replot_umap_model_space)
+
+        QMessageBox.information(
+            self, "Checkpoint Loaded", f"Loaded embedding head: {path.name}"
+        )
+
+    def _cached_model_class_names(self, path: Path):
+        """Look up class names stored alongside a cached model artifact in the DB."""
+        if not self.db_path:
+            return None
+        try:
+            from ..store.db import ClassKitDB as _CKDb
+
+            for entry in _CKDb(self.db_path).list_model_caches():
+                if str(path) in entry.get("artifact_paths", []):
+                    return entry.get("class_names")
+        except Exception:
+            return None
+        return None
+
+    def _load_custom_cnn_checkpoint(self, path: Path, ckpt) -> None:
+        """Load a torchvision custom CNN checkpoint and run inference."""
+        ckpt_names = ckpt.get("class_names")
+        input_size = ckpt.get("input_size", (224, 224))
+        size = (
+            input_size[0] if isinstance(input_size, (list, tuple)) else int(input_size)
+        )
+        arch = (
+            ckpt.get("arch", "tinyclassifier")
+            if isinstance(ckpt, dict)
+            else "tinyclassifier"
+        )
+        resolved = ckpt_names or list(self.classes)
+        self._active_model_mode = "custom_cnn"
+        self.status.showMessage(f"Loading Custom CNN ({arch}): {path.name}...")
+        self._run_torchvision_inference(
+            path,
+            class_names=resolved,
+            input_size=size,
+            on_success=lambda result: (
+                self._evaluate_model_on_labeled(),
+                QTimer.singleShot(100, self._replot_umap_model_space),
+                QMessageBox.information(
+                    self,
+                    "Custom CNN Loaded",
+                    f"Loaded: {path.name}\n"
+                    f"Inference on {len(self.image_paths):,} images complete.\n"
+                    "Metrics tab updated. Model UMAP computing...",
+                ),
+            ),
+        )
+
+    def _load_tiny_cnn_checkpoint(self, path: Path, ckpt) -> None:
+        """Load a tiny CNN checkpoint and run inference."""
+        ckpt_names = ckpt.get("class_names")
+        resolved = (
+            ckpt_names or self._cached_model_class_names(path) or list(self.classes)
+        )
+        self._active_model_mode = "tiny"
+        self.status.showMessage(f"Loading tiny CNN: {path.name}...")
+        self._run_tiny_inference(
+            path,
+            class_names=resolved,
+            on_success=lambda result: (
+                self._evaluate_model_on_labeled(),
+                QTimer.singleShot(100, self._replot_umap_model_space),
+                QMessageBox.information(
+                    self,
+                    "Tiny CNN Loaded",
+                    f"Loaded: {path.name}\n"
+                    f"Inference on {len(self.image_paths):,} images complete.\n"
+                    "Metrics tab updated. Model UMAP computing...",
+                ),
+            ),
+        )
+
+    def _load_yolo_checkpoint(self, path: Path) -> None:
+        """Load a YOLO classifier checkpoint and run inference."""
+        self._yolo_model_path = path
+        self.status.showMessage(f"Loading YOLO model: {path.name}...")
+        self._run_yolo_inference(
+            path,
+            on_success=lambda result: (
+                self._evaluate_model_on_labeled(),
+                QTimer.singleShot(100, self._replot_umap_model_space),
+                QMessageBox.information(
+                    self,
+                    "YOLO Model Loaded",
+                    f"Loaded: {path.name}\n"
+                    f"Inference on {len(self.image_paths):,} images complete.\n"
+                    "Metrics tab updated. Model UMAP is being computed automatically.",
+                ),
+            ),
+        )
+
     def _load_checkpoint_from_path(self, path: Path):
         """Load a checkpoint, auto-detecting YOLO vs embedding-head vs tiny CNN format."""
         try:
@@ -4138,46 +4388,7 @@ class MainWindow(QMainWindow):
             )
 
             if isinstance(ckpt, dict) and "model_state" in ckpt:
-                # ── Embedding head format ──────────────────────────────
-                from ..train.trainer import EmbeddingHeadTrainer
-
-                input_dim = (
-                    int(self.embeddings.shape[1])
-                    if self.embeddings is not None
-                    else 768
-                )
-                trainer = EmbeddingHeadTrainer(
-                    model_type=ckpt.get("model_type", "linear"),
-                    input_dim=input_dim,
-                    num_classes=max(2, len(self.classes)),
-                    device=(self._last_training_settings or {}).get("device", "cpu"),
-                )
-                trainer.load(path)
-                self._trained_classifier = trainer
-                self.status.showMessage(f"Loaded embedding head: {path.name}")
-
-                if self.embeddings is not None:
-                    probs = trainer.predict_proba(self.embeddings, calibrated=True)
-                    self._model_probs = probs
-                    self._model_class_names = list(self.classes)
-                    self.umap_model_coords = None
-                    self.pca_model_coords = None
-                    self._show_model_umap = False
-                    self._show_model_pca = False
-                    self.btn_umap_embedding.setChecked(True)
-                    self.btn_umap_model.setChecked(False)
-                    if hasattr(self, "btn_pca_model"):
-                        self.btn_pca_model.setChecked(False)
-                    self.image_confidences = list(probs.max(axis=1).astype(float))
-                    self.update_explorer_plot()
-                    self._set_model_projection_buttons_enabled(True)
-                    self._update_al_status()
-                    self._evaluate_model_on_labeled()
-                    QTimer.singleShot(100, self._replot_umap_model_space)
-
-                QMessageBox.information(
-                    self, "Checkpoint Loaded", f"Loaded embedding head: {path.name}"
-                )
+                self._load_embedding_head_checkpoint(path, ckpt)
             elif is_tiny_cnn:
                 arch = (
                     ckpt.get("arch", "tinyclassifier")
@@ -4185,85 +4396,11 @@ class MainWindow(QMainWindow):
                     else "tinyclassifier"
                 )
                 if arch != "tinyclassifier":
-                    # ── Torchvision Custom CNN format ──────────────────
-                    ckpt_names = ckpt.get("class_names")
-                    input_size = ckpt.get("input_size", (224, 224))
-                    sz = (
-                        input_size[0]
-                        if isinstance(input_size, (list, tuple))
-                        else int(input_size)
-                    )
-                    resolved = ckpt_names or list(self.classes)
-                    self._active_model_mode = "custom_cnn"
-                    self.status.showMessage(
-                        f"Loading Custom CNN ({arch}): {path.name}..."
-                    )
-                    self._run_torchvision_inference(
-                        path,
-                        class_names=resolved,
-                        input_size=sz,
-                        on_success=lambda r: (
-                            self._evaluate_model_on_labeled(),
-                            QTimer.singleShot(100, self._replot_umap_model_space),
-                            QMessageBox.information(
-                                self,
-                                "Custom CNN Loaded",
-                                f"Loaded: {path.name}\n"
-                                f"Inference on {len(self.image_paths):,} images complete.\n"
-                                "Metrics tab updated. Model UMAP computing...",
-                            ),
-                        ),
-                    )
+                    self._load_custom_cnn_checkpoint(path, ckpt)
                 else:
-                    # ── Tiny CNN format (arch == 'tinyclassifier' or arch absent) ─
-                    ckpt_names = ckpt.get("class_names")
-                    db_names = None
-                    if self.db_path:
-                        try:
-                            from ..store.db import ClassKitDB as _CKDb
-
-                            for _entry in _CKDb(self.db_path).list_model_caches():
-                                if str(path) in _entry.get("artifact_paths", []):
-                                    db_names = _entry.get("class_names")
-                                    break
-                        except Exception:
-                            pass
-                    resolved = ckpt_names or db_names or list(self.classes)
-                    self._active_model_mode = "tiny"
-                    self.status.showMessage(f"Loading tiny CNN: {path.name}...")
-                    self._run_tiny_inference(
-                        path,
-                        class_names=resolved,
-                        on_success=lambda r: (
-                            self._evaluate_model_on_labeled(),
-                            QTimer.singleShot(100, self._replot_umap_model_space),
-                            QMessageBox.information(
-                                self,
-                                "Tiny CNN Loaded",
-                                f"Loaded: {path.name}\n"
-                                f"Inference on {len(self.image_paths):,} images complete.\n"
-                                "Metrics tab updated. Model UMAP computing...",
-                            ),
-                        ),
-                    )
+                    self._load_tiny_cnn_checkpoint(path, ckpt)
             else:
-                # ── YOLO model format ──────────────────────────────────
-                self._yolo_model_path = path
-                self.status.showMessage(f"Loading YOLO model: {path.name}...")
-                self._run_yolo_inference(
-                    path,
-                    on_success=lambda r: (
-                        self._evaluate_model_on_labeled(),
-                        QTimer.singleShot(100, self._replot_umap_model_space),
-                        QMessageBox.information(
-                            self,
-                            "YOLO Model Loaded",
-                            f"Loaded: {path.name}\n"
-                            f"Inference on {len(self.image_paths):,} images complete.\n"
-                            "Metrics tab updated. Model UMAP is being computed automatically.",
-                        ),
-                    ),
-                )
+                self._load_yolo_checkpoint(path)
         except Exception as exc:
             QMessageBox.critical(
                 self,
@@ -4336,67 +4473,86 @@ class MainWindow(QMainWindow):
         )
         self.status.showMessage(f"Assigned label '{label}' to point {idx}")
 
+    def _advance_pool_index(self, pool, step: int) -> int | None:
+        """Advance within the current navigation pool with wraparound."""
+        if not pool:
+            return None
+        try:
+            current_pos = pool.index(self.selected_point_index)
+            return pool[(current_pos + step) % len(pool)]
+        except ValueError:
+            return pool[0]
+
+    def _advance_unlabeled_pool(self, pool, step: int):
+        """Advance to the next unlabeled candidate within the active pool."""
+        labels = self.image_labels or []
+        unlabeled = [i for i in pool if i >= len(labels) or not labels[i]]
+        if not unlabeled:
+            self.selected_point_index = None
+            self.hover_locked = False
+            self.request_update_explorer_selection(None)
+            return None, self._prompt_after_label_set_complete()
+
+        unlabeled_set = set(unlabeled)
+        try:
+            current_pos = pool.index(self.selected_point_index)
+        except ValueError:
+            current_pos = -1 if step > 0 else 0
+
+        for offset in range(1, len(pool) + 1):
+            idx = pool[(current_pos + step * offset) % len(pool)]
+            if idx in unlabeled_set:
+                return idx, None
+        return None, self._prompt_after_label_set_complete()
+
+    def _fallback_navigation_index(self, step: int) -> int | None:
+        """Advance linearly when no special candidate pool is active."""
+        if not self.image_paths:
+            return None
+        current = (
+            self.selected_point_index if self.selected_point_index is not None else 0
+        )
+        if step > 0:
+            return min(len(self.image_paths) - 1, current + 1)
+        return max(0, current - 1)
+
+    def _apply_navigation_selection(self, source: str) -> None:
+        """Refresh preview and explorer selection after moving to a new point."""
+        if self.selected_point_index is None:
+            return
+        self.hover_locked = True
+        self.request_preview_for_index(self.selected_point_index, source=source)
+        self.request_update_explorer_selection(self.selected_point_index)
+
+    def _navigate_selected_image(self, step: int, source: str):
+        """Shared next/previous navigation logic for both labeling and explore modes."""
+        if self.selected_point_index is None:
+            self.status.showMessage(
+                "No selected point; arrow keys are inactive until you click a point"
+            )
+            return None
+
+        next_action = None
+        pool = self._get_navigation_pool()
+        if pool:
+            if self.explorer_mode == "labeling":
+                self.selected_point_index, next_action = self._advance_unlabeled_pool(
+                    pool, step
+                )
+            else:
+                self.selected_point_index = self._advance_pool_index(pool, step)
+        else:
+            self.selected_point_index = self._fallback_navigation_index(step)
+
+        self._apply_navigation_selection(source)
+        return next_action
+
     def on_next_image(self):
         """Navigate to next candidate or point."""
         if not self._begin_command():
             return
-        next_action = None
         try:
-            if self.selected_point_index is None:
-                self.status.showMessage(
-                    "No selected point; arrow keys are inactive until you click a point"
-                )
-                return
-
-            pool = self._get_navigation_pool()
-            if pool:
-                if self.explorer_mode == "labeling":
-                    # In labeling mode only advance to unlabeled candidates.
-                    labels = self.image_labels or []
-                    unlabeled = [i for i in pool if i >= len(labels) or not labels[i]]
-                    unlabeled_set = set(unlabeled)
-                    if not unlabeled:
-                        # All candidates are labeled — prompt for next action.
-                        self.selected_point_index = None
-                        self.hover_locked = False
-                        self.request_update_explorer_selection(None)
-                        next_action = self._prompt_after_label_set_complete()
-                    else:
-                        # Find the next unlabeled item after the current position.
-                        try:
-                            current_pos = pool.index(self.selected_point_index)
-                        except ValueError:
-                            current_pos = -1
-                        # Walk forward from current_pos wrapping only within unlabeled.
-                        candidate = None
-                        for offset in range(1, len(pool) + 1):
-                            idx = pool[(current_pos + offset) % len(pool)]
-                            if idx in unlabeled_set:
-                                candidate = idx
-                                break
-                        if candidate is not None:
-                            self.selected_point_index = candidate
-                        else:
-                            self.selected_point_index = None
-                            self.hover_locked = False
-                            self.request_update_explorer_selection(None)
-                            next_action = self._prompt_after_label_set_complete()
-                        # else: all unlabeled already tried, handled by empty check above
-                else:
-                    try:
-                        current_pos = pool.index(self.selected_point_index)
-                        next_pos = (current_pos + 1) % len(pool)
-                    except ValueError:
-                        next_pos = 0
-                    self.selected_point_index = pool[next_pos]
-            else:
-                self.selected_point_index = min(
-                    len(self.image_paths) - 1, (self.selected_point_index or 0) + 1
-                )
-            if self.selected_point_index is not None:
-                self.hover_locked = True
-                self.request_preview_for_index(self.selected_point_index, source="next")
-                self.request_update_explorer_selection(self.selected_point_index)
+            next_action = self._navigate_selected_image(1, "next")
         finally:
             self._end_command(0.08)
 
@@ -4411,62 +4567,8 @@ class MainWindow(QMainWindow):
         """Navigate to previous candidate or point."""
         if not self._begin_command():
             return
-        next_action = None
         try:
-            if self.selected_point_index is None:
-                self.status.showMessage(
-                    "No selected point; arrow keys are inactive until you click a point"
-                )
-                return
-
-            pool = self._get_navigation_pool()
-            if pool:
-                if self.explorer_mode == "labeling":
-                    # In labeling mode only move through unlabeled candidates.
-                    labels = self.image_labels or []
-                    unlabeled = [i for i in pool if i >= len(labels) or not labels[i]]
-                    unlabeled_set = set(unlabeled)
-                    if not unlabeled:
-                        self.selected_point_index = None
-                        self.hover_locked = False
-                        self.request_update_explorer_selection(None)
-                        next_action = self._prompt_after_label_set_complete()
-                    else:
-                        try:
-                            current_pos = pool.index(self.selected_point_index)
-                        except ValueError:
-                            current_pos = 0
-                        candidate = None
-                        for offset in range(1, len(pool) + 1):
-                            idx = pool[(current_pos - offset) % len(pool)]
-                            if idx in unlabeled_set:
-                                candidate = idx
-                                break
-                        if candidate is not None:
-                            self.selected_point_index = candidate
-                        else:
-                            self.selected_point_index = None
-                            self.hover_locked = False
-                            self.request_update_explorer_selection(None)
-                            next_action = self._prompt_after_label_set_complete()
-                else:
-                    try:
-                        current_pos = pool.index(self.selected_point_index)
-                        prev_pos = (current_pos - 1) % len(pool)
-                    except ValueError:
-                        prev_pos = 0
-                    self.selected_point_index = pool[prev_pos]
-            else:
-                current = (
-                    self.selected_point_index
-                    if self.selected_point_index is not None
-                    else 0
-                )
-                self.selected_point_index = max(0, current - 1)
-            if self.selected_point_index is not None:
-                self.hover_locked = True
-                self.request_preview_for_index(self.selected_point_index, source="prev")
-                self.request_update_explorer_selection(self.selected_point_index)
+            next_action = self._navigate_selected_image(-1, "prev")
         finally:
             self._end_command(0.08)
 
@@ -4927,54 +5029,66 @@ class MainWindow(QMainWindow):
             self._active_model_mode = "tiny"
             self._run_tiny_inference(Path(paths[0]), class_names, on_success=_after)
 
+    def _labeled_eval_arrays(self):
+        """Return labeled indices and ground-truth class ids for evaluation."""
+        import numpy as np
+
+        labeled_indices = [i for i, lbl in enumerate(self.image_labels) if lbl]
+        if len(labeled_indices) < 2:
+            return None, None
+
+        class_to_id = {c: i for i, c in enumerate(self.classes)}
+        y_true = np.array(
+            [class_to_id.get(self.image_labels[i], -1) for i in labeled_indices]
+        )
+        valid = y_true >= 0
+        if valid.sum() < 2:
+            return None, None
+        return np.array(labeled_indices)[valid], y_true[valid]
+
+    def _aligned_eval_probs(self, idx_arr, probs_rows):
+        """Align model probability columns to the project's class order."""
+        import numpy as np
+
+        if self._model_class_names:
+            name_to_col = {
+                str(name): i for i, name in enumerate(self._model_class_names)
+            }
+            probs_subset = np.zeros(
+                (len(idx_arr), len(self.classes)), dtype=probs_rows.dtype
+            )
+            for target_col, class_name in enumerate(self.classes):
+                source_col = name_to_col.get(str(class_name))
+                if (
+                    source_col is not None
+                    and 0 <= int(source_col) < probs_rows.shape[1]
+                ):
+                    probs_subset[:, target_col] = probs_rows[:, int(source_col)]
+            return probs_subset
+
+        usable_cols = min(probs_rows.shape[1], len(self.classes))
+        probs_subset = np.zeros(
+            (len(idx_arr), len(self.classes)), dtype=probs_rows.dtype
+        )
+        if usable_cols > 0:
+            probs_subset[:, :usable_cols] = probs_rows[:, :usable_cols]
+        return probs_subset
+
     def _evaluate_model_on_labeled(self):
         """Compute metrics from _model_probs on all labeled images and update Metrics tab."""
         if self._model_probs is None:
-            return
-        labeled_indices = [i for i, lbl in enumerate(self.image_labels) if lbl]
-        if len(labeled_indices) < 2:
             return
         try:
             import numpy as np
 
             from ..train.metrics import compute_metrics
 
-            class_to_id = {c: i for i, c in enumerate(self.classes)}
-            y_true = np.array(
-                [class_to_id.get(self.image_labels[i], -1) for i in labeled_indices]
-            )
-            valid = y_true >= 0
-            if valid.sum() < 2:
+            idx_arr, y_true = self._labeled_eval_arrays()
+            if idx_arr is None or y_true is None:
                 return
-            idx_arr = np.array(labeled_indices)[valid]
-            y_true = y_true[valid]
 
             probs_rows = np.asarray(self._model_probs[idx_arr])
-
-            # Align model probability columns to project class order by name.
-            # Missing classes remain all-zero instead of throwing index errors.
-            if self._model_class_names:
-                name_to_col = {
-                    str(name): i for i, name in enumerate(self._model_class_names)
-                }
-                probs_subset = np.zeros(
-                    (len(idx_arr), len(self.classes)), dtype=probs_rows.dtype
-                )
-                for target_col, class_name in enumerate(self.classes):
-                    source_col = name_to_col.get(str(class_name))
-                    if source_col is None:
-                        continue
-                    if 0 <= int(source_col) < probs_rows.shape[1]:
-                        probs_subset[:, target_col] = probs_rows[:, int(source_col)]
-            else:
-                # Fallback when model classes are unknown: clamp width safely.
-                usable_cols = min(probs_rows.shape[1], len(self.classes))
-                probs_subset = np.zeros(
-                    (len(idx_arr), len(self.classes)), dtype=probs_rows.dtype
-                )
-                if usable_cols > 0:
-                    probs_subset[:, :usable_cols] = probs_rows[:, :usable_cols]
-
+            probs_subset = self._aligned_eval_probs(idx_arr, probs_rows)
             y_pred = probs_subset.argmax(axis=1)
             metrics = compute_metrics(y_pred, y_true, class_names=self.classes)
             self._update_metrics_display(metrics)

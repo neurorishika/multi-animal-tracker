@@ -34,6 +34,199 @@ from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
 
+
+def _suggest_trial_params(trial, tune, params):
+    """Suggest or inherit each BG-sub detection parameter for an Optuna trial."""
+    trial_params: Dict[str, Any] = {}
+
+    # THRESHOLD_VALUE
+    if "THRESHOLD_VALUE" in tune:
+        trial_params["THRESHOLD_VALUE"] = trial.suggest_int("THRESHOLD_VALUE", 5, 80)
+    else:
+        trial_params["THRESHOLD_VALUE"] = params["THRESHOLD_VALUE"]
+
+    # MORPH_KERNEL_SIZE (odd)
+    if "MORPH_KERNEL_SIZE" in tune:
+        morph_half = trial.suggest_int("MORPH_KERNEL_HALF", 1, 7)
+        trial_params["MORPH_KERNEL_SIZE"] = morph_half * 2 + 1
+    else:
+        trial_params["MORPH_KERNEL_SIZE"] = params["MORPH_KERNEL_SIZE"]
+
+    # MIN_CONTOUR_AREA
+    if "MIN_CONTOUR_AREA" in tune:
+        trial_params["MIN_CONTOUR_AREA"] = trial.suggest_int(
+            "MIN_CONTOUR_AREA", 10, 500
+        )
+    else:
+        trial_params["MIN_CONTOUR_AREA"] = params["MIN_CONTOUR_AREA"]
+
+    # ENABLE_ADDITIONAL_DILATION group
+    if "ENABLE_ADDITIONAL_DILATION" in tune:
+        enable_dil = trial.suggest_categorical(
+            "ENABLE_ADDITIONAL_DILATION",
+            [True, False],
+        )
+    else:
+        enable_dil = params.get("ENABLE_ADDITIONAL_DILATION", False)
+    trial_params["ENABLE_ADDITIONAL_DILATION"] = enable_dil
+
+    if enable_dil:
+        if "DILATION_KERNEL_SIZE" in tune:
+            dil_half = trial.suggest_int("DILATION_KERNEL_HALF", 1, 5)
+            trial_params["DILATION_KERNEL_SIZE"] = dil_half * 2 + 1
+        else:
+            trial_params["DILATION_KERNEL_SIZE"] = params.get("DILATION_KERNEL_SIZE", 3)
+        if "DILATION_ITERATIONS" in tune:
+            trial_params["DILATION_ITERATIONS"] = trial.suggest_int(
+                "DILATION_ITERATIONS",
+                1,
+                5,
+            )
+        else:
+            trial_params["DILATION_ITERATIONS"] = params.get("DILATION_ITERATIONS", 1)
+    else:
+        trial_params["DILATION_KERNEL_SIZE"] = params.get("DILATION_KERNEL_SIZE", 3)
+        trial_params["DILATION_ITERATIONS"] = params.get("DILATION_ITERATIONS", 1)
+
+    # ENABLE_CONSERVATIVE_SPLIT group
+    if "ENABLE_CONSERVATIVE_SPLIT" in tune:
+        enable_split = trial.suggest_categorical(
+            "ENABLE_CONSERVATIVE_SPLIT",
+            [True, False],
+        )
+    else:
+        enable_split = params.get("ENABLE_CONSERVATIVE_SPLIT", False)
+    trial_params["ENABLE_CONSERVATIVE_SPLIT"] = enable_split
+
+    if enable_split:
+        if "CONSERVATIVE_KERNEL_SIZE" in tune:
+            trial_params["CONSERVATIVE_KERNEL_SIZE"] = trial.suggest_int(
+                "CONSERVATIVE_KERNEL_SIZE",
+                1,
+                11,
+            )
+        else:
+            trial_params["CONSERVATIVE_KERNEL_SIZE"] = params.get(
+                "CONSERVATIVE_KERNEL_SIZE",
+                3,
+            )
+        if "CONSERVATIVE_ERODE_ITER" in tune:
+            trial_params["CONSERVATIVE_ERODE_ITER"] = trial.suggest_int(
+                "CONSERVATIVE_ERODE_ITER",
+                1,
+                5,
+            )
+        else:
+            trial_params["CONSERVATIVE_ERODE_ITER"] = params.get(
+                "CONSERVATIVE_ERODE_ITER",
+                1,
+            )
+    else:
+        trial_params["CONSERVATIVE_KERNEL_SIZE"] = params.get(
+            "CONSERVATIVE_KERNEL_SIZE",
+            3,
+        )
+        trial_params["CONSERVATIVE_ERODE_ITER"] = params.get(
+            "CONSERVATIVE_ERODE_ITER",
+            1,
+        )
+
+    return trial_params
+
+
+def _score_single_frame(
+    diff,
+    gray,
+    bg_u8,
+    trial_params,
+    detector,
+    morph_ker,
+    dil_ker,
+    roi_mask,
+):
+    """Run BG-sub pipeline on a single diff image and return (n_det, sizes)."""
+    threshold = trial_params["THRESHOLD_VALUE"]
+    enable_dil = trial_params["ENABLE_ADDITIONAL_DILATION"]
+    enable_split = trial_params["ENABLE_CONSERVATIVE_SPLIT"]
+    dil_iter = trial_params["DILATION_ITERATIONS"]
+
+    _, fg = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, morph_ker)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, morph_ker)
+    if dil_ker is not None and enable_dil:
+        fg = cv2.dilate(fg, dil_ker, iterations=dil_iter)
+    if roi_mask is not None:
+        fg = cv2.bitwise_and(fg, fg, mask=roi_mask)
+    if enable_split:
+        fg = detector.apply_conservative_split(fg, gray, bg_u8)
+    meas, sizes, _shapes, _yolo, _conf = detector.detect_objects(fg, 0)
+    return len(meas), sizes
+
+
+def _aggregate_trial_scores(count_scores, consistency_scores, frame_medians):
+    """Compute count/consistency/stability sub-scores from per-frame data."""
+    s_count = float(np.mean(count_scores)) if count_scores else 0.0
+    s_consistency = float(np.mean(consistency_scores)) if consistency_scores else 0.0
+    if len(frame_medians) >= 2:
+        med_arr = np.array(frame_medians)
+        med_mean = med_arr.mean()
+        if med_mean > 1e-6:
+            s_stability = max(0.0, 1.0 - med_arr.std() / med_mean)
+        else:
+            s_stability = 0.0
+    elif frame_medians:
+        s_stability = 1.0
+    else:
+        s_stability = 0.0
+    return s_count, s_consistency, s_stability
+
+
+def _read_sample_frames(
+    cap,
+    sample_indices,
+    resize_f,
+    dark_on_light,
+    bg_u8,
+    params,
+    apply_image_adjustments,
+    stop_check,
+):
+    """Read and pre-compute diff images for sample frames."""
+    diffs: List[np.ndarray] = []
+    grays: List[np.ndarray] = []
+    for idx in sample_indices:
+        if stop_check():
+            cap.release()
+            return None, None
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        if resize_f < 1.0:
+            frame = cv2.resize(
+                frame,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = apply_image_adjustments(
+            gray,
+            params.get("BRIGHTNESS", 0),
+            params.get("CONTRAST", 1.0),
+            params.get("GAMMA", 1.0),
+            use_gpu=False,
+        )
+        if dark_on_light:
+            diff = cv2.subtract(bg_u8, gray)
+        else:
+            diff = cv2.subtract(gray, bg_u8)
+        grays.append(gray)
+        diffs.append(diff)
+    return diffs, grays
+
+
 # ---------------------------------------------------------------------------
 # Parameter ranges  (mirrors _PARAM_RANGES in tracking/optimizer.py)
 # ---------------------------------------------------------------------------
@@ -219,41 +412,20 @@ class BgSubtractionOptimizer(QThread):
 
         # --- 4. pre-compute diff images ------------------------------------
         self.progress_signal.emit(5, "Reading sample frames …")
-        diffs: List[np.ndarray] = []
-        grays: List[np.ndarray] = []
-
-        for idx in sample_indices:
-            if self._stop_requested:
-                cap.release()
-                return
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            if resize_f < 1.0:
-                frame = cv2.resize(
-                    frame,
-                    (0, 0),
-                    fx=resize_f,
-                    fy=resize_f,
-                    interpolation=cv2.INTER_AREA,
-                )
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = apply_image_adjustments(
-                gray,
-                params.get("BRIGHTNESS", 0),
-                params.get("CONTRAST", 1.0),
-                params.get("GAMMA", 1.0),
-                use_gpu=False,
-            )
-            if dark_on_light:
-                diff = cv2.subtract(bg_u8, gray)
-            else:
-                diff = cv2.subtract(gray, bg_u8)
-            grays.append(gray)
-            diffs.append(diff)
-
+        result = _read_sample_frames(
+            cap,
+            sample_indices,
+            resize_f,
+            dark_on_light,
+            bg_u8,
+            params,
+            apply_image_adjustments,
+            lambda: self._stop_requested,
+        )
         cap.release()
+        if result[0] is None:
+            return
+        diffs, grays = result
 
         if not diffs:
             self.progress_signal.emit(0, "Error: no frames could be read")
@@ -311,133 +483,19 @@ class BgSubtractionOptimizer(QThread):
         # Filter tuning_config to only enabled params
         tune = {k: v for k, v in self.tuning_config.items() if v}
 
-        def objective(trial):  # noqa: C901
+        def objective(trial):
             if self._stop_requested:
                 raise optuna.TrialPruned()
 
-            # --- suggest or inherit each parameter -------------------------
-            trial_params: Dict[str, Any] = {}
+            trial_params = _suggest_trial_params(trial, tune, params)
 
-            # THRESHOLD_VALUE
-            if "THRESHOLD_VALUE" in tune:
-                trial_params["THRESHOLD_VALUE"] = trial.suggest_int(
-                    "THRESHOLD_VALUE",
-                    5,
-                    80,
-                )
-            else:
-                trial_params["THRESHOLD_VALUE"] = params["THRESHOLD_VALUE"]
-            threshold = trial_params["THRESHOLD_VALUE"]
-
-            # MORPH_KERNEL_SIZE (odd)
-            if "MORPH_KERNEL_SIZE" in tune:
-                morph_half = trial.suggest_int("MORPH_KERNEL_HALF", 1, 7)
-                trial_params["MORPH_KERNEL_SIZE"] = morph_half * 2 + 1
-            else:
-                trial_params["MORPH_KERNEL_SIZE"] = params["MORPH_KERNEL_SIZE"]
-            morph_k = trial_params["MORPH_KERNEL_SIZE"]
-
-            # MIN_CONTOUR_AREA
-            if "MIN_CONTOUR_AREA" in tune:
-                trial_params["MIN_CONTOUR_AREA"] = trial.suggest_int(
-                    "MIN_CONTOUR_AREA",
-                    10,
-                    500,
-                )
-            else:
-                trial_params["MIN_CONTOUR_AREA"] = params["MIN_CONTOUR_AREA"]
-
-            # ENABLE_ADDITIONAL_DILATION group
-            if "ENABLE_ADDITIONAL_DILATION" in tune:
-                enable_dil = trial.suggest_categorical(
-                    "ENABLE_ADDITIONAL_DILATION",
-                    [True, False],
-                )
-            else:
-                enable_dil = params.get("ENABLE_ADDITIONAL_DILATION", False)
-            trial_params["ENABLE_ADDITIONAL_DILATION"] = enable_dil
-
-            if enable_dil:
-                if "DILATION_KERNEL_SIZE" in tune:
-                    dil_half = trial.suggest_int("DILATION_KERNEL_HALF", 1, 5)
-                    trial_params["DILATION_KERNEL_SIZE"] = dil_half * 2 + 1
-                else:
-                    trial_params["DILATION_KERNEL_SIZE"] = params.get(
-                        "DILATION_KERNEL_SIZE",
-                        3,
-                    )
-                if "DILATION_ITERATIONS" in tune:
-                    trial_params["DILATION_ITERATIONS"] = trial.suggest_int(
-                        "DILATION_ITERATIONS",
-                        1,
-                        5,
-                    )
-                else:
-                    trial_params["DILATION_ITERATIONS"] = params.get(
-                        "DILATION_ITERATIONS",
-                        1,
-                    )
-            else:
-                trial_params["DILATION_KERNEL_SIZE"] = params.get(
-                    "DILATION_KERNEL_SIZE",
-                    3,
-                )
-                trial_params["DILATION_ITERATIONS"] = params.get(
-                    "DILATION_ITERATIONS",
-                    1,
-                )
-            dil_k = trial_params["DILATION_KERNEL_SIZE"]
-            dil_iter = trial_params["DILATION_ITERATIONS"]
-
-            # ENABLE_CONSERVATIVE_SPLIT group
-            if "ENABLE_CONSERVATIVE_SPLIT" in tune:
-                enable_split = trial.suggest_categorical(
-                    "ENABLE_CONSERVATIVE_SPLIT",
-                    [True, False],
-                )
-            else:
-                enable_split = params.get("ENABLE_CONSERVATIVE_SPLIT", False)
-            trial_params["ENABLE_CONSERVATIVE_SPLIT"] = enable_split
-
-            if enable_split:
-                if "CONSERVATIVE_KERNEL_SIZE" in tune:
-                    trial_params["CONSERVATIVE_KERNEL_SIZE"] = trial.suggest_int(
-                        "CONSERVATIVE_KERNEL_SIZE",
-                        1,
-                        11,
-                    )
-                else:
-                    trial_params["CONSERVATIVE_KERNEL_SIZE"] = params.get(
-                        "CONSERVATIVE_KERNEL_SIZE",
-                        3,
-                    )
-                if "CONSERVATIVE_ERODE_ITER" in tune:
-                    trial_params["CONSERVATIVE_ERODE_ITER"] = trial.suggest_int(
-                        "CONSERVATIVE_ERODE_ITER",
-                        1,
-                        5,
-                    )
-                else:
-                    trial_params["CONSERVATIVE_ERODE_ITER"] = params.get(
-                        "CONSERVATIVE_ERODE_ITER",
-                        1,
-                    )
-            else:
-                trial_params["CONSERVATIVE_KERNEL_SIZE"] = params.get(
-                    "CONSERVATIVE_KERNEL_SIZE",
-                    3,
-                )
-                trial_params["CONSERVATIVE_ERODE_ITER"] = params.get(
-                    "CONSERVATIVE_ERODE_ITER",
-                    1,
-                )
-
-            # --- build per-trial detector ----------------------------------
             det_params = dict(params)
             det_params.update(trial_params)
             detector = ObjectDetector(det_params)
 
-            # Pre-build structuring elements once per trial (not per frame)
+            morph_k = trial_params["MORPH_KERNEL_SIZE"]
+            dil_k = trial_params["DILATION_KERNEL_SIZE"]
+            enable_dil = trial_params["ENABLE_ADDITIONAL_DILATION"]
             morph_ker = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE,
                 (morph_k, morph_k),
@@ -457,37 +515,21 @@ class BgSubtractionOptimizer(QThread):
                 if self._stop_requested:
                     raise optuna.TrialPruned()
 
-                # threshold
-                _, fg = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
-                # morph open + close
-                fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, morph_ker)
-                fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, morph_ker)
-                # additional dilation
-                if dil_ker is not None:
-                    fg = cv2.dilate(fg, dil_ker, iterations=dil_iter)
-                # ROI
-                if roi_mask is not None:
-                    fg = cv2.bitwise_and(fg, fg, mask=roi_mask)
-                # conservative split
-                if enable_split:
-                    fg = detector.apply_conservative_split(
-                        fg,
-                        grays[fi],
-                        bg_u8,
-                    )
-                # detect
-                meas, sizes, _shapes, _yolo, _conf = detector.detect_objects(
-                    fg,
-                    fi,
+                n_det, sizes = _score_single_frame(
+                    diff,
+                    grays[fi],
+                    bg_u8,
+                    trial_params,
+                    detector,
+                    morph_ker,
+                    dil_ker,
+                    roi_mask,
                 )
 
-                # --- count sub-score ----------------------------------------
-                n_det = len(meas)
                 if max_targets > 0:
                     err = abs(n_det - max_targets) / max_targets
                     count_scores.append(max(0.0, 1.0 - err))
 
-                # --- size consistency sub-score -----------------------------
                 if sizes and n_det == max_targets and n_det >= 2:
                     areas = np.array(sizes, dtype=float)
                     mean_a = areas.mean()
@@ -500,10 +542,6 @@ class BgSubtractionOptimizer(QThread):
                 elif sizes:
                     frame_medians.append(float(np.median(sizes)))
 
-                # --- intermediate pruning -----------------------------------
-                # Report running count score periodically so the pruner can
-                # kill obviously-bad trials early (e.g. wrong threshold →
-                # zero detections on every frame).
                 if (fi + 1) % _PRUNE_INTERVAL == 0 or fi == n_frames - 1:
                     running = float(np.mean(count_scores)) if count_scores else 0.0
                     trial.report(running, step=prune_step)
@@ -511,25 +549,11 @@ class BgSubtractionOptimizer(QThread):
                     if trial.should_prune():
                         raise optuna.TrialPruned()
 
-            # --- aggregate per-trial scores --------------------------------
-            s_count = float(np.mean(count_scores)) if count_scores else 0.0
-            s_consistency = (
-                float(np.mean(consistency_scores)) if consistency_scores else 0.0
+            s_count, s_consistency, s_stability = _aggregate_trial_scores(
+                count_scores,
+                consistency_scores,
+                frame_medians,
             )
-
-            # Size stability: 1 - CoV of per-frame median areas
-            if len(frame_medians) >= 2:
-                med_arr = np.array(frame_medians)
-                med_mean = med_arr.mean()
-                if med_mean > 1e-6:
-                    s_stability = max(0.0, 1.0 - med_arr.std() / med_mean)
-                else:
-                    s_stability = 0.0
-            elif frame_medians:
-                s_stability = 1.0  # single frame — no variation
-            else:
-                s_stability = 0.0
-
             score = w_cnt * s_count + w_con * s_consistency + w_stb * s_stability
 
             trial_median_area = (

@@ -167,7 +167,7 @@ def rounded(metrics: Metrics) -> dict[str, float | int]:
     }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Audit documentation quality in code")
     parser.add_argument("--src", default="src/hydra_suite", help="source root")
     parser.add_argument("--baseline", default="docs/doc-quality-baseline.json")
@@ -176,12 +176,10 @@ def main() -> int:
     parser.add_argument("--min-symbol-doc", type=float, default=55.0)
     parser.add_argument("--min-typed-func", type=float, default=20.0)
     parser.add_argument("--max-report-items", type=int, default=20)
-    args = parser.parse_args()
+    return parser
 
-    src_root = Path(args.src)
-    metrics, missing_mod, missing_sym, missing_typed = compute_metrics(src_root)
-    summary = rounded(metrics)
 
+def _print_summary(summary: dict[str, float | int]) -> None:
     print("Documentation Quality Report")
     print(
         "- module doc coverage: {module_doc_pct}% ({module_doc}/{module_total})".format(
@@ -199,41 +197,76 @@ def main() -> int:
         )
     )
 
+
+def _write_baseline(baseline_path: Path, summary: dict[str, float | int]) -> None:
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote baseline: {baseline_path}")
+
+
+def _find_baseline_regressions(
+    baseline_path: Path,
+    summary: dict[str, float | int],
+) -> list[str]:
+    if not baseline_path.exists():
+        return []
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    regressions: list[str] = []
+    for key in ("module_doc_pct", "symbol_doc_pct", "function_typed_pct"):
+        if summary[key] + 1e-9 < baseline.get(key, 0.0):
+            regressions.append(f"{key}: {summary[key]} < baseline {baseline.get(key)}")
+    return regressions
+
+
+def _threshold_failures(args, summary: dict[str, float | int]) -> list[str]:
+    failures = []
+    if summary["module_doc_pct"] < args.min_module_doc:
+        failures.append(
+            f"module_doc_pct {summary['module_doc_pct']} < {args.min_module_doc}"
+        )
+    if summary["symbol_doc_pct"] < args.min_symbol_doc:
+        failures.append(
+            f"symbol_doc_pct {summary['symbol_doc_pct']} < {args.min_symbol_doc}"
+        )
+    if summary["function_typed_pct"] < args.min_typed_func:
+        failures.append(
+            f"function_typed_pct {summary['function_typed_pct']} < {args.min_typed_func}"
+        )
+    return failures
+
+
+def _print_report_items(title: str, items: list[str], max_items: int) -> None:
+    if not items[:max_items]:
+        return
+    print(f"\n{title}:")
+    for item in items[:max_items]:
+        print(f"- {item}")
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    src_root = Path(args.src)
+    metrics, missing_mod, missing_sym, missing_typed = compute_metrics(src_root)
+    summary = rounded(metrics)
+
+    _print_summary(summary)
+
     baseline_path = Path(args.baseline)
     failed = False
 
     if args.write_baseline:
-        baseline_path.parent.mkdir(parents=True, exist_ok=True)
-        baseline_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-        print(f"Wrote baseline: {baseline_path}")
+        _write_baseline(baseline_path, summary)
 
     if baseline_path.exists() and not args.write_baseline:
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        regressions: list[str] = []
-        for key in ("module_doc_pct", "symbol_doc_pct", "function_typed_pct"):
-            if summary[key] + 1e-9 < baseline.get(key, 0.0):
-                regressions.append(
-                    f"{key}: {summary[key]} < baseline {baseline.get(key)}"
-                )
+        regressions = _find_baseline_regressions(baseline_path, summary)
         if regressions:
             failed = True
             print("\nRegression detected vs baseline:")
             for r in regressions:
                 print(f"- {r}")
 
-    threshold_failures = []
-    if summary["module_doc_pct"] < args.min_module_doc:
-        threshold_failures.append(
-            f"module_doc_pct {summary['module_doc_pct']} < {args.min_module_doc}"
-        )
-    if summary["symbol_doc_pct"] < args.min_symbol_doc:
-        threshold_failures.append(
-            f"symbol_doc_pct {summary['symbol_doc_pct']} < {args.min_symbol_doc}"
-        )
-    if summary["function_typed_pct"] < args.min_typed_func:
-        threshold_failures.append(
-            f"function_typed_pct {summary['function_typed_pct']} < {args.min_typed_func}"
-        )
+    threshold_failures = _threshold_failures(args, summary)
 
     if threshold_failures:
         failed = True
@@ -242,20 +275,17 @@ def main() -> int:
             print(f"- {item}")
 
     max_items = max(0, args.max_report_items)
-    if missing_mod[:max_items]:
-        print("\nMissing module docstrings (sample):")
-        for item in missing_mod[:max_items]:
-            print(f"- {item}")
-
-    if missing_sym[:max_items]:
-        print("\nMissing public symbol docstrings (sample):")
-        for item in missing_sym[:max_items]:
-            print(f"- {item}")
-
-    if missing_typed[:max_items]:
-        print("\nPublic functions missing full type annotations (sample):")
-        for item in missing_typed[:max_items]:
-            print(f"- {item}")
+    _print_report_items("Missing module docstrings (sample)", missing_mod, max_items)
+    _print_report_items(
+        "Missing public symbol docstrings (sample)",
+        missing_sym,
+        max_items,
+    )
+    _print_report_items(
+        "Public functions missing full type annotations (sample)",
+        missing_typed,
+        max_items,
+    )
 
     return 1 if failed else 0
 

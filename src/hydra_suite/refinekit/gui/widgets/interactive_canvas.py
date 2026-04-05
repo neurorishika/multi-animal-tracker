@@ -233,44 +233,59 @@ class InteractiveCanvas(QWidget):
             return super().eventFilter(watched, event)
 
         t = event.type()
+        handler = {
+            QEvent.Type.Wheel: self._on_wheel_event,
+            QEvent.Type.MouseButtonPress: self._on_mouse_press,
+            QEvent.Type.MouseMove: self._on_mouse_move,
+            QEvent.Type.MouseButtonRelease: self._on_mouse_release,
+            QEvent.Type.MouseButtonDblClick: self._on_mouse_dblclick,
+        }.get(t)
 
-        if t == QEvent.Type.Wheel:
-            return self._handle_wheel(event)  # type: ignore[arg-type]
-
-        if t == QEvent.Type.MouseButtonPress:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self._is_panning = True
-                self._pan_start = event.globalPosition().toPoint()
-                self._scroll_h0 = self._scroll.horizontalScrollBar().value()
-                self._scroll_v0 = self._scroll.verticalScrollBar().value()
-                self._label.setCursor(Qt.CursorShape.ClosedHandCursor)
-                return True
-
-        if t == QEvent.Type.MouseMove:
-            if self._is_panning and self._pan_start is not None:
-                δ = event.globalPosition().toPoint() - self._pan_start
-                self._scroll.horizontalScrollBar().setValue(self._scroll_h0 - δ.x())
-                self._scroll.verticalScrollBar().setValue(self._scroll_v0 - δ.y())
-                return True
-            else:
-                self._label.setCursor(Qt.CursorShape.OpenHandCursor)
-
-        if t == QEvent.Type.MouseButtonRelease:
-            if self._is_panning:
-                self._is_panning = False
-                self._pan_start = None
-                self._label.setCursor(Qt.CursorShape.OpenHandCursor)
-                return True
-
-        if t == QEvent.Type.MouseButtonDblClick:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.fit()
-                return True
+        if handler is not None:
+            result = handler(event)
+            if result is not None:
+                return result
 
         if t == QEvent.Type.Gesture and QGestureEvent is not None:
             return self._handle_gesture(event)  # type: ignore[arg-type]
 
         return super().eventFilter(watched, event)
+
+    def _on_wheel_event(self, event):
+        return self._handle_wheel(event)  # type: ignore[arg-type]
+
+    def _on_mouse_press(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_panning = True
+            self._pan_start = event.globalPosition().toPoint()
+            self._scroll_h0 = self._scroll.horizontalScrollBar().value()
+            self._scroll_v0 = self._scroll.verticalScrollBar().value()
+            self._label.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return True
+        return None
+
+    def _on_mouse_move(self, event):
+        if self._is_panning and self._pan_start is not None:
+            δ = event.globalPosition().toPoint() - self._pan_start
+            self._scroll.horizontalScrollBar().setValue(self._scroll_h0 - δ.x())
+            self._scroll.verticalScrollBar().setValue(self._scroll_v0 - δ.y())
+            return True
+        self._label.setCursor(Qt.CursorShape.OpenHandCursor)
+        return None
+
+    def _on_mouse_release(self, event):
+        if self._is_panning:
+            self._is_panning = False
+            self._pan_start = None
+            self._label.setCursor(Qt.CursorShape.OpenHandCursor)
+            return True
+        return None
+
+    def _on_mouse_dblclick(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.fit()
+            return True
+        return None
 
     def _handle_wheel(self, evt: QWheelEvent) -> bool:
         if evt.modifiers() & Qt.KeyboardModifier.ControlModifier:

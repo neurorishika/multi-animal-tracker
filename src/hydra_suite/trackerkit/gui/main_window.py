@@ -345,24 +345,99 @@ class MergeWorker(BaseWorker):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
+    @staticmethod
+    def _convert_resolved_to_dataframe(resolved_trajectories):
+        """Convert a list of resolved trajectories to a single DataFrame."""
+        if not resolved_trajectories or not isinstance(resolved_trajectories, list):
+            return resolved_trajectories
+        if isinstance(resolved_trajectories[0], pd.DataFrame):
+            for new_id, traj_df in enumerate(resolved_trajectories):
+                traj_df["TrajectoryID"] = new_id
+            return pd.concat(resolved_trajectories, ignore_index=True)
+        # Fallback for old tuple format
+        logger.warning("Received tuple format from resolve_trajectories, converting...")
+        all_data = []
+        for traj_id, traj in enumerate(resolved_trajectories):
+            for x, y, theta, frame in traj:
+                all_data.append(
+                    {
+                        "TrajectoryID": traj_id,
+                        "X": x,
+                        "Y": y,
+                        "Theta": theta,
+                        "FrameID": frame,
+                    }
+                )
+        return pd.DataFrame(all_data) if all_data else []
+
+    def _resolve_tag_identities(self, resolved_trajectories):
+        """Apply AprilTag identity resolution if a tag cache is available."""
+        if (
+            not isinstance(resolved_trajectories, pd.DataFrame)
+            or self.tag_cache_path is None
+        ):
+            return resolved_trajectories
+        try:
+            from hydra_suite.core.post.tag_identity import (
+                detect_tag_swaps,
+                resolve_tag_identities,
+            )
+            from hydra_suite.data.tag_observation_cache import TagObservationCache
+
+            self.progress_signal.emit(92, "Resolving tag identities...")
+            tag_cache = TagObservationCache(str(self.tag_cache_path), mode="r")
+            resolved_trajectories = resolve_tag_identities(
+                resolved_trajectories, tag_cache, self.params
+            )
+            swaps = detect_tag_swaps(resolved_trajectories, tag_cache, self.params)
+            if swaps:
+                logger.warning("Detected %d potential tag-swap events", len(swaps))
+            tag_cache.close()
+        except Exception:
+            logger.warning(
+                "Tag identity resolution failed (non-fatal)",
+                exc_info=True,
+            )
+        return resolved_trajectories
+
+    def _rescale_coordinates(self, resolved_trajectories):
+        """Scale coordinates back to original video space."""
+        if not isinstance(resolved_trajectories, pd.DataFrame):
+            return resolved_trajectories
+        logger.info(
+            f"Pre-scaling (resize_factor={self.resize_factor:.3f}): "
+            f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
+            f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
+        )
+        resolved_trajectories[["X", "Y"]] = (
+            resolved_trajectories[["X", "Y"]] / self.resize_factor
+        )
+        if "Width" in resolved_trajectories.columns:
+            resolved_trajectories["Width"] /= self.resize_factor
+        if "Height" in resolved_trajectories.columns:
+            resolved_trajectories["Height"] /= self.resize_factor
+        logger.info(
+            f"Post-scaling: "
+            f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
+            f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
+        )
+        return resolved_trajectories
+
     def execute(self):
         """Merge forward and backward trajectories."""
         from hydra_suite.core.tracking.profiler import TrackingProfiler
 
         profiler = TrackingProfiler(enabled=self.enable_profiling)
-        # pose_backend = None
         try:
             if self._should_stop():
                 return
             profiler.phase_start("post_prepare")
             self.progress_signal.emit(10, "Preparing trajectories...")
 
-            # Convert DataFrames to list of DataFrames (one per trajectory)
             def prepare_trajs_for_merge(trajs):
                 if isinstance(trajs, pd.DataFrame):
                     return [group for _, group in trajs.groupby("TrajectoryID")]
-                else:
-                    return trajs
+                return trajs
 
             forward_prepared = prepare_trajs_for_merge(self.forward_trajs)
             backward_prepared = prepare_trajs_for_merge(self.backward_trajs)
@@ -384,41 +459,12 @@ class MergeWorker(BaseWorker):
                 return
             self.progress_signal.emit(60, "Converting to DataFrame...")
 
-            # Convert resolved trajectories to DataFrame
-            if resolved_trajectories and isinstance(resolved_trajectories, list):
-                if isinstance(resolved_trajectories[0], pd.DataFrame):
-                    # Reassign TrajectoryID to ensure unique IDs
-                    for new_id, traj_df in enumerate(resolved_trajectories):
-                        traj_df["TrajectoryID"] = new_id
-                    resolved_trajectories = pd.concat(
-                        resolved_trajectories, ignore_index=True
-                    )
-                else:
-                    # Fallback for old tuple format
-                    logger.warning(
-                        "Received tuple format from resolve_trajectories, converting..."
-                    )
-                    all_data = []
-                    for traj_id, traj in enumerate(resolved_trajectories):
-                        for x, y, theta, frame in traj:
-                            all_data.append(
-                                {
-                                    "TrajectoryID": traj_id,
-                                    "X": x,
-                                    "Y": y,
-                                    "Theta": theta,
-                                    "FrameID": frame,
-                                }
-                            )
-                    if all_data:
-                        resolved_trajectories = pd.DataFrame(all_data)
-                    else:
-                        resolved_trajectories = []
+            resolved_trajectories = self._convert_resolved_to_dataframe(
+                resolved_trajectories
+            )
 
             profiler.phase_start("post_interpolate")
             self.progress_signal.emit(75, "Applying interpolation...")
-
-            # Apply interpolation if enabled
             if isinstance(resolved_trajectories, pd.DataFrame):
                 if self.interp_method != "none":
                     resolved_trajectories = interpolate_trajectories(
@@ -427,80 +473,21 @@ class MergeWorker(BaseWorker):
                         max_gap=self.max_gap,
                         heading_flip_max_burst=self.heading_flip_max_burst,
                     )
-
             profiler.phase_end("post_interpolate")
 
             if self._should_stop():
                 return
             self.progress_signal.emit(90, "Scaling to original space...")
 
-            # --- AprilTag identity resolution (before coordinate rescaling) ---
             profiler.phase_start("post_tag_identity")
-
-            # --- AprilTag identity resolution (before coordinate rescaling) ---
-            if (
-                isinstance(resolved_trajectories, pd.DataFrame)
-                and self.tag_cache_path is not None
-            ):
-                try:
-                    from hydra_suite.core.post.tag_identity import (
-                        detect_tag_swaps,
-                        resolve_tag_identities,
-                    )
-                    from hydra_suite.data.tag_observation_cache import (
-                        TagObservationCache,
-                    )
-
-                    self.progress_signal.emit(92, "Resolving tag identities...")
-                    tag_cache = TagObservationCache(str(self.tag_cache_path), mode="r")
-                    resolved_trajectories = resolve_tag_identities(
-                        resolved_trajectories, tag_cache, self.params
-                    )
-                    swaps = detect_tag_swaps(
-                        resolved_trajectories, tag_cache, self.params
-                    )
-                    if swaps:
-                        logger.warning(
-                            "Detected %d potential tag-swap events", len(swaps)
-                        )
-                    tag_cache.close()
-                except Exception:
-                    logger.warning(
-                        "Tag identity resolution failed (non-fatal)",
-                        exc_info=True,
-                    )
-
+            resolved_trajectories = self._resolve_tag_identities(resolved_trajectories)
             profiler.phase_end("post_tag_identity")
 
-            # Scale coordinates back to original video space
             profiler.phase_start("post_rescale")
-            if isinstance(resolved_trajectories, pd.DataFrame):
-                # Log pre-scaling ranges for debugging
-                logger.info(
-                    f"Pre-scaling (resize_factor={self.resize_factor:.3f}): "
-                    f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
-                    f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
-                )
-
-                resolved_trajectories[["X", "Y"]] = (
-                    resolved_trajectories[["X", "Y"]] / self.resize_factor
-                )
-                if "Width" in resolved_trajectories.columns:
-                    resolved_trajectories["Width"] /= self.resize_factor
-                if "Height" in resolved_trajectories.columns:
-                    resolved_trajectories["Height"] /= self.resize_factor
-
-                # Log post-scaling ranges for debugging
-                logger.info(
-                    f"Post-scaling: "
-                    f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
-                    f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
-                )
-
+            resolved_trajectories = self._rescale_coordinates(resolved_trajectories)
             profiler.phase_end("post_rescale")
 
             if not self._should_stop():
-                # Export profiling summary for post-processing
                 profiler.log_final_summary()
                 if self.profile_export_path:
                     profiler.export_summary(self.profile_export_path)
@@ -510,6 +497,56 @@ class MergeWorker(BaseWorker):
         except Exception as e:
             logger.exception("Error during trajectory merging")
             self.error_signal.emit(str(e))
+
+
+def _write_csv_artifact(path, fieldnames, rows):
+    """Write a CSV artifact file. Returns the path on success, None on failure."""
+    try:
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+    except Exception:
+        return None
+
+
+def _write_roi_npz(path, roi_rows, roi_corners):
+    """Write ROI data to a compressed NPZ file. Returns path on success, None on failure."""
+    try:
+        np.savez_compressed(
+            str(path),
+            frame_id=np.array([r["frame_id"] for r in roi_rows], dtype=np.int64),
+            trajectory_id=np.array(
+                [r["trajectory_id"] for r in roi_rows], dtype=np.int64
+            ),
+            filename=np.array([r["filename"] for r in roi_rows], dtype=object),
+            cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
+            cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
+            w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
+            h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
+            theta=np.array([r["theta"] for r in roi_rows], dtype=np.float32),
+            interp_from_start=np.array(
+                [r["interp_from_start"] for r in roi_rows], dtype=np.int64
+            ),
+            interp_from_end=np.array(
+                [r["interp_from_end"] for r in roi_rows], dtype=np.int64
+            ),
+            interp_index=np.array(
+                [r["interp_index"] for r in roi_rows], dtype=np.int64
+            ),
+            interp_total=np.array(
+                [r["interp_total"] for r in roi_rows], dtype=np.int64
+            ),
+            obb_corners=(
+                np.stack(roi_corners).astype(np.float32)
+                if roi_corners
+                else np.zeros((0, 4, 2), dtype=np.float32)
+            ),
+        )
+        return path
+    except Exception:
+        return None
 
 
 class InterpolatedCropsWorker(BaseWorker):
@@ -1049,177 +1086,111 @@ class InterpolatedCropsWorker(BaseWorker):
 
         Returns dict of artifact paths.
         """
-        mapping_path = None
-        roi_csv_path = None
-        roi_npz_path = None
-        pose_csv_path = None
-        tag_csv_path = None
-        cnn_csv_paths = {}
-        headtail_csv_path = None
+        result = {
+            "mapping_path": None,
+            "roi_csv_path": None,
+            "roi_npz_path": None,
+            "pose_csv_path": None,
+            "tag_csv_path": None,
+            "cnn_csv_paths": {},
+            "headtail_csv_path": None,
+        }
 
-        if save_interpolated_outputs and interp_rows and gen.crops_dir is not None:
-            mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
-            try:
-                with open(mapping_path, "w", newline="") as f:
-                    writer = csv.DictWriter(
-                        f,
-                        fieldnames=[
-                            "frame_id",
-                            "trajectory_id",
-                            "filename",
-                            "interp_from_start",
-                            "interp_from_end",
-                            "interp_index",
-                            "interp_total",
-                        ],
-                    )
-                    writer.writeheader()
-                    writer.writerows(interp_rows)
-            except Exception:
-                pass
-        if cache_interpolated_artifacts and roi_rows and gen.crops_dir is not None:
-            roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
-            try:
-                with open(roi_csv_path, "w", newline="") as f:
-                    writer = csv.DictWriter(
-                        f,
-                        fieldnames=[
-                            "frame_id",
-                            "trajectory_id",
-                            "filename",
-                            "cx",
-                            "cy",
-                            "w",
-                            "h",
-                            "theta",
-                            "interp_from_start",
-                            "interp_from_end",
-                            "interp_index",
-                            "interp_total",
-                        ],
-                    )
-                    writer.writeheader()
-                    writer.writerows(roi_rows)
-            except Exception:
-                pass
-            roi_npz_path = gen.crops_dir.parent / "interpolated_rois.npz"
-            try:
-                np.savez_compressed(
-                    str(roi_npz_path),
-                    frame_id=np.array(
-                        [r["frame_id"] for r in roi_rows], dtype=np.int64
-                    ),
-                    trajectory_id=np.array(
-                        [r["trajectory_id"] for r in roi_rows], dtype=np.int64
-                    ),
-                    filename=np.array([r["filename"] for r in roi_rows], dtype=object),
-                    cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
-                    cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
-                    w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
-                    h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
-                    theta=np.array([r["theta"] for r in roi_rows], dtype=np.float32),
-                    interp_from_start=np.array(
-                        [r["interp_from_start"] for r in roi_rows], dtype=np.int64
-                    ),
-                    interp_from_end=np.array(
-                        [r["interp_from_end"] for r in roi_rows], dtype=np.int64
-                    ),
-                    interp_index=np.array(
-                        [r["interp_index"] for r in roi_rows], dtype=np.int64
-                    ),
-                    interp_total=np.array(
-                        [r["interp_total"] for r in roi_rows], dtype=np.int64
-                    ),
-                    obb_corners=(
-                        np.stack(roi_corners).astype(np.float32)
-                        if roi_corners
-                        else np.zeros((0, 4, 2), dtype=np.float32)
-                    ),
-                )
-            except Exception:
-                pass
-        if save_interpolated_outputs and interp_pose_rows and gen.crops_dir is not None:
-            pose_csv_path = gen.crops_dir.parent / "interpolated_pose.csv"
-            try:
-                pose_fieldnames = [
+        if gen.crops_dir is None:
+            return result
+
+        parent = gen.crops_dir.parent
+
+        if save_interpolated_outputs and interp_rows:
+            result["mapping_path"] = _write_csv_artifact(
+                parent / "interpolated_mapping.csv",
+                [
                     "frame_id",
                     "trajectory_id",
                     "filename",
-                    *POSE_SUMMARY_COLUMNS,
-                    *pose_wide_columns_for_labels(pose_kpt_labels),
-                ]
-                with open(pose_csv_path, "w", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=pose_fieldnames)
-                    writer.writeheader()
-                    writer.writerows(interp_pose_rows)
-            except Exception:
-                pose_csv_path = None
-        if interp_tag_rows and gen.crops_dir is not None:
-            tag_csv_path = gen.crops_dir.parent / "interpolated_tags.csv"
-            try:
-                with open(tag_csv_path, "w", newline="") as f:
-                    writer = csv.DictWriter(
-                        f,
-                        fieldnames=[
-                            "frame_id",
-                            "trajectory_id",
-                            "tag_id",
-                            "center_x",
-                            "center_y",
-                            "hamming",
-                        ],
-                    )
-                    writer.writeheader()
-                    writer.writerows(interp_tag_rows)
-            except Exception:
-                tag_csv_path = None
-        for _cnn_label, _cnn_rows in interp_cnn_rows.items():
-            if _cnn_rows and gen.crops_dir is not None:
-                _cnn_path = gen.crops_dir.parent / f"interpolated_cnn_{_cnn_label}.csv"
-                try:
-                    with open(_cnn_path, "w", newline="") as f:
-                        writer = csv.DictWriter(
-                            f,
-                            fieldnames=[
-                                "frame_id",
-                                "trajectory_id",
-                                "class_name",
-                                "confidence",
-                            ],
-                        )
-                        writer.writeheader()
-                        writer.writerows(_cnn_rows)
-                    cnn_csv_paths[_cnn_label] = str(_cnn_path)
-                except Exception:
-                    pass
-        if interp_headtail_rows and gen.crops_dir is not None:
-            headtail_csv_path = gen.crops_dir.parent / "interpolated_headtail.csv"
-            try:
-                with open(headtail_csv_path, "w", newline="") as f:
-                    writer = csv.DictWriter(
-                        f,
-                        fieldnames=[
-                            "frame_id",
-                            "trajectory_id",
-                            "heading_rad",
-                            "heading_conf",
-                            "heading_directed",
-                        ],
-                    )
-                    writer.writeheader()
-                    writer.writerows(interp_headtail_rows)
-            except Exception:
-                headtail_csv_path = None
+                    "interp_from_start",
+                    "interp_from_end",
+                    "interp_index",
+                    "interp_total",
+                ],
+                interp_rows,
+            )
 
-        return {
-            "mapping_path": mapping_path,
-            "roi_csv_path": roi_csv_path,
-            "roi_npz_path": roi_npz_path,
-            "pose_csv_path": pose_csv_path,
-            "tag_csv_path": tag_csv_path,
-            "cnn_csv_paths": cnn_csv_paths,
-            "headtail_csv_path": headtail_csv_path,
-        }
+        if cache_interpolated_artifacts and roi_rows:
+            result["roi_csv_path"] = _write_csv_artifact(
+                parent / "interpolated_rois.csv",
+                [
+                    "frame_id",
+                    "trajectory_id",
+                    "filename",
+                    "cx",
+                    "cy",
+                    "w",
+                    "h",
+                    "theta",
+                    "interp_from_start",
+                    "interp_from_end",
+                    "interp_index",
+                    "interp_total",
+                ],
+                roi_rows,
+            )
+            result["roi_npz_path"] = _write_roi_npz(
+                parent / "interpolated_rois.npz", roi_rows, roi_corners
+            )
+
+        if save_interpolated_outputs and interp_pose_rows:
+            pose_fieldnames = [
+                "frame_id",
+                "trajectory_id",
+                "filename",
+                *POSE_SUMMARY_COLUMNS,
+                *pose_wide_columns_for_labels(pose_kpt_labels),
+            ]
+            result["pose_csv_path"] = _write_csv_artifact(
+                parent / "interpolated_pose.csv", pose_fieldnames, interp_pose_rows
+            )
+
+        if interp_tag_rows:
+            result["tag_csv_path"] = _write_csv_artifact(
+                parent / "interpolated_tags.csv",
+                [
+                    "frame_id",
+                    "trajectory_id",
+                    "tag_id",
+                    "center_x",
+                    "center_y",
+                    "hamming",
+                ],
+                interp_tag_rows,
+            )
+
+        cnn_csv_paths = {}
+        for _cnn_label, _cnn_rows in interp_cnn_rows.items():
+            if _cnn_rows:
+                path = _write_csv_artifact(
+                    parent / f"interpolated_cnn_{_cnn_label}.csv",
+                    ["frame_id", "trajectory_id", "class_name", "confidence"],
+                    _cnn_rows,
+                )
+                if path is not None:
+                    cnn_csv_paths[_cnn_label] = str(path)
+        result["cnn_csv_paths"] = cnn_csv_paths
+
+        if interp_headtail_rows:
+            result["headtail_csv_path"] = _write_csv_artifact(
+                parent / "interpolated_headtail.csv",
+                [
+                    "frame_id",
+                    "trajectory_id",
+                    "heading_rad",
+                    "heading_conf",
+                    "heading_directed",
+                ],
+                interp_headtail_rows,
+            )
+
+        return result
 
     @staticmethod
     def _cleanup_backends(
@@ -4555,6 +4526,46 @@ class MainWindow(QMainWindow):
         )
         self.start_preview_on_video(video_path)
 
+    def _apply_optimized_params(self, new_params):
+        """Apply optimized parameter values from the helper dialog to UI widgets."""
+        _direct_mappings = [
+            ("YOLO_CONFIDENCE_THRESHOLD", self._detection_panel.spin_yolo_confidence),
+            ("YOLO_IOU_THRESHOLD", self._detection_panel.spin_yolo_iou),
+            ("MAX_DISTANCE_MULTIPLIER", self._tracking_panel.spin_max_dist),
+            ("KALMAN_NOISE_COVARIANCE", self._tracking_panel.spin_kalman_noise),
+            (
+                "KALMAN_MEASUREMENT_NOISE_COVARIANCE",
+                self._tracking_panel.spin_kalman_meas,
+            ),
+            ("W_POSITION", self._tracking_panel.spin_Wp),
+            ("W_ORIENTATION", self._tracking_panel.spin_Wo),
+            ("W_AREA", self._tracking_panel.spin_Wa),
+            ("W_ASPECT", self._tracking_panel.spin_Wasp),
+            ("KALMAN_DAMPING", self._tracking_panel.spin_kalman_damping),
+            (
+                "KALMAN_MAX_VELOCITY_MULTIPLIER",
+                self._tracking_panel.spin_kalman_max_velocity,
+            ),
+            (
+                "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER",
+                self._tracking_panel.spin_kalman_longitudinal_noise,
+            ),
+        ]
+        for key, widget in _direct_mappings:
+            if key in new_params:
+                widget.setValue(new_params[key])
+
+        # Frame-count-to-seconds conversions
+        _opt_fps = self._setup_panel.spin_fps.value()
+        if "KALMAN_MATURITY_AGE" in new_params:
+            self._tracking_panel.spin_kalman_maturity_age.setValue(
+                new_params["KALMAN_MATURITY_AGE"] / _opt_fps
+            )
+        if "LOST_THRESHOLD_FRAMES" in new_params:
+            self._tracking_panel.spin_lost_thresh.setValue(
+                new_params["LOST_THRESHOLD_FRAMES"] / _opt_fps
+            )
+
     def _open_parameter_helper(self):
         """Open the tracking parameter selection helper dialog."""
         video_path = self._setup_panel.file_line.text().strip()
@@ -4582,14 +4593,13 @@ class MainWindow(QMainWindow):
         )
 
         if not already_valid:
-            # No suitable cache found — build one
             res = QMessageBox.question(
                 self,
                 "Detection Required",
                 "No detection cache covering frames "
-                f"{start_frame}–{end_frame} was found.\n\n"
+                f"{start_frame}\u2013{end_frame} was found.\n\n"
                 "Run a quick detection-only scan now?\n"
-                "(No config save, no pose inference, no CSV output — "
+                "(No config save, no pose inference, no CSV output \u2014 "
                 "detections only.)",
                 QMessageBox.Yes | QMessageBox.No,
             )
@@ -4604,67 +4614,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             new_params = dialog.get_selected_params()
             if new_params:
-                # Update UI elements with new parameters
-                if "YOLO_CONFIDENCE_THRESHOLD" in new_params:
-                    self._detection_panel.spin_yolo_confidence.setValue(
-                        new_params["YOLO_CONFIDENCE_THRESHOLD"]
-                    )
-                if "YOLO_IOU_THRESHOLD" in new_params:
-                    self._detection_panel.spin_yolo_iou.setValue(
-                        new_params["YOLO_IOU_THRESHOLD"]
-                    )
-                if "MAX_DISTANCE_MULTIPLIER" in new_params:
-                    self._tracking_panel.spin_max_dist.setValue(
-                        new_params["MAX_DISTANCE_MULTIPLIER"]
-                    )
-                if "KALMAN_NOISE_COVARIANCE" in new_params:
-                    self._tracking_panel.spin_kalman_noise.setValue(
-                        new_params["KALMAN_NOISE_COVARIANCE"]
-                    )
-                if "KALMAN_MEASUREMENT_NOISE_COVARIANCE" in new_params:
-                    self._tracking_panel.spin_kalman_meas.setValue(
-                        new_params["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
-                    )
-
-                # Weights
-                if "W_POSITION" in new_params:
-                    self._tracking_panel.spin_Wp.setValue(new_params["W_POSITION"])
-                if "W_ORIENTATION" in new_params:
-                    self._tracking_panel.spin_Wo.setValue(new_params["W_ORIENTATION"])
-                if "W_AREA" in new_params:
-                    self._tracking_panel.spin_Wa.setValue(new_params["W_AREA"])
-                if "W_ASPECT" in new_params:
-                    self._tracking_panel.spin_Wasp.setValue(new_params["W_ASPECT"])
-
-                # Kalman dynamics & lifecycle
-                if "KALMAN_DAMPING" in new_params:
-                    self._tracking_panel.spin_kalman_damping.setValue(
-                        new_params["KALMAN_DAMPING"]
-                    )
-                if "KALMAN_MATURITY_AGE" in new_params:
-                    # Optimizer returns frame count; convert to seconds for UI
-                    _opt_fps = self._setup_panel.spin_fps.value()
-                    self._tracking_panel.spin_kalman_maturity_age.setValue(
-                        new_params["KALMAN_MATURITY_AGE"] / _opt_fps
-                    )
-                if "KALMAN_MAX_VELOCITY_MULTIPLIER" in new_params:
-                    self._tracking_panel.spin_kalman_max_velocity.setValue(
-                        new_params["KALMAN_MAX_VELOCITY_MULTIPLIER"]
-                    )
-                if "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER" in new_params:
-                    self._tracking_panel.spin_kalman_longitudinal_noise.setValue(
-                        new_params["KALMAN_LONGITUDINAL_NOISE_MULTIPLIER"]
-                    )
-                if "LOST_THRESHOLD_FRAMES" in new_params:
-                    # Optimizer returns frame count; convert to seconds for UI
-                    _opt_fps = self._setup_panel.spin_fps.value()
-                    self._tracking_panel.spin_lost_thresh.setValue(
-                        new_params["LOST_THRESHOLD_FRAMES"] / _opt_fps
-                    )
-
-                # Signals from setValue() calls above fire _on_parameter_changed
-                # automatically, which calls get_parameters_dict() and emits
-                # parameters_changed — no extra sync call needed.
+                self._apply_optimized_params(new_params)
                 QMessageBox.information(
                     self,
                     "Parameters Applied",
@@ -10492,6 +10442,66 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
+    def _store_interpolated_pose_result(self, pose_csv_path, pose_rows):
+        """Store interpolated pose results from CSV path or in-memory rows."""
+        if pose_csv_path:
+            self.current_interpolated_pose_csv_path = pose_csv_path
+            self.current_interpolated_pose_df = None
+            logger.info(f"Interpolated pose CSV saved: {pose_csv_path}")
+        elif pose_rows:
+            try:
+                self.current_interpolated_pose_df = pd.DataFrame(pose_rows)
+                self.current_interpolated_pose_csv_path = None
+                logger.info(
+                    "Interpolated pose rows kept in-memory: %d",
+                    len(self.current_interpolated_pose_df),
+                )
+            except Exception:
+                self.current_interpolated_pose_df = None
+
+    def _store_interpolated_tag_result(self, tag_csv_path, tag_rows):
+        """Store interpolated AprilTag results from CSV path or in-memory rows."""
+        if tag_csv_path:
+            self.current_interpolated_tag_csv_path = tag_csv_path
+            self.current_interpolated_tag_df = None
+            logger.info(f"Interpolated tag CSV saved: {tag_csv_path}")
+        elif tag_rows:
+            try:
+                self.current_interpolated_tag_df = pd.DataFrame(tag_rows)
+                self.current_interpolated_tag_csv_path = None
+            except Exception:
+                self.current_interpolated_tag_df = None
+
+    def _store_interpolated_cnn_result(self, cnn_csv_paths, cnn_rows):
+        """Store interpolated CNN identity results from CSV paths or in-memory rows."""
+        if cnn_csv_paths:
+            self.current_interpolated_cnn_csv_paths = cnn_csv_paths
+            self.current_interpolated_cnn_dfs = {}
+            logger.info(f"Interpolated CNN CSVs: {cnn_csv_paths}")
+        elif cnn_rows:
+            try:
+                self.current_interpolated_cnn_dfs = {
+                    label: pd.DataFrame(rows)
+                    for label, rows in cnn_rows.items()
+                    if rows
+                }
+                self.current_interpolated_cnn_csv_paths = {}
+            except Exception:
+                self.current_interpolated_cnn_dfs = {}
+
+    def _store_interpolated_headtail_result(self, headtail_csv_path, headtail_rows):
+        """Store interpolated head-tail results from CSV path or in-memory rows."""
+        if headtail_csv_path:
+            self.current_interpolated_headtail_csv_path = headtail_csv_path
+            self.current_interpolated_headtail_df = None
+            logger.info(f"Interpolated head-tail CSV saved: {headtail_csv_path}")
+        elif headtail_rows:
+            try:
+                self.current_interpolated_headtail_df = pd.DataFrame(headtail_rows)
+                self.current_interpolated_headtail_csv_path = None
+            except Exception:
+                self.current_interpolated_headtail_df = None
+
     def _on_interpolated_crops_finished(self, result):
         sender = self.sender()
         if (
@@ -10508,98 +10518,43 @@ class MainWindow(QMainWindow):
             self._cleanup_thread_reference("interp_worker")
             self._refresh_progress_visibility()
             return
+
         saved = 0
         gaps = 0
-        mapping_path = None
-        roi_csv_path = None
-        roi_npz_path = None
-        pose_csv_path = None
-        pose_rows = None
-        tag_csv_path = None
-        tag_rows = None
-        cnn_csv_paths = None
-        cnn_rows = None
-        headtail_csv_path = None
-        headtail_rows = None
         try:
             saved = int(result.get("saved", 0))
             gaps = int(result.get("gaps", 0))
-            mapping_path = result.get("mapping_path")
-            roi_csv_path = result.get("roi_csv_path")
-            roi_npz_path = result.get("roi_npz_path")
-            pose_csv_path = result.get("pose_csv_path")
-            pose_rows = result.get("pose_rows")
-            tag_csv_path = result.get("tag_csv_path")
-            tag_rows = result.get("tag_rows")
-            cnn_csv_paths = result.get("cnn_csv_paths")
-            cnn_rows = result.get("cnn_rows")
-            headtail_csv_path = result.get("headtail_csv_path")
-            headtail_rows = result.get("headtail_rows")
         except Exception:
             pass
+
         self._refresh_progress_visibility()
         logger.info(f"Interpolated individual crops saved: {saved} (gaps: {gaps})")
+
+        mapping_path = result.get("mapping_path")
         if mapping_path:
             logger.info(f"Interpolated mapping saved: {mapping_path}")
+
+        roi_csv_path = result.get("roi_csv_path")
         if roi_csv_path:
             logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
+
+        roi_npz_path = result.get("roi_npz_path")
         if roi_npz_path:
             self.current_interpolated_roi_npz_path = roi_npz_path
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
-        if pose_csv_path:
-            self.current_interpolated_pose_csv_path = pose_csv_path
-            self.current_interpolated_pose_df = None
-            logger.info(f"Interpolated pose CSV saved: {pose_csv_path}")
-        elif pose_rows:
-            try:
-                self.current_interpolated_pose_df = pd.DataFrame(pose_rows)
-                self.current_interpolated_pose_csv_path = None
-                logger.info(
-                    "Interpolated pose rows kept in-memory: %d",
-                    len(self.current_interpolated_pose_df),
-                )
-            except Exception:
-                self.current_interpolated_pose_df = None
 
-        # --- Store interpolated AprilTag results ---
-        if tag_csv_path:
-            self.current_interpolated_tag_csv_path = tag_csv_path
-            self.current_interpolated_tag_df = None
-            logger.info(f"Interpolated tag CSV saved: {tag_csv_path}")
-        elif tag_rows:
-            try:
-                self.current_interpolated_tag_df = pd.DataFrame(tag_rows)
-                self.current_interpolated_tag_csv_path = None
-            except Exception:
-                self.current_interpolated_tag_df = None
-
-        # --- Store interpolated CNN identity results ---
-        if cnn_csv_paths:
-            self.current_interpolated_cnn_csv_paths = cnn_csv_paths
-            self.current_interpolated_cnn_dfs = {}
-            logger.info(f"Interpolated CNN CSVs: {cnn_csv_paths}")
-        elif cnn_rows:
-            try:
-                self.current_interpolated_cnn_dfs = {
-                    label: pd.DataFrame(rows)
-                    for label, rows in cnn_rows.items()
-                    if rows
-                }
-                self.current_interpolated_cnn_csv_paths = {}
-            except Exception:
-                self.current_interpolated_cnn_dfs = {}
-
-        # --- Store interpolated head-tail results ---
-        if headtail_csv_path:
-            self.current_interpolated_headtail_csv_path = headtail_csv_path
-            self.current_interpolated_headtail_df = None
-            logger.info(f"Interpolated head-tail CSV saved: {headtail_csv_path}")
-        elif headtail_rows:
-            try:
-                self.current_interpolated_headtail_df = pd.DataFrame(headtail_rows)
-                self.current_interpolated_headtail_csv_path = None
-            except Exception:
-                self.current_interpolated_headtail_df = None
+        self._store_interpolated_pose_result(
+            result.get("pose_csv_path"), result.get("pose_rows")
+        )
+        self._store_interpolated_tag_result(
+            result.get("tag_csv_path"), result.get("tag_rows")
+        )
+        self._store_interpolated_cnn_result(
+            result.get("cnn_csv_paths"), result.get("cnn_rows")
+        )
+        self._store_interpolated_headtail_result(
+            result.get("headtail_csv_path"), result.get("headtail_rows")
+        )
 
         self._cleanup_thread_reference("interp_worker")
         self._refresh_progress_visibility()
@@ -14598,6 +14553,70 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"Failed to load configuration: {e}")
 
+    @staticmethod
+    def _atomic_json_write(cfg, path):
+        """Write a JSON config atomically. Returns (success, error_message)."""
+        import tempfile as _tempfile
+
+        tmp_path = None
+        try:
+            with _tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=os.path.dirname(path),
+                delete=False,
+                suffix=".tmp",
+            ) as tmp:
+                json.dump(cfg, tmp, indent=2)
+                tmp_path = tmp.name
+            os.replace(tmp_path, path)
+            return True, ""
+        except Exception as e:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            return False, str(e)
+
+    def _resolve_config_save_path(self, prompt_if_exists):
+        """Determine the config file save path, prompting the user if needed."""
+        video_path = self._setup_panel.file_line.text()
+        default_path = (
+            get_video_config_path(video_path) if video_path else CONFIG_FILENAME
+        )
+
+        if default_path and os.path.exists(default_path) and prompt_if_exists:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Configuration File Exists")
+            msg.setText(
+                f"A configuration file already exists:\n{os.path.basename(default_path)}"
+            )
+            msg.setInformativeText(
+                "Do you want to replace it or save to a different location?"
+            )
+            replace_btn = msg.addButton("Replace Existing", QMessageBox.AcceptRole)
+            save_as_btn = msg.addButton("Save As...", QMessageBox.ActionRole)
+            msg.addButton(QMessageBox.Cancel)
+            msg.setDefaultButton(replace_btn)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == replace_btn:
+                return default_path
+            if clicked == save_as_btn:
+                path, _ = QFileDialog.getSaveFileName(
+                    self, "Save Configuration As", default_path, "JSON Files (*.json)"
+                )
+                return path or None
+            return None
+
+        if default_path:
+            return default_path
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Configuration", CONFIG_FILENAME, "JSON Files (*.json)"
+        )
+        return path or None
+
     def save_config(
         self: object,
         preset_mode: object = False,
@@ -15031,105 +15050,25 @@ class MainWindow(QMainWindow):
 
         # If preset mode with path provided, save directly
         if preset_mode and preset_path:
-            try:
-                import tempfile
-
-                os.makedirs(os.path.dirname(preset_path), exist_ok=True)
-                # Write to temp file first, then rename (atomic on most filesystems)
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    dir=os.path.dirname(preset_path),
-                    delete=False,
-                    suffix=".tmp",
-                ) as tmp:
-                    json.dump(cfg, tmp, indent=2)
-                    tmp_path = tmp.name
-                os.replace(tmp_path, preset_path)  # Atomic rename
+            os.makedirs(os.path.dirname(preset_path), exist_ok=True)
+            ok, err = self._atomic_json_write(cfg, preset_path)
+            if ok:
                 logger.info(f"Saved preset to {preset_path}")
                 return True
-            except Exception as e:
-                logger.error(f"Failed to save preset: {e}")
-                QMessageBox.critical(self, "Save Error", f"Failed to save preset:\n{e}")
-                return False
-
-        # Determine save path: video-based if video selected, otherwise ask user
-        video_path = self._setup_panel.file_line.text()
-        if video_path:
-            default_path = get_video_config_path(video_path)
-        else:
-            default_path = CONFIG_FILENAME
-
-        config_path = None
-
-        # If default path exists, ask user whether to replace or save elsewhere
-        if default_path and os.path.exists(default_path) and prompt_if_exists:
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Question)
-            msg.setWindowTitle("Configuration File Exists")
-            msg.setText(
-                f"A configuration file already exists:\n{os.path.basename(default_path)}"
-            )
-            msg.setInformativeText(
-                "Do you want to replace it or save to a different location?"
-            )
-
-            replace_btn = msg.addButton("Replace Existing", QMessageBox.AcceptRole)
-            save_as_btn = msg.addButton("Save As...", QMessageBox.ActionRole)
-            cancel_btn = msg.addButton(QMessageBox.Cancel)
-            msg.setDefaultButton(replace_btn)
-
-            result = msg.exec()
-            clicked = msg.clickedButton()
-
-            if clicked == replace_btn:
-                config_path = default_path
-            elif clicked == save_as_btn:
-                config_path, _ = QFileDialog.getSaveFileName(
-                    self, "Save Configuration As", default_path, "JSON Files (*.json)"
-                )
-            else:
-                # User clicked Cancel or closed dialog - return False to cancel operation
-                return False
-        else:
-            # No existing file, save directly to default path if available
-            if default_path:
-                config_path = default_path
-            else:
-                # No video selected, ask user where to save
-                config_path, _ = QFileDialog.getSaveFileName(
-                    self, "Save Configuration", CONFIG_FILENAME, "JSON Files (*.json)"
-                )
-
-        if config_path:
-            try:
-                import tempfile
-
-                # Write to temp file first, then rename (atomic on most filesystems)
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    dir=os.path.dirname(config_path),
-                    delete=False,
-                    suffix=".tmp",
-                ) as tmp:
-                    json.dump(cfg, tmp, indent=2)
-                    tmp_path = tmp.name
-                os.replace(tmp_path, config_path)  # Atomic rename
-                logger.info(
-                    f"Configuration saved to {config_path} (including ROI shapes)"
-                )
-                return True
-            except Exception as e:
-                logger.warning(f"Failed to save configuration: {e}")
-                # Clean up temp file if save failed
-                try:
-                    if "tmp_path" in locals() and os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                except OSError:
-                    pass
-                return False
-        else:
-            # User cancelled file dialog
+            logger.error(f"Failed to save preset: {err}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save preset:\n{err}")
             return False
+
+        config_path = self._resolve_config_save_path(prompt_if_exists)
+        if not config_path:
+            return False
+
+        ok, err = self._atomic_json_write(cfg, config_path)
+        if ok:
+            logger.info(f"Configuration saved to {config_path} (including ROI shapes)")
+            return True
+        logger.warning(f"Failed to save configuration: {err}")
+        return False
 
     def _setup_session_logging(self, video_path, backward_mode=False):
         """Set up comprehensive logging for the entire tracking session."""
@@ -16178,6 +16117,123 @@ class MainWindow(QMainWindow):
 
             traceback.print_exc()
 
+    def _poll_crop_stderr_progress(self, process):
+        """Read ffmpeg stderr in non-blocking mode and log progress."""
+        if not process.stderr:
+            return
+        try:
+            import fcntl
+            import os as os_module
+
+            fd = process.stderr.fileno()
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
+            try:
+                while True:
+                    line = process.stderr.readline()
+                    if not line:
+                        break
+                    if "frame=" in line:
+                        try:
+                            frame_str = line.split("frame=")[1].split()[0]
+                            current_frame = int(frame_str)
+                            total_frames = self._crop_process.get("total_frames", 0)
+                            if total_frames > 0:
+                                progress_pct = int((current_frame / total_frames) * 100)
+                                last_logged = self._crop_process.get(
+                                    "last_logged_progress", 0
+                                )
+                                if progress_pct >= last_logged + 10:
+                                    logger.info(
+                                        f"Video crop progress: {progress_pct}% ({current_frame}/{total_frames} frames)"
+                                    )
+                                    self._crop_process["last_logged_progress"] = (
+                                        progress_pct
+                                    )
+                        except (ValueError, IndexError):
+                            pass
+            except (IOError, OSError):
+                pass
+        except Exception:
+            pass
+
+    def _load_cropped_video(self, output_path):
+        """Set up the UI to use the newly cropped video."""
+        self._setup_panel.file_line.setText(output_path)
+        self.current_video_path = output_path
+        self.clear_roi()
+
+        video_dir = os.path.dirname(output_path)
+        video_name = os.path.splitext(os.path.basename(output_path))[0]
+
+        csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+        self._setup_panel.csv_line.setText(csv_path)
+
+        video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
+        self._postprocess_panel.video_out_line.setText(video_out_path)
+        self._postprocess_panel.check_video_output.setChecked(True)
+
+        self.btn_test_detection.setEnabled(True)
+        self._setup_panel.btn_detect_fps.setEnabled(True)
+        self.btn_crop_video.setEnabled(False)
+        if hasattr(self, "roi_optimization_label"):
+            self.roi_optimization_label.setText("")
+
+        config_path = get_video_config_path(output_path)
+        if config_path and os.path.isfile(config_path):
+            self._load_config_from_file(config_path)
+            self._setup_panel.config_status_label.setText(
+                f"\u2713 Loaded: {os.path.basename(config_path)}"
+            )
+            self._setup_panel.config_status_label.setStyleSheet(
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Cropped video loaded: {output_path} (auto-loaded config)")
+        else:
+            self._setup_panel.config_status_label.setText(
+                "No config found (using current settings)"
+            )
+            self._setup_panel.config_status_label.setStyleSheet(
+                "color: #f39c12; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Cropped video loaded: {output_path} (no config found)")
+
+    def _handle_crop_success(self, output_path, orig_w, orig_h, crop_w, crop_h):
+        """Handle a successful crop completion."""
+        reply = QMessageBox.question(
+            self,
+            "Crop Complete",
+            f"Video successfully cropped to ROI!\n\n"
+            f"Original: {orig_w}x{orig_h}\n"
+            f"Cropped: {crop_w}x{crop_h}\n"
+            f"Saved to: {os.path.basename(output_path)}\n\n"
+            f"Would you like to load the cropped video now?\n"
+            f"(Note: ROI will be cleared since the video is already cropped)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._load_cropped_video(output_path)
+
+        self._set_ui_controls_enabled(True)
+        if hasattr(self, "btn_crop_video"):
+            self.btn_crop_video.setText("Crop Video to ROI")
+        logger.info(f"Successfully cropped video to {output_path}")
+
+    def _handle_crop_failure(self, return_code):
+        """Handle a failed crop completion."""
+        self._set_ui_controls_enabled(True)
+        if hasattr(self, "btn_crop_video"):
+            self.btn_crop_video.setText("Crop Video to ROI")
+            self.btn_crop_video.setEnabled(True)
+        logger.error(f"Video crop failed with return code {return_code}")
+        QMessageBox.critical(
+            self,
+            "Crop Failed",
+            f"Video cropping failed (return code: {return_code})\n\n"
+            f"Check that ffmpeg is installed and the video is valid.",
+        )
+
     def _check_crop_completion(self):
         """Check if background crop process has completed."""
         if not hasattr(self, "_crop_process"):
@@ -16186,154 +16242,18 @@ class MainWindow(QMainWindow):
             return
 
         process = self._crop_process["process"]
+        self._poll_crop_stderr_progress(process)
 
-        # Read and log any new stderr output (ffmpeg progress)
-        try:
-            # Read available lines without blocking (non-blocking I/O)
-            if process.stderr:
-                import fcntl
-                import os as os_module
-
-                # Set stderr to non-blocking mode
-                fd = process.stderr.fileno()
-                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
-
-                try:
-                    while True:
-                        line = process.stderr.readline()
-                        if not line:
-                            break
-
-                        # Parse progress from ffmpeg output
-                        if "frame=" in line:
-                            try:
-                                frame_str = line.split("frame=")[1].split()[0]
-                                current_frame = int(frame_str)
-                                total_frames = self._crop_process.get("total_frames", 0)
-
-                                # Log every 10% of progress
-                                if total_frames > 0:
-                                    progress_pct = int(
-                                        (current_frame / total_frames) * 100
-                                    )
-                                    last_logged = self._crop_process.get(
-                                        "last_logged_progress", 0
-                                    )
-
-                                    if progress_pct >= last_logged + 10:
-                                        logger.info(
-                                            f"Video crop progress: {progress_pct}% ({current_frame}/{total_frames} frames)"
-                                        )
-                                        self._crop_process["last_logged_progress"] = (
-                                            progress_pct
-                                        )
-                            except (ValueError, IndexError):
-                                pass
-                except (IOError, OSError):
-                    # No data available right now
-                    pass
-        except Exception:
-            # Don't let logging errors break the process
-            pass
-
-        return_code = process.poll()  # Non-blocking check
-
-        if return_code is not None:  # Process has finished
+        return_code = process.poll()
+        if return_code is not None:
             self._crop_check_timer.stop()
             output_path = self._crop_process["output_path"]
             orig_w, orig_h = self._crop_process["original_size"]
             crop_w, crop_h = self._crop_process["cropped_size"]
 
             if return_code == 0 and os.path.exists(output_path):
-                # Success - ask if user wants to load the cropped video
-                reply = QMessageBox.question(
-                    self,
-                    "Crop Complete",
-                    f"Video successfully cropped to ROI!\n\n"
-                    f"Original: {orig_w}x{orig_h}\n"
-                    f"Cropped: {crop_w}x{crop_h}\n"
-                    f"Saved to: {os.path.basename(output_path)}\n\n"
-                    f"Would you like to load the cropped video now?\n"
-                    f"(Note: ROI will be cleared since the video is already cropped)",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-
-                if reply == QMessageBox.Yes:
-                    # Load the cropped video with full initialization (same as select_file)
-                    self._setup_panel.file_line.setText(output_path)
-                    self.current_video_path = output_path
-                    self.clear_roi()  # Clear ROI since we're loading the cropped version
-
-                    # Auto-generate output paths based on cropped video name
-                    video_dir = os.path.dirname(output_path)
-                    video_name = os.path.splitext(os.path.basename(output_path))[0]
-
-                    # Auto-populate CSV output
-                    csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
-                    self._setup_panel.csv_line.setText(csv_path)
-
-                    # Auto-populate video output and enable it
-                    video_out_path = os.path.join(
-                        video_dir, f"{video_name}_tracking.mp4"
-                    )
-                    self._postprocess_panel.video_out_line.setText(video_out_path)
-                    self._postprocess_panel.check_video_output.setChecked(True)
-
-                    # Enable preview detection button
-                    self.btn_test_detection.setEnabled(True)
-                    self._setup_panel.btn_detect_fps.setEnabled(True)
-
-                    # Disable crop button and clear optimization info (no ROI anymore)
-                    self.btn_crop_video.setEnabled(False)
-                    if hasattr(self, "roi_optimization_label"):
-                        self.roi_optimization_label.setText("")
-
-                    # Auto-load config if it exists
-                    config_path = get_video_config_path(output_path)
-                    if config_path and os.path.isfile(config_path):
-                        self._load_config_from_file(config_path)
-                        self._setup_panel.config_status_label.setText(
-                            f"✓ Loaded: {os.path.basename(config_path)}"
-                        )
-                        self._setup_panel.config_status_label.setStyleSheet(
-                            "color: #4fc1ff; font-style: italic; font-size: 10px;"
-                        )
-                        logger.info(
-                            f"Cropped video loaded: {output_path} (auto-loaded config)"
-                        )
-                    else:
-                        self._setup_panel.config_status_label.setText(
-                            "No config found (using current settings)"
-                        )
-                        self._setup_panel.config_status_label.setStyleSheet(
-                            "color: #f39c12; font-style: italic; font-size: 10px;"
-                        )
-                        logger.info(
-                            f"Cropped video loaded: {output_path} (no config found)"
-                        )
-
-                # Re-enable UI controls after successful crop
-                self._set_ui_controls_enabled(True)
-                if hasattr(self, "btn_crop_video"):
-                    self.btn_crop_video.setText("Crop Video to ROI")
-
-                logger.info(f"Successfully cropped video to {output_path}")
+                self._handle_crop_success(output_path, orig_w, orig_h, crop_w, crop_h)
             else:
-                # Process failed - re-enable UI
-                self._set_ui_controls_enabled(True)
-                if hasattr(self, "btn_crop_video"):
-                    self.btn_crop_video.setText("Crop Video to ROI")
-                    self.btn_crop_video.setEnabled(True)
+                self._handle_crop_failure(return_code)
 
-                logger.error(f"Video crop failed with return code {return_code}")
-                QMessageBox.critical(
-                    self,
-                    "Crop Failed",
-                    f"Video cropping failed (return code: {return_code})\n\n"
-                    f"Check that ffmpeg is installed and the video is valid.",
-                )
-
-            # Clean up
             del self._crop_process

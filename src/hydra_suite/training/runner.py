@@ -47,6 +47,20 @@ def _accuracy_column_priority(name: str) -> tuple[int, str]:
     return (4, low)
 
 
+def _best_value_for_column(rows: list[dict], col: str) -> float | None:
+    """Extract the maximum numeric value for a column across all rows."""
+    values: list[float] = []
+    for row in rows:
+        raw = row.get(col)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            values.append(float(raw))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
 def _extract_best_val_acc_from_results_csv(metrics_csv_path: Path) -> float | None:
     """Extract best validation-like accuracy from Ultralytics results.csv."""
     if not metrics_csv_path.exists():
@@ -55,23 +69,17 @@ def _extract_best_val_acc_from_results_csv(metrics_csv_path: Path) -> float | No
         with open(metrics_csv_path, encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
             field_names = list(reader.fieldnames or [])
-            candidate_cols = [c for c in field_names if _looks_like_accuracy_column(c)]
+            candidate_cols = sorted(
+                [c for c in field_names if _looks_like_accuracy_column(c)],
+                key=_accuracy_column_priority,
+            )
             if not candidate_cols:
                 return None
-            candidate_cols = sorted(candidate_cols, key=_accuracy_column_priority)
             rows = list(reader)
             for col in candidate_cols:
-                values: list[float] = []
-                for row in rows:
-                    raw = row.get(col)
-                    if raw is None or str(raw).strip() == "":
-                        continue
-                    try:
-                        values.append(float(raw))
-                    except Exception:
-                        continue
-                if values:
-                    return max(values)
+                result = _best_value_for_column(rows, col)
+                if result is not None:
+                    return result
             return None
     except Exception:
         return None
@@ -607,6 +615,110 @@ def _train_tiny_classify(
     }
 
 
+def _build_discriminative_param_groups(model, params):
+    """Split model parameters into head and backbone groups with discriminative LR."""
+    head_params, backbone_params = [], []
+    head_names = {"classifier", "fc", "heads"}
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if any(name.startswith(h) for h in head_names):
+            head_params.append(p)
+        else:
+            backbone_params.append(p)
+    param_groups = [{"params": head_params, "lr": params.lr}]
+    if backbone_params:
+        param_groups.append(
+            {"params": backbone_params, "lr": params.lr * params.backbone_lr_scale}
+        )
+    return param_groups
+
+
+def _run_torchvision_training_loop(
+    model,
+    train_loader,
+    val_loader,
+    optimizer,
+    criterion,
+    device,
+    params,
+    save_torchvision_checkpoint_fn,
+    best_ckpt_path,
+    class_names,
+    log_cb,
+    progress_cb,
+    should_cancel,
+):
+    """Run training/validation epochs for a torchvision model.
+
+    Returns (best_val_acc, history).
+    """
+    import torch
+
+    sz = params.input_size
+    best_val_acc = 0.0
+    patience_count = 0
+    history: dict = {"train_loss": [], "val_acc": []}
+
+    for epoch in range(params.epochs):
+        if should_cancel and should_cancel():
+            _safe_log(log_cb, "Training canceled.")
+            break
+
+        model.train()
+        total_loss = 0.0
+        for batch_x, batch_y in train_loader:
+            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(batch_x), batch_y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        avg_loss = total_loss / max(len(train_loader), 1)
+        history["train_loss"].append(avg_loss)
+
+        model.eval()
+        correct = total = 0
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                preds = model(batch_x).argmax(dim=1)
+                correct += (preds == batch_y).sum().item()
+                total += len(batch_y)
+        val_acc = correct / max(total, 1)
+        history["val_acc"].append(val_acc)
+
+        _safe_log(
+            log_cb,
+            f"Epoch {epoch + 1}/{params.epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}",
+        )
+        if progress_cb:
+            progress_cb(epoch + 1, params.epochs)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_count = 0
+            save_torchvision_checkpoint_fn(
+                model=model,
+                backbone=params.backbone,
+                class_names=class_names,
+                factor_names=[],
+                input_size=(sz, sz),
+                best_val_acc=best_val_acc,
+                history=history,
+                trainable_layers=params.trainable_layers,
+                backbone_lr_scale=params.backbone_lr_scale,
+                path=best_ckpt_path,
+            )
+        else:
+            patience_count += 1
+            if patience_count >= params.patience:
+                _safe_log(log_cb, f"Early stopping at epoch {epoch + 1}.")
+                break
+
+    return best_val_acc, history
+
+
 def _train_custom_classify(
     spec: "TrainingRunSpec",
     run_dir: Path,
@@ -643,15 +755,7 @@ def _train_custom_classify(
     weights_dir = run_dir / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    def _log(msg: str) -> None:
-        if log_cb:
-            log_cb(msg)
-
-    # Build dataset
     dataset_dir = Path(spec.derived_dataset_dir)
-    train_dir = dataset_dir / "train"
-    val_dir = dataset_dir / "val"
-
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     sz = params.input_size
@@ -672,8 +776,8 @@ def _train_custom_classify(
         ]
     )
 
-    train_ds = datasets.ImageFolder(str(train_dir), transform=train_tf)
-    val_ds = datasets.ImageFolder(str(val_dir), transform=val_tf)
+    train_ds = datasets.ImageFolder(str(dataset_dir / "train"), transform=train_tf)
+    val_ds = datasets.ImageFolder(str(dataset_dir / "val"), transform=val_tf)
     class_names = train_ds.classes
 
     train_loader = DataLoader(
@@ -683,106 +787,44 @@ def _train_custom_classify(
         val_ds, batch_size=params.batch, shuffle=False, num_workers=0, pin_memory=True
     )
 
-    # _pick_torch_device is defined in runner.py and handles "auto", MPS, CUDA fallback
     device = _pick_torch_device(spec.device)
     model = build_torchvision_classifier(
         params.backbone, len(class_names), params.trainable_layers
     )
     model.to(device)
 
-    # Discriminative LR: backbone params at reduced LR, head at full LR
-    head_params, backbone_params = [], []
-    head_names = {"classifier", "fc", "heads"}
-    for name, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        if any(name.startswith(h) for h in head_names):
-            head_params.append(p)
-        else:
-            backbone_params.append(p)
-
-    param_groups = [{"params": head_params, "lr": params.lr}]
-    if backbone_params:
-        param_groups.append(
-            {"params": backbone_params, "lr": params.lr * params.backbone_lr_scale}
-        )
-
+    param_groups = _build_discriminative_param_groups(model, params)
     optimizer = torch.optim.AdamW(param_groups, weight_decay=params.weight_decay)
-    # NOTE: params.class_rebalance_mode and class_rebalance_power are stored
-    # in CustomCNNParams but not yet applied in the torchvision training path
-    # (only label_smoothing is passed to CrossEntropyLoss). A WeightedRandomSampler
-    # or loss weighting implementation can be added here in a future task.
     criterion = nn.CrossEntropyLoss(label_smoothing=params.label_smoothing)
 
-    best_val_acc = 0.0
-    patience_count = 0
-    history: dict = {"train_loss": [], "val_acc": []}
     best_ckpt_path = (
         weights_dir / f"classkit_custom_{params.backbone}_{len(class_names)}cls.pth"
     )
 
-    for epoch in range(params.epochs):
-        if should_cancel and should_cancel():
-            _log("Training canceled.")
-            break
+    best_val_acc, history = _run_torchvision_training_loop(
+        model,
+        train_loader,
+        val_loader,
+        optimizer,
+        criterion,
+        device,
+        params,
+        save_torchvision_checkpoint,
+        best_ckpt_path,
+        class_names,
+        log_cb,
+        progress_cb,
+        should_cancel,
+    )
 
-        # Training
-        model.train()
-        total_loss = 0.0
-        for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            optimizer.zero_grad()
-            loss = criterion(model(batch_x), batch_y)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        avg_loss = total_loss / max(len(train_loader), 1)
-        history["train_loss"].append(avg_loss)
-
-        # Validation
-        model.eval()
-        correct = total = 0
-        with torch.no_grad():
-            for batch_x, batch_y in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                preds = model(batch_x).argmax(dim=1)
-                correct += (preds == batch_y).sum().item()
-                total += len(batch_y)
-        val_acc = correct / max(total, 1)
-        history["val_acc"].append(val_acc)
-
-        _log(
-            f"Epoch {epoch + 1}/{params.epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}"
-        )
-        if progress_cb:
-            progress_cb(epoch + 1, params.epochs)
-
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            patience_count = 0
-            save_torchvision_checkpoint(
-                model=model,
-                backbone=params.backbone,
-                class_names=class_names,
-                factor_names=[],
-                input_size=(sz, sz),
-                best_val_acc=best_val_acc,
-                history=history,
-                trainable_layers=params.trainable_layers,
-                backbone_lr_scale=params.backbone_lr_scale,
-                path=best_ckpt_path,
-            )
-        else:
-            patience_count += 1
-            if patience_count >= params.patience:
-                _log(f"Early stopping at epoch {epoch + 1}.")
-                break
+    metrics_path = run_dir / "custom_metrics.json"
+    metrics_path.write_text(
+        json.dumps({"best_val_acc": best_val_acc, "history": history}, indent=2)
+    )
 
     if not best_ckpt_path.exists():
-        _log("No checkpoint saved (training canceled or val acc never improved).")
-        metrics_path = run_dir / "custom_metrics.json"
-        metrics_path.write_text(
-            json.dumps({"best_val_acc": best_val_acc, "history": history}, indent=2)
+        _safe_log(
+            log_cb, "No checkpoint saved (training canceled or val acc never improved)."
         )
         return {
             "success": False,
@@ -794,19 +836,13 @@ def _train_custom_classify(
             "task": "custom_classify",
         }
 
-    # ONNX export
     best_model, best_ckpt = load_torchvision_classifier(
         str(best_ckpt_path), device="cpu"
     )
     onnx_path = best_ckpt_path.with_suffix(".onnx")
     export_torchvision_to_onnx(best_model, best_ckpt, onnx_path)
 
-    # Metrics
-    metrics_path = run_dir / "custom_metrics.json"
-    metrics_path.write_text(
-        json.dumps({"best_val_acc": best_val_acc, "history": history}, indent=2)
-    )
-    _log(f"Training complete. Best val acc: {best_val_acc:.4f}")
+    _safe_log(log_cb, f"Training complete. Best val acc: {best_val_acc:.4f}")
 
     return {
         "success": True,
@@ -817,6 +853,62 @@ def _train_custom_classify(
         "command": ["custom_classify_inprocess"],
         "task": "custom_classify",
     }
+
+
+_CUSTOM_CLASSIFY_ROLES = {
+    TrainingRole.CLASSIFY_FLAT_CUSTOM,
+    TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
+    TrainingRole.CLASSIFY_FLAT_TINY,
+    TrainingRole.CLASSIFY_MULTIHEAD_TINY,
+}
+
+
+def _cancel_subprocess(proc, command):
+    """Terminate or kill a subprocess and return a cancellation result dict."""
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return {
+        "success": False,
+        "canceled": True,
+        "artifact_path": "",
+        "metrics_path": "",
+        "command": command,
+    }
+
+
+def _stream_ultralytics_output(proc, log_cb, progress_cb, should_cancel, command):
+    """Stream subprocess output, parse progress, handle cancellation.
+
+    Returns a cancellation result dict if canceled, otherwise None.
+    """
+    assert proc.stdout is not None
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    progress_re_1 = re.compile(r"Epoch\s+(\d+)\s*/\s*(\d+)")
+    progress_re_2 = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s")
+
+    for line in proc.stdout:
+        if should_cancel and should_cancel():
+            return _cancel_subprocess(proc, command)
+
+        msg = ansi_re.sub("", line).rstrip()
+        if msg:
+            _safe_log(log_cb, msg)
+        for regex in (progress_re_1, progress_re_2):
+            m = regex.search(msg)
+            if m and progress_cb is not None:
+                try:
+                    progress_cb(int(m.group(1)), int(m.group(2)))
+                except Exception:
+                    pass
+                break
+    return None
 
 
 def run_training(
@@ -832,14 +924,7 @@ def run_training(
     run_dir = Path(run_dir).expanduser().resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    if spec.role in (
-        TrainingRole.CLASSIFY_FLAT_CUSTOM,
-        TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
-        TrainingRole.CLASSIFY_FLAT_TINY,
-        TrainingRole.CLASSIFY_MULTIHEAD_TINY,
-    ):
-        # Ensure custom_params is populated; alias roles (flat_tiny, multihead_tiny)
-        # inject tinyclassifier default so _train_custom_classify can dispatch correctly.
+    if spec.role in _CUSTOM_CLASSIFY_ROLES:
         if spec.custom_params is None:
             spec = dataclasses.replace(
                 spec, custom_params=CustomCNNParams(backbone="tinyclassifier")
@@ -862,42 +947,12 @@ def run_training(
         text=True,
         bufsize=1,
     )
-    assert proc.stdout is not None
 
-    ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-    progress_re_1 = re.compile(r"Epoch\s+(\d+)\s*/\s*(\d+)")
-    progress_re_2 = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s")
-
-    for line in proc.stdout:
-        if should_cancel and should_cancel():
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            if proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            return {
-                "success": False,
-                "canceled": True,
-                "artifact_path": "",
-                "metrics_path": "",
-                "command": command,
-            }
-
-        msg = ansi_re.sub("", line).rstrip()
-        if msg:
-            _safe_log(log_cb, msg)
-        for regex in (progress_re_1, progress_re_2):
-            m = regex.search(msg)
-            if m and progress_cb is not None:
-                try:
-                    progress_cb(int(m.group(1)), int(m.group(2)))
-                except Exception:
-                    pass
-                break
+    cancel_result = _stream_ultralytics_output(
+        proc, log_cb, progress_cb, should_cancel, command
+    )
+    if cancel_result is not None:
+        return cancel_result
 
     rc = proc.wait()
     if rc != 0:

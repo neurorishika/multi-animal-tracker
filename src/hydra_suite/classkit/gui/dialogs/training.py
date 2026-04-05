@@ -69,24 +69,9 @@ class ClassKitTrainingDialog(QDialog):
 
         return ordered
 
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-
-        total = self._scheme.total_classes if self._scheme else "?"
-        name = self._scheme.name if self._scheme else "free-form"
-        header = QLabel(
-            f"<h2 style='color:#ffffff;margin:0'>Train Classifier</h2>"
-            f"<p style='color:#888;margin:4px 0 0 0'>Scheme: <b>{name}</b>"
-            f" &nbsp;|&nbsp; Classes: <b>{total}</b>"
-            f" &nbsp;|&nbsp; Labeled samples: <b>{self._n_labeled}</b></p>"
-        )
-        header.setStyleSheet("background: #252526; padding: 10px; border-radius: 4px;")
-        layout.addWidget(header)
-
-        self.tabs = QTabWidget()
+    def _build_general_tab(self):
+        """Build the General settings tab and return its widget."""
         self.general_tab = QWidget()
-
         form = QFormLayout()
         form.setSpacing(8)
 
@@ -117,6 +102,25 @@ class ClassKitTrainingDialog(QDialog):
         )
         form.addRow("<b>Training Device:</b>", self.device_combo)
 
+        self._build_compute_runtime_combo(form)
+        self._build_base_model_combo(form)
+        self._build_hyperparams_widgets(form)
+
+        self._mode_desc_label = QLabel("")
+        self._mode_desc_label.setWordWrap(True)
+        self._mode_desc_label.setStyleSheet(
+            "color: #888; font-size: 11px; padding: 4px 8px; "
+            "border-left: 2px solid #3e3e42; margin-top: 2px;"
+        )
+
+        layout_gen = QVBoxLayout(self.general_tab)
+        layout_gen.addLayout(form)
+        layout_gen.addWidget(self._mode_desc_label)
+        layout_gen.addStretch()
+        return self.general_tab
+
+    def _build_compute_runtime_combo(self, form):
+        """Build the inference runtime combo box."""
         self.compute_runtime_combo = QComboBox()
         try:
             from hydra_suite.runtime.compute_runtime import (
@@ -150,6 +154,8 @@ class ClassKitTrainingDialog(QDialog):
         )
         form.addRow("<b>Inference Runtime:</b>", self.compute_runtime_combo)
 
+    def _build_base_model_combo(self, form):
+        """Build the YOLO base model combo box."""
         self.base_model_combo = QComboBox()
         for m in [
             "yolo26n-cls.pt",
@@ -166,6 +172,8 @@ class ClassKitTrainingDialog(QDialog):
         self._base_model_row_label = QLabel("<b>Base Model (YOLO):</b>")
         form.addRow(self._base_model_row_label, self.base_model_combo)
 
+    def _build_hyperparams_widgets(self, form):
+        """Build epoch, batch, lr, val fraction, and patience widgets."""
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(1, 500)
         self.epochs_spin.setValue(50)
@@ -213,20 +221,177 @@ class ClassKitTrainingDialog(QDialog):
             "Set to 0 to disable early stopping."
         )
 
-        self._mode_desc_label = QLabel("")
-        self._mode_desc_label.setWordWrap(True)
-        self._mode_desc_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 4px 8px; "
-            "border-left: 2px solid #3e3e42; margin-top: 2px;"
+    @staticmethod
+    def _safe_class_text(value: object) -> str:
+        if value is None or isinstance(value, bool):
+            return ""
+        return str(value).strip()
+
+    def _build_class_combo(self, initial_text: object = "") -> QComboBox:
+        combo = QComboBox()
+        combo.setMinimumWidth(160)
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToContentsOnFirstShow)
+
+        if self._class_choices:
+            for cls in self._class_choices:
+                combo.addItem(cls, cls)
+        else:
+            combo.addItem("(no classes)", "")
+            combo.setEnabled(False)
+
+        initial = self._safe_class_text(initial_text)
+        if initial:
+            idx = combo.findData(initial)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        return combo
+
+    def _add_reverse_mapping(
+        self,
+        rows: List[Tuple[QComboBox, QComboBox]],
+        add_row,
+        src: QComboBox,
+        dst: QComboBox,
+    ) -> None:
+        src_name = self._safe_class_text(src.currentData() or src.currentText())
+        dst_name = self._safe_class_text(dst.currentData() or dst.currentText())
+        if not src_name or not dst_name or src_name == dst_name:
+            return
+        for row_src, row_dst in rows:
+            row_src_name = self._safe_class_text(
+                row_src.currentData() or row_src.currentText()
+            )
+            row_dst_name = self._safe_class_text(
+                row_dst.currentData() or row_dst.currentText()
+            )
+            if row_src_name == dst_name and row_dst_name == src_name:
+                return
+        add_row(dst_name, src_name)
+
+    def _add_mapping_row(
+        self,
+        rows: List[Tuple[QComboBox, QComboBox]],
+        rows_layout: QVBoxLayout,
+        add_row,
+        src_text: str = "",
+        dst_text: str = "",
+    ) -> None:
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        src = self._build_class_combo(src_text)
+        dst = self._build_class_combo(dst_text)
+        add_rev = QPushButton("Reverse")
+        add_rev.setFixedWidth(72)
+        add_rev.setToolTip("Add the reverse mapping (destination \u2192 source)")
+        remove_btn = QPushButton("Remove")
+        remove_btn.setFixedWidth(72)
+        remove_btn.setStyleSheet("color:#c66;")
+
+        row_layout.addWidget(src, 1)
+        row_layout.addWidget(QLabel("\u2192"))
+        row_layout.addWidget(dst, 1)
+        row_layout.addWidget(add_rev)
+        row_layout.addWidget(remove_btn)
+        rows_layout.addWidget(row_widget)
+
+        pair = (src, dst)
+        rows.append(pair)
+
+        def _remove_row() -> None:
+            if pair in rows:
+                rows.remove(pair)
+            row_widget.setParent(None)
+
+        remove_btn.clicked.connect(_remove_row)
+        add_rev.clicked.connect(
+            lambda: self._add_reverse_mapping(rows, add_row, src, dst)
         )
 
-        layout_gen = QVBoxLayout(self.general_tab)
-        layout_gen.addLayout(form)
-        layout_gen.addWidget(self._mode_desc_label)
-        layout_gen.addStretch()
-        self.tabs.addTab(self.general_tab, "General")
+    def _build_mapping_section(
+        self,
+        layout: QVBoxLayout,
+        title: str,
+        add_row,
+    ) -> tuple[QWidget, QVBoxLayout]:
+        header_row = QHBoxLayout()
+        header_row.addWidget(QLabel(title))
+        add_btn = QPushButton("+ Add pair")
+        add_btn.setFixedWidth(90)
+        add_btn.clicked.connect(lambda _checked=False: add_row())
+        header_row.addWidget(add_btn)
+        header_row.addStretch()
+        layout.addLayout(header_row)
 
-        # Tab 2: Tiny Architecture
+        rows_widget = QWidget()
+        rows_layout = QVBoxLayout(rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(3)
+        layout.addWidget(rows_widget)
+        return rows_widget, rows_layout
+
+    def _build_expansion_group(self) -> QGroupBox:
+        exp_group = QGroupBox("Label-Switching Expansion  (advanced)")
+        exp_group.setCheckable(True)
+        exp_group.setChecked(False)
+        exp_group.setToolTip(
+            "Generate deterministic mirrored copies of training images with remapped labels.\n"
+            "Useful when a flip transforms one class into another (e.g. 'left' \u2194 'right'\n"
+            "on a horizontal flip).  Expanded copies are only added to the train split."
+        )
+        exp_vbox = QVBoxLayout(exp_group)
+
+        exp_note = QLabel(
+            "<i>Each row: source label \u2192 destination label when that flip is applied.<br>"
+            "Pairs are applied to train images only; evaluation data is never flipped.<br>"
+            "When enabled, all stochastic augmentations (flip/rotate) are disabled.</i>"
+        )
+        exp_note.setWordWrap(True)
+        exp_note.setStyleSheet("color:#aaa; font-size:11px;")
+        exp_vbox.addWidget(exp_note)
+
+        self._exp_constraints_label = QLabel("")
+        self._exp_constraints_label.setWordWrap(True)
+        self._exp_constraints_label.setStyleSheet("color:#e0c070; font-size:11px;")
+        exp_vbox.addWidget(self._exp_constraints_label)
+
+        self._lr_mapping_rows = []
+        self._ud_mapping_rows = []
+
+        def _add_lr_row(src_text="", dst_text=""):
+            self._add_mapping_row(
+                self._lr_mapping_rows,
+                self._lr_rows_layout,
+                _add_lr_row,
+                src_text,
+                dst_text,
+            )
+
+        self._lr_rows_widget, self._lr_rows_layout = self._build_mapping_section(
+            exp_vbox,
+            "<b>Horizontal flip (LR) mappings:</b>",
+            _add_lr_row,
+        )
+        self._add_lr_row = _add_lr_row
+
+        def _add_ud_row(src_text="", dst_text=""):
+            self._add_mapping_row(
+                self._ud_mapping_rows,
+                self._ud_rows_layout,
+                _add_ud_row,
+                src_text,
+                dst_text,
+            )
+
+        self._ud_rows_widget, self._ud_rows_layout = self._build_mapping_section(
+            exp_vbox,
+            "<b>Vertical flip (UD) mappings:</b>",
+            _add_ud_row,
+        )
+        self._add_ud_row = _add_ud_row
+        return exp_group
+
+    def _build_tiny_architecture_tab(self) -> None:
         self.tiny_tab = QWidget()
         tiny_layout = QVBoxLayout(self.tiny_tab)
         tiny_form = QFormLayout()
@@ -311,7 +476,7 @@ class ClassKitTrainingDialog(QDialog):
         tiny_layout.addStretch()
         self._tiny_tab_idx = self.tabs.addTab(self.tiny_tab, "Tiny Architecture")
 
-        # Tab: Custom CNN
+    def _build_custom_cnn_tab(self) -> None:
         self.custom_tab = QWidget()
         custom_form = QFormLayout(self.custom_tab)
         custom_form.setSpacing(8)
@@ -419,7 +584,7 @@ class ClassKitTrainingDialog(QDialog):
         )
         self._on_custom_backbone_changed()
 
-        # Tab 3: Space & Augmentations
+    def _build_space_and_augmentations_tab(self) -> None:
         self.aug_tab = QWidget()
         aug_tab_layout = QVBoxLayout(self.aug_tab)
         aug_tab_layout.setContentsMargins(0, 0, 0, 0)
@@ -448,188 +613,14 @@ class ClassKitTrainingDialog(QDialog):
         self.rotate_spin.setValue(0.0)
         aug_form.addRow("<b>Max Rotation (deg):</b>", self.rotate_spin)
 
-        exp_group = QGroupBox("Label-Switching Expansion  (advanced)")
-        exp_group.setCheckable(True)
-        exp_group.setChecked(False)
-        exp_group.setToolTip(
-            "Generate deterministic mirrored copies of training images with remapped labels.\n"
-            "Useful when a flip transforms one class into another (e.g. 'left' \u2194 'right'\n"
-            "on a horizontal flip).  Expanded copies are only added to the train split."
-        )
-        exp_vbox = QVBoxLayout(exp_group)
-
-        exp_note = QLabel(
-            "<i>Each row: source label \u2192 destination label when that flip is applied.<br>"
-            "Pairs are applied to train images only; evaluation data is never flipped.<br>"
-            "When enabled, all stochastic augmentations (flip/rotate) are disabled.</i>"
-        )
-        exp_note.setWordWrap(True)
-        exp_note.setStyleSheet("color:#aaa; font-size:11px;")
-        exp_vbox.addWidget(exp_note)
-
-        self._exp_constraints_label = QLabel("")
-        self._exp_constraints_label.setWordWrap(True)
-        self._exp_constraints_label.setStyleSheet("color:#e0c070; font-size:11px;")
-        exp_vbox.addWidget(self._exp_constraints_label)
-
-        # -- Horizontal flip (LR) mapping rows --
-        lr_hdr_row = QHBoxLayout()
-        lr_hdr_row.addWidget(QLabel("<b>Horizontal flip (LR) mappings:</b>"))
-        lr_add_btn = QPushButton("+ Add pair")
-        lr_add_btn.setFixedWidth(90)
-        lr_hdr_row.addWidget(lr_add_btn)
-        lr_hdr_row.addStretch()
-        exp_vbox.addLayout(lr_hdr_row)
-
-        self._lr_mapping_rows: List[Tuple[QComboBox, QComboBox]] = []
-        self._lr_rows_widget = QWidget()
-        self._lr_rows_layout = QVBoxLayout(self._lr_rows_widget)
-        self._lr_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._lr_rows_layout.setSpacing(3)
-        exp_vbox.addWidget(self._lr_rows_widget)
-
-        def _safe_class_text(value: object) -> str:
-            if value is None or isinstance(value, bool):
-                return ""
-            return str(value).strip()
-
-        def _build_class_combo(initial_text: object = "") -> QComboBox:
-            combo = QComboBox()
-            combo.setMinimumWidth(160)
-            combo.setSizeAdjustPolicy(QComboBox.AdjustToContentsOnFirstShow)
-
-            if self._class_choices:
-                for cls in self._class_choices:
-                    combo.addItem(cls, cls)
-            else:
-                combo.addItem("(no classes)", "")
-                combo.setEnabled(False)
-
-            initial = _safe_class_text(initial_text)
-            if initial:
-                idx = combo.findData(initial)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-            return combo
-
-        def _add_lr_row(src_text="", dst_text=""):
-            row_w = QWidget()
-            row_h = QHBoxLayout(row_w)
-            row_h.setContentsMargins(0, 0, 0, 0)
-            src = _build_class_combo(src_text)
-            arr = QLabel("\u2192")
-            dst = _build_class_combo(dst_text)
-            add_rev = QPushButton("Reverse")
-            add_rev.setFixedWidth(72)
-            add_rev.setToolTip("Add the reverse mapping (destination \u2192 source)")
-            rm = QPushButton("Remove")
-            rm.setFixedWidth(72)
-            rm.setStyleSheet("color:#c66;")
-            row_h.addWidget(src, 1)
-            row_h.addWidget(arr)
-            row_h.addWidget(dst, 1)
-            row_h.addWidget(add_rev)
-            row_h.addWidget(rm)
-            self._lr_rows_layout.addWidget(row_w)
-            pair = (src, dst)
-            self._lr_mapping_rows.append(pair)
-
-            def _remove_row() -> None:
-                if pair in self._lr_mapping_rows:
-                    self._lr_mapping_rows.remove(pair)
-                row_w.setParent(None)
-
-            rm.clicked.connect(_remove_row)
-
-            def _add_reverse_pair() -> None:
-                s = _safe_class_text(src.currentData() or src.currentText())
-                d = _safe_class_text(dst.currentData() or dst.currentText())
-                if not s or not d or s == d:
-                    return
-                for rs, rd in self._lr_mapping_rows:
-                    rs_name = _safe_class_text(rs.currentData() or rs.currentText())
-                    rd_name = _safe_class_text(rd.currentData() or rd.currentText())
-                    if rs_name == d and rd_name == s:
-                        return
-                _add_lr_row(d, s)
-
-            add_rev.clicked.connect(_add_reverse_pair)
-
-        lr_add_btn.clicked.connect(lambda _checked=False: _add_lr_row())
-        self._add_lr_row = _add_lr_row
-
-        # -- Vertical flip (UD) mapping rows --
-        ud_hdr_row = QHBoxLayout()
-        ud_hdr_row.addWidget(QLabel("<b>Vertical flip (UD) mappings:</b>"))
-        ud_add_btn = QPushButton("+ Add pair")
-        ud_add_btn.setFixedWidth(90)
-        ud_hdr_row.addWidget(ud_add_btn)
-        ud_hdr_row.addStretch()
-        exp_vbox.addLayout(ud_hdr_row)
-
-        self._ud_mapping_rows: List[Tuple[QComboBox, QComboBox]] = []
-        self._ud_rows_widget = QWidget()
-        self._ud_rows_layout = QVBoxLayout(self._ud_rows_widget)
-        self._ud_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._ud_rows_layout.setSpacing(3)
-        exp_vbox.addWidget(self._ud_rows_widget)
-
-        def _add_ud_row(src_text="", dst_text=""):
-            row_w = QWidget()
-            row_h = QHBoxLayout(row_w)
-            row_h.setContentsMargins(0, 0, 0, 0)
-            src = _build_class_combo(src_text)
-            arr = QLabel("\u2192")
-            dst = _build_class_combo(dst_text)
-            add_rev = QPushButton("Reverse")
-            add_rev.setFixedWidth(72)
-            add_rev.setToolTip("Add the reverse mapping (destination \u2192 source)")
-            rm = QPushButton("Remove")
-            rm.setFixedWidth(72)
-            rm.setStyleSheet("color:#c66;")
-            row_h.addWidget(src, 1)
-            row_h.addWidget(arr)
-            row_h.addWidget(dst, 1)
-            row_h.addWidget(add_rev)
-            row_h.addWidget(rm)
-            self._ud_rows_layout.addWidget(row_w)
-            pair = (src, dst)
-            self._ud_mapping_rows.append(pair)
-
-            def _remove_row() -> None:
-                if pair in self._ud_mapping_rows:
-                    self._ud_mapping_rows.remove(pair)
-                row_w.setParent(None)
-
-            rm.clicked.connect(_remove_row)
-
-            def _add_reverse_pair() -> None:
-                s = _safe_class_text(src.currentData() or src.currentText())
-                d = _safe_class_text(dst.currentData() or dst.currentText())
-                if not s or not d or s == d:
-                    return
-                for rs, rd in self._ud_mapping_rows:
-                    rs_name = _safe_class_text(rs.currentData() or rs.currentText())
-                    rd_name = _safe_class_text(rd.currentData() or rd.currentText())
-                    if rs_name == d and rd_name == s:
-                        return
-                _add_ud_row(d, s)
-
-            add_rev.clicked.connect(_add_reverse_pair)
-
-        ud_add_btn.clicked.connect(lambda _checked=False: _add_ud_row())
-        self._add_ud_row = _add_ud_row
-
-        aug_layout.addWidget(exp_group)
-        self._exp_group = exp_group
-
+        self._exp_group = self._build_expansion_group()
+        aug_layout.addWidget(self._exp_group)
         aug_layout.addStretch()
         self._aug_scroll.setWidget(aug_scroll_content)
         aug_tab_layout.addWidget(self._aug_scroll)
         self.tabs.addTab(self.aug_tab, "Space and Augmentations")
 
-        layout.addWidget(self.tabs, 1)
-
+    def _build_log_panel(self, layout: QVBoxLayout) -> None:
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setFixedHeight(160)
@@ -643,6 +634,7 @@ class ClassKitTrainingDialog(QDialog):
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
 
+    def _build_action_row(self, layout: QVBoxLayout) -> None:
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton("Start Training")
         self.cancel_btn = QPushButton("Cancel")
@@ -657,6 +649,31 @@ class ClassKitTrainingDialog(QDialog):
         btn_row.addStretch()
         btn_row.addWidget(self.close_btn)
         layout.addLayout(btn_row)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        total = self._scheme.total_classes if self._scheme else "?"
+        name = self._scheme.name if self._scheme else "free-form"
+        header = QLabel(
+            f"<h2 style='color:#ffffff;margin:0'>Train Classifier</h2>"
+            f"<p style='color:#888;margin:4px 0 0 0'>Scheme: <b>{name}</b>"
+            f" &nbsp;|&nbsp; Classes: <b>{total}</b>"
+            f" &nbsp;|&nbsp; Labeled samples: <b>{self._n_labeled}</b></p>"
+        )
+        header.setStyleSheet("background: #252526; padding: 10px; border-radius: 4px;")
+        layout.addWidget(header)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_general_tab(), "General")
+        self._build_tiny_architecture_tab()
+        self._build_custom_cnn_tab()
+        self._build_space_and_augmentations_tab()
+
+        layout.addWidget(self.tabs, 1)
+        self._build_log_panel(layout)
+        self._build_action_row(layout)
 
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)

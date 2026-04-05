@@ -392,6 +392,37 @@ def find_regions(
 # ---------------------------------------------------------------------------
 
 
+def tag_detections(
+    detections: List[Dict[str, Any]],
+    regions: List[DensityRegion],
+) -> List[Dict[str, Any]]:
+    """Annotate detection dicts with confidence-density region membership.
+
+    Each input dict must contain ``frame``, ``cx``, and ``cy`` keys. The
+    matching region label is written back in-place as ``region_label`` and the
+    temporal edge flag as ``region_boundary``.
+    """
+    for det in detections:
+        frame = int(det["frame"])
+        cx = float(det["cx"])
+        cy = float(det["cy"])
+
+        matched_region: Optional[DensityRegion] = None
+        for region in regions:
+            if region.contains(frame, cx, cy):
+                matched_region = region
+                break
+
+        if matched_region is None:
+            det["region_label"] = "open_field"
+            det["region_boundary"] = False
+        else:
+            det["region_label"] = matched_region.label
+            det["region_boundary"] = matched_region.is_boundary_frame(frame)
+
+    return detections
+
+
 # ---------------------------------------------------------------------------
 # save_regions / load_regions
 # ---------------------------------------------------------------------------
@@ -572,6 +603,102 @@ def compute_density_map_from_cache(
 # ---------------------------------------------------------------------------
 
 
+def _prepare_diag_frame(frame_reader, frame_idx, frame_h, frame_w, cv2):
+    """Read and resize a frame for diagnostic video output."""
+    frame = frame_reader(frame_idx)
+    if frame is None:
+        return np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+    if frame.shape[0] != frame_h or frame.shape[1] != frame_w:
+        return cv2.resize(frame, (frame_w, frame_h), interpolation=cv2.INTER_AREA)
+    return frame.copy()
+
+
+def _overlay_diag_heatmap(
+    frame,
+    frame_idx,
+    density_grids,
+    global_max,
+    frame_h,
+    frame_w,
+    heatmap_alpha,
+    cv2,
+):
+    """Apply red heatmap overlay for a single frame."""
+    if frame_idx >= len(density_grids):
+        return frame
+    norm = (density_grids[frame_idx] / global_max).clip(0, 1)
+    if norm.shape[0] != frame_h or norm.shape[1] != frame_w:
+        norm = cv2.resize(norm, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR)
+    red_mask = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+    red_mask[:, :, 2] = (norm * 255).astype(np.uint8)
+    return cv2.addWeighted(frame, 1 - heatmap_alpha, red_mask, heatmap_alpha, 0)
+
+
+def _scaled_region_bbox(r, output_scale):
+    """Scale a region's pixel bbox by output_scale."""
+    x1, y1, x2, y2 = r.pixel_bbox
+    if output_scale != 1.0:
+        x1, y1 = int(x1 * output_scale), int(y1 * output_scale)
+        x2, y2 = int(x2 * output_scale), int(y2 * output_scale)
+    return x1, y1, x2, y2
+
+
+def _draw_diag_regions(
+    frame,
+    frame_idx,
+    regions,
+    binary_volume,
+    frame_h,
+    frame_w,
+    output_scale,
+    cv2,
+):
+    """Draw region outlines/contours and labels on a diagnostic frame."""
+    active = [r for r in regions if r.frame_start <= frame_idx <= r.frame_end]
+    if not active:
+        return
+
+    if binary_volume is not None and frame_idx < len(binary_volume):
+        bin_slice = binary_volume[frame_idx]
+        if bin_slice.max() > 0:
+            bin_out = cv2.resize(
+                bin_slice,
+                (frame_w, frame_h),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            contours, _ = cv2.findContours(
+                bin_out,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            cv2.drawContours(frame, contours, -1, (0, 0, 200), 1)
+        for r in active:
+            x1, y1, x2, y2 = _scaled_region_bbox(r, output_scale)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            cv2.putText(
+                frame,
+                f"{r.label} [{r.frame_start}-{r.frame_end}]",
+                (cx, max(cy - 4, 12)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (0, 0, 200),
+                1,
+            )
+    else:
+        for r in active:
+            x1, y1, x2, y2 = _scaled_region_bbox(r, output_scale)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
+            cv2.putText(
+                frame,
+                f"{r.label} [{r.frame_start}-{r.frame_end}]",
+                (x1, max(y1 - 4, 12)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (0, 0, 200),
+                1,
+            )
+
+
 def export_diagnostic_video(
     frame_reader,  # callable: frame_idx -> np.ndarray (H,W,3) uint8 or None
     n_frames: int,
@@ -650,96 +777,34 @@ def export_diagnostic_video(
 
     try:
         for frame_idx in range(n_frames):
-            frame = frame_reader(frame_idx)
-            if frame is None:
-                frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-
-            # Resize frame to output dimensions if needed.
-            if frame.shape[0] != frame_h or frame.shape[1] != frame_w:
-                frame = cv2.resize(
-                    frame, (frame_w, frame_h), interpolation=cv2.INTER_AREA
-                )
-            else:
-                frame = frame.copy()
-
-            if frame_idx < len(density_grids):
-                norm = (density_grids[frame_idx] / global_max).clip(0, 1)
-                # Resize density grid to output resolution if needed.
-                if norm.shape[0] != frame_h or norm.shape[1] != frame_w:
-                    norm = cv2.resize(
-                        norm, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR
-                    )
-                red_mask = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-                red_mask[:, :, 2] = (norm * 255).astype(np.uint8)
-                frame = cv2.addWeighted(
-                    frame, 1 - heatmap_alpha, red_mask, heatmap_alpha, 0
-                )
-
-            # --- Draw region outlines and labels ---
-            if binary_volume is not None and frame_idx < len(binary_volume):
-                # Draw actual connected-component contours from the binary
-                # volume slice, then place labels at each region's centroid.
-                bin_slice = binary_volume[frame_idx]  # (grid_h, grid_w) uint8
-                if bin_slice.max() > 0:
-                    bin_out = cv2.resize(
-                        bin_slice,
-                        (frame_w, frame_h),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    contours, _ = cv2.findContours(
-                        bin_out, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    cv2.drawContours(frame, contours, -1, (0, 0, 200), 1)
-                for r in regions:
-                    if r.frame_start <= frame_idx <= r.frame_end:
-                        x1, y1, x2, y2 = r.pixel_bbox
-                        if output_scale != 1.0:
-                            x1 = int(x1 * output_scale)
-                            y1 = int(y1 * output_scale)
-                            x2 = int(x2 * output_scale)
-                            y2 = int(y2 * output_scale)
-                        cx = (x1 + x2) // 2
-                        cy = (y1 + y2) // 2
-                        label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
-                        cv2.putText(
-                            frame,
-                            label_text,
-                            (cx, max(cy - 4, 12)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            (0, 0, 200),
-                            1,
-                        )
-            else:
-                # Fallback: draw bounding rectangles when no binary volume.
-                for r in regions:
-                    if r.frame_start <= frame_idx <= r.frame_end:
-                        x1, y1, x2, y2 = r.pixel_bbox
-                        if output_scale != 1.0:
-                            x1 = int(x1 * output_scale)
-                            y1 = int(y1 * output_scale)
-                            x2 = int(x2 * output_scale)
-                            y2 = int(y2 * output_scale)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
-                        label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
-                        cv2.putText(
-                            frame,
-                            label_text,
-                            (x1, max(y1 - 4, 12)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            (0, 0, 200),
-                            1,
-                        )
-
+            frame = _prepare_diag_frame(frame_reader, frame_idx, frame_h, frame_w, cv2)
+            frame = _overlay_diag_heatmap(
+                frame,
+                frame_idx,
+                density_grids,
+                global_max,
+                frame_h,
+                frame_w,
+                heatmap_alpha,
+                cv2,
+            )
+            _draw_diag_regions(
+                frame,
+                frame_idx,
+                regions,
+                binary_volume,
+                frame_h,
+                frame_w,
+                output_scale,
+                cv2,
+            )
             writer.write(frame)
             if progress_callback is not None and (
                 frame_idx % 50 == 0 or frame_idx == n_frames - 1
             ):
-                pct = 50 + int(45 * (frame_idx + 1) / n_frames)  # 50–95%
+                pct = 50 + int(45 * (frame_idx + 1) / n_frames)
                 progress_callback(
-                    pct,
-                    f"Diagnostic video: frame {frame_idx + 1}/{n_frames}",
+                    pct, f"Diagnostic video: frame {frame_idx + 1}/{n_frames}"
                 )
     finally:
         writer.release()

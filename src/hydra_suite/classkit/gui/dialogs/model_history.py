@@ -285,16 +285,8 @@ class ModelHistoryDialog(QDialog):
         row = self._selected_row()
         self._refresh_table(select_row=row)
 
-    def _delete_selected(self) -> None:
-        entry = self._get_selected_entry()
-        if entry is None:
-            return
-        if self._db_path is None:
-            QMessageBox.warning(
-                self, "Delete Failed", "No project database is available."
-            )
-            return
-
+    def _confirm_delete_selected(self) -> Optional[bool]:
+        """Return whether to delete artifact files, or None if cancelled."""
         prompt = QMessageBox(self)
         prompt.setIcon(QMessageBox.Warning)
         prompt.setWindowTitle("Delete Model Entry")
@@ -313,42 +305,48 @@ class ModelHistoryDialog(QDialog):
         prompt.exec()
 
         clicked = prompt.clickedButton()
-        if clicked not in {remove_record_btn, delete_files_btn}:
-            return
+        if clicked == remove_record_btn:
+            return False
+        if clicked == delete_files_btn:
+            return True
+        return None
 
-        delete_files = clicked == delete_files_btn
+    @staticmethod
+    def _delete_artifacts(entry: dict) -> tuple[int, list[str]]:
+        """Delete artifact files recorded on an entry."""
         deleted_files = 0
         file_errors: list[str] = []
+        for src in entry.get("artifact_paths") or []:
+            src_path = Path(src)
+            if not src_path.exists():
+                continue
+            try:
+                src_path.unlink()
+                deleted_files += 1
+            except Exception as exc:
+                file_errors.append(f"{src_path.name}: {exc}")
+        return deleted_files, file_errors
 
-        if delete_files:
-            for src in entry.get("artifact_paths") or []:
-                src_path = Path(src)
-                if not src_path.exists():
-                    continue
-                try:
-                    src_path.unlink()
-                    deleted_files += 1
-                except Exception as exc:
-                    file_errors.append(f"{src_path.name}: {exc}")
-
+    def _remove_selected_entry_from_db(self, entry: dict) -> bool:
+        """Delete the selected model-history row from the database."""
         from hydra_suite.classkit.gui.store.db import ClassKitDB
 
         deleted_rows = ClassKitDB(self._db_path).delete_model_cache_entry(
             int(entry.get("id", -1))
         )
-        if deleted_rows < 1:
-            QMessageBox.warning(
-                self,
-                "Delete Failed",
-                "Could not remove this history entry from the database.",
-            )
-            return
+        return deleted_rows >= 1
 
+    def _remove_entry_from_view(self, entry: dict) -> None:
+        """Remove an entry from the local list and refresh selection."""
         keep_id = int(entry.get("id", -1))
         self._entries = [e for e in self._entries if int(e.get("id", -1)) != keep_id]
         row = self._selected_row()
         self._refresh_table(select_row=max(0, row - 1))
 
+    def _show_delete_result(
+        self, delete_files: bool, deleted_files: int, file_errors: list[str]
+    ) -> None:
+        """Render the final delete status message."""
         if file_errors:
             QMessageBox.warning(
                 self,
@@ -356,54 +354,74 @@ class ModelHistoryDialog(QDialog):
                 f"Removed history entry. Deleted files: {deleted_files}\n\n"
                 + "\n".join(file_errors),
             )
-        elif delete_files:
+            return
+
+        if delete_files:
             self.detail_label.setText(
                 f"<span style='color:#4ec9b0'>Removed history entry and deleted {deleted_files} artifact file(s).</span>"
             )
-        else:
-            self.detail_label.setText(
-                "<span style='color:#4ec9b0'>Removed history entry from the database.</span>"
-            )
+            return
 
-    def _export_selected(self):
-        """Copy selected artifacts to project ``models/`` using descriptive names."""
+        self.detail_label.setText(
+            "<span style='color:#4ec9b0'>Removed history entry from the database.</span>"
+        )
+
+    def _delete_selected(self) -> None:
         entry = self._get_selected_entry()
         if entry is None:
             return
-        artifact_paths = entry.get("artifact_paths") or []
-        if not artifact_paths:
+        if self._db_path is None:
             QMessageBox.warning(
-                self, "No Artifacts", "No model files are recorded for this entry."
+                self, "Delete Failed", "No project database is available."
             )
             return
 
+        delete_files = self._confirm_delete_selected()
+        if delete_files is None:
+            return
+
+        deleted_files, file_errors = (
+            self._delete_artifacts(entry) if delete_files else (0, [])
+        )
+        if not self._remove_selected_entry_from_db(entry):
+            QMessageBox.warning(
+                self,
+                "Delete Failed",
+                "Could not remove this history entry from the database.",
+            )
+            return
+
+        self._remove_entry_from_view(entry)
+        self._show_delete_result(delete_files, deleted_files, file_errors)
+
+    @staticmethod
+    def _slug(text: object, max_len: int = 48) -> str:
+        """Convert free text to a short filesystem-safe slug."""
+        raw = str(text or "").strip().lower()
+        out = "".join(ch if ch.isalnum() else "_" for ch in raw).strip("_")
+        if not out:
+            return ""
+        while "__" in out:
+            out = out.replace("__", "_")
+        return out[:max_len]
+
+    def _resolve_export_dir(self) -> Path:
+        """Return and create the destination models directory."""
         if self._project_path:
             dest_dir = Path(str(self._project_path)) / "models"
         else:
             dest_dir = Path.cwd() / "models"
-        try:
-            dest_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            QMessageBox.warning(
-                self,
-                "Export Failed",
-                f"Could not create export directory:\n{dest_dir}\n\n{exc}",
-            )
-            return
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        return dest_dir
 
-        def _slug(text: object, max_len: int = 48) -> str:
-            raw = str(text or "").strip().lower()
-            out = "".join(ch if ch.isalnum() else "_" for ch in raw).strip("_")
-            if not out:
-                return ""
-            while "__" in out:
-                out = out.replace("__", "_")
-            return out[:max_len]
-
-        mode_slug = _slug(entry.get("mode", "model"), max_len=32) or "model"
+    def _build_export_stem(self, entry: dict) -> str:
+        """Build the descriptive base filename used for exported artifacts."""
+        mode_slug = self._slug(entry.get("mode", "model"), max_len=32) or "model"
         class_names = entry.get("class_names") or []
         class_slug = "-".join(
-            part for part in (_slug(name, max_len=16) for name in class_names) if part
+            part
+            for part in (self._slug(name, max_len=16) for name in class_names)
+            if part
         )
         if not class_slug:
             class_slug = "classes"
@@ -411,41 +429,65 @@ class ModelHistoryDialog(QDialog):
             class_slug = f"{max(1, len(class_names))}cls"
         ts_raw = str(entry.get("timestamp", "")).strip()
         ts_slug = "".join(ch for ch in ts_raw if ch.isdigit())[:14] or "unknown"
-        base_stem = f"classkit_{mode_slug}_{class_slug}_{ts_slug}"
+        return f"classkit_{mode_slug}_{class_slug}_{ts_slug}"
 
-        copied, failed = [], []
+    @classmethod
+    def _build_export_filename(
+        cls, src_path: Path, base_stem: str, index: int, total_artifacts: int
+    ) -> str:
+        """Build the preferred destination filename for one artifact."""
+        ext = src_path.suffix or ".bin"
+        hint = cls._slug(src_path.stem, max_len=24)
+        if hint in {"", "best", "last", "weights", "model", "checkpoint"}:
+            hint = ""
+        if total_artifacts == 1:
+            return f"{base_stem}{ext}"
+        if hint:
+            return f"{base_stem}_{hint}{ext}"
+        return f"{base_stem}_f{index + 1}{ext}"
+
+    @staticmethod
+    def _dedupe_export_path(dest_dir: Path, desired_name: str) -> Path:
+        """Append a numeric suffix until the export path is unique."""
+        dst = dest_dir / desired_name
+        suffix_counter = 1
+        while dst.exists():
+            ext = dst.suffix
+            dst = dest_dir / f"{dst.stem}_{suffix_counter}{ext}"
+            suffix_counter += 1
+        return dst
+
+    @classmethod
+    def _copy_artifacts_to_dir(
+        cls, artifact_paths: list, dest_dir: Path, base_stem: str
+    ) -> tuple[list[str], list[str]]:
+        """Copy artifacts into the export directory and report successes/failures."""
+        copied: list[str] = []
+        failed: list[str] = []
         total_artifacts = len(artifact_paths)
+
         for idx, src in enumerate(artifact_paths):
             src_path = Path(src)
-            if src_path.exists():
-                ext = src_path.suffix or ".bin"
-                hint = _slug(src_path.stem, max_len=24)
-                if hint in {"", "best", "last", "weights", "model", "checkpoint"}:
-                    hint = ""
-
-                if total_artifacts == 1:
-                    desired_name = f"{base_stem}{ext}"
-                else:
-                    desired_name = (
-                        f"{base_stem}_{hint}{ext}"
-                        if hint
-                        else f"{base_stem}_f{idx + 1}{ext}"
-                    )
-
-                dst = dest_dir / desired_name
-                suffix_counter = 1
-                while dst.exists():
-                    dst = dest_dir / f"{dst.stem}_{suffix_counter}{ext}"
-                    suffix_counter += 1
-
-                try:
-                    shutil.copy2(str(src_path), str(dst))
-                    copied.append(dst.name)
-                except Exception as exc:
-                    failed.append(f"{src_path.name}: {exc}")
-            else:
+            if not src_path.exists():
                 failed.append(f"{src_path.name}: file not found")
+                continue
 
+            desired_name = cls._build_export_filename(
+                src_path, base_stem, idx, total_artifacts
+            )
+            dst = cls._dedupe_export_path(dest_dir, desired_name)
+            try:
+                shutil.copy2(str(src_path), str(dst))
+                copied.append(dst.name)
+            except Exception as exc:
+                failed.append(f"{src_path.name}: {exc}")
+
+        return copied, failed
+
+    def _show_export_result(
+        self, dest_dir: Path, copied: list[str], failed: list[str]
+    ) -> None:
+        """Render the export result in the dialog and a message box."""
         if copied:
             self.detail_label.setText(
                 f"<span style='color:#4ec9b0'>Exported \u2192 {dest_dir}:</span> "
@@ -462,9 +504,42 @@ class ModelHistoryDialog(QDialog):
                 f"Exported {len(copied)} file(s) to:\n{dest_dir}"
                 + ("\n\nSkipped:\n" + "\n".join(failed) if failed else ""),
             )
-        else:
+            return
+
+        QMessageBox.warning(
+            self,
+            "Export Failed",
+            "No model files could be exported.\n\n" + "\n".join(failed),
+        )
+
+    def _export_selected(self):
+        """Copy selected artifacts to project ``models/`` using descriptive names."""
+        entry = self._get_selected_entry()
+        if entry is None:
+            return
+        artifact_paths = entry.get("artifact_paths") or []
+        if not artifact_paths:
+            QMessageBox.warning(
+                self, "No Artifacts", "No model files are recorded for this entry."
+            )
+            return
+
+        try:
+            dest_dir = self._resolve_export_dir()
+        except Exception as exc:
+            project_models_dir = (
+                Path(str(self._project_path)) / "models"
+                if self._project_path
+                else (Path.cwd() / "models")
+            )
             QMessageBox.warning(
                 self,
                 "Export Failed",
-                "No model files could be exported.\n\n" + "\n".join(failed),
+                f"Could not create export directory:\n{project_models_dir}\n\n{exc}",
             )
+            return
+        base_stem = self._build_export_stem(entry)
+        copied, failed = self._copy_artifacts_to_dir(
+            artifact_paths, dest_dir, base_stem
+        )
+        self._show_export_result(dest_dir, copied, failed)

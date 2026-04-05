@@ -125,6 +125,17 @@ class DetectionCache:
                 continue
         return cached
 
+    @staticmethod
+    def _to_optional_arr(data, dtype, filter_none=False):
+        """Convert optional list to numpy array, returning empty array if absent."""
+        if not data or len(data) == 0:
+            return np.array([], dtype=dtype)
+        if filter_none:
+            data = [v for v in data if v is not None]
+            if not data:
+                return np.array([], dtype=dtype)
+        return np.array(data, dtype=dtype)
+
     def add_frame(
         self: object,
         frame_idx: object,
@@ -160,14 +171,12 @@ class DetectionCache:
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot write")
 
-        # Convert to numpy arrays for efficient storage
         if len(meas) > 0:
-            meas_arr = np.array(meas, dtype=np.float32)  # Shape: (n, 3)
+            meas_arr = np.array(meas, dtype=np.float32)
             sizes_arr = np.array(sizes, dtype=np.float32)
-            shapes_arr = np.array(shapes, dtype=np.float32)  # Shape: (n, 2)
+            shapes_arr = np.array(shapes, dtype=np.float32)
             confidences_arr = np.array(confidences, dtype=np.float32)
 
-            # Store detection IDs if provided
             if detection_ids and len(detection_ids) > 0:
                 detection_ids_arr = np.array(
                     _normalize_detection_ids(detection_ids), dtype=np.int64
@@ -175,55 +184,19 @@ class DetectionCache:
             else:
                 detection_ids_arr = np.array([], dtype=np.int64)
 
-            # Store OBB corners if provided (YOLO detection)
-            if obb_corners and len(obb_corners) > 0:
-                obb_arr = np.array(obb_corners, dtype=np.float32)
-            else:
-                obb_arr = np.array([], dtype=np.float32)
-
-            if heading_hints and len(heading_hints) > 0:
-                heading_hints_arr = np.array(heading_hints, dtype=np.float32)
-            else:
-                heading_hints_arr = np.array([], dtype=np.float32)
-
-            if directed_mask and len(directed_mask) > 0:
-                directed_mask_arr = np.array(directed_mask, dtype=np.uint8)
-            else:
-                directed_mask_arr = np.array([], dtype=np.uint8)
-
-            if canonical_affines and len(canonical_affines) > 0:
-                # Filter None entries — store as (N, 2, 3) float32
-                valid = [a for a in canonical_affines if a is not None]
-                if valid:
-                    canonical_affines_arr = np.array(valid, dtype=np.float32)
-                else:
-                    canonical_affines_arr = np.array([], dtype=np.float32)
-            else:
-                canonical_affines_arr = np.array([], dtype=np.float32)
-
-            # Canvas dimensions: (N, 2) int32 — [width, height] per detection
-            if canonical_canvas_dims and len(canonical_canvas_dims) > 0:
-                valid_dims = [d for d in canonical_canvas_dims if d is not None]
-                canvas_dims_arr = (
-                    np.array(valid_dims, dtype=np.int32)
-                    if valid_dims
-                    else np.array([], dtype=np.int32)
-                )
-            else:
-                canvas_dims_arr = np.array([], dtype=np.int32)
-
-            # Inverse affines: (N, 2, 3) float32
-            if canonical_M_inverse and len(canonical_M_inverse) > 0:
-                valid_inv = [a for a in canonical_M_inverse if a is not None]
-                M_inverse_arr = (
-                    np.array(valid_inv, dtype=np.float32)
-                    if valid_inv
-                    else np.array([], dtype=np.float32)
-                )
-            else:
-                M_inverse_arr = np.array([], dtype=np.float32)
+            obb_arr = self._to_optional_arr(obb_corners, np.float32)
+            heading_hints_arr = self._to_optional_arr(heading_hints, np.float32)
+            directed_mask_arr = self._to_optional_arr(directed_mask, np.uint8)
+            canonical_affines_arr = self._to_optional_arr(
+                canonical_affines, np.float32, filter_none=True
+            )
+            canvas_dims_arr = self._to_optional_arr(
+                canonical_canvas_dims, np.int32, filter_none=True
+            )
+            M_inverse_arr = self._to_optional_arr(
+                canonical_M_inverse, np.float32, filter_none=True
+            )
         else:
-            # Empty frame (no detections)
             meas_arr = np.array([], dtype=np.float32).reshape(0, 3)
             sizes_arr = np.array([], dtype=np.float32)
             shapes_arr = np.array([], dtype=np.float32).reshape(0, 2)
@@ -236,7 +209,6 @@ class DetectionCache:
             canvas_dims_arr = np.array([], dtype=np.int32)
             M_inverse_arr = np.array([], dtype=np.float32)
 
-        # Store with frame index as key
         frame_key = f"frame_{frame_idx:06d}"
         self._data[f"{frame_key}_meas"] = meas_arr
         self._data[f"{frame_key}_sizes"] = sizes_arr

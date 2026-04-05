@@ -11,6 +11,63 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 
+_FINGERPRINT_KEY_NAMES = {
+    "best.ckpt",
+    "training_config.yaml",
+    "training_config.json",
+    "export_metadata.json",
+    "metadata.json",
+}
+
+_FINGERPRINT_SUFFIXES = {
+    ".pt",
+    ".ckpt",
+    ".onnx",
+    ".engine",
+    ".trt",
+    ".json",
+    ".yaml",
+    ".yml",
+}
+
+
+def _is_fingerprint_relevant(child: Path, file_count: int) -> bool:
+    """Determine whether a file should contribute to a directory fingerprint."""
+    return (
+        child.name in _FINGERPRINT_KEY_NAMES
+        or child.suffix.lower() in _FINGERPRINT_SUFFIXES
+        or file_count < 64
+    )
+
+
+def _directory_fingerprint(p: Path) -> str:
+    """Generate fingerprint token for a directory path."""
+    parts: List[str] = []
+    try:
+        stat = p.stat()
+        parts.append(f"{p}|d|{stat.st_mtime_ns}")
+    except OSError:
+        parts.append(f"{p}|d|unknown")
+
+    file_count = 0
+    for child in sorted(p.rglob("*")):
+        if not child.is_file():
+            continue
+        if not _is_fingerprint_relevant(child, file_count):
+            continue
+        rel = child.relative_to(p)
+        try:
+            st = child.stat()
+            parts.append(f"{rel}|{st.st_mtime_ns}|{st.st_size}")
+        except OSError:
+            parts.append(f"{rel}|unknown")
+        file_count += 1
+        if file_count >= 256:
+            break
+    blob = "|".join(parts).encode("utf-8")
+    return hashlib.sha1(blob).hexdigest()[:24]
+
+
 def path_fingerprint_token(path_str: str) -> str:
     """Generate fingerprint token for path (file or directory)."""
     p = Path(path_str).expanduser().resolve()
@@ -19,44 +76,7 @@ def path_fingerprint_token(path_str: str) -> str:
     if p.is_file():
         stat = p.stat()
         return f"{p}|f|{stat.st_mtime_ns}|{stat.st_size}"
-
-    # Directory fingerprint: root stat + key files + shallow recursive fallback.
-    parts: List[str] = []
-    try:
-        stat = p.stat()
-        parts.append(f"{p}|d|{stat.st_mtime_ns}")
-    except OSError:
-        parts.append(f"{p}|d|unknown")
-
-    key_names = {
-        "best.ckpt",
-        "training_config.yaml",
-        "training_config.json",
-        "export_metadata.json",
-        "metadata.json",
-    }
-    file_count = 0
-    for child in sorted(p.rglob("*")):
-        if not child.is_file():
-            continue
-        rel = child.relative_to(p)
-        suffix = child.suffix.lower()
-        if (
-            child.name in key_names
-            or suffix
-            in {".pt", ".ckpt", ".onnx", ".engine", ".trt", ".json", ".yaml", ".yml"}
-            or file_count < 64
-        ):
-            try:
-                st = child.stat()
-                parts.append(f"{rel}|{st.st_mtime_ns}|{st.st_size}")
-            except OSError:
-                parts.append(f"{rel}|unknown")
-            file_count += 1
-        if file_count >= 256:
-            break
-    blob = "|".join(parts).encode("utf-8")
-    return hashlib.sha1(blob).hexdigest()[:24]
+    return _directory_fingerprint(p)
 
 
 def artifact_meta_path(path: Path) -> Path:

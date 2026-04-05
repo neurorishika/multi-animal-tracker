@@ -33,6 +33,89 @@ class FrameQualityScorer:
         self.use_track_loss = params.get("METRIC_TRACK_LOSS", True)
         self.use_uncertainty = params.get("METRIC_HIGH_UNCERTAINTY", False)
 
+    def _score_confidence(self, detection_data, metrics):
+        """Score based on low detection confidence. Returns weighted score."""
+        if not (self.use_confidence and "confidences" in detection_data):
+            return 0.0
+        confidences = detection_data["confidences"]
+        if not confidences:
+            return 0.0
+        valid_confs = [c for c in confidences if not np.isnan(c)]
+        if not valid_confs:
+            return 0.0
+        avg_conf = np.mean(valid_confs)
+        if avg_conf >= self.conf_threshold:
+            return 0.0
+        denom = max(self.conf_threshold, 1e-6)
+        conf_score = (self.conf_threshold - avg_conf) / denom
+        metrics["low_confidence"] = {
+            "min": min(valid_confs),
+            "avg": avg_conf,
+            "score": conf_score,
+        }
+        return conf_score * 0.4
+
+    def _score_count_mismatch(self, detection_data, metrics):
+        """Score based on detection count mismatch. Returns weighted score."""
+        if not (self.use_count_mismatch and "count" in detection_data):
+            return 0.0
+        det_count = detection_data["count"]
+        if det_count == self.max_targets:
+            return 0.0
+        if det_count < self.max_targets:
+            count_score = (self.max_targets - det_count) / self.max_targets
+            weighted = count_score * 0.3
+        else:
+            count_score = (
+                min((det_count - self.max_targets) / self.max_targets, 1.0) * 0.5
+            )
+            weighted = count_score * 0.15
+        metrics["count_mismatch"] = {
+            "expected": self.max_targets,
+            "actual": det_count,
+            "score": count_score if det_count < self.max_targets else count_score * 0.5,
+        }
+        return weighted
+
+    def _score_assignment_cost(self, tracking_data, metrics):
+        """Score based on high assignment cost. Returns weighted score."""
+        if not (self.use_assignment_cost and "assignment_costs" in tracking_data):
+            return 0.0
+        costs = tracking_data["assignment_costs"]
+        if not costs:
+            return 0.0
+        avg_cost = np.mean(costs)
+        cost_score = min(avg_cost / 50.0, 1.0)
+        metrics["high_assignment_cost"] = {
+            "avg": avg_cost,
+            "max": max(costs),
+            "score": cost_score,
+        }
+        return cost_score * 0.15
+
+    def _score_track_loss(self, tracking_data, metrics):
+        """Score based on track losses. Returns weighted score."""
+        if not (self.use_track_loss and "lost_tracks" in tracking_data):
+            return 0.0
+        lost_count = tracking_data["lost_tracks"]
+        if lost_count <= 0:
+            return 0.0
+        loss_score = min(lost_count / self.max_targets, 1.0)
+        metrics["track_loss"] = {"count": lost_count, "score": loss_score}
+        return loss_score * 0.1
+
+    def _score_uncertainty(self, tracking_data, metrics):
+        """Score based on high position uncertainty. Returns weighted score."""
+        if not (self.use_uncertainty and "uncertainties" in tracking_data):
+            return 0.0
+        uncertainties = tracking_data["uncertainties"]
+        if not uncertainties:
+            return 0.0
+        avg_uncertainty = np.mean(uncertainties)
+        unc_score = min(avg_uncertainty / 50.0, 1.0)
+        metrics["high_uncertainty"] = {"avg": avg_uncertainty, "score": unc_score}
+        return unc_score * 0.05
+
     def score_frame(
         self: object,
         frame_id: object,
@@ -55,105 +138,21 @@ class FrameQualityScorer:
         Returns:
             score: Higher score = more problematic frame (0.0 to 1.0+)
         """
-        score = 0.0
-        metrics = {}
-
         if detection_data is None:
             detection_data = {}
         if tracking_data is None:
             tracking_data = {}
 
-        # Metric 1: Low detection confidence (frame-level average confidence)
-        if self.use_confidence and "confidences" in detection_data:
-            confidences = detection_data["confidences"]
-            if confidences:
-                # Filter out NaN values (from background subtraction)
-                valid_confs = [c for c in confidences if not np.isnan(c)]
-                if valid_confs:
-                    avg_conf = np.mean(valid_confs)
-                    min_conf = min(valid_confs)
+        metrics = {}
+        score = (
+            self._score_confidence(detection_data, metrics)
+            + self._score_count_mismatch(detection_data, metrics)
+            + self._score_assignment_cost(tracking_data, metrics)
+            + self._score_track_loss(tracking_data, metrics)
+            + self._score_uncertainty(tracking_data, metrics)
+        )
 
-                    # Score based on how far frame-average confidence is below threshold.
-                    # This uses raw detections when available from cache and avoids
-                    # over-penalizing a frame due to one isolated low-confidence box.
-                    denom = max(self.conf_threshold, 1e-6)
-                    if avg_conf < self.conf_threshold:
-                        conf_score = (self.conf_threshold - avg_conf) / denom
-                        score += conf_score * 0.4  # 40% weight
-                        metrics["low_confidence"] = {
-                            "min": min_conf,
-                            "avg": avg_conf,
-                            "score": conf_score,
-                        }
-
-        # Metric 2: Detection count mismatch
-        if self.use_count_mismatch and "count" in detection_data:
-            det_count = detection_data["count"]
-            if det_count != self.max_targets:
-                # More severe for under-detection than over-detection
-                if det_count < self.max_targets:
-                    count_score = (self.max_targets - det_count) / self.max_targets
-                    score += count_score * 0.3  # 30% weight
-                else:
-                    count_score = (
-                        min((det_count - self.max_targets) / self.max_targets, 1.0)
-                        * 0.5
-                    )
-                    score += count_score * 0.15  # 15% weight for over-detection
-
-                metrics["count_mismatch"] = {
-                    "expected": self.max_targets,
-                    "actual": det_count,
-                    "score": (
-                        count_score
-                        if det_count < self.max_targets
-                        else count_score * 0.5
-                    ),
-                }
-
-        # Metric 3: High assignment cost
-        if self.use_assignment_cost and "assignment_costs" in tracking_data:
-            costs = tracking_data["assignment_costs"]
-            if costs:
-                avg_cost = np.mean(costs)
-                max_cost = max(costs)
-
-                # Normalize costs (typical good matches < 10, bad matches > 50)
-                cost_score = min(avg_cost / 50.0, 1.0)
-                score += cost_score * 0.15  # 15% weight
-
-                metrics["high_assignment_cost"] = {
-                    "avg": avg_cost,
-                    "max": max_cost,
-                    "score": cost_score,
-                }
-
-        # Metric 4: Track losses
-        if self.use_track_loss and "lost_tracks" in tracking_data:
-            lost_count = tracking_data["lost_tracks"]
-            if lost_count > 0:
-                loss_score = min(lost_count / self.max_targets, 1.0)
-                score += loss_score * 0.1  # 10% weight
-
-                metrics["track_loss"] = {"count": lost_count, "score": loss_score}
-
-        # Metric 5: High position uncertainty
-        if self.use_uncertainty and "uncertainties" in tracking_data:
-            uncertainties = tracking_data["uncertainties"]
-            if uncertainties:
-                avg_uncertainty = np.mean(uncertainties)
-                # Normalize (typical uncertainty < 10, high > 50)
-                unc_score = min(avg_uncertainty / 50.0, 1.0)
-                score += unc_score * 0.05  # 5% weight
-
-                metrics["high_uncertainty"] = {
-                    "avg": avg_uncertainty,
-                    "score": unc_score,
-                }
-
-        # Store the score
         self.frame_scores[frame_id] = {"score": score, "metrics": metrics}
-
         return score
 
     def get_worst_frames(

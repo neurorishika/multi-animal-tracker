@@ -88,6 +88,24 @@ def select_directed_heading(
     return float("nan"), False
 
 
+def _safe_float_at(arr, idx: int) -> float:
+    """Safely extract a float from an array-like at the given index."""
+    try:
+        if arr is not None and idx < len(arr):
+            return float(arr[idx])
+    except Exception:
+        pass
+    return math.nan
+
+
+def _safe_bool_at(arr, idx: int) -> bool:
+    """Safely extract a boolean from an array-like at the given index."""
+    try:
+        return bool(arr is not None and idx < len(arr) and arr[idx])
+    except Exception:
+        return False
+
+
 def build_detection_direction_overrides(
     n_detections: int,
     pose_headings,
@@ -106,44 +124,11 @@ def build_detection_direction_overrides(
     detection_directed_mask = np.zeros(count, dtype=np.uint8)
 
     for det_idx in range(count):
-        try:
-            pose_heading = (
-                float(pose_headings[det_idx])
-                if pose_headings is not None and det_idx < len(pose_headings)
-                else math.nan
-            )
-        except Exception:
-            pose_heading = math.nan
-        try:
-            pose_directed = bool(
-                pose_directed_mask is not None
-                and det_idx < len(pose_directed_mask)
-                and pose_directed_mask[det_idx]
-            )
-        except Exception:
-            pose_directed = False
-        try:
-            headtail_heading = (
-                float(headtail_headings[det_idx])
-                if headtail_headings is not None and det_idx < len(headtail_headings)
-                else math.nan
-            )
-        except Exception:
-            headtail_heading = math.nan
-        try:
-            headtail_directed = bool(
-                headtail_directed_mask is not None
-                and det_idx < len(headtail_directed_mask)
-                and headtail_directed_mask[det_idx]
-            )
-        except Exception:
-            headtail_directed = False
-
         selected_heading, is_directed = select_directed_heading(
-            pose_heading=pose_heading,
-            pose_directed=pose_directed,
-            headtail_heading=headtail_heading,
-            headtail_directed=headtail_directed,
+            pose_heading=_safe_float_at(pose_headings, det_idx),
+            pose_directed=_safe_bool_at(pose_directed_mask, det_idx),
+            headtail_heading=_safe_float_at(headtail_headings, det_idx),
+            headtail_directed=_safe_bool_at(headtail_directed_mask, det_idx),
             pose_overrides_headtail=pose_overrides_headtail,
         )
         if is_directed:

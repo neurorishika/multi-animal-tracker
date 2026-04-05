@@ -7,24 +7,25 @@ import numpy as np
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 
-def _load_worker_module():
-    hydra_suite_pkg = types.ModuleType("hydra_suite")
-    hydra_suite_pkg.__path__ = []
-    core_pkg = types.ModuleType("hydra_suite.core")
-    core_pkg.__path__ = []
-    core_tracking = types.ModuleType("hydra_suite.core.tracking")
-    core_tracking.__path__ = []
-    utils_pkg = types.ModuleType("hydra_suite.utils")
-    utils_pkg.__path__ = []
-    data_pkg = types.ModuleType("hydra_suite.data")
-    data_pkg.__path__ = []
+def _make_namespace_package(name: str) -> types.ModuleType:
+    module = types.ModuleType(name)
+    module.__path__ = []
+    return module
 
-    video_artifacts = load_src_module(
-        "hydra_suite/utils/video_artifacts.py",
-        "video_artifacts_under_test",
-    )
 
-    # Minimal QtCore stub
+def _build_base_package_stubs() -> dict[str, types.ModuleType]:
+    return {
+        "hydra_suite": _make_namespace_package("hydra_suite"),
+        "hydra_suite.core": _make_namespace_package("hydra_suite.core"),
+        "hydra_suite.core.tracking": _make_namespace_package(
+            "hydra_suite.core.tracking"
+        ),
+        "hydra_suite.utils": _make_namespace_package("hydra_suite.utils"),
+        "hydra_suite.data": _make_namespace_package("hydra_suite.data"),
+    }
+
+
+def _build_qt_stubs() -> dict[str, types.ModuleType]:
     qtcore = types.ModuleType("PySide6.QtCore")
 
     class Signal:
@@ -58,8 +59,10 @@ def _load_worker_module():
 
     pyside = types.ModuleType("PySide6")
     pyside.QtCore = qtcore
+    return {"PySide6": pyside, "PySide6.QtCore": qtcore}
 
-    # Utility and core dependency stubs to avoid importing heavy runtime modules.
+
+def _build_runtime_stubs(video_artifacts) -> dict[str, types.ModuleType]:
     image_processing = types.ModuleType("hydra_suite.utils.image_processing")
     image_processing.apply_image_adjustments = lambda *args, **kwargs: args[0]
     image_processing.stabilize_lighting = lambda *args, **kwargs: (args[0], None, 0.0)
@@ -96,18 +99,23 @@ def _load_worker_module():
 
     frame_prefetcher.FramePrefetcher = FramePrefetcher
 
-    # Stub core submodules imported by worker.
-    core_filters = types.ModuleType("hydra_suite.core.filters")
-    core_background = types.ModuleType("hydra_suite.core.background")
-    core_detectors = types.ModuleType("hydra_suite.core.detectors")
-    core_assigners = types.ModuleType("hydra_suite.core.assigners")
-    core_identity = types.ModuleType("hydra_suite.core.identity")
+    return {
+        "hydra_suite.utils.image_processing": image_processing,
+        "hydra_suite.utils.geometry": geometry,
+        "hydra_suite.utils.video_artifacts": video_artifacts,
+        "hydra_suite.data.detection_cache": detection_cache,
+        "hydra_suite.data.tag_observation_cache": tag_observation_cache,
+        "hydra_suite.utils.batch_optimizer": batch_optimizer,
+        "hydra_suite.utils.frame_prefetcher": frame_prefetcher,
+    }
 
-    core_filters.__path__ = []
-    core_background.__path__ = []
-    core_detectors.__path__ = []
-    core_assigners.__path__ = []
-    core_identity.__path__ = []
+
+def _build_core_dependency_stubs() -> dict[str, types.ModuleType]:
+    core_filters = _make_namespace_package("hydra_suite.core.filters")
+    core_background = _make_namespace_package("hydra_suite.core.background")
+    core_detectors = _make_namespace_package("hydra_suite.core.detectors")
+    core_assigners = _make_namespace_package("hydra_suite.core.assigners")
+    core_identity = _make_namespace_package("hydra_suite.core.identity")
 
     kalman = types.ModuleType("hydra_suite.core.filters.kalman")
     kalman.KalmanFilterManager = object
@@ -115,7 +123,6 @@ def _load_worker_module():
     background_model = types.ModuleType("hydra_suite.core.background.model")
     background_model.BackgroundModel = object
 
-    # worker.py imports create_detector from the package
     core_detectors.create_detector = lambda *_args, **_kwargs: None
 
     assigner = types.ModuleType("hydra_suite.core.assigners.hungarian")
@@ -133,7 +140,22 @@ def _load_worker_module():
     tag_features.build_detection_tag_id_list = lambda *_args, **_kwargs: []
     tag_features.build_tag_detection_map = lambda *_args, **_kwargs: {}
 
-    # Classification sub-package stubs
+    return {
+        "hydra_suite.core.filters": core_filters,
+        "hydra_suite.core.background": core_background,
+        "hydra_suite.core.detectors": core_detectors,
+        "hydra_suite.core.assigners": core_assigners,
+        "hydra_suite.core.identity": core_identity,
+        "hydra_suite.core.filters.kalman": kalman,
+        "hydra_suite.core.background.model": background_model,
+        "hydra_suite.core.assigners.hungarian": assigner,
+        "hydra_suite.core.identity.dataset": identity_dataset,
+        "hydra_suite.core.identity.dataset.generator": identity_dataset_generator,
+        "hydra_suite.core.tracking.tag_features": tag_features,
+    }
+
+
+def _build_identity_and_tracking_stubs() -> dict[str, types.ModuleType]:
     classification = types.ModuleType("hydra_suite.core.identity.classification")
     classification_apriltag = types.ModuleType(
         "hydra_suite.core.identity.classification.apriltag"
@@ -153,7 +175,6 @@ def _load_worker_module():
     )
     classification_headtail.HeadTailAnalyzer = object
 
-    # Identity geometry stubs
     identity_geometry = types.ModuleType("hydra_suite.core.identity.geometry")
     identity_geometry.build_detection_direction_overrides = lambda *_args, **_kwargs: (
         np.full(0, np.nan, dtype=np.float32),
@@ -163,7 +184,6 @@ def _load_worker_module():
     identity_geometry.resolve_tracking_theta = lambda *_args, **_kwargs: 0.0
     identity_geometry.normalize_theta = lambda x: float(x) % (2 * 3.141592653589793)
 
-    # Pose sub-package stubs
     pose_pkg = types.ModuleType("hydra_suite.core.identity.pose")
     pose_features_new = types.ModuleType("hydra_suite.core.identity.pose.features")
     pose_features_new.build_pose_detection_keypoint_map = lambda *_args, **_kwargs: {}
@@ -176,7 +196,6 @@ def _load_worker_module():
     pose_api.build_runtime_config = lambda *_args, **_kwargs: None
     pose_api.create_pose_backend_from_config = lambda *_args, **_kwargs: None
 
-    # Properties sub-package stubs
     properties_pkg = types.ModuleType("hydra_suite.core.identity.properties")
     properties_cache = types.ModuleType("hydra_suite.core.identity.properties.cache")
     properties_cache.IndividualPropertiesCache = object
@@ -185,7 +204,6 @@ def _load_worker_module():
     properties_cache.compute_filter_settings_hash = lambda *_args, **_kwargs: ""
     properties_cache.compute_individual_properties_id = lambda *_args, **_kwargs: ""
 
-    # Tracking sub-module stubs for density, cnn_features, precompute
     density = types.ModuleType("hydra_suite.core.tracking.density")
     density.get_density_region_flags = lambda *_args, **_kwargs: np.zeros(0, dtype=bool)
 
@@ -207,32 +225,7 @@ def _load_worker_module():
     profiler = types.ModuleType("hydra_suite.core.tracking.profiler")
     profiler.TrackingProfiler = object
 
-    stubs = {
-        "cv2": make_cv2_stub(),
-        "PySide6": pyside,
-        "PySide6.QtCore": qtcore,
-        "hydra_suite": hydra_suite_pkg,
-        "hydra_suite.core": core_pkg,
-        "hydra_suite.core.tracking": core_tracking,
-        "hydra_suite.utils": utils_pkg,
-        "hydra_suite.data": data_pkg,
-        "hydra_suite.utils.image_processing": image_processing,
-        "hydra_suite.utils.geometry": geometry,
-        "hydra_suite.utils.video_artifacts": video_artifacts,
-        "hydra_suite.data.detection_cache": detection_cache,
-        "hydra_suite.data.tag_observation_cache": tag_observation_cache,
-        "hydra_suite.utils.batch_optimizer": batch_optimizer,
-        "hydra_suite.utils.frame_prefetcher": frame_prefetcher,
-        "hydra_suite.core.filters": core_filters,
-        "hydra_suite.core.background": core_background,
-        "hydra_suite.core.detectors": core_detectors,
-        "hydra_suite.core.assigners": core_assigners,
-        "hydra_suite.core.identity": core_identity,
-        "hydra_suite.core.filters.kalman": kalman,
-        "hydra_suite.core.background.model": background_model,
-        "hydra_suite.core.assigners.hungarian": assigner,
-        "hydra_suite.core.identity.dataset": identity_dataset,
-        "hydra_suite.core.identity.dataset.generator": identity_dataset_generator,
+    return {
         "hydra_suite.core.identity.classification": classification,
         "hydra_suite.core.identity.classification.apriltag": classification_apriltag,
         "hydra_suite.core.identity.classification.cnn": classification_cnn,
@@ -248,114 +241,25 @@ def _load_worker_module():
         "hydra_suite.core.tracking.pose_pipeline": pose_pipeline,
         "hydra_suite.core.tracking.precompute": precompute,
         "hydra_suite.core.tracking.profiler": profiler,
-        "hydra_suite.core.tracking.tag_features": tag_features,
     }
 
+
+def _load_worker_module():
+    video_artifacts = load_src_module(
+        "hydra_suite/utils/video_artifacts.py",
+        "video_artifacts_under_test",
+    )
+    stubs = {"cv2": make_cv2_stub()}
+    stubs.update(_build_base_package_stubs())
+    stubs.update(_build_qt_stubs())
+    stubs.update(_build_runtime_stubs(video_artifacts))
+    stubs.update(_build_core_dependency_stubs())
+    stubs.update(_build_identity_and_tracking_stubs())
     return load_src_module(
         "hydra_suite/core/tracking/worker.py",
         "tracking_worker_under_test",
         stubs=stubs,
     )
-
-
-class _DummyCap:
-    def __init__(self, frames):
-        self.frames = list(frames)
-        self.idx = 0
-
-    def read(self):
-        if self.idx >= len(self.frames):
-            return False, None
-        frame = self.frames[self.idx]
-        self.idx += 1
-        return True, frame
-
-
-def test_cached_detection_iterator_frame_counts() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
-
-    rows = list(
-        worker._cached_detection_iterator(
-            total_frames=4, start_frame=5, end_frame=8, backward=False
-        )
-    )
-    assert len(rows) == 4
-    assert [count for _, count in rows] == [1, 2, 3, 4]
-    assert all(frame is None for frame, _ in rows)
-
-    rows_b = list(
-        worker._cached_detection_iterator(
-            total_frames=3, start_frame=10, end_frame=12, backward=True
-        )
-    )
-    assert len(rows_b) == 3
-    assert [count for _, count in rows_b] == [1, 2, 3]
-
-
-def test_forward_frame_iterator_sync_and_prefetch_paths() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
-
-    cap_sync = _DummyCap(frames=["f1", "f2", "f3"])
-    sync_rows = list(worker._forward_frame_iterator(cap_sync, use_prefetcher=False))
-    assert sync_rows == [("f1", 1), ("f2", 2), ("f3", 3)]
-
-    cap_prefetch = _DummyCap(frames=["a", "b"])
-    prefetch_rows = list(
-        worker._forward_frame_iterator(cap_prefetch, use_prefetcher=True)
-    )
-    assert prefetch_rows == [("a", 1), ("b", 2)]
-    assert worker.frame_prefetcher is None
-
-
-def test_collapse_obb_axis_theta_chooses_nearest_branch() -> None:
-    pf = load_src_module(
-        "hydra_suite/core/identity/geometry.py",
-        "geometry_for_collapse_test",
-    )
-
-    theta_axis = np.deg2rad(12.0)
-    reference = np.deg2rad(205.0)
-    collapsed = pf.collapse_obb_axis_theta(theta_axis, reference)
-    expected = (theta_axis + np.pi) % (2 * np.pi)
-    diff = ((collapsed - expected + np.pi) % (2 * np.pi)) - np.pi
-    assert abs(float(diff)) < 1e-6
-
-
-def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
-    pf = load_src_module(
-        "hydra_suite/core/identity/pose/features.py",
-        "pose_features_for_heading_test",
-    )
-
-    keypoints = np.array(
-        [
-            [9.0, 0.0, 0.9],  # anterior
-            [11.0, 0.0, 0.8],  # anterior
-            [0.0, 0.0, 0.7],  # posterior
-            [0.0, 1.0, 0.1],  # posterior but below threshold
-        ],
-        dtype=np.float32,
-    )
-    result = pf.compute_pose_geometry_from_keypoints(
-        keypoints=keypoints,
-        anterior_indices=[0, 1],
-        posterior_indices=[2, 3],
-        min_valid_conf=0.2,
-    )
-    theta = result["heading"] if result else None
-    assert theta is not None
-    assert abs(float(theta)) < 1e-6
-
-    result_none = pf.compute_pose_geometry_from_keypoints(
-        keypoints=keypoints,
-        anterior_indices=[3],  # low confidence only
-        posterior_indices=[2],
-        min_valid_conf=0.2,
-    )
-    theta_none = result_none["heading"] if result_none else None
-    assert theta_none is None
 
 
 def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:

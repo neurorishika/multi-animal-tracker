@@ -16,6 +16,235 @@ from ._runtime_artifacts import RuntimeArtifactMixin
 logger = logging.getLogger(__name__)
 
 
+def _prepare_stage2_crops(crops, params):
+    """Pre-resize crops for stage-2 OBB inference and optionally pad to power-of-2."""
+    stage2_imgsz = int(params.get("YOLO_SEQ_STAGE2_IMGSZ", 160))
+    if stage2_imgsz <= 0:
+        return crops, None
+
+    resize_interp = getattr(cv2, "INTER_LINEAR", getattr(cv2, "INTER_AREA", 1))
+    resized_crops = []
+    for crop in crops:
+        h_c, w_c = crop.shape[:2]
+        if h_c != stage2_imgsz or w_c != stage2_imgsz:
+            resized_crops.append(
+                cv2.resize(
+                    crop, (stage2_imgsz, stage2_imgsz), interpolation=resize_interp
+                )
+            )
+        else:
+            resized_crops.append(crop)
+
+    crops_for_stage2 = resized_crops
+    predict_imgsz = stage2_imgsz
+
+    # Pad to power-of-2 count for MPS Metal shader cache
+    n_real_crops = len(crops_for_stage2)
+    pow2_pad = params.get("YOLO_SEQ_STAGE2_POW2_PAD", 0)
+    if pow2_pad and predict_imgsz is not None and n_real_crops > 0:
+        p2 = 1
+        while p2 < n_real_crops:
+            p2 *= 2
+        if p2 > n_real_crops:
+            pad_img = np.zeros((predict_imgsz, predict_imgsz, 3), dtype=np.uint8)
+            crops_for_stage2 = list(crops_for_stage2) + [pad_img] * (p2 - n_real_crops)
+
+    return crops_for_stage2, predict_imgsz
+
+
+def _merge_stage2_results(
+    stage2_results,
+    crop_offsets,
+    crop_original_sizes,
+    predict_imgsz,
+    n_real_crops,
+    extract_fn,
+    return_class_ids,
+    max_det,
+):
+    """Merge per-crop stage-2 OBB results back into the global frame."""
+    merged_meas, merged_sizes, merged_shapes = [], [], []
+    merged_conf, merged_corners, merged_class_ids = [], [], []
+
+    n_stage2 = min(len(stage2_results), len(crop_offsets), n_real_crops)
+    for i in range(n_stage2):
+        result = stage2_results[i]
+        x0, y0 = crop_offsets[i]
+        if result is None or result.obb is None or len(result.obb) == 0:
+            continue
+        if return_class_ids:
+            (
+                crop_meas,
+                crop_sizes,
+                crop_shapes,
+                crop_conf,
+                crop_corners,
+                crop_class_ids,
+            ) = extract_fn(result.obb, return_class_ids=True)
+        else:
+            crop_meas, crop_sizes, crop_shapes, crop_conf, crop_corners = extract_fn(
+                result.obb
+            )
+        if not crop_meas:
+            continue
+        if predict_imgsz is not None and i < len(crop_original_sizes):
+            orig_w, orig_h = crop_original_sizes[i]
+            sx = orig_w / float(predict_imgsz)
+            sy = orig_h / float(predict_imgsz)
+        else:
+            sx, sy = 1.0, 1.0
+        for j in range(len(crop_meas)):
+            m = np.asarray(crop_meas[j], dtype=np.float32).copy()
+            m[0] = m[0] * np.float32(sx) + np.float32(x0)
+            m[1] = m[1] * np.float32(sy) + np.float32(y0)
+            c = np.asarray(crop_corners[j], dtype=np.float32).copy()
+            c[:, 0] = c[:, 0] * np.float32(sx) + np.float32(x0)
+            c[:, 1] = c[:, 1] * np.float32(sy) + np.float32(y0)
+            merged_meas.append(m)
+            merged_sizes.append(float(crop_sizes[j]) * sx * sy)
+            merged_shapes.append(tuple(crop_shapes[j]))
+            merged_conf.append(float(crop_conf[j]))
+            merged_corners.append(c)
+            if return_class_ids:
+                merged_class_ids.append(int(crop_class_ids[j]))
+
+    if not merged_meas:
+        return None
+
+    conf_arr = np.asarray(merged_conf, dtype=np.float32)
+    order_final = np.argsort(conf_arr)[::-1]
+    if len(order_final) > max_det:
+        order_final = order_final[:max_det]
+
+    raw_meas = [merged_meas[i] for i in order_final]
+    raw_sizes = [merged_sizes[i] for i in order_final]
+    raw_shapes = [merged_shapes[i] for i in order_final]
+    raw_confidences = [merged_conf[i] for i in order_final]
+    raw_obb_corners = [merged_corners[i] for i in order_final]
+    if return_class_ids:
+        raw_class_ids = [merged_class_ids[i] for i in order_final]
+        return (
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            raw_confidences,
+            raw_obb_corners,
+            raw_class_ids,
+        )
+    return raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners
+
+
+def _run_fixed_batch_inference(
+    model,
+    frames,
+    actual_frame_count,
+    fixed_batch_size,
+    fixed_backend,
+    obb_predict_device,
+    raw_conf_floor,
+    target_classes,
+    max_det,
+    use_onnx,
+    onnx_imgsz,
+):
+    """Run YOLO inference in fixed-size chunks for TensorRT/static-batch ONNX."""
+    all_results = []
+    for chunk_start in range(0, actual_frame_count, fixed_batch_size):
+        chunk_end = min(chunk_start + fixed_batch_size, actual_frame_count)
+        chunk_frames = frames[chunk_start:chunk_end]
+        chunk_size = len(chunk_frames)
+
+        if chunk_size < fixed_batch_size:
+            padding_needed = fixed_batch_size - chunk_size
+            dummy_frame = chunk_frames[0]
+            chunk_frames = list(chunk_frames) + [dummy_frame] * padding_needed
+            logger.debug(
+                f"Padded final chunk from {chunk_size} to {fixed_batch_size} for {fixed_backend}"
+            )
+
+        try:
+            predict_kwargs = dict(
+                source=chunk_frames,
+                conf=raw_conf_floor,
+                iou=1.0,
+                classes=target_classes,
+                max_det=max_det,
+                verbose=False,
+            )
+            if obb_predict_device is not None:
+                predict_kwargs["device"] = obb_predict_device
+            if use_onnx and onnx_imgsz:
+                predict_kwargs["imgsz"] = int(onnx_imgsz)
+            chunk_results = model.predict(**predict_kwargs)
+            all_results.extend(chunk_results[:chunk_size])
+        except Exception as e:
+            logger.error(f"YOLO batched inference failed on chunk: {e}")
+            all_results.extend([None] * chunk_size)
+    return all_results
+
+
+def _run_standard_batch_inference(
+    model,
+    frames,
+    obb_predict_device,
+    raw_conf_floor,
+    target_classes,
+    max_det,
+    use_onnx,
+    onnx_imgsz,
+):
+    """Run standard PyTorch batched inference, with ONNX per-frame fallback."""
+    try:
+        predict_kwargs = dict(
+            source=frames,
+            conf=raw_conf_floor,
+            iou=1.0,
+            classes=target_classes,
+            max_det=max_det,
+            verbose=False,
+        )
+        if obb_predict_device is not None:
+            predict_kwargs["device"] = obb_predict_device
+        if use_onnx and onnx_imgsz:
+            predict_kwargs["imgsz"] = int(onnx_imgsz)
+        return model.predict(**predict_kwargs)
+    except Exception as e:
+        logger.error(f"YOLO batched inference failed: {e}")
+        if not use_onnx:
+            return None
+
+        logger.warning(
+            "ONNX batched inference unavailable, falling back to per-frame ONNX inference."
+        )
+        results_batch = []
+        for idx, frame in enumerate(frames):
+            try:
+                single_kwargs = dict(
+                    source=frame,
+                    conf=raw_conf_floor,
+                    iou=1.0,
+                    classes=target_classes,
+                    max_det=max_det,
+                    verbose=False,
+                )
+                if obb_predict_device is not None:
+                    single_kwargs["device"] = obb_predict_device
+                if onnx_imgsz:
+                    single_kwargs["imgsz"] = int(onnx_imgsz)
+                single_results = model.predict(**single_kwargs)
+                results_batch.append(
+                    single_results[0] if len(single_results) > 0 else None
+                )
+            except Exception as frame_err:
+                logger.error(
+                    "YOLO ONNX single-frame fallback failed at batch frame %d: %s",
+                    idx,
+                    frame_err,
+                )
+                results_batch.append(None)
+        return results_batch
+
+
 class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
     """
     Detects objects using a pretrained YOLO OBB (Oriented Bounding Box) model.

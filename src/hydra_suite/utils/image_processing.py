@@ -130,6 +130,61 @@ if NUMBA_AVAILABLE:
         return np.mean(data)
 
 
+def _extract_roi_pixels(frame, roi_mask, use_gpu):
+    """Extract pixels of interest from frame, respecting ROI mask and GPU setting."""
+    if roi_mask is not None:
+        if use_gpu and CUDA_AVAILABLE:
+            frame_gpu = cp.asarray(frame)
+            roi_mask_gpu = cp.asarray(roi_mask)
+            roi_pixels = frame_gpu[roi_mask_gpu > 0]
+            if len(roi_pixels) < 100:
+                frame_flat = frame_gpu.ravel()
+            else:
+                frame_flat = roi_pixels
+            return cp.asnumpy(frame_flat)
+        roi_pixels = frame[roi_mask > 0]
+        if len(roi_pixels) < 100:
+            return frame.ravel()
+        return roi_pixels
+    return frame.ravel()
+
+
+def _compute_robust_mean(frame_flat):
+    """Compute robust mean intensity using percentile-based trimming."""
+    if NUMBA_AVAILABLE:
+        percentiles = _compute_percentiles_numba(
+            frame_flat, np.array([10.0, 25.0, 75.0, 90.0])
+        )
+        p10, p25, p75, p90 = percentiles
+        return _calculate_robust_mean_numba(frame_flat, p25, p75, p10, p90)
+
+    p10, p25, p75, p90 = np.percentile(frame_flat, [10, 25, 75, 90])
+    mask = (frame_flat >= p25) & (frame_flat <= p75)
+    if np.sum(mask) > frame_flat.size * 0.1:
+        return np.mean(frame_flat[mask])
+    mask = (frame_flat >= p10) & (frame_flat <= p90)
+    return np.mean(frame_flat[mask]) if np.sum(mask) > 0 else np.mean(frame_flat)
+
+
+def _smooth_intensity(current_intensity_history, median_window, alpha, lighting_state):
+    """Apply median filtering and exponential smoothing to intensity history."""
+    if len(current_intensity_history) >= median_window:
+        recent_values = np.array(list(current_intensity_history)[-median_window:])
+        median_intensity = np.median(recent_values)
+        if "smoothed_value" in lighting_state:
+            smoothed = (
+                alpha * lighting_state["smoothed_value"]
+                + (1 - alpha) * median_intensity
+            )
+        else:
+            smoothed = median_intensity
+    else:
+        recent_values = np.array(list(current_intensity_history))
+        smoothed = np.mean(recent_values)
+    lighting_state["smoothed_value"] = smoothed
+    return smoothed
+
+
 def stabilize_lighting(
     frame: object,
     reference_intensity: object,
@@ -171,70 +226,16 @@ def stabilize_lighting(
     if reference_intensity is None:
         return frame, current_intensity_history, np.mean(frame)
 
-    # Initialize lighting state if not provided
     if lighting_state is None:
         lighting_state = {}
 
-    # Extract pixels of interest
-    if roi_mask is not None:
-        if use_gpu and CUDA_AVAILABLE:
-            frame_gpu = cp.asarray(frame)
-            roi_mask_gpu = cp.asarray(roi_mask)
-            roi_pixels = frame_gpu[roi_mask_gpu > 0]
-            if len(roi_pixels) < 100:
-                frame_flat = frame_gpu.ravel()
-            else:
-                frame_flat = roi_pixels
-            frame_flat = cp.asnumpy(frame_flat)
-        else:
-            roi_pixels = frame[roi_mask > 0]
-            if len(roi_pixels) < 100:
-                frame_flat = frame.ravel()
-            else:
-                frame_flat = roi_pixels
-    else:
-        frame_flat = frame.ravel()
-
-    # Compute percentiles (optimized with Numba if available)
-    if NUMBA_AVAILABLE:
-        percentiles = _compute_percentiles_numba(
-            frame_flat, np.array([10.0, 25.0, 75.0, 90.0])
-        )
-        p10, p25, p75, p90 = percentiles
-        current_mean = _calculate_robust_mean_numba(frame_flat, p25, p75, p10, p90)
-    else:
-        p10, p25, p75, p90 = np.percentile(frame_flat, [10, 25, 75, 90])
-
-        # Robust mean calculation
-        mask = (frame_flat >= p25) & (frame_flat <= p75)
-        if np.sum(mask) > frame_flat.size * 0.1:
-            current_mean = np.mean(frame_flat[mask])
-        else:
-            mask = (frame_flat >= p10) & (frame_flat <= p90)
-            current_mean = (
-                np.mean(frame_flat[mask]) if np.sum(mask) > 0 else np.mean(frame_flat)
-            )
-
-    # Update intensity history
+    frame_flat = _extract_roi_pixels(frame, roi_mask, use_gpu)
+    current_mean = _compute_robust_mean(frame_flat)
     current_intensity_history.append(current_mean)
 
-    # Apply median filtering and smoothing
-    if len(current_intensity_history) >= median_window:
-        recent_values = np.array(list(current_intensity_history)[-median_window:])
-        median_intensity = np.median(recent_values)
-
-        if "smoothed_value" in lighting_state:
-            smoothed_intensity = (
-                alpha * lighting_state["smoothed_value"]
-                + (1 - alpha) * median_intensity
-            )
-        else:
-            smoothed_intensity = median_intensity
-        lighting_state["smoothed_value"] = smoothed_intensity
-    else:
-        recent_values = np.array(list(current_intensity_history))
-        smoothed_intensity = np.mean(recent_values)
-        lighting_state["smoothed_value"] = smoothed_intensity
+    smoothed_intensity = _smooth_intensity(
+        current_intensity_history, median_window, alpha, lighting_state
+    )
 
     # Calculate and smooth correction factor
     if smoothed_intensity > 0:

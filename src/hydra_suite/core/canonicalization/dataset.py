@@ -112,6 +112,31 @@ class MatMetadataCanonicalizer:
             "margin": float(self.margin),
         }
 
+    @staticmethod
+    def _extract_canon_params(
+        ann: dict,
+    ) -> tuple[float, float, float, float, float] | None:
+        """Extract (cx, cy, box_w, box_h, angle) from an annotation or None."""
+        canonical = ann.get("canonicalization", {})
+        center = canonical.get("center_px")
+        size = canonical.get("size_px")
+        angle = canonical.get("angle_rad", ann.get("theta"))
+        if (
+            not isinstance(center, (list, tuple))
+            or len(center) != 2
+            or not isinstance(size, (list, tuple))
+            or len(size) != 2
+            or angle is None
+        ):
+            return None
+        return (
+            float(center[0]),
+            float(center[1]),
+            max(1.0, float(size[0])),
+            max(1.0, float(size[1])),
+            float(angle),
+        )
+
     def __call__(self, image_path: Path, img_pil):
         if not self.enabled:
             return img_pil
@@ -126,26 +151,11 @@ class MatMetadataCanonicalizer:
             self._record_skip("ambiguous_annotation_count")
             return img_pil
 
-        ann = annotations[0]
-        canonical = ann.get("canonicalization", {})
-        center = canonical.get("center_px")
-        size = canonical.get("size_px")
-        angle = canonical.get("angle_rad", ann.get("theta"))
-        if (
-            not isinstance(center, (list, tuple))
-            or len(center) != 2
-            or not isinstance(size, (list, tuple))
-            or len(size) != 2
-            or angle is None
-        ):
+        params = self._extract_canon_params(annotations[0])
+        if params is None:
             self._record_skip("missing_canonicalization_fields")
             return img_pil
-
-        cx = float(center[0])
-        cy = float(center[1])
-        box_w = max(1.0, float(size[0]))
-        box_h = max(1.0, float(size[1]))
-        angle = float(angle)
+        cx, cy, box_w, box_h, angle = params
 
         arr = np.asarray(img_pil.convert("RGB"))
         if arr.ndim != 3 or arr.shape[2] != 3:

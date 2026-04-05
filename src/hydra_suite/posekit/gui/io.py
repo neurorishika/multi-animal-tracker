@@ -124,6 +124,42 @@ def save_yolo_pose_label(
     CrashSafeWriter.write_label(label_path, content)
 
 
+def _build_keypoint_mapping(
+    old_kpt_names: List[str],
+    new_kpt_names: List[str],
+    mode: str,
+) -> Dict[int, Optional[int]]:
+    """Build a mapping from new keypoint index to old keypoint index."""
+    old_k = len(old_kpt_names)
+    new_k = len(new_kpt_names)
+    mapping: Dict[int, Optional[int]] = {}
+    if mode == "index":
+        for ni in range(new_k):
+            mapping[ni] = ni if ni < old_k else None
+    else:
+        name_to_old: Dict[str, int] = {}
+        for i, n in enumerate(old_kpt_names):
+            if n not in name_to_old:
+                name_to_old[n] = i
+        for ni, n in enumerate(new_kpt_names):
+            mapping[ni] = name_to_old.get(n, None)
+    return mapping
+
+
+def _parse_old_keypoint_triples(
+    rest: List[str], old_k: int
+) -> Optional[List[Tuple[str, str, str]]]:
+    """Parse keypoint triples (x, y, v) from the tail of a label line.
+
+    Returns None if the data is too short to parse safely.
+    """
+    if len(rest) >= 3 * old_k:
+        return [(rest[3 * i], rest[3 * i + 1], rest[3 * i + 2]) for i in range(old_k)]
+    if len(rest) >= 2 * old_k:
+        return [(rest[2 * i], rest[2 * i + 1], "2") for i in range(old_k)]
+    return None
+
+
 def migrate_labels_keypoints(
     labels_dir: Path,
     old_kpt_names: List[str],
@@ -143,20 +179,7 @@ def migrate_labels_keypoints(
 
     old_k = len(old_kpt_names)
     new_k = len(new_kpt_names)
-
-    # build mapping new_index -> old_index
-    mapping: Dict[int, Optional[int]] = {}
-    if mode == "index":
-        for ni in range(new_k):
-            mapping[ni] = ni if ni < old_k else None
-    else:
-        # name-based mapping (only safe if names are unique-ish)
-        name_to_old = {}
-        for i, n in enumerate(old_kpt_names):
-            if n not in name_to_old:
-                name_to_old[n] = i
-        for ni, n in enumerate(new_kpt_names):
-            mapping[ni] = name_to_old.get(n, None)
+    mapping = _build_keypoint_mapping(old_kpt_names, new_kpt_names, mode)
 
     files_modified = 0
     for lp in txts:
@@ -176,25 +199,11 @@ def migrate_labels_keypoints(
         cx, cy, bw, bh = parts[1:5]
         rest = parts[5:]
 
-        # parse old kpts triples if possible; otherwise skip
-        old_trip = []
-        if len(rest) >= 3 * old_k:
-            for i in range(old_k):
-                x = rest[3 * i + 0]
-                y = rest[3 * i + 1]
-                v = rest[3 * i + 2]
-                old_trip.append((x, y, v))
-        elif len(rest) >= 2 * old_k:
-            # no visibility; assume v=2
-            for i in range(old_k):
-                x = rest[2 * i + 0]
-                y = rest[2 * i + 1]
-                old_trip.append((x, y, "2"))
-        else:
-            # can't safely migrate
+        old_trip = _parse_old_keypoint_triples(rest, old_k)
+        if old_trip is None:
             continue
 
-        new_trip = []
+        new_trip: List[str] = []
         for ni in range(new_k):
             oi = mapping.get(ni, None)
             if oi is None or oi >= len(old_trip):

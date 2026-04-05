@@ -646,51 +646,59 @@ def bench_classify(
 _MODELS_DIR = _REPO_ROOT / "models"
 
 
+def _append_model_path(found: dict[str, list[str]], task_key: str, path: Path) -> None:
+    full = str(path.resolve())
+    if full not in found[task_key]:
+        found[task_key].append(full)
+
+
+def _load_registry_models(
+    registry_path: Path,
+    found: dict[str, list[str]],
+) -> None:
+    if not registry_path.exists():
+        return
+
+    try:
+        registry = json.loads(registry_path.read_text())
+    except Exception as exc:
+        logger.warning("Failed to parse model_registry.json: %s", exc)
+        return
+
+    family_map = {"obb": "obb", "detect": "detect", "classify": "classify"}
+    for rel_path, meta in registry.items():
+        path = _MODELS_DIR / rel_path
+        if not path.exists():
+            continue
+        family = str(meta.get("task_family", "")).strip().lower()
+        task_key = family_map.get(family)
+        if task_key is not None:
+            _append_model_path(found, task_key, path)
+
+
+def _scan_registered_model_dirs(found: dict[str, list[str]]) -> None:
+    scan_specs = [
+        ("obb", "obb", "*.pt"),
+        ("detection", "detect", "*.pt"),
+        ("pose/YOLO", "pose", "*.pt"),
+        ("classification", "classify", "*.pth"),
+        ("classification", "classify", "*.pt"),
+    ]
+    for subdir, task_key, pattern in scan_specs:
+        scan_dir = _MODELS_DIR / subdir
+        if not scan_dir.is_dir():
+            continue
+        for path in scan_dir.rglob(pattern):
+            _append_model_path(found, task_key, path)
+
+
 def _find_models_in_registry() -> dict[str, list[str]]:
     """Scan the model registry for available models by task family."""
     registry_path = _MODELS_DIR / "model_registry.json"
     found: dict[str, list[str]] = {"obb": [], "detect": [], "pose": [], "classify": []}
 
-    if registry_path.exists():
-        try:
-            registry = json.loads(registry_path.read_text())
-            for rel_path, meta in registry.items():
-                full_path = str((_MODELS_DIR / rel_path).resolve())
-                if not Path(full_path).exists():
-                    continue
-                family = str(meta.get("task_family", "")).strip().lower()
-                if family == "obb":
-                    found["obb"].append(full_path)
-                elif family == "detect":
-                    # Regular YOLO detection models (first-stage in sequential pipeline)
-                    found["detect"].append(full_path)
-                elif family == "classify":
-                    found["classify"].append(full_path)
-        except Exception as exc:
-            logger.warning("Failed to parse model_registry.json: %s", exc)
-
-    # Scan filesystem for .pt files not in the registry
-    for subdir, task_key in [
-        ("obb", "obb"),
-        ("detection", "detect"),
-        ("pose/YOLO", "pose"),
-    ]:
-        scan_dir = _MODELS_DIR / subdir
-        if scan_dir.is_dir():
-            for p in scan_dir.rglob("*.pt"):
-                full = str(p.resolve())
-                if full not in found[task_key]:
-                    found[task_key].append(full)
-
-    # Scan for classification models (.pth and .pt)
-    cls_dir = _MODELS_DIR / "classification"
-    if cls_dir.is_dir():
-        for ext in ("*.pth", "*.pt"):
-            for p in cls_dir.rglob(ext):
-                full = str(p.resolve())
-                if full not in found["classify"]:
-                    found["classify"].append(full)
-
+    _load_registry_models(registry_path, found)
+    _scan_registered_model_dirs(found)
     return found
 
 
@@ -1060,317 +1068,394 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def _discover_models(args, registry: dict) -> dict:
+    """Discover models for each task based on CLI args and the model registry.
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    Returns a dict mapping task name to list of model paths.
+    """
+    tasks = {
+        "obb": ("skip_obb", "obb_model"),
+        "detect": ("skip_detect", "detect_model"),
+        "pose": ("skip_pose", "pose_model"),
+        "classify": ("skip_classify", "classify_model"),
+    }
+    result: dict[str, list[str]] = {}
+    for task, (skip_flag, model_flag) in tasks.items():
+        if getattr(args, skip_flag):
+            result[task] = []
+            continue
+        explicit = getattr(args, model_flag)
+        if explicit:
+            result[task] = [explicit]
+        else:
+            result[task] = registry.get(task, [])
+        if not result[task]:
+            logger.info("No %s models found — skipping %s benchmarks.", task, task)
+    return result
+
+
+def _run_compile_benchmarks(
+    args,
+    models: dict,
+    runtimes: list,
+    frame_size: tuple,
+    cropped_frame_size: tuple,
+) -> None:
+    """Run compile-time benchmarks and export results."""
+    compile_results: list[CompileBenchmarkResult] = []
+    force_rebuild = not args.keep_existing_artifacts
+    compile_runtimes = {"tensorrt", "onnx_cpu", "onnx_cuda", "onnx_rocm"}
+
+    _run_obb_compile_benchmarks(
+        args,
+        models.get("obb", []),
+        runtimes,
+        frame_size,
+        cropped_frame_size,
+        force_rebuild,
+        compile_runtimes,
+        compile_results,
+    )
+    _run_detect_compile_benchmarks(
+        args,
+        models.get("detect", []),
+        runtimes,
+        frame_size,
+        force_rebuild,
+        compile_runtimes,
+        compile_results,
+    )
+    _run_pose_compile_benchmarks(
+        args,
+        models.get("pose", []),
+        runtimes,
+        force_rebuild,
+        compile_runtimes,
+        compile_results,
     )
 
-    _print_device_info()
+    if models.get("classify"):
+        logger.info(
+            "Classification compile benchmark is not implemented; skipping classification models."
+        )
 
-    # ----- Discover models -----
-    registry = _find_models_in_registry()
+    _print_compile_overall_summary(compile_results)
 
-    obb_models: list[str] = []
-    if not args.skip_obb:
-        if args.obb_model:
-            obb_models = [args.obb_model]
-        else:
-            obb_models = registry.get("obb", [])
-        if not obb_models:
-            logger.info("No OBB models found — skipping OBB benchmarks.")
+    if args.output_json:
+        _save_compile_json(compile_results, args.output_json)
+    if args.output_csv:
+        _save_compile_csv(compile_results, args.output_csv)
 
-    detect_models: list[str] = []
-    if not args.skip_detect:
-        if args.detect_model:
-            detect_models = [args.detect_model]
-        else:
-            detect_models = registry.get("detect", [])
-        if not detect_models:
-            logger.info("No detection models found — skipping detection benchmarks.")
 
-    pose_models: list[str] = []
-    if not args.skip_pose:
-        if args.pose_model:
-            pose_models = [args.pose_model]
-        else:
-            pose_models = registry.get("pose", [])
-        if not pose_models:
-            logger.info("No pose models found — skipping pose benchmarks.")
+def _compile_runtimes_for_pipeline(
+    runtimes: list,
+    pipeline: str,
+    compile_runtimes: set[str],
+) -> list:
+    return [
+        runtime
+        for runtime in runtimes
+        if runtime in supported_runtimes_for_pipeline(pipeline)
+        and runtime in compile_runtimes
+    ]
 
-    classify_models: list[str] = []
-    if not args.skip_classify:
-        if args.classify_model:
-            classify_models = [args.classify_model]
-        else:
-            classify_models = registry.get("classify", [])
-        if not classify_models:
-            logger.info(
-                "No classification models found — skipping classify benchmarks."
-            )
 
-    # ----- Determine runtimes -----
-    if args.runtimes:
-        runtimes = [_normalize_runtime(r) for r in args.runtimes]
-    else:
-        runtimes = allowed_runtimes_for_pipelines([])
-
-    # ----- Run benchmarks -----
-    frame_size = tuple(args.frame_size)
-    cropped_frame_size = (args.crop_size, args.crop_size)
-
-    if args.compile_benchmark:
-        compile_results: list[CompileBenchmarkResult] = []
-        force_rebuild = not args.keep_existing_artifacts
-        compile_runtimes = {"tensorrt", "onnx_cpu", "onnx_cuda", "onnx_rocm"}
-
-        if obb_models:
-            start_idx = len(compile_results)
-            obb_runtimes = [
-                r
-                for r in runtimes
-                if r in supported_runtimes_for_pipeline("yolo_obb_detection")
-                and r in compile_runtimes
-            ]
-            print(f"\n{'═' * 60}")
-            print("  OBB Detection Compile Benchmarks")
-            print(
-                f"  Cache policy: {'cold rebuild' if force_rebuild else 'reuse existing artifacts'}"
-            )
-            print(f"{'═' * 60}")
-            _print_compile_header()
-            for model in obb_models:
-                is_crop = _is_cropped_model(model)
-                fsize = cropped_frame_size if is_crop else frame_size
-                for rt in obb_runtimes:
-                    for bs in args.batch_sizes:
-                        r = bench_obb_compile(
-                            model,
-                            rt,
-                            bs,
-                            fsize,
-                            imgsz=max(fsize),
-                            force_rebuild=force_rebuild,
-                            trt_workspace_gb=args.tensorrt_workspace_gb,
-                            trt_build_batch_size=args.tensorrt_build_batch_size,
-                        )
-                        compile_results.append(r)
-                        _print_compile_result(r)
-            group = compile_results[start_idx:]
-            _print_footer(len(group), sum(1 for r in group if r.success))
-
-        if detect_models:
-            det_runtimes = [
-                r
-                for r in runtimes
-                if r in supported_runtimes_for_pipeline("yolo_obb_detection")
-                and r in compile_runtimes
-            ]
-            print(f"\n{'═' * 60}")
-            print("  Detection Model Compile Benchmarks")
-            print(f"{'═' * 60}")
-            _print_compile_header()
-            start_idx = len(compile_results)
-            for model in detect_models:
-                for rt in det_runtimes:
-                    for bs in args.batch_sizes:
-                        r = bench_obb_compile(
-                            model,
-                            rt,
-                            bs,
-                            frame_size,
-                            imgsz=max(frame_size),
-                            model_type="detect",
-                            force_rebuild=force_rebuild,
-                            trt_workspace_gb=args.tensorrt_workspace_gb,
-                            trt_build_batch_size=args.tensorrt_build_batch_size,
-                        )
-                        compile_results.append(r)
-                        _print_compile_result(r)
-            group = compile_results[start_idx:]
-            _print_footer(len(group), sum(1 for r in group if r.success))
-
-        if pose_models:
-            pose_runtimes = [
-                r
-                for r in runtimes
-                if r in supported_runtimes_for_pipeline("yolo_pose")
-                and r in compile_runtimes
-            ]
-            print(f"\n{'═' * 60}")
-            print("  Pose Compile Benchmarks")
-            print(f"{'═' * 60}")
-            _print_compile_header()
-            start_idx = len(compile_results)
-            for model in pose_models:
-                for rt in pose_runtimes:
-                    for bs in args.batch_sizes:
-                        r = bench_pose_compile(
-                            model,
-                            rt,
-                            bs,
-                            force_rebuild=force_rebuild,
-                        )
-                        compile_results.append(r)
-                        _print_compile_result(r)
-            group = compile_results[start_idx:]
-            _print_footer(len(group), sum(1 for r in group if r.success))
-
-        if classify_models:
-            logger.info(
-                "Classification compile benchmark is not implemented; skipping classification models."
-            )
-
-        n_total = len(compile_results)
-        n_ok = sum(1 for r in compile_results if r.success)
-        n_fail = n_total - n_ok
-        print(f"\n{'═' * 60}")
-        print(f"  Overall compile results: {n_ok}/{n_total} passed, {n_fail} failed")
-        print(f"{'═' * 60}\n")
-
-        if args.output_json:
-            _save_compile_json(compile_results, args.output_json)
-        if args.output_csv:
-            _save_compile_csv(compile_results, args.output_csv)
+def _run_obb_compile_benchmarks(
+    args,
+    obb_models: list[str],
+    runtimes: list,
+    frame_size: tuple,
+    cropped_frame_size: tuple,
+    force_rebuild: bool,
+    compile_runtimes: set[str],
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    if not obb_models:
         return
 
-    all_results: list[BenchmarkResult] = []
+    obb_runtimes = _compile_runtimes_for_pipeline(
+        runtimes,
+        "yolo_obb_detection",
+        compile_runtimes,
+    )
+    start_idx = len(compile_results)
+    print(f"\n{'═' * 60}")
+    print("  OBB Detection Compile Benchmarks")
+    print(
+        f"  Cache policy: {'cold rebuild' if force_rebuild else 'reuse existing artifacts'}"
+    )
+    print(f"{'═' * 60}")
+    _print_compile_header()
+    for model in obb_models:
+        fsize = cropped_frame_size if _is_cropped_model(model) else frame_size
+        for rt in obb_runtimes:
+            for bs in args.batch_sizes:
+                result = bench_obb_compile(
+                    model,
+                    rt,
+                    bs,
+                    fsize,
+                    imgsz=max(fsize),
+                    force_rebuild=force_rebuild,
+                    trt_workspace_gb=args.tensorrt_workspace_gb,
+                    trt_build_batch_size=args.tensorrt_build_batch_size,
+                )
+                compile_results.append(result)
+                _print_compile_result(result)
+    group = compile_results[start_idx:]
+    _print_footer(len(group), sum(1 for r in group if r.success))
 
-    # OBB Detection
-    if obb_models:
-        obb_runtimes = [
-            r
-            for r in runtimes
-            if r in supported_runtimes_for_pipeline("yolo_obb_detection")
-        ]
-        full_models = [m for m in obb_models if not _is_cropped_model(m)]
-        crop_models = [m for m in obb_models if _is_cropped_model(m)]
-        print(f"\n{'═' * 60}")
-        print("  OBB Detection Benchmarks")
-        print(
-            f"  Models: {len(obb_models)} ({len(full_models)} full @ {frame_size[0]}x{frame_size[1]}, "
-            f"{len(crop_models)} cropped @ {args.crop_size}x{args.crop_size})"
-        )
-        print(f"  Runtimes: {len(obb_runtimes)} │ Batch sizes: {args.batch_sizes}")
-        print(f"{'═' * 60}")
-        _print_header()
-        for model in obb_models:
-            is_crop = _is_cropped_model(model)
-            fsize = cropped_frame_size if is_crop else frame_size
-            label_tag = "[cropped]" if is_crop else "[full]"
-            logger.info("Benchmarking OBB model %s: %s", label_tag, Path(model).name)
-            for rt in obb_runtimes:
-                for bs in args.batch_sizes:
-                    r = bench_obb(
-                        model,
-                        rt,
-                        args.warmup,
-                        args.iterations,
-                        bs,
-                        fsize,
-                        imgsz=max(fsize),
-                        trt_workspace_gb=args.tensorrt_workspace_gb,
-                        trt_build_batch_size=args.tensorrt_build_batch_size,
-                    )
-                    all_results.append(r)
-                    _print_result(r)
-        _print_footer(
-            sum(1 for r in all_results if r.model_type == "obb"),
-            sum(1 for r in all_results if r.model_type == "obb" and r.success),
-        )
 
-    # Detection (first-stage detect models)
-    if detect_models:
-        det_runtimes = [
-            r
-            for r in runtimes
-            if r in supported_runtimes_for_pipeline("yolo_obb_detection")
-        ]
-        print(f"\n{'═' * 60}")
-        print("  Detection Model Benchmarks  (task=detect, full-frame)")
-        print(f"  Models: {len(detect_models)} @ {frame_size[0]}x{frame_size[1]}")
-        print(f"  Runtimes: {len(det_runtimes)} │ Batch sizes: {args.batch_sizes}")
-        print(f"{'═' * 60}")
-        _print_header()
-        for model in detect_models:
-            logger.info("Benchmarking detect model: %s", Path(model).name)
-            for rt in det_runtimes:
-                for bs in args.batch_sizes:
-                    r = bench_obb(
-                        model,
-                        rt,
-                        args.warmup,
-                        args.iterations,
-                        bs,
-                        frame_size,
-                        imgsz=max(frame_size),
-                        model_type="detect",
-                        trt_workspace_gb=args.tensorrt_workspace_gb,
-                        trt_build_batch_size=args.tensorrt_build_batch_size,
-                    )
-                    all_results.append(r)
-                    _print_result(r)
-        _print_footer(
-            sum(1 for r in all_results if r.model_type == "detect"),
-            sum(1 for r in all_results if r.model_type == "detect" and r.success),
-        )
+def _run_detect_compile_benchmarks(
+    args,
+    detect_models: list[str],
+    runtimes: list,
+    frame_size: tuple,
+    force_rebuild: bool,
+    compile_runtimes: set[str],
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    if not detect_models:
+        return
 
-    # Pose Estimation
-    if pose_models:
-        pose_runtimes = [
-            r for r in runtimes if r in supported_runtimes_for_pipeline("yolo_pose")
-        ]
-        print(f"\n{'═' * 60}")
-        print("  Pose Estimation Benchmarks")
-        print(
-            f"  Models: {len(pose_models)} │ Runtimes: {len(pose_runtimes)} │ Batch sizes: {args.batch_sizes}"
-        )
-        print(f"{'═' * 60}")
-        _print_header()
-        for model in pose_models:
-            logger.info("Benchmarking pose model: %s", Path(model).name)
-            for rt in pose_runtimes:
-                for bs in args.batch_sizes:
-                    r = bench_pose(
-                        model, rt, args.warmup, args.iterations, bs, args.crop_size
-                    )
-                    all_results.append(r)
-                    _print_result(r)
-        _print_footer(
-            sum(1 for r in all_results if r.model_type == "pose"),
-            sum(1 for r in all_results if r.model_type == "pose" and r.success),
-        )
+    det_runtimes = _compile_runtimes_for_pipeline(
+        runtimes,
+        "yolo_obb_detection",
+        compile_runtimes,
+    )
+    start_idx = len(compile_results)
+    print(f"\n{'═' * 60}")
+    print("  Detection Model Compile Benchmarks")
+    print(f"{'═' * 60}")
+    _print_compile_header()
+    for model in detect_models:
+        for rt in det_runtimes:
+            for bs in args.batch_sizes:
+                result = bench_obb_compile(
+                    model,
+                    rt,
+                    bs,
+                    frame_size,
+                    imgsz=max(frame_size),
+                    model_type="detect",
+                    force_rebuild=force_rebuild,
+                    trt_workspace_gb=args.tensorrt_workspace_gb,
+                    trt_build_batch_size=args.tensorrt_build_batch_size,
+                )
+                compile_results.append(result)
+                _print_compile_result(result)
+    group = compile_results[start_idx:]
+    _print_footer(len(group), sum(1 for r in group if r.success))
 
-    # Classification
-    if classify_models:
-        cls_runtimes = [
-            r for r in runtimes if r in supported_runtimes_for_pipeline("tiny_classify")
-        ]
-        print(f"\n{'═' * 60}")
-        print("  Classification Benchmarks")
-        print(
-            f"  Models: {len(classify_models)} │ Runtimes: {len(cls_runtimes)} │ Batch sizes: {args.batch_sizes}"
-        )
-        print(f"{'═' * 60}")
-        _print_header()
-        for model in classify_models:
-            logger.info("Benchmarking classification model: %s", Path(model).name)
-            for rt in cls_runtimes:
-                for bs in args.batch_sizes:
-                    r = bench_classify(
-                        model, rt, args.warmup, args.iterations, bs, args.crop_size
-                    )
-                    all_results.append(r)
-                    _print_result(r)
-        _print_footer(
-            sum(1 for r in all_results if r.model_type == "classify"),
-            sum(1 for r in all_results if r.model_type == "classify" and r.success),
-        )
 
-    # ----- Summary -----
-    n_total = len(all_results)  # already includes obb + detect + pose + classify
+def _run_pose_compile_benchmarks(
+    args,
+    pose_models: list[str],
+    runtimes: list,
+    force_rebuild: bool,
+    compile_runtimes: set[str],
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    if not pose_models:
+        return
+
+    pose_runtimes = _compile_runtimes_for_pipeline(
+        runtimes,
+        "yolo_pose",
+        compile_runtimes,
+    )
+    start_idx = len(compile_results)
+    print(f"\n{'═' * 60}")
+    print("  Pose Compile Benchmarks")
+    print(f"{'═' * 60}")
+    _print_compile_header()
+    for model in pose_models:
+        for rt in pose_runtimes:
+            for bs in args.batch_sizes:
+                result = bench_pose_compile(
+                    model,
+                    rt,
+                    bs,
+                    force_rebuild=force_rebuild,
+                )
+                compile_results.append(result)
+                _print_compile_result(result)
+    group = compile_results[start_idx:]
+    _print_footer(len(group), sum(1 for r in group if r.success))
+
+
+def _print_compile_overall_summary(
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    n_total = len(compile_results)
+    n_ok = sum(1 for r in compile_results if r.success)
+    n_fail = n_total - n_ok
+    print(f"\n{'═' * 60}")
+    print(f"  Overall compile results: {n_ok}/{n_total} passed, {n_fail} failed")
+    print(f"{'═' * 60}\n")
+
+
+def _run_obb_benchmarks(
+    args,
+    obb_models: list,
+    runtimes: list,
+    frame_size: tuple,
+    cropped_frame_size: tuple,
+    all_results: list,
+) -> None:
+    """Run OBB detection inference benchmarks."""
+    obb_runtimes = [
+        r
+        for r in runtimes
+        if r in supported_runtimes_for_pipeline("yolo_obb_detection")
+    ]
+    full_models = [m for m in obb_models if not _is_cropped_model(m)]
+    crop_models = [m for m in obb_models if _is_cropped_model(m)]
+    print(f"\n{'═' * 60}")
+    print("  OBB Detection Benchmarks")
+    print(
+        f"  Models: {len(obb_models)} ({len(full_models)} full @ {frame_size[0]}x{frame_size[1]}, "
+        f"{len(crop_models)} cropped @ {args.crop_size}x{args.crop_size})"
+    )
+    print(f"  Runtimes: {len(obb_runtimes)} │ Batch sizes: {args.batch_sizes}")
+    print(f"{'═' * 60}")
+    _print_header()
+    for model in obb_models:
+        is_crop = _is_cropped_model(model)
+        fsize = cropped_frame_size if is_crop else frame_size
+        label_tag = "[cropped]" if is_crop else "[full]"
+        logger.info("Benchmarking OBB model %s: %s", label_tag, Path(model).name)
+        for rt in obb_runtimes:
+            for bs in args.batch_sizes:
+                r = bench_obb(
+                    model,
+                    rt,
+                    args.warmup,
+                    args.iterations,
+                    bs,
+                    fsize,
+                    imgsz=max(fsize),
+                    trt_workspace_gb=args.tensorrt_workspace_gb,
+                    trt_build_batch_size=args.tensorrt_build_batch_size,
+                )
+                all_results.append(r)
+                _print_result(r)
+    _print_footer(
+        sum(1 for r in all_results if r.model_type == "obb"),
+        sum(1 for r in all_results if r.model_type == "obb" and r.success),
+    )
+
+
+def _run_detect_benchmarks(
+    args,
+    detect_models: list,
+    runtimes: list,
+    frame_size: tuple,
+    all_results: list,
+) -> None:
+    """Run first-stage detection inference benchmarks."""
+    det_runtimes = [
+        r
+        for r in runtimes
+        if r in supported_runtimes_for_pipeline("yolo_obb_detection")
+    ]
+    print(f"\n{'═' * 60}")
+    print("  Detection Model Benchmarks  (task=detect, full-frame)")
+    print(f"  Models: {len(detect_models)} @ {frame_size[0]}x{frame_size[1]}")
+    print(f"  Runtimes: {len(det_runtimes)} │ Batch sizes: {args.batch_sizes}")
+    print(f"{'═' * 60}")
+    _print_header()
+    for model in detect_models:
+        logger.info("Benchmarking detect model: %s", Path(model).name)
+        for rt in det_runtimes:
+            for bs in args.batch_sizes:
+                r = bench_obb(
+                    model,
+                    rt,
+                    args.warmup,
+                    args.iterations,
+                    bs,
+                    frame_size,
+                    imgsz=max(frame_size),
+                    model_type="detect",
+                    trt_workspace_gb=args.tensorrt_workspace_gb,
+                    trt_build_batch_size=args.tensorrt_build_batch_size,
+                )
+                all_results.append(r)
+                _print_result(r)
+    _print_footer(
+        sum(1 for r in all_results if r.model_type == "detect"),
+        sum(1 for r in all_results if r.model_type == "detect" and r.success),
+    )
+
+
+def _run_pose_benchmarks(
+    args,
+    pose_models: list,
+    runtimes: list,
+    all_results: list,
+) -> None:
+    """Run pose estimation inference benchmarks."""
+    pose_runtimes = [
+        r for r in runtimes if r in supported_runtimes_for_pipeline("yolo_pose")
+    ]
+    print(f"\n{'═' * 60}")
+    print("  Pose Estimation Benchmarks")
+    print(
+        f"  Models: {len(pose_models)} │ Runtimes: {len(pose_runtimes)} │ Batch sizes: {args.batch_sizes}"
+    )
+    print(f"{'═' * 60}")
+    _print_header()
+    for model in pose_models:
+        logger.info("Benchmarking pose model: %s", Path(model).name)
+        for rt in pose_runtimes:
+            for bs in args.batch_sizes:
+                r = bench_pose(
+                    model, rt, args.warmup, args.iterations, bs, args.crop_size
+                )
+                all_results.append(r)
+                _print_result(r)
+    _print_footer(
+        sum(1 for r in all_results if r.model_type == "pose"),
+        sum(1 for r in all_results if r.model_type == "pose" and r.success),
+    )
+
+
+def _run_classify_benchmarks(
+    args,
+    classify_models: list,
+    runtimes: list,
+    all_results: list,
+) -> None:
+    """Run classification inference benchmarks."""
+    cls_runtimes = [
+        r for r in runtimes if r in supported_runtimes_for_pipeline("tiny_classify")
+    ]
+    print(f"\n{'═' * 60}")
+    print("  Classification Benchmarks")
+    print(
+        f"  Models: {len(classify_models)} │ Runtimes: {len(cls_runtimes)} │ Batch sizes: {args.batch_sizes}"
+    )
+    print(f"{'═' * 60}")
+    _print_header()
+    for model in classify_models:
+        logger.info("Benchmarking classification model: %s", Path(model).name)
+        for rt in cls_runtimes:
+            for bs in args.batch_sizes:
+                r = bench_classify(
+                    model, rt, args.warmup, args.iterations, bs, args.crop_size
+                )
+                all_results.append(r)
+                _print_result(r)
+    _print_footer(
+        sum(1 for r in all_results if r.model_type == "classify"),
+        sum(1 for r in all_results if r.model_type == "classify" and r.success),
+    )
+
+
+def _print_overall_summary(all_results: list) -> None:
+    """Print overall benchmark summary and top-5 fastest configs."""
+    n_total = len(all_results)
     n_ok = sum(1 for r in all_results if r.success)
     n_fail = n_total - n_ok
 
@@ -1391,10 +1476,54 @@ def main() -> None:
             )
         print()
 
-    # ----- Clean summary reprint (no log noise) -----
     _print_results_summary(all_results)
 
-    # ----- Export -----
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    )
+
+    _print_device_info()
+
+    registry = _find_models_in_registry()
+    models = _discover_models(args, registry)
+
+    if args.runtimes:
+        runtimes = [_normalize_runtime(r) for r in args.runtimes]
+    else:
+        runtimes = allowed_runtimes_for_pipelines([])
+
+    frame_size = tuple(args.frame_size)
+    cropped_frame_size = (args.crop_size, args.crop_size)
+
+    if args.compile_benchmark:
+        _run_compile_benchmarks(args, models, runtimes, frame_size, cropped_frame_size)
+        return
+
+    all_results: list[BenchmarkResult] = []
+
+    if models["obb"]:
+        _run_obb_benchmarks(
+            args, models["obb"], runtimes, frame_size, cropped_frame_size, all_results
+        )
+
+    if models["detect"]:
+        _run_detect_benchmarks(
+            args, models["detect"], runtimes, frame_size, all_results
+        )
+
+    if models["pose"]:
+        _run_pose_benchmarks(args, models["pose"], runtimes, all_results)
+
+    if models["classify"]:
+        _run_classify_benchmarks(args, models["classify"], runtimes, all_results)
+
+    _print_overall_summary(all_results)
+
     if args.output_json:
         _save_json(all_results, args.output_json)
     if args.output_csv:

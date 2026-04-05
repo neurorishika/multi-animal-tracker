@@ -136,11 +136,11 @@ class CNNIdentityBackend:
     def __init__(
         self,
         config: CNNIdentityConfig,
-        model_path: str,
+        model_path: str | None = None,
         compute_runtime: str = "cpu",
     ) -> None:
         self._config = config
-        self._model_path = str(model_path)
+        self._model_path = str(model_path or config.model_path or "")
         self._compute_runtime = str(compute_runtime or "cpu")
         self._model = None
         self._class_names: list[str] = []

@@ -255,6 +255,48 @@ class TrackingWorker(QThread):
             track_idx, measured_theta, pose_directed, orientation_last, fallback_theta
         )
 
+    @staticmethod
+    def _normalize_theta(theta):
+        """Compatibility wrapper for legacy tests and call sites."""
+        from hydra_suite.core.identity import geometry as _geom
+
+        normalize = getattr(_geom, "normalize_theta", None)
+        if normalize is None:
+            return float(theta) % (2 * math.pi)
+        return normalize(theta)
+
+    @staticmethod
+    def _circular_abs_diff_rad(a, b):
+        """Compatibility wrapper for legacy tests and call sites."""
+        from hydra_suite.core.identity import geometry as _geom
+
+        diff = getattr(_geom, "circular_abs_diff_rad", None)
+        if diff is not None:
+            return diff(a, b)
+        delta = (float(a) - float(b) + math.pi) % (2 * math.pi) - math.pi
+        return abs(delta)
+
+    @staticmethod
+    def _collapse_obb_axis_theta(theta_axis, reference_theta):
+        """Compatibility wrapper for legacy tests and call sites."""
+        from hydra_suite.core.identity import geometry as _geom
+
+        collapse = getattr(_geom, "collapse_obb_axis_theta", None)
+        if collapse is not None:
+            return collapse(theta_axis, reference_theta)
+
+        theta0 = TrackingWorker._normalize_theta(theta_axis)
+        theta1 = TrackingWorker._normalize_theta(theta0 + math.pi)
+        if reference_theta is None:
+            return theta0
+        try:
+            ref = TrackingWorker._normalize_theta(float(reference_theta))
+        except Exception:
+            return theta0
+        d0 = TrackingWorker._circular_abs_diff_rad(theta0, ref)
+        d1 = TrackingWorker._circular_abs_diff_rad(theta1, ref)
+        return theta0 if d0 <= d1 else theta1
+
     def _build_cnn_identity_cache_path(
         self, label: str, classify_id: str, start_frame: int, end_frame: int
     ):

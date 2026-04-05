@@ -98,6 +98,50 @@ def build_pose_detection_keypoint_map(
     return out
 
 
+def _weighted_centroid(
+    arr: np.ndarray, indices: List, ignore_set: set, min_valid_conf: float
+) -> Optional[Tuple[float, float]]:
+    """Compute confidence-weighted centroid of keypoints at given indices."""
+    pts = []
+    weights = []
+    for idx in indices:
+        if idx in ignore_set or idx < 0 or idx >= len(arr):
+            continue
+        x, y, conf = arr[idx]
+        if (
+            not np.isfinite(x)
+            or not np.isfinite(y)
+            or not np.isfinite(conf)
+            or float(conf) < float(min_valid_conf)
+        ):
+            continue
+        pts.append((float(x), float(y)))
+        weights.append(max(1e-6, float(conf)))
+    if not pts:
+        return None
+    pts_arr = np.asarray(pts, dtype=np.float64)
+    w_arr = np.asarray(weights, dtype=np.float64)
+    cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+    cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+    return cx, cy
+
+
+def _keypoint_visibility(
+    arr: np.ndarray, ignore_set: set, min_valid_conf: float
+) -> float:
+    """Compute fraction of visible (non-ignored, above-confidence) keypoints."""
+    valid_total = 0
+    visible_total = 0
+    for idx in range(len(arr)):
+        if idx in ignore_set:
+            continue
+        valid_total += 1
+        conf = arr[idx, 2]
+        if np.isfinite(conf) and float(conf) >= float(min_valid_conf):
+            visible_total += 1
+    return float(visible_total) / float(valid_total) if valid_total > 0 else 0.0
+
+
 def compute_pose_geometry_from_keypoints(
     keypoints,
     anterior_indices,
@@ -118,44 +162,10 @@ def compute_pose_geometry_from_keypoints(
         return None
 
     ignore_set = {int(idx) for idx in (ignore_indices or [])}
+    visibility = _keypoint_visibility(arr, ignore_set, min_valid_conf)
 
-    def weighted_centroid(indices):
-        pts = []
-        weights = []
-        for idx in indices:
-            if idx in ignore_set or idx < 0 or idx >= len(arr):
-                continue
-            x, y, conf = arr[idx]
-            if (
-                not np.isfinite(x)
-                or not np.isfinite(y)
-                or not np.isfinite(conf)
-                or float(conf) < float(min_valid_conf)
-            ):
-                continue
-            pts.append((float(x), float(y)))
-            weights.append(max(1e-6, float(conf)))
-        if not pts:
-            return None
-        pts_arr = np.asarray(pts, dtype=np.float64)
-        w_arr = np.asarray(weights, dtype=np.float64)
-        cx = float(np.average(pts_arr[:, 0], weights=w_arr))
-        cy = float(np.average(pts_arr[:, 1], weights=w_arr))
-        return cx, cy
-
-    valid_total = 0
-    visible_total = 0
-    for idx in range(len(arr)):
-        if idx in ignore_set:
-            continue
-        valid_total += 1
-        conf = arr[idx, 2]
-        if np.isfinite(conf) and float(conf) >= float(min_valid_conf):
-            visible_total += 1
-    visibility = float(visible_total) / float(valid_total) if valid_total > 0 else 0.0
-
-    ant = weighted_centroid(anterior_indices)
-    post = weighted_centroid(posterior_indices)
+    ant = _weighted_centroid(arr, anterior_indices, ignore_set, min_valid_conf)
+    post = _weighted_centroid(arr, posterior_indices, ignore_set, min_valid_conf)
     if ant is None or post is None:
         return {
             "heading": None,

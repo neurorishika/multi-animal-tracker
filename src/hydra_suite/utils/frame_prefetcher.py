@@ -7,12 +7,45 @@ reducing I/O wait times and improving overall throughput.
 """
 
 import logging
+import math
 import queue
 import threading
 
 import cv2
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_cap_float(cap, prop_id, default=-1.0):
+    """Read a numeric capture property safely for logging."""
+    try:
+        value = cap.get(prop_id)
+    except Exception:
+        return float(default)
+    try:
+        value = float(value)
+    except Exception:
+        return float(default)
+    return value if math.isfinite(value) else float(default)
+
+
+def _enqueue_with_retry(q, item, stop_event, timeout=0.1):
+    """Put *item* into *q*, retrying until success or *stop_event* is set.
+
+    Returns True if enqueued, False if stopped.
+    """
+    while not stop_event.is_set():
+        try:
+            q.put(item, timeout=timeout)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
+def _enqueue_sentinel(q, stop_event, sentinel=None, timeout=0.1):
+    """Put a sentinel value into *q*, retrying until success or stop."""
+    _enqueue_with_retry(q, sentinel, stop_event, timeout)
 
 
 class FramePrefetcher:
@@ -77,56 +110,53 @@ class FramePrefetcher:
         """Background thread loop that reads frames ahead of time."""
         try:
             while not self.stop_requested.is_set():
-                # Read next frame from video
                 ret, frame = self.cap.read()
                 self._last_read_ok = ret
 
-                # Keep retrying the same frame until it is enqueued. Dropping
-                # already-read frames advances the capture and can terminate the
-                # stream early under slow-consumer workloads.
-                enqueued = False
-                while not self.stop_requested.is_set():
-                    try:
-                        self.frame_queue.put((ret, frame), timeout=0.1)
-                        enqueued = True
-                        break
-                    except queue.Full:
-                        continue
-
-                if not enqueued:
+                if not _enqueue_with_retry(
+                    self.frame_queue, (ret, frame), self.stop_requested
+                ):
                     self._stopped_reason = "stop_requested"
                     break
 
                 if ret:
                     self._frames_read += 1
-
-                # If we've reached end of video, stop prefetching
-                if not ret:
+                else:
                     self._stopped_reason = "eof_or_read_error"
-                    logger.warning(
-                        "Prefetcher bg-thread: cap.read() returned False after "
-                        "%d successful frames. cap.isOpened()=%s, "
-                        "CAP_PROP_POS_FRAMES=%.0f, CAP_PROP_FRAME_COUNT=%.0f",
-                        self._frames_read,
-                        self.cap.isOpened() if self.cap else "N/A",
-                        self.cap.get(1) if self.cap and self.cap.isOpened() else -1,
-                        self.cap.get(7) if self.cap and self.cap.isOpened() else -1,
-                    )
+                    self._log_eof()
                     break
 
             if self._stopped_reason is None and self.stop_requested.is_set():
                 self._stopped_reason = "stop_requested"
 
         except Exception as e:
-            # Store exception to be raised in main thread
             self.exception = e
             self._stopped_reason = f"exception: {e}"
             logger.error("Exception in prefetcher thread: %s", e, exc_info=True)
-            # Put sentinel to unblock main thread
             try:
                 self.frame_queue.put((False, None), block=False)
             except queue.Full:
                 pass
+
+    def _log_eof(self):
+        """Log details when cap.read() returns False."""
+        logger.warning(
+            "Prefetcher bg-thread: cap.read() returned False after "
+            "%d successful frames. cap.isOpened()=%s, "
+            "CAP_PROP_POS_FRAMES=%.0f, CAP_PROP_FRAME_COUNT=%.0f",
+            self._frames_read,
+            self.cap.isOpened() if self.cap else "N/A",
+            (
+                _safe_cap_float(self.cap, 1)
+                if self.cap and self.cap.isOpened()
+                else -1.0
+            ),
+            (
+                _safe_cap_float(self.cap, 7)
+                if self.cap and self.cap.isOpened()
+                else -1.0
+            ),
+        )
 
     def read(self: object) -> object:
         """
@@ -164,7 +194,7 @@ class FramePrefetcher:
                 self._last_read_ok,
                 self.cap.isOpened() if self.cap else "N/A",
                 (
-                    self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+                    _safe_cap_float(self.cap, cv2.CAP_PROP_POS_FRAMES)
                     if self.cap and self.cap.isOpened()
                     else -1
                 ),
@@ -245,20 +275,10 @@ class SparseFramePrefetcher:
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, f)
                 ret, frame = self.cap.read()
                 current_pos = f + 1
-                while not self.stop_requested.is_set():
-                    try:
-                        self.frame_queue.put((f, ret, frame), timeout=0.1)
-                        break
-                    except queue.Full:
-                        continue
-            # sentinel
-            if not self.stop_requested.is_set():
-                while not self.stop_requested.is_set():
-                    try:
-                        self.frame_queue.put(None, timeout=0.1)
-                        break
-                    except queue.Full:
-                        continue
+                _enqueue_with_retry(
+                    self.frame_queue, (f, ret, frame), self.stop_requested
+                )
+            _enqueue_sentinel(self.frame_queue, self.stop_requested)
         except Exception as e:
             self.exception = e
             logger.error("SparseFramePrefetcher error: %s", e, exc_info=True)
@@ -337,7 +357,6 @@ class SequentialScanPrefetcher:
 
     def _scan_loop(self):
         try:
-            # Single seek to the start of the range
             current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
             if current_pos != self.first_frame:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.first_frame)
@@ -349,21 +368,11 @@ class SequentialScanPrefetcher:
                 if not ret:
                     break
                 if f not in self.needed:
-                    continue  # discard non-needed frames (no seek cost)
-                while not self.stop_requested.is_set():
-                    try:
-                        self.frame_queue.put((f, ret, frame), timeout=0.1)
-                        break
-                    except queue.Full:
-                        continue
-            # sentinel
-            if not self.stop_requested.is_set():
-                while not self.stop_requested.is_set():
-                    try:
-                        self.frame_queue.put(None, timeout=0.1)
-                        break
-                    except queue.Full:
-                        continue
+                    continue
+                _enqueue_with_retry(
+                    self.frame_queue, (f, ret, frame), self.stop_requested
+                )
+            _enqueue_sentinel(self.frame_queue, self.stop_requested)
         except Exception as e:
             self.exception = e
             logger.error("SequentialScanPrefetcher error: %s", e, exc_info=True)
@@ -431,15 +440,13 @@ class FramePrefetcherBackward(FramePrefetcher):
         """Background thread loop that reads frames in reverse order."""
         try:
             while not self.stop_requested.is_set() and self.current_frame_idx >= 0:
-                # Seek to current frame
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
                 ret, frame = self.cap.read()
 
-                # Put frame in queue
-                try:
-                    self.frame_queue.put((ret, frame), timeout=0.1)
-                except queue.Full:
-                    continue
+                if not _enqueue_with_retry(
+                    self.frame_queue, (ret, frame), self.stop_requested
+                ):
+                    break
 
                 if not ret:
                     logger.warning(
@@ -447,7 +454,6 @@ class FramePrefetcherBackward(FramePrefetcher):
                         self.current_frame_idx,
                     )
 
-                # Move to previous frame
                 self.current_frame_idx -= 1
 
             # Signal end of video

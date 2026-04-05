@@ -109,6 +109,19 @@ def _parse_obb_label_lines(lbl_path: Path) -> list[tuple[int, np.ndarray]]:
     return out
 
 
+def _copy_remap_label(lbl: Path, lbl_dst: Path, remap_single_class: bool) -> None:
+    """Copy a label file, optionally remapping all class IDs to 0."""
+    if remap_single_class:
+        lines = []
+        for cls_id, poly in _parse_obb_label_lines(lbl):
+            _ = cls_id
+            coords = " ".join(f"{float(v):.6f}" for v in poly.reshape(-1))
+            lines.append(f"0 {coords}")
+        lbl_dst.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    else:
+        shutil.copy2(lbl, lbl_dst)
+
+
 def merge_obb_sources(
     sources: list[SourceDataset],
     output_root: str | Path,
@@ -139,7 +152,6 @@ def merge_obb_sources(
     for src in sources:
         src_name = _safe_name(src.name or Path(src.path).name)
         inspection: DatasetInspection = inspect_obb_or_detect_dataset(src.path)
-        # Use stratified splitting to ensure proportional class representation
         if "all" in inspection.splits:
             split_items = stratified_split_items(
                 list(inspection.splits["all"]), split_tuple, seed=seed
@@ -147,7 +159,6 @@ def merge_obb_sources(
         else:
             split_items = split_items_for_training(inspection, split_tuple, seed=seed)
 
-        # If source already has train/val we keep their order deterministic but shuffled per-source.
         for split in ("train", "val", "test"):
             items = list(split_items.get(split, []))
             rng.shuffle(items)
@@ -166,17 +177,7 @@ def merge_obb_sources(
                 lbl_dst = out_dir / "labels" / split / f"{stem}.txt"
 
                 shutil.copy2(img, img_dst)
-                if remap_single_class:
-                    lines = []
-                    for cls_id, poly in _parse_obb_label_lines(lbl):
-                        _ = cls_id
-                        coords = " ".join(f"{float(v):.6f}" for v in poly.reshape(-1))
-                        lines.append(f"0 {coords}")
-                    lbl_dst.write_text(
-                        "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
-                    )
-                else:
-                    shutil.copy2(lbl, lbl_dst)
+                _copy_remap_label(lbl, lbl_dst, remap_single_class)
 
                 split_counts[split] += 1
                 source_items[src_name] += 1
@@ -224,6 +225,38 @@ def _convert_obb_to_aabb(poly: np.ndarray) -> tuple[float, float, float, float]:
     return cx, cy, w, h
 
 
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+
+def _find_label_for_obb_image(
+    img_path: Path, src_img: Path, src_lbl: Path
+) -> Path | None:
+    """Locate the label file corresponding to an image, or return None."""
+    rel = img_path.relative_to(src_img)
+    lbl_path = (src_lbl / rel).with_suffix(".txt")
+    if lbl_path.exists():
+        return lbl_path
+    lbl_path = src_lbl / f"{img_path.stem}.txt"
+    return lbl_path if lbl_path.exists() else None
+
+
+def _unique_dst_pair(out_dir: Path, split: str, img_path: Path) -> tuple[Path, Path]:
+    """Generate a unique (image, label) destination path pair."""
+    dst_img = out_dir / "images" / split / img_path.name
+    dst_lbl = out_dir / "labels" / split / f"{img_path.stem}.txt"
+    counter = 1
+    while dst_img.exists() or dst_lbl.exists():
+        dst_img = (
+            out_dir
+            / "images"
+            / split
+            / f"{img_path.stem}_{counter}{img_path.suffix.lower()}"
+        )
+        dst_lbl = out_dir / "labels" / split / f"{img_path.stem}_{counter}.txt"
+        counter += 1
+    return dst_img, dst_lbl
+
+
 def derive_detect_dataset_from_obb(
     obb_dataset_dir: str | Path,
     output_root: str | Path,
@@ -248,20 +281,10 @@ def derive_detect_dataset_from_obb(
         if not src_img.exists():
             continue
         for img_path in sorted(src_img.rglob("*")):
-            if img_path.suffix.lower() not in {
-                ".jpg",
-                ".jpeg",
-                ".png",
-                ".bmp",
-                ".tif",
-                ".tiff",
-            }:
+            if img_path.suffix.lower() not in IMAGE_EXTS:
                 continue
-            rel = img_path.relative_to(src_img)
-            lbl_path = (src_lbl / rel).with_suffix(".txt")
-            if not lbl_path.exists():
-                lbl_path = src_lbl / f"{img_path.stem}.txt"
-            if not lbl_path.exists():
+            lbl_path = _find_label_for_obb_image(img_path, src_img, src_lbl)
+            if lbl_path is None:
                 continue
 
             detections = _parse_obb_label_lines(lbl_path)
@@ -273,19 +296,7 @@ def derive_detect_dataset_from_obb(
             if not out_lines:
                 continue
 
-            dst_img = out_dir / "images" / split / img_path.name
-            dst_lbl = out_dir / "labels" / split / f"{img_path.stem}.txt"
-            counter = 1
-            while dst_img.exists() or dst_lbl.exists():
-                dst_img = (
-                    out_dir
-                    / "images"
-                    / split
-                    / f"{img_path.stem}_{counter}{img_path.suffix.lower()}"
-                )
-                dst_lbl = out_dir / "labels" / split / f"{img_path.stem}_{counter}.txt"
-                counter += 1
-
+            dst_img, dst_lbl = _unique_dst_pair(out_dir, split, img_path)
             shutil.copy2(img_path, dst_img)
             dst_lbl.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
             counts[split] += 1
@@ -318,6 +329,103 @@ def _clip_crop(
     return xi1, yi1, xi2, yi2
 
 
+def _extract_crop_for_object(
+    img: np.ndarray,
+    poly_norm: np.ndarray,
+    pad_ratio: float,
+    min_crop_size_px: int,
+    enforce_square: bool,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract a padded crop and re-normalize the polygon into crop space.
+
+    Returns (crop_image, normalized_polygon) or None if the crop is empty.
+    """
+    h, w = img.shape[:2]
+    poly_px = np.zeros((4, 2), dtype=np.float32)
+    poly_px[:, 0] = poly_norm[:, 0] * float(w)
+    poly_px[:, 1] = poly_norm[:, 1] * float(h)
+
+    x1, x2 = float(np.min(poly_px[:, 0])), float(np.max(poly_px[:, 0]))
+    y1, y2 = float(np.min(poly_px[:, 1])), float(np.max(poly_px[:, 1]))
+
+    bw = max(1.0, x2 - x1)
+    bh = max(1.0, y2 - y1)
+    cx, cy = x1 + bw * 0.5, y1 + bh * 0.5
+
+    crop_w = max(float(min_crop_size_px), bw * (1.0 + 2.0 * max(0.0, pad_ratio)))
+    crop_h = max(float(min_crop_size_px), bh * (1.0 + 2.0 * max(0.0, pad_ratio)))
+    if enforce_square:
+        crop_w = crop_h = max(crop_w, crop_h)
+
+    c = _clip_crop(
+        cx - crop_w * 0.5, cy - crop_h * 0.5, cx + crop_w * 0.5, cy + crop_h * 0.5, w, h
+    )
+    if c is None:
+        return None
+    xi1, yi1, xi2, yi2 = c
+    crop = img[yi1:yi2, xi1:xi2]
+    if crop is None or crop.size == 0:
+        return None
+    ch, cw = crop.shape[:2]
+    if ch <= 0 or cw <= 0:
+        return None
+
+    poly_crop = poly_px.copy()
+    poly_crop[:, 0] = np.clip((poly_crop[:, 0] - float(xi1)) / float(cw), 0.0, 1.0)
+    poly_crop[:, 1] = np.clip((poly_crop[:, 1] - float(yi1)) / float(ch), 0.0, 1.0)
+    return crop, poly_crop
+
+
+def _unique_crop_output_paths(
+    out_dir: Path,
+    split: str,
+    stem: str,
+) -> tuple[Path, Path]:
+    """Generate a unique destination pair for one cropped OBB object."""
+    dst_img = out_dir / "images" / split / f"{stem}.jpg"
+    dst_lbl = out_dir / "labels" / split / f"{stem}.txt"
+    counter = 1
+    while dst_img.exists() or dst_lbl.exists():
+        dst_img = out_dir / "images" / split / f"{stem}_{counter}.jpg"
+        dst_lbl = out_dir / "labels" / split / f"{stem}_{counter}.txt"
+        counter += 1
+    return dst_img, dst_lbl
+
+
+def _process_crop_obb_image(
+    img_path: Path,
+    lbl_path: Path,
+    out_dir: Path,
+    split: str,
+    pad_ratio: float,
+    min_crop_size_px: int,
+    enforce_square: bool,
+) -> int:
+    """Create crop-domain OBB samples for one source image."""
+    img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+    if img is None or img.size == 0:
+        return 0
+
+    written = 0
+    detections = _parse_obb_label_lines(lbl_path)
+    for obj_idx, (_cls_id, poly_norm) in enumerate(detections):
+        result = _extract_crop_for_object(
+            img, poly_norm, pad_ratio, min_crop_size_px, enforce_square
+        )
+        if result is None:
+            continue
+
+        crop, poly_crop = result
+        stem = f"{img_path.stem}__obj{obj_idx:03d}"
+        dst_img, dst_lbl = _unique_crop_output_paths(out_dir, split, stem)
+        cv2.imwrite(str(dst_img), crop)
+        coords = " ".join(f"{float(v):.6f}" for v in poly_crop.reshape(-1))
+        dst_lbl.write_text(f"0 {coords}\n", encoding="utf-8")
+        written += 1
+
+    return written
+
+
 def derive_crop_obb_dataset_from_obb(
     obb_dataset_dir: str | Path,
     output_root: str | Path,
@@ -345,93 +453,22 @@ def derive_crop_obb_dataset_from_obb(
         if not src_img.exists():
             continue
         for img_path in sorted(src_img.rglob("*")):
-            if img_path.suffix.lower() not in {
-                ".jpg",
-                ".jpeg",
-                ".png",
-                ".bmp",
-                ".tif",
-                ".tiff",
-            }:
+            if img_path.suffix.lower() not in IMAGE_EXTS:
                 continue
-            rel = img_path.relative_to(src_img)
-            lbl_path = (src_lbl / rel).with_suffix(".txt")
-            if not lbl_path.exists():
-                lbl_path = src_lbl / f"{img_path.stem}.txt"
-            if not lbl_path.exists():
+            lbl_path = _find_label_for_obb_image(img_path, src_img, src_lbl)
+            if lbl_path is None:
                 continue
-
-            img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-            if img is None or img.size == 0:
-                continue
-            h, w = img.shape[:2]
-
-            detections = _parse_obb_label_lines(lbl_path)
-            for obj_idx, (_cls_id, poly_norm) in enumerate(detections):
-                poly_px = np.zeros((4, 2), dtype=np.float32)
-                poly_px[:, 0] = poly_norm[:, 0] * float(w)
-                poly_px[:, 1] = poly_norm[:, 1] * float(h)
-
-                x1 = float(np.min(poly_px[:, 0]))
-                y1 = float(np.min(poly_px[:, 1]))
-                x2 = float(np.max(poly_px[:, 0]))
-                y2 = float(np.max(poly_px[:, 1]))
-
-                bw = max(1.0, x2 - x1)
-                bh = max(1.0, y2 - y1)
-                cx = x1 + bw * 0.5
-                cy = y1 + bh * 0.5
-
-                crop_w = max(
-                    float(min_crop_size_px), bw * (1.0 + 2.0 * max(0.0, pad_ratio))
-                )
-                crop_h = max(
-                    float(min_crop_size_px), bh * (1.0 + 2.0 * max(0.0, pad_ratio))
-                )
-                if enforce_square:
-                    side = max(crop_w, crop_h)
-                    crop_w = side
-                    crop_h = side
-
-                c = _clip_crop(
-                    cx - crop_w * 0.5,
-                    cy - crop_h * 0.5,
-                    cx + crop_w * 0.5,
-                    cy + crop_h * 0.5,
-                    w,
-                    h,
-                )
-                if c is None:
-                    continue
-                xi1, yi1, xi2, yi2 = c
-                crop = img[yi1:yi2, xi1:xi2]
-                if crop is None or crop.size == 0:
-                    continue
-
-                poly_crop = poly_px.copy()
-                poly_crop[:, 0] -= float(xi1)
-                poly_crop[:, 1] -= float(yi1)
-                ch, cw = crop.shape[:2]
-                if ch <= 0 or cw <= 0:
-                    continue
-
-                poly_crop[:, 0] = np.clip(poly_crop[:, 0] / float(cw), 0.0, 1.0)
-                poly_crop[:, 1] = np.clip(poly_crop[:, 1] / float(ch), 0.0, 1.0)
-
-                stem = f"{img_path.stem}__obj{obj_idx:03d}"
-                dst_img = out_dir / "images" / split / f"{stem}.jpg"
-                dst_lbl = out_dir / "labels" / split / f"{stem}.txt"
-                counter = 1
-                while dst_img.exists() or dst_lbl.exists():
-                    dst_img = out_dir / "images" / split / f"{stem}_{counter}.jpg"
-                    dst_lbl = out_dir / "labels" / split / f"{stem}_{counter}.txt"
-                    counter += 1
-
-                cv2.imwrite(str(dst_img), crop)
-                coords = " ".join(f"{float(v):.6f}" for v in poly_crop.reshape(-1))
-                dst_lbl.write_text(f"0 {coords}\n", encoding="utf-8")
-                counts[split] += 1
-                counts["objects"] += 1
+            written = _process_crop_obb_image(
+                img_path,
+                lbl_path,
+                out_dir,
+                split,
+                pad_ratio,
+                min_crop_size_px,
+                enforce_square,
+            )
+            counts[split] += written
+            counts["objects"] += written
 
     include_test = counts["test"] > 0
     _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)

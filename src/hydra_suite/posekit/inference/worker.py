@@ -81,12 +81,10 @@ def _normalize_conf_values(conf: Any) -> np.ndarray:
     return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
 
 
-def _normalize_xy_conf(
-    raw: Any, batch_size: int
+def _extract_xy_conf_from_raw(
+    raw: Any,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    xy_arr: Optional[np.ndarray] = None
-    conf_arr: Optional[np.ndarray] = None
-
+    """Extract raw xy and confidence arrays from various raw output formats."""
     if isinstance(raw, dict):
         xy_arr = _as_array(
             _dict_first_present(
@@ -112,59 +110,84 @@ def _normalize_xy_conf(
                 ),
             )
         )
-    elif isinstance(raw, (tuple, list)) and len(raw) >= 1:
+        return xy_arr, conf_arr
+    if isinstance(raw, (tuple, list)) and len(raw) >= 1:
         xy_arr = _as_array(raw[0])
-        if len(raw) > 1:
-            conf_arr = _as_array(raw[1])
-    else:
-        xy_arr = _as_array(raw)
+        conf_arr = _as_array(raw[1]) if len(raw) > 1 else None
+        return xy_arr, conf_arr
+    return _as_array(raw), None
+
+
+def _reshape_xy(xy_arr: np.ndarray) -> Optional[np.ndarray]:
+    """Reshape xy array to [B, K, 2], returning None on incompatible shapes."""
+    xy_arr = np.asarray(xy_arr)
+    if xy_arr.ndim == 4:
+        xy_arr = xy_arr[:, 0, :, :]
+    elif xy_arr.ndim == 2:
+        xy_arr = xy_arr[None, :, :]
+    elif xy_arr.ndim != 3:
+        return None
+    if xy_arr.shape[-1] < 2:
+        return None
+    return xy_arr[..., :2]
+
+
+def _reshape_conf(conf_arr: np.ndarray) -> Optional[np.ndarray]:
+    """Reshape confidence array to [B, K], returning None on incompatible shapes."""
+    conf_arr = np.asarray(conf_arr)
+    if conf_arr.ndim == 4:
+        return conf_arr[:, 0, :, 0]
+    if conf_arr.ndim == 3:
+        if conf_arr.shape[-1] == 1:
+            return conf_arr[:, :, 0]
+        return conf_arr[:, 0, :]
+    if conf_arr.ndim == 1:
+        return conf_arr[None, :]
+    if conf_arr.ndim == 2:
+        return conf_arr
+    return None
+
+
+def _align_batch_dim(
+    xy_arr: np.ndarray, conf_arr: Optional[np.ndarray], batch_size: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Ensure xy and conf arrays match the expected batch_size."""
+    if xy_arr.shape[0] == batch_size:
+        return xy_arr, conf_arr
+    if xy_arr.shape[0] == 1 and batch_size > 1:
+        xy_arr = np.repeat(xy_arr, batch_size, axis=0)
+        if conf_arr is not None and conf_arr.shape[0] == 1:
+            conf_arr = np.repeat(conf_arr, batch_size, axis=0)
+        return xy_arr, conf_arr
+    if batch_size == 1:
+        xy_arr = xy_arr[:1]
+        if conf_arr is not None:
+            conf_arr = conf_arr[:1]
+        return xy_arr, conf_arr
+    return None, None
+
+
+def _normalize_xy_conf(
+    raw: Any, batch_size: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    xy_arr, conf_arr = _extract_xy_conf_from_raw(raw)
 
     if xy_arr is None:
         return None, None
 
-    xy_arr = np.asarray(xy_arr)
-    if xy_arr.ndim == 4:
-        # Typical: [B, I, K, 2]
-        xy_arr = xy_arr[:, 0, :, :]
-    elif xy_arr.ndim == 2:
-        # Single sample [K, 2]
-        xy_arr = xy_arr[None, :, :]
-    elif xy_arr.ndim != 3:
+    xy_arr = _reshape_xy(xy_arr)
+    if xy_arr is None:
         return None, None
-
-    if xy_arr.shape[-1] < 2:
-        return None, None
-    xy_arr = xy_arr[..., :2]
 
     if conf_arr is not None:
-        conf_arr = np.asarray(conf_arr)
-        if conf_arr.ndim == 4:
-            conf_arr = conf_arr[:, 0, :, 0]
-        elif conf_arr.ndim == 3:
-            if conf_arr.shape[-1] == 1:
-                conf_arr = conf_arr[:, :, 0]
-            else:
-                conf_arr = conf_arr[:, 0, :]
-        elif conf_arr.ndim == 1:
-            conf_arr = conf_arr[None, :]
-        elif conf_arr.ndim != 2:
-            conf_arr = None
+        conf_arr = _reshape_conf(conf_arr)
 
     if conf_arr is not None:
         conf_arr = _normalize_conf_values(conf_arr)
 
-    # Normalize batch dimension.
-    if xy_arr.shape[0] != batch_size:
-        if xy_arr.shape[0] == 1 and batch_size > 1:
-            xy_arr = np.repeat(xy_arr, batch_size, axis=0)
-            if conf_arr is not None and conf_arr.shape[0] == 1:
-                conf_arr = np.repeat(conf_arr, batch_size, axis=0)
-        elif batch_size == 1:
-            xy_arr = xy_arr[:1]
-            if conf_arr is not None:
-                conf_arr = conf_arr[:1]
-        else:
-            return None, None
+    xy_arr, conf_arr = _align_batch_dim(xy_arr, conf_arr, batch_size)
+    if xy_arr is None:
+        return None, None
 
     return xy_arr.astype(np.float32, copy=False), (
         conf_arr.astype(np.float32, copy=False) if conf_arr is not None else None
@@ -374,28 +397,26 @@ def _detect_predictor_input_format(predictor: Any) -> Optional[Dict[str, Any]]:
     return {"is_float": is_float, "layout": layout}
 
 
-def _detect_model_min_batch(predictor: Any) -> Optional[int]:
-    """Detect the minimum required batch from the model session/engine."""
-    session = None
+def _min_batch_from_session(predictor: Any) -> Optional[int]:
+    """Try to read minimum batch size from an ONNX Runtime session on the predictor."""
     for attr in ("session", "_session", "ort_session", "_ort_session", "sess"):
         cand = getattr(predictor, attr, None)
         if cand is not None and hasattr(cand, "get_inputs"):
-            session = cand
-            break
-    if session is not None:
-        try:
-            inputs = session.get_inputs()
-            if inputs:
-                shape = getattr(inputs[0], "shape", [])
-                if shape:
-                    try:
+            try:
+                inputs = cand.get_inputs()
+                if inputs:
+                    shape = getattr(inputs[0], "shape", [])
+                    if shape:
                         b = int(shape[0])
                         if b > 0:
                             return b
-                    except (TypeError, ValueError):
-                        pass
-        except Exception:
-            pass
+            except Exception:
+                pass
+    return None
+
+
+def _min_batch_from_engine(predictor: Any) -> Optional[int]:
+    """Try to read minimum batch size from a TensorRT engine on the predictor."""
     for attr in ("engine", "_engine", "trt_engine"):
         engine = getattr(predictor, attr, None)
         if engine is None:
@@ -415,6 +436,14 @@ def _detect_model_min_batch(predictor: Any) -> Optional[int]:
             except Exception:
                 pass
     return None
+
+
+def _detect_model_min_batch(predictor: Any) -> Optional[int]:
+    """Detect the minimum required batch from the model session/engine."""
+    result = _min_batch_from_session(predictor)
+    if result is not None:
+        return result
+    return _min_batch_from_engine(predictor)
 
 
 def _predict_batch(

@@ -742,10 +742,10 @@ class ClassKitDB:
             "timestamp": timestamp,
         }
         if meta_json:
-            try:
+            from contextlib import suppress
+
+            with suppress(Exception):
                 payload.update(json.loads(meta_json))
-            except Exception:
-                pass
         return payload
 
     # ── Model cache ──────────────────────────────────────────────────────────
@@ -825,6 +825,36 @@ class ClassKitDB:
             return int(c.rowcount)
 
     @staticmethod
+    def _accuracy_columns(field_names: List[str]) -> List[str]:
+        """Return candidate accuracy columns sorted by preference."""
+        cols = [
+            c for c in field_names if ("acc" in c.lower()) or ("accuracy" in c.lower())
+        ]
+        return sorted(
+            cols,
+            key=lambda c: (
+                0 if ("top1" in c.lower() and "metrics" in c.lower()) else 1,
+                c.lower(),
+            ),
+        )
+
+    @staticmethod
+    def _max_float_from_rows(
+        rows: List[Dict[str, Any]], column: str
+    ) -> Optional[float]:
+        """Return the maximum parseable float from one CSV column."""
+        values: List[float] = []
+        for row in rows:
+            raw = row.get(column)
+            if raw is None or str(raw).strip() == "":
+                continue
+            try:
+                values.append(float(raw))
+            except Exception:
+                continue
+        return max(values) if values else None
+
+    @staticmethod
     def _extract_best_acc_from_results_csv(path: Path) -> Optional[float]:
         if not path.exists():
             return None
@@ -832,36 +862,56 @@ class ClassKitDB:
             with open(path, encoding="utf-8", newline="") as f:
                 reader = csv.DictReader(f)
                 fields = list(reader.fieldnames or [])
-                cols = [
-                    c
-                    for c in fields
-                    if ("acc" in c.lower()) or ("accuracy" in c.lower())
-                ]
+                cols = ClassKitDB._accuracy_columns(fields)
                 if not cols:
                     return None
-                cols = sorted(
-                    cols,
-                    key=lambda c: (
-                        0 if ("top1" in c.lower() and "metrics" in c.lower()) else 1,
-                        c.lower(),
-                    ),
-                )
                 rows = list(reader)
                 for col in cols:
-                    values: List[float] = []
-                    for row in rows:
-                        raw = row.get(col)
-                        if raw is None or str(raw).strip() == "":
-                            continue
-                        try:
-                            values.append(float(raw))
-                        except Exception:
-                            continue
-                    if values:
-                        return max(values)
+                    value = ClassKitDB._max_float_from_rows(rows, col)
+                    if value is not None:
+                        return value
                 return None
         except Exception:
             return None
+
+    @staticmethod
+    def _infer_acc_from_tiny_metrics(path: Path) -> Optional[float]:
+        """Read best validation accuracy from Tiny CNN metrics JSON."""
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        direct = data.get("best_val_acc")
+        if direct is not None:
+            return float(direct)
+        history = data.get("history")
+        if not isinstance(history, list):
+            return None
+        vals = [
+            float(item.get("val_acc"))
+            for item in history
+            if isinstance(item, dict) and item.get("val_acc") is not None
+        ]
+        return max(vals) if vals else None
+
+    @classmethod
+    def _infer_acc_from_artifact(cls, artifact: Path) -> Optional[float]:
+        """Infer validation accuracy from metrics artifacts beside a model file."""
+        if not artifact.exists():
+            return None
+        run_dir = (
+            artifact.parent.parent
+            if artifact.parent.name == "weights"
+            else artifact.parent
+        )
+        value = cls._infer_acc_from_tiny_metrics(run_dir / "tiny_metrics.json")
+        if value is not None:
+            return value
+        return cls._extract_best_acc_from_results_csv(run_dir / "results.csv")
 
     @classmethod
     def _infer_best_val_acc_from_artifacts(
@@ -870,43 +920,59 @@ class ClassKitDB:
         inferred_values: List[float] = []
         for src in artifact_paths or []:
             artifact = Path(str(src))
-            if not artifact.exists():
-                continue
-
-            run_dir = (
-                artifact.parent.parent
-                if artifact.parent.name == "weights"
-                else artifact.parent
-            )
-            tiny_metrics = run_dir / "tiny_metrics.json"
-            if tiny_metrics.exists():
-                try:
-                    data = json.loads(tiny_metrics.read_text(encoding="utf-8"))
-                    if isinstance(data, dict):
-                        direct = data.get("best_val_acc")
-                        if direct is not None:
-                            inferred_values.append(float(direct))
-                            continue
-                        history = data.get("history")
-                        if isinstance(history, list):
-                            vals = [
-                                float(item.get("val_acc"))
-                                for item in history
-                                if isinstance(item, dict)
-                                and item.get("val_acc") is not None
-                            ]
-                            if vals:
-                                inferred_values.append(max(vals))
-                                continue
-                except Exception:
-                    pass
-
-            yolo_results = run_dir / "results.csv"
-            csv_val = cls._extract_best_acc_from_results_csv(yolo_results)
-            if csv_val is not None:
-                inferred_values.append(float(csv_val))
+            value = cls._infer_acc_from_artifact(artifact)
+            if value is not None:
+                inferred_values.append(float(value))
 
         return max(inferred_values) if inferred_values else None
+
+    @staticmethod
+    def _deserialize_model_cache_lists(
+        paths_json: str, names_json: Optional[str]
+    ) -> tuple[List[str], List[str]]:
+        """Deserialize artifact/class-name JSON columns safely."""
+        try:
+            artifact_paths = json.loads(paths_json)
+        except Exception:
+            artifact_paths = []
+        try:
+            class_names = json.loads(names_json) if names_json else []
+        except Exception:
+            class_names = []
+        return artifact_paths, class_names
+
+    def _build_model_cache_entry(self, row) -> Optional[Dict[str, Any]]:
+        """Convert one model_cache SQL row into an API entry dict."""
+        id_, mode, paths_json, names_json, _canon, acc, n_cls, ts, meta_json = row
+        artifact_paths, class_names = self._deserialize_model_cache_lists(
+            paths_json, names_json
+        )
+        best_val_acc = float(acc) if acc is not None else None
+        if (best_val_acc is None or best_val_acc <= 0.0) and artifact_paths:
+            inferred = self._infer_best_val_acc_from_artifacts(artifact_paths)
+            if inferred is not None:
+                best_val_acc = float(inferred)
+
+        entry: Dict[str, Any] = {
+            "id": id_,
+            "mode": mode,
+            "artifact_paths": artifact_paths,
+            "class_names": class_names,
+            "best_val_acc": best_val_acc,
+            "num_classes": int(n_cls) if n_cls else 0,
+            "timestamp": ts,
+        }
+        if meta_json:
+            try:
+                meta = json.loads(meta_json)
+                entry["meta"] = meta
+                if isinstance(meta, dict) and str(meta.get("display_name", "")).strip():
+                    entry["display_name"] = str(meta.get("display_name")).strip()
+            except Exception:
+                pass
+        if artifact_paths and Path(artifact_paths[0]).exists():
+            return entry
+        return None
 
     def list_model_caches(self) -> List[Dict[str, Any]]:
         """Return all model cache entries ordered newest-first."""
@@ -922,43 +988,8 @@ class ClassKitDB:
 
         results = []
         for row in rows:
-            id_, mode, paths_json, names_json, canon, acc, n_cls, ts, meta_json = row
-            try:
-                artifact_paths = json.loads(paths_json)
-            except Exception:
-                artifact_paths = []
-            try:
-                class_names = json.loads(names_json) if names_json else []
-            except Exception:
-                class_names = []
-            best_val_acc = float(acc) if acc is not None else None
-            if (best_val_acc is None or best_val_acc <= 0.0) and artifact_paths:
-                inferred = self._infer_best_val_acc_from_artifacts(artifact_paths)
-                if inferred is not None:
-                    best_val_acc = float(inferred)
-
-            entry: Dict[str, Any] = {
-                "id": id_,
-                "mode": mode,
-                "artifact_paths": artifact_paths,
-                "class_names": class_names,
-                "best_val_acc": best_val_acc,
-                "num_classes": int(n_cls) if n_cls else 0,
-                "timestamp": ts,
-            }
-            if meta_json:
-                try:
-                    meta = json.loads(meta_json)
-                    entry["meta"] = meta
-                    if (
-                        isinstance(meta, dict)
-                        and str(meta.get("display_name", "")).strip()
-                    ):
-                        entry["display_name"] = str(meta.get("display_name")).strip()
-                except Exception:
-                    pass
-            # Only include entries where at least the first artifact still exists
-            if artifact_paths and Path(artifact_paths[0]).exists():
+            entry = self._build_model_cache_entry(row)
+            if entry is not None:
                 results.append(entry)
         return results
 

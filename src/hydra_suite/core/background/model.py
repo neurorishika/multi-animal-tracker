@@ -235,6 +235,58 @@ class BackgroundModel:
                 "Using CPU with Numba JIT optimization."
             )
 
+    @staticmethod
+    def _prepare_roi_mask(
+        cap: cv2.VideoCapture, ROI_mask, resize_f: float
+    ) -> Optional[np.ndarray]:
+        """Pre-resize ROI mask to match detection frame dimensions."""
+        if ROI_mask is None:
+            return None
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret, sample_frame = cap.read()
+        if not ret:
+            return None
+        if resize_f < 1.0:
+            sample_frame = cv2.resize(
+                sample_frame,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+        gray_sample = cv2.cvtColor(sample_frame, cv2.COLOR_BGR2GRAY)
+        if resize_f != 1.0:
+            return cv2.resize(
+                ROI_mask,
+                (gray_sample.shape[1], gray_sample.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        return ROI_mask
+
+    @staticmethod
+    def _iqr_mean_intensity(pixels: np.ndarray) -> Optional[float]:
+        """Compute mean intensity within the inter-quartile range."""
+        if len(pixels) <= 100:
+            return None
+        p25, p75 = np.percentile(pixels, [25, 75])
+        mask = (pixels >= p25) & (pixels <= p75)
+        if np.sum(mask) > 0:
+            return float(np.mean(pixels[mask]))
+        return None
+
+    def _fallback_reference_intensity(
+        self, bg_temp: np.ndarray, roi_resized: Optional[np.ndarray]
+    ) -> float:
+        """Compute reference intensity as fallback when no IQR samples exist."""
+        if roi_resized is not None:
+            roi_bg_pixels = bg_temp[roi_resized > 0]
+            return (
+                float(np.mean(roi_bg_pixels))
+                if len(roi_bg_pixels) > 0
+                else float(np.mean(bg_temp))
+            )
+        return float(np.mean(bg_temp))
+
     def prime_background(self, cap: cv2.VideoCapture) -> None:
         """
         Initialize background model using "lightest pixel" method with lighting reference.
@@ -254,31 +306,7 @@ class BackgroundModel:
         bg_temp = None
         intensity_samples = []
 
-        # Pre-resize ROI mask once if needed
-        roi_resized = None
-        if ROI_mask is not None:
-            # Get frame dimensions to determine ROI size
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, sample_frame = cap.read()
-            if ret:
-                if resize_f < 1.0:
-                    sample_frame = cv2.resize(
-                        sample_frame,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-                gray_sample = cv2.cvtColor(sample_frame, cv2.COLOR_BGR2GRAY)
-                roi_resized = (
-                    cv2.resize(
-                        ROI_mask,
-                        (gray_sample.shape[1], gray_sample.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    if resize_f != 1.0
-                    else ROI_mask
-                )
+        roi_resized = self._prepare_roi_mask(cap, ROI_mask, resize_f)
 
         for idx in idxs:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -298,19 +326,12 @@ class BackgroundModel:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray = apply_image_adjustments(gray, br, ct, gm, self.use_gpu)
 
-            if roi_resized is not None:
-                roi_pixels = gray[roi_resized > 0]
-                if len(roi_pixels) > 100:
-                    p25, p75 = np.percentile(roi_pixels, [25, 75])
-                    mask = (roi_pixels >= p25) & (roi_pixels <= p75)
-                    if np.sum(mask) > 0:
-                        intensity_samples.append(np.mean(roi_pixels[mask]))
-            else:
-                frame_flat = gray.flatten()
-                p25, p75 = np.percentile(frame_flat, [25, 75])
-                mask = (frame_flat >= p25) & (frame_flat <= p75)
-                if np.sum(mask) > 0:
-                    intensity_samples.append(np.mean(frame_flat[mask]))
+            pixels = (
+                gray[roi_resized > 0] if roi_resized is not None else gray.flatten()
+            )
+            sample = self._iqr_mean_intensity(pixels)
+            if sample is not None:
+                intensity_samples.append(sample)
 
             if bg_temp is None:
                 bg_temp = gray.astype(np.float32)
@@ -327,19 +348,55 @@ class BackgroundModel:
                 logger.info(
                     f"Reference intensity established: {self.reference_intensity:.1f}"
                 )
-            else:  # Fallback - reuse roi_resized
-                if roi_resized is not None:
-                    roi_bg_pixels = bg_temp[roi_resized > 0]
-                    self.reference_intensity = (
-                        np.mean(roi_bg_pixels)
-                        if len(roi_bg_pixels) > 0
-                        else np.mean(bg_temp)
-                    )
-                else:
-                    self.reference_intensity = np.mean(bg_temp)
+            else:
+                self.reference_intensity = self._fallback_reference_intensity(
+                    bg_temp, roi_resized
+                )
                 logger.info(
                     f"Fallback reference intensity: {self.reference_intensity:.1f}"
                 )
+
+    def _adaptive_update_cpu(self, gray_f32: np.ndarray, learning_rate: float) -> None:
+        """Update adaptive background using the best available CPU backend."""
+        if NUMBA_AVAILABLE:
+            self.adaptive_background = _update_adaptive_background_numba(
+                self.adaptive_background, gray_f32, learning_rate
+            )
+        else:
+            self.adaptive_background = (
+                1 - learning_rate
+            ) * self.adaptive_background + learning_rate * gray_f32
+
+    def _adaptive_update_gpu(self, gray_f32: np.ndarray, learning_rate: float) -> None:
+        """Attempt GPU-accelerated adaptive background update, fall back to CPU."""
+        try:
+            if self.gpu_type == "cuda":
+                with self.gpu_device:
+                    gray_gpu = cp.asarray(gray_f32)
+                    bg_gpu = cp.asarray(self.adaptive_background)
+                    bg_gpu = _update_adaptive_background_gpu(
+                        bg_gpu, gray_gpu, learning_rate
+                    )
+                    self.adaptive_background = cp.asnumpy(bg_gpu)
+            elif self.gpu_type == "mps":
+                gray_torch = torch.from_numpy(gray_f32).to(self.torch_device)
+                bg_torch = torch.from_numpy(self.adaptive_background).to(
+                    self.torch_device
+                )
+                bg_torch = _update_adaptive_background_mps(
+                    bg_torch, gray_torch, learning_rate
+                )
+                self.adaptive_background = bg_torch.cpu().numpy()
+            else:
+                self._adaptive_update_cpu(gray_f32, learning_rate)
+        except Exception as e:
+            if not hasattr(self, "_gpu_fallback_warned"):
+                logger.warning(
+                    f"{self.gpu_type} GPU operation failed, falling back to CPU: {e}"
+                )
+                self._gpu_fallback_warned = True
+            self.use_gpu = False
+            self._adaptive_update_cpu(gray_f32, learning_rate)
 
     def update_and_get_background(
         self,
@@ -366,133 +423,57 @@ class BackgroundModel:
             learning_rate = p.get("BACKGROUND_LEARNING_RATE", 0.001)
             gray_f32 = gray.astype(np.float32)
 
-            if self.use_gpu and self.gpu_type == "cuda":
-                # CUDA GPU-accelerated update (5-15x faster on large frames)
-                try:
-                    with self.gpu_device:
-                        gray_gpu = cp.asarray(gray_f32)
-                        bg_gpu = cp.asarray(self.adaptive_background)
-                        bg_gpu = _update_adaptive_background_gpu(
-                            bg_gpu, gray_gpu, learning_rate
-                        )
-                        self.adaptive_background = cp.asnumpy(bg_gpu)
-                except Exception as e:
-                    # CuPy failed - disable GPU and use fallback
-                    if not hasattr(self, "_gpu_fallback_warned"):
-                        logger.warning(
-                            f"CuPy GPU operation failed, falling back to CPU: {e}"
-                        )
-                        self._gpu_fallback_warned = True
-                    self.use_gpu = False
-                    # Use Numba or numpy fallback
-                    if NUMBA_AVAILABLE:
-                        self.adaptive_background = _update_adaptive_background_numba(
-                            self.adaptive_background, gray_f32, learning_rate
-                        )
-                    else:
-                        self.adaptive_background = (
-                            1 - learning_rate
-                        ) * self.adaptive_background + learning_rate * gray_f32
-            elif self.use_gpu and self.gpu_type == "mps":
-                # MPS GPU-accelerated update (Apple Silicon, ~3-10x faster)
-                try:
-                    gray_torch = torch.from_numpy(gray_f32).to(self.torch_device)
-                    bg_torch = torch.from_numpy(self.adaptive_background).to(
-                        self.torch_device
-                    )
-                    bg_torch = _update_adaptive_background_mps(
-                        bg_torch, gray_torch, learning_rate
-                    )
-                    self.adaptive_background = bg_torch.cpu().numpy()
-                except Exception as e:
-                    if not hasattr(self, "_gpu_fallback_warned"):
-                        logger.warning(
-                            f"MPS GPU operation failed, falling back to CPU: {e}"
-                        )
-                        self._gpu_fallback_warned = True
-                    self.use_gpu = False
-                    # Use Numba or numpy fallback
-                    if NUMBA_AVAILABLE:
-                        self.adaptive_background = _update_adaptive_background_numba(
-                            self.adaptive_background, gray_f32, learning_rate
-                        )
-                    else:
-                        self.adaptive_background = (
-                            1 - learning_rate
-                        ) * self.adaptive_background + learning_rate * gray_f32
-            elif NUMBA_AVAILABLE:
-                # Use Numba-accelerated update (2-5x faster on large frames)
-                self.adaptive_background = _update_adaptive_background_numba(
-                    self.adaptive_background, gray_f32, learning_rate
-                )
+            if self.use_gpu:
+                self._adaptive_update_gpu(gray_f32, learning_rate)
             else:
-                # Fallback to NumPy broadcasting
-                self.adaptive_background = (
-                    1 - learning_rate
-                ) * self.adaptive_background + learning_rate * gray_f32
+                self._adaptive_update_cpu(gray_f32, learning_rate)
 
         if tracking_stabilized:
             return cv2.convertScaleAbs(self.adaptive_background)
         else:
             return cv2.convertScaleAbs(self.lightest_background)
 
-    def generate_foreground_mask(
+    def _foreground_mask_gpu(
         self, gray: np.ndarray, background: np.ndarray
-    ) -> np.ndarray:
-        """Generates the foreground mask from the gray frame and background.
-
-        Uses GPU acceleration if available for significant speedup on large frames.
-        Supports both CUDA (NVIDIA) and MPS (Apple Silicon) GPUs.
-        Falls back to CPU if GPU operations fail (e.g., CuPy compilation errors).
-        """
+    ) -> Optional[np.ndarray]:
+        """Attempt GPU-accelerated foreground mask; return None on failure."""
         p = self.params
-
-        if self.use_gpu and self.gpu_type == "cuda":
-            # CUDA GPU-accelerated foreground mask generation (10-30x faster)
-            try:
+        try:
+            if self.gpu_type == "cuda":
                 with self.gpu_device:
                     gray_gpu = cp.asarray(gray.astype(np.float32))
                     bg_gpu = cp.asarray(background.astype(np.float32))
                     fg_mask_gpu = _generate_foreground_mask_gpu(gray_gpu, bg_gpu, p)
-                    fg_mask = cp.asnumpy(fg_mask_gpu)
-                return fg_mask
-            except Exception as e:
-                # CuPy compilation or runtime error - disable GPU and fall back to CPU
-                if not hasattr(self, "_gpu_fallback_warned"):
-                    logger.warning(
-                        f"CuPy GPU operation failed, falling back to CPU: {e}"
-                    )
-                    logger.info(
-                        "This may be due to CUDA/CuPy version incompatibility. "
-                        "Consider updating CuPy: pip install --upgrade cupy-cuda12x"
-                    )
-                    self._gpu_fallback_warned = True
-                self.use_gpu = False
-                # Fall through to CPU path below
-
-        elif self.use_gpu and self.gpu_type == "mps":
-            # MPS GPU-accelerated foreground mask generation (Apple Silicon, ~5-15x faster)
-            try:
+                    return cp.asnumpy(fg_mask_gpu)
+            elif self.gpu_type == "mps":
                 gray_torch = torch.from_numpy(gray.astype(np.float32)).to(
                     self.torch_device
                 )
                 bg_torch = torch.from_numpy(background.astype(np.float32)).to(
                     self.torch_device
                 )
-                fg_mask = _generate_foreground_mask_mps(
+                return _generate_foreground_mask_mps(
                     gray_torch, bg_torch, p, self.torch_device
                 )
-                return fg_mask
-            except Exception as e:
-                if not hasattr(self, "_gpu_fallback_warned"):
-                    logger.warning(
-                        f"MPS GPU operation failed, falling back to CPU: {e}"
+        except Exception as e:
+            if not hasattr(self, "_gpu_fallback_warned"):
+                logger.warning(
+                    f"{self.gpu_type} GPU operation failed, falling back to CPU: {e}"
+                )
+                if self.gpu_type == "cuda":
+                    logger.info(
+                        "This may be due to CUDA/CuPy version incompatibility. "
+                        "Consider updating CuPy: pip install --upgrade cupy-cuda12x"
                     )
-                    self._gpu_fallback_warned = True
-                self.use_gpu = False
-                # Fall through to CPU path below
+                self._gpu_fallback_warned = True
+            self.use_gpu = False
+        return None
 
-        # CPU fallback
+    def _foreground_mask_cpu(
+        self, gray: np.ndarray, background: np.ndarray
+    ) -> np.ndarray:
+        """Generate foreground mask using CPU (OpenCV)."""
+        p = self.params
         dark_on_light = p.get("DARK_ON_LIGHT_BACKGROUND", True)
 
         if dark_on_light:
@@ -516,3 +497,19 @@ class BackgroundModel:
             fg_mask = cv2.dilate(fg_mask, dil_kernel, iterations=dil_iter)
 
         return fg_mask
+
+    def generate_foreground_mask(
+        self, gray: np.ndarray, background: np.ndarray
+    ) -> np.ndarray:
+        """Generates the foreground mask from the gray frame and background.
+
+        Uses GPU acceleration if available for significant speedup on large frames.
+        Supports both CUDA (NVIDIA) and MPS (Apple Silicon) GPUs.
+        Falls back to CPU if GPU operations fail (e.g., CuPy compilation errors).
+        """
+        if self.use_gpu:
+            result = self._foreground_mask_gpu(gray, background)
+            if result is not None:
+                return result
+
+        return self._foreground_mask_cpu(gray, background)

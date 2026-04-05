@@ -274,36 +274,8 @@ class EventScorer:
 
         return events
 
-    def _score_pair(
-        self,
-        df: pd.DataFrame,
-        track_data: Dict[int, pd.DataFrame],
-        id_a: int,
-        id_b: int,
-        threshold: float,
-    ) -> Optional[SuspicionEvent]:
-        """Score a single pair and return a SuspicionEvent or None."""
-        df_a = track_data[id_a]
-        df_b = track_data[id_b]
-
-        common = np.intersect1d(df_a["FrameID"].values, df_b["FrameID"].values)
-        if len(common) < 3:
-            return None
-
-        a_idx = df_a.set_index("FrameID").loc[common]
-        b_idx = df_b.set_index("FrameID").loc[common]
-
-        dx = a_idx["X"].values - b_idx["X"].values
-        dy = a_idx["Y"].values - b_idx["Y"].values
-        distances = np.sqrt(dx**2 + dy**2)
-
-        min_dist = float(distances.min())
-        if min_dist >= self.approach_distance:
-            return None
-
-        peak_i = int(np.argmin(distances))
-        peak_frame = int(common[peak_i])
-
+    def _collect_signals(self, a_idx, b_idx, df_a, df_b, common, distances, peak_frame):
+        """Collect all signal components for a pair. Returns (signals, cr, pr, hd, pq_term) or None."""
         signals: List[str] = []
 
         cr = self._crossing_signal(a_idx, b_idx, common, distances)
@@ -328,6 +300,43 @@ class EventScorer:
 
         if not signals:
             return None
+        return signals, cr, pr, hd, pq_term
+
+    def _score_pair(
+        self,
+        df: pd.DataFrame,
+        track_data: Dict[int, pd.DataFrame],
+        id_a: int,
+        id_b: int,
+        threshold: float,
+    ) -> Optional[SuspicionEvent]:
+        """Score a single pair and return a SuspicionEvent or None."""
+        df_a = track_data[id_a]
+        df_b = track_data[id_b]
+
+        common = np.intersect1d(df_a["FrameID"].values, df_b["FrameID"].values)
+        if len(common) < 3:
+            return None
+
+        a_idx = df_a.set_index("FrameID").loc[common]
+        b_idx = df_b.set_index("FrameID").loc[common]
+
+        dx = a_idx["X"].values - b_idx["X"].values
+        dy = a_idx["Y"].values - b_idx["Y"].values
+        distances = np.sqrt(dx**2 + dy**2)
+
+        if float(distances.min()) >= self.approach_distance:
+            return None
+
+        peak_i = int(np.argmin(distances))
+        peak_frame = int(common[peak_i])
+
+        result = self._collect_signals(
+            a_idx, b_idx, df_a, df_b, common, distances, peak_frame
+        )
+        if result is None:
+            return None
+        signals, cr, pr, hd, pq_term = result
 
         cx = float((a_idx["X"].values[peak_i] + b_idx["X"].values[peak_i]) / 2)
         cy = float((a_idx["Y"].values[peak_i] + b_idx["Y"].values[peak_i]) / 2)
@@ -440,6 +449,46 @@ class EventScorer:
     # ==================================================================
 
     @staticmethod
+    def _build_cluster(ev_i, pairwise, consumed, i):
+        """Grow a cluster from event *ev_i*, absorbing overlapping events."""
+        cluster = [ev_i]
+        consumed.add(i)
+        tracks_in = set(ev_i.involved_tracks)
+        changed = True
+        while changed:
+            changed = False
+            for j, ev_j in enumerate(pairwise):
+                if j in consumed:
+                    continue
+                if (
+                    ev_j.frame_range[0] <= ev_i.frame_range[1] + _MULTI_WINDOW
+                    and ev_j.frame_range[1] >= ev_i.frame_range[0] - _MULTI_WINDOW
+                    and tracks_in & set(ev_j.involved_tracks)
+                ):
+                    cluster.append(ev_j)
+                    consumed.add(j)
+                    tracks_in.update(ev_j.involved_tracks)
+                    changed = True
+        return cluster, tracks_in
+
+    @staticmethod
+    def _cluster_to_event(cluster, tracks_in):
+        """Create a MULTI_SHUFFLE event from a cluster of pairwise events."""
+        return SuspicionEvent(
+            event_type=EventType.MULTI_SHUFFLE,
+            involved_tracks=sorted(tracks_in),
+            frame_peak=cluster[0].frame_peak,
+            frame_range=(
+                min(e.frame_range[0] for e in cluster),
+                max(e.frame_range[1] for e in cluster),
+            ),
+            score=max(e.score for e in cluster),
+            signals=sorted({s for e in cluster for s in e.signals}),
+            region_label=cluster[0].region_label,
+            region_boundary=any(e.region_boundary for e in cluster),
+        )
+
+    @staticmethod
     def _detect_multi_shuffle(events: List[SuspicionEvent]) -> List[SuspicionEvent]:
         """Promote overlapping swap/flicker events into MULTI_SHUFFLE."""
         pairwise = [
@@ -451,60 +500,17 @@ class EventScorer:
         if len(pairwise) < 2:
             return events
 
-        # Build overlap graph: two events overlap if frame ranges intersect
-        # and they share at least one track
         consumed = set()
-        clusters: List[List[SuspicionEvent]] = []
 
         for i, ev_i in enumerate(pairwise):
             if i in consumed:
                 continue
-            cluster = [ev_i]
-            consumed.add(i)
-            tracks_in = set(ev_i.involved_tracks)
-            changed = True
-            while changed:
-                changed = False
-                for j, ev_j in enumerate(pairwise):
-                    if j in consumed:
-                        continue
-                    # Check temporal overlap
-                    if (
-                        ev_j.frame_range[0] <= ev_i.frame_range[1] + _MULTI_WINDOW
-                        and ev_j.frame_range[1] >= ev_i.frame_range[0] - _MULTI_WINDOW
-                    ):
-                        # Check track overlap
-                        if tracks_in & set(ev_j.involved_tracks):
-                            cluster.append(ev_j)
-                            consumed.add(j)
-                            tracks_in.update(ev_j.involved_tracks)
-                            changed = True
-
+            cluster, tracks_in = EventScorer._build_cluster(ev_i, pairwise, consumed, i)
             if len(cluster) >= 2 and len(tracks_in) >= 3:
-                all_tracks = sorted(tracks_in)
-                all_scores = [e.score for e in cluster]
-                all_signals = sorted({s for e in cluster for s in e.signals})
-                frame_start = min(e.frame_range[0] for e in cluster)
-                frame_end = max(e.frame_range[1] for e in cluster)
-                peak = cluster[0].frame_peak
-
-                clusters.append(cluster)
-                others.append(
-                    SuspicionEvent(
-                        event_type=EventType.MULTI_SHUFFLE,
-                        involved_tracks=all_tracks,
-                        frame_peak=peak,
-                        frame_range=(frame_start, frame_end),
-                        score=max(all_scores),
-                        signals=all_signals,
-                        region_label=cluster[0].region_label,
-                        region_boundary=any(e.region_boundary for e in cluster),
-                    )
-                )
+                others.append(EventScorer._cluster_to_event(cluster, tracks_in))
             else:
                 others.extend(cluster)
 
-        # Add back pairwise events that weren't consumed
         for i, ev in enumerate(pairwise):
             if i not in consumed:
                 others.append(ev)
@@ -515,18 +521,11 @@ class EventScorer:
     # Fragmentation detector
     # ==================================================================
 
-    def _detect_fragmentation(
-        self,
-        df: pd.DataFrame,
-        track_data: Dict[int, pd.DataFrame],
-        threshold: float,
-    ) -> List[SuspicionEvent]:
-        """Find trajectory fragments that are likely the same animal."""
-        events: List[SuspicionEvent] = []
-        tids = sorted(track_data.keys())
-
-        # Compute span for each track: (first_frame, last_frame, last_x, last_y,
-        #                                first_x, first_y, n_active)
+    @staticmethod
+    def _compute_track_spans(
+        tids, track_data
+    ) -> Dict[int, Tuple[int, int, float, float, float, float]]:
+        """Compute span for each track: (first_frame, last_frame, last_x, last_y, first_x, first_y)."""
         spans: Dict[int, Tuple[int, int, float, float, float, float]] = {}
         for tid in tids:
             tdf = track_data[tid]
@@ -543,6 +542,30 @@ class EventScorer:
                 float(first_row["X"]),
                 float(first_row["Y"]),
             )
+        return spans
+
+    @staticmethod
+    def _score_fragment(gap, dist):
+        """Score a candidate fragment connection given gap and distance."""
+        overlap = max(0, -gap)
+        effective_gap = abs(gap)
+        raw_score = (
+            0.7 * (1.0 - dist / _FRAG_MAX_DIST)
+            + 0.2 * (1.0 - effective_gap / _FRAG_MAX_GAP)
+            - 0.1 * (overlap / max(_FRAG_MAX_OVERLAP, 1))
+        )
+        return float(np.clip(raw_score, 0.0, 1.0))
+
+    def _detect_fragmentation(
+        self,
+        df: pd.DataFrame,
+        track_data: Dict[int, pd.DataFrame],
+        threshold: float,
+    ) -> List[SuspicionEvent]:
+        """Find trajectory fragments that are likely the same animal."""
+        events: List[SuspicionEvent] = []
+        tids = sorted(track_data.keys())
+        spans = self._compute_track_spans(tids, track_data)
 
         seen = set()
         for tid_a in tids:
@@ -558,78 +581,88 @@ class EventScorer:
 
                 b_start, b_end, _, _, b_first_x, b_first_y = spans[tid_b]
 
-                # Check if b starts shortly after a ends (a → b fragment)
-                # Allow small overlaps (negative gap) for double-detection
-                gap = b_start - a_end
-                if -_FRAG_MAX_OVERLAP <= gap <= _FRAG_MAX_GAP:
-                    dist = np.sqrt(
-                        (a_last_x - b_first_x) ** 2 + (a_last_y - b_first_y) ** 2
-                    )
-                    if dist < _FRAG_MAX_DIST:
-                        overlap = max(0, -gap)
-                        effective_gap = abs(gap)
-                        raw_score = (
-                            0.7 * (1.0 - dist / _FRAG_MAX_DIST)
-                            + 0.2 * (1.0 - effective_gap / _FRAG_MAX_GAP)
-                            - 0.1 * (overlap / max(_FRAG_MAX_OVERLAP, 1))
-                        )
-                        score_val = float(np.clip(raw_score, 0.0, 1.0))
-                        if score_val >= threshold:
-                            seen.add(pair_key)
-                            events.append(
-                                SuspicionEvent(
-                                    event_type=EventType.FRAGMENTATION,
-                                    involved_tracks=[int(tid_a), int(tid_b)],
-                                    frame_peak=a_end,
-                                    frame_range=(
-                                        max(a_end - 5, a_start),
-                                        min(b_start + 5, b_end),
-                                    ),
-                                    score=score_val,
-                                    signals=["Frag"],
-                                    region_label="open_field",
-                                )
-                            )
+                # Forward direction: a -> b
+                self._check_fragment_direction(
+                    a_end,
+                    b_start,
+                    a_last_x,
+                    a_last_y,
+                    b_first_x,
+                    b_first_y,
+                    tid_a,
+                    tid_b,
+                    a_start,
+                    b_end,
+                    threshold,
+                    seen,
+                    pair_key,
+                    events,
+                )
 
-                # Also check the reverse direction (b → a)
-                gap_rev = a_start - b_end
-                if -_FRAG_MAX_OVERLAP <= gap_rev <= _FRAG_MAX_GAP:
-                    dist_rev = np.sqrt(
-                        (b_first_x - a_last_x) ** 2 + (b_first_y - a_last_y) ** 2
-                    )
-                    # Actually need last of b vs first of a
+                # Reverse direction: b -> a
+                if pair_key not in seen:
                     _, _, b_last_x, b_last_y, _, _ = spans[tid_b]
                     a_first_x, a_first_y = spans[tid_a][4], spans[tid_a][5]
-                    dist_rev = np.sqrt(
-                        (b_last_x - a_first_x) ** 2 + (b_last_y - a_first_y) ** 2
+                    self._check_fragment_direction(
+                        b_end,
+                        a_start,
+                        b_last_x,
+                        b_last_y,
+                        a_first_x,
+                        a_first_y,
+                        tid_b,
+                        tid_a,
+                        b_start,
+                        a_end,
+                        threshold,
+                        seen,
+                        pair_key,
+                        events,
                     )
-                    if dist_rev < _FRAG_MAX_DIST:
-                        overlap_rev = max(0, -gap_rev)
-                        effective_gap_rev = abs(gap_rev)
-                        raw_score = (
-                            0.7 * (1.0 - dist_rev / _FRAG_MAX_DIST)
-                            + 0.2 * (1.0 - effective_gap_rev / _FRAG_MAX_GAP)
-                            - 0.1 * (overlap_rev / max(_FRAG_MAX_OVERLAP, 1))
-                        )
-                        score_val = float(np.clip(raw_score, 0.0, 1.0))
-                        if score_val >= threshold:
-                            seen.add(pair_key)
-                            events.append(
-                                SuspicionEvent(
-                                    event_type=EventType.FRAGMENTATION,
-                                    involved_tracks=[int(tid_b), int(tid_a)],
-                                    frame_peak=b_end,
-                                    frame_range=(
-                                        max(b_end - 5, b_start),
-                                        min(a_start + 5, a_end),
-                                    ),
-                                    score=score_val,
-                                    signals=["Frag"],
-                                    region_label="open_field",
-                                )
-                            )
 
         return events
+
+    def _check_fragment_direction(
+        self,
+        end_frame,
+        start_frame,
+        end_x,
+        end_y,
+        start_x,
+        start_y,
+        tid_src,
+        tid_dst,
+        src_start,
+        dst_end,
+        threshold,
+        seen,
+        pair_key,
+        events,
+    ):
+        """Check one direction of fragment connection and append event if scored."""
+        gap = start_frame - end_frame
+        if not (-_FRAG_MAX_OVERLAP <= gap <= _FRAG_MAX_GAP):
+            return
+        dist = np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2)
+        if dist >= _FRAG_MAX_DIST:
+            return
+        score_val = self._score_fragment(gap, dist)
+        if score_val >= threshold:
+            seen.add(pair_key)
+            events.append(
+                SuspicionEvent(
+                    event_type=EventType.FRAGMENTATION,
+                    involved_tracks=[int(tid_src), int(tid_dst)],
+                    frame_peak=end_frame,
+                    frame_range=(
+                        max(end_frame - 5, src_start),
+                        min(start_frame + 5, dst_end),
+                    ),
+                    score=score_val,
+                    signals=["Frag"],
+                    region_label="open_field",
+                )
+            )
 
     # ==================================================================
     # Phantom detector

@@ -11,7 +11,20 @@ from typing import Any
 from .contracts import TrainingRole
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _use_project_root_override() -> bool:
+    return getattr(_project_root, "__module__", __name__) != __name__
+
+
 def get_models_root() -> Path:
+    if _use_project_root_override():
+        root = _project_root() / "models"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     from hydra_suite.paths import get_models_dir
 
     return get_models_dir()

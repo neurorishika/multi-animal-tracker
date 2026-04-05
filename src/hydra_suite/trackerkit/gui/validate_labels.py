@@ -15,6 +15,85 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
+def _validate_class_id(parts: List[str], issues: List[str]) -> bool:
+    """Validate the class ID field. Returns False if parsing fails fatally."""
+    try:
+        cls = int(parts[0])
+        if cls < 0:
+            issues.append(f"Negative class ID: {cls}")
+        return True
+    except Exception:
+        return False
+
+
+def _validate_bbox(
+    parts: List[str], issues: List[str], min_bbox_dim: float, epsilon: float
+) -> bool:
+    """Validate bbox coordinates. Returns False if parsing fails fatally."""
+    try:
+        cx = float(parts[1])
+        cy = float(parts[2])
+        bw = float(parts[3])
+        bh = float(parts[4])
+    except Exception:
+        return False
+
+    for name, val in [("cx", cx), ("cy", cy), ("bw", bw), ("bh", bh)]:
+        if not np.isfinite(val):
+            issues.append(f"Non-finite bbox {name}: {val}")
+
+    if not (-epsilon <= cx <= 1.0 + epsilon):
+        issues.append(f"Bbox cx out of range [0, 1]: {cx:.6f}")
+    if not (-epsilon <= cy <= 1.0 + epsilon):
+        issues.append(f"Bbox cy out of range [0, 1]: {cy:.6f}")
+    if not (0.0 <= bw <= 1.0 + epsilon):
+        issues.append(f"Bbox w out of range [0, 1]: {bw:.6f}")
+    if not (0.0 <= bh <= 1.0 + epsilon):
+        issues.append(f"Bbox h out of range [0, 1]: {bh:.6f}")
+
+    if bw < min_bbox_dim:
+        issues.append(f"Bbox width too small: {bw:.6f} < {min_bbox_dim}")
+    if bh < min_bbox_dim:
+        issues.append(f"Bbox height too small: {bh:.6f} < {min_bbox_dim}")
+    return True
+
+
+def _validate_keypoints(
+    parts: List[str], kpt_count: int, issues: List[str], epsilon: float
+) -> None:
+    """Validate keypoint coordinates, visibility, and ranges."""
+    visible_count = 0
+    for i in range(5, 5 + 3 * kpt_count, 3):
+        kpt_idx = (i - 5) // 3
+        try:
+            x = float(parts[i])
+            y = float(parts[i + 1])
+            v = int(float(parts[i + 2]))
+        except Exception:
+            issues.append(f"Cannot parse keypoint {kpt_idx}")
+            continue
+
+        if not np.isfinite(x):
+            issues.append(f"Non-finite x for keypoint {kpt_idx}: {x}")
+        if not np.isfinite(y):
+            issues.append(f"Non-finite y for keypoint {kpt_idx}: {y}")
+
+        if v not in (0, 1, 2):
+            issues.append(
+                f"Invalid visibility {v} for keypoint {kpt_idx} (must be 0, 1, or 2)"
+            )
+
+        if v > 0:
+            visible_count += 1
+            if not (-epsilon <= x <= 1.0 + epsilon):
+                issues.append(f"Keypoint {kpt_idx} x out of range: {x:.6f}")
+            if not (-epsilon <= y <= 1.0 + epsilon):
+                issues.append(f"Keypoint {kpt_idx} y out of range: {y:.6f}")
+
+    if visible_count == 0:
+        issues.append("No visible keypoints (all visibility = 0)")
+
+
 def validate_label_file(
     label_path: Path, kpt_count: int, min_bbox_dim: float = 0.001, epsilon: float = 1e-8
 ) -> Tuple[bool, List[str]]:
@@ -24,7 +103,7 @@ def validate_label_file(
     Returns:
         (is_valid, list_of_issues)
     """
-    issues = []
+    issues: List[str] = []
 
     try:
         text = label_path.read_text(encoding="utf-8").strip()
@@ -40,78 +119,13 @@ def validate_label_file(
     if len(parts) < expected_parts:
         return False, [f"Expected {expected_parts} values, got {len(parts)}"]
 
-    # Validate class
-    try:
-        cls = int(parts[0])
-        if cls < 0:
-            issues.append(f"Negative class ID: {cls}")
-    except Exception:
+    if not _validate_class_id(parts, issues):
         return False, ["Invalid class ID"]
 
-    # Validate bbox
-    try:
-        cx = float(parts[1])
-        cy = float(parts[2])
-        bw = float(parts[3])
-        bh = float(parts[4])
-    except Exception:
+    if not _validate_bbox(parts, issues, min_bbox_dim, epsilon):
         return False, ["Cannot parse bbox coordinates"]
 
-    # Check for NaN or inf in bbox
-    for name, val in [("cx", cx), ("cy", cy), ("bw", bw), ("bh", bh)]:
-        if not np.isfinite(val):
-            issues.append(f"Non-finite bbox {name}: {val}")
-
-    # Check bbox ranges
-    if not (-epsilon <= cx <= 1.0 + epsilon):
-        issues.append(f"Bbox cx out of range [0, 1]: {cx:.6f}")
-    if not (-epsilon <= cy <= 1.0 + epsilon):
-        issues.append(f"Bbox cy out of range [0, 1]: {cy:.6f}")
-    if not (0.0 <= bw <= 1.0 + epsilon):
-        issues.append(f"Bbox w out of range [0, 1]: {bw:.6f}")
-    if not (0.0 <= bh <= 1.0 + epsilon):
-        issues.append(f"Bbox h out of range [0, 1]: {bh:.6f}")
-
-    # Check minimum bbox size
-    if bw < min_bbox_dim:
-        issues.append(f"Bbox width too small: {bw:.6f} < {min_bbox_dim}")
-    if bh < min_bbox_dim:
-        issues.append(f"Bbox height too small: {bh:.6f} < {min_bbox_dim}")
-
-    # Validate keypoints
-    visible_count = 0
-    for i in range(5, 5 + 3 * kpt_count, 3):
-        kpt_idx = (i - 5) // 3
-        try:
-            x = float(parts[i])
-            y = float(parts[i + 1])
-            v = int(float(parts[i + 2]))
-        except Exception:
-            issues.append(f"Cannot parse keypoint {kpt_idx}")
-            continue
-
-        # Check for NaN/inf
-        if not np.isfinite(x):
-            issues.append(f"Non-finite x for keypoint {kpt_idx}: {x}")
-        if not np.isfinite(y):
-            issues.append(f"Non-finite y for keypoint {kpt_idx}: {y}")
-
-        # Check visibility value
-        if v not in (0, 1, 2):
-            issues.append(
-                f"Invalid visibility {v} for keypoint {kpt_idx} (must be 0, 1, or 2)"
-            )
-
-        # For visible keypoints, check coordinate range
-        if v > 0:
-            visible_count += 1
-            if not (-epsilon <= x <= 1.0 + epsilon):
-                issues.append(f"Keypoint {kpt_idx} x out of range: {x:.6f}")
-            if not (-epsilon <= y <= 1.0 + epsilon):
-                issues.append(f"Keypoint {kpt_idx} y out of range: {y:.6f}")
-
-    if visible_count == 0:
-        issues.append("No visible keypoints (all visibility = 0)")
+    _validate_keypoints(parts, kpt_count, issues, epsilon)
 
     is_valid = len(issues) == 0
     return is_valid, issues

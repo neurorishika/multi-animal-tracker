@@ -113,174 +113,199 @@ class SieveWorker(BaseWorker):
                 self._emit_stage_progress(25, 40, idx, total, "Quality filter")
         return kept
 
+    def _should_abort(self):
+        if self._is_running:
+            return False
+        self.stop()
+        return True
+
+    def _initialize_run_state(self):
+        self.progress.emit(0, "Step 1/7: Loading dataset metadata")
+        self.status.emit("Loading dataset...")
+        dataset = self.core.load_dataset(self.dataset_path)
+        loaded_count = len(dataset)
+        self.progress.emit(10, f"Step 1/7 complete: loaded {loaded_count:,} images")
+        stats = {
+            "loaded": loaded_count,
+            "after_quality": loaded_count,
+            "after_temporal": loaded_count,
+            "after_dedup": loaded_count,
+            "after_diversity": loaded_count,
+        }
+        return dataset, stats, [], []
+
+    def _extend_removed_examples(self, before, after, reason, removed_examples):
+        removed_examples.extend(self._collect_removed_examples(before, after, reason))
+
+    def _run_quality_stage(self, dataset, stats, removed_examples):
+        if not self.config.get("quality_enabled"):
+            stats["after_quality"] = len(dataset)
+            self.progress.emit(40, "Step 3/7 skipped: quality filter disabled")
+            return dataset
+
+        self.progress.emit(25, "Step 3/7: Running quality filter")
+        self.status.emit("Applying quality filter (blur + contrast)...")
+        before = list(dataset)
+        dataset = self._quality_filter(dataset)
+        self._extend_removed_examples(before, dataset, "quality", removed_examples)
+        stats["after_quality"] = len(dataset)
+        self.status.emit(f"Remaining after quality: {len(dataset)}")
+        self.progress.emit(
+            40,
+            f"Step 3/7 complete: quality {len(before):,} → {len(dataset):,}",
+        )
+        return dataset
+
+    def _run_temporal_stage(self, dataset, stats, removed_examples):
+        if not self.config.get("temporal_enabled"):
+            self.progress.emit(55, "Step 4/7 skipped: temporal filter disabled")
+            stats["after_temporal"] = len(dataset)
+            return dataset
+
+        interval = self.config.get("temporal_interval", 1)
+        if interval <= 1:
+            self.progress.emit(55, "Step 4/7 skipped: interval is 1")
+            stats["after_temporal"] = len(dataset)
+            return dataset
+
+        self.progress.emit(40, "Step 4/7: Applying temporal subsampling")
+        self.status.emit(f"Applying temporal subsampling (1/{interval})...")
+        before = list(dataset)
+        dataset = self.core.temporal_subsample(dataset, interval)
+        self._extend_removed_examples(before, dataset, "temporal", removed_examples)
+        self.status.emit(f"Remaining after temporal: {len(dataset)}")
+        self.progress.emit(
+            55,
+            f"Step 4/7 complete: temporal {len(before):,} → {len(dataset):,}",
+        )
+        stats["after_temporal"] = len(dataset)
+        return dataset
+
+    def _run_dedup_stage(self, dataset, stats, removed_examples):
+        if not self.config.get("dedup_enabled"):
+            self.progress.emit(85, "Step 5/7 skipped: deduplication disabled")
+            stats["after_dedup"] = len(dataset)
+            return dataset, []
+
+        method = self.config.get("dedup_method", "phash")
+        raw_threshold = self.config.get("dedup_threshold", 2)
+        threshold = (
+            float(raw_threshold) / 100.0
+            if method == "histogram"
+            else float(raw_threshold)
+        )
+        preserve_color = bool(self.config.get("preserve_color_diversity", False))
+        raw_color_threshold = self.config.get("color_threshold", 8)
+        color_threshold = float(raw_color_threshold) / 100.0 if preserve_color else None
+
+        self.progress.emit(55, f"Step 5/7: Deduplicating with {method}")
+        self.status.emit(
+            (
+                f"Removing duplicates (method={method}, threshold={raw_threshold}, "
+                f"preserve_color={'on' if preserve_color else 'off'})..."
+            )
+        )
+        before = list(dataset)
+        dataset, duplicate_clusters = self.core.deduplicate_by_hash(
+            dataset,
+            threshold=threshold,
+            method=method,
+            progress_callback=lambda cur, tot: self._emit_stage_progress(
+                55, 85, cur, tot, "Deduplication"
+            ),
+            return_groups=True,
+            color_threshold=color_threshold,
+        )
+        self._extend_removed_examples(before, dataset, "duplicate", removed_examples)
+        self.status.emit(f"Remaining after deduplication: {len(dataset)}")
+        self.progress.emit(
+            85,
+            f"Step 5/7 complete: dedup {len(before):,} → {len(dataset):,}",
+        )
+        stats["after_dedup"] = len(dataset)
+        return dataset, duplicate_clusters
+
+    def _run_diversity_stage(self, dataset, stats, removed_examples):
+        if not self.config.get("diversity_enabled"):
+            self.progress.emit(95, "Step 6/7 skipped: diversity sampling disabled")
+            stats["after_diversity"] = len(dataset)
+            return dataset
+
+        target = self.config.get("diversity_target", 1000)
+        if len(dataset) <= target:
+            self.progress.emit(
+                95,
+                f"Step 6/7 skipped: current set ({len(dataset):,}) <= target ({target:,})",
+            )
+            stats["after_diversity"] = len(dataset)
+            return dataset
+
+        self.progress.emit(85, "Step 6/7: Running diversity sampling")
+        self.status.emit(f"Applying diversity sampling (target={target})...")
+        before = list(dataset)
+        dataset = self.core.diversity_sample(dataset, target)
+        self._extend_removed_examples(before, dataset, "diversity", removed_examples)
+        self.status.emit(f"Remaining after diversity: {len(dataset)}")
+        self.progress.emit(
+            95,
+            f"Step 6/7 complete: diversity {len(before):,} → {len(dataset):,}",
+        )
+        stats["after_diversity"] = len(dataset)
+        return dataset
+
+    def _finalize_result(self, dataset, stats, removed_examples, duplicate_clusters):
+        for item in dataset:
+            item.pop("dhash", None)
+            item.pop("dedup_signature", None)
+            item.pop("color_signature", None)
+            item.pop("features", None)
+
+        selected_sanitized = self._sanitize_items_for_qt(dataset)
+        self.progress.emit(100, "Step 7/7 complete: Finalized and ready to review")
+        return {
+            "selected_dataset": selected_sanitized,
+            "stats": stats,
+            "removed_examples": removed_examples,
+            "duplicate_clusters": duplicate_clusters,
+            "config_used": dict(self.config),
+        }
+
     def execute(self):
         try:
-            self.progress.emit(0, "Step 1/7: Loading dataset metadata")
-            self.status.emit("Loading dataset...")
-            loaded = self.core.load_dataset(self.dataset_path)
-            loaded_count = len(loaded)
-            self.progress.emit(10, f"Step 1/7 complete: loaded {loaded_count:,} images")
-
-            stats = {
-                "loaded": loaded_count,
-                "after_quality": loaded_count,
-                "after_temporal": loaded_count,
-                "after_dedup": loaded_count,
-                "after_diversity": loaded_count,
-            }
-            removed_examples = []
-            duplicate_clusters = []
-
-            if not self._is_running:
-                self.stop()
+            dataset, stats, removed_examples, duplicate_clusters = (
+                self._initialize_run_state()
+            )
+            if self._should_abort():
                 return
 
-            dataset = loaded
-
-            if self.config.get("quality_enabled"):
-                self.progress.emit(25, "Step 3/7: Running quality filter")
-                self.status.emit("Applying quality filter (blur + contrast)...")
-                before = list(dataset)
-                dataset = self._quality_filter(dataset)
-                removed_examples.extend(
-                    self._collect_removed_examples(before, dataset, "quality")
-                )
-                stats["after_quality"] = len(dataset)
-                self.status.emit(f"Remaining after quality: {len(dataset)}")
-                self.progress.emit(
-                    40,
-                    f"Step 3/7 complete: quality {len(before):,} → {len(dataset):,}",
-                )
-            else:
-                stats["after_quality"] = len(dataset)
-                self.progress.emit(40, "Step 3/7 skipped: quality filter disabled")
-
-            if not self._is_running:
-                self.stop()
+            dataset = self._run_quality_stage(dataset, stats, removed_examples)
+            if self._should_abort():
                 return
 
-            if self.config.get("temporal_enabled"):
-                interval = self.config.get("temporal_interval", 1)
-                if interval > 1:
-                    self.progress.emit(40, "Step 4/7: Applying temporal subsampling")
-                    self.status.emit(f"Applying temporal subsampling (1/{interval})...")
-                    before = list(dataset)
-                    dataset = self.core.temporal_subsample(dataset, interval)
-                    removed_examples.extend(
-                        self._collect_removed_examples(before, dataset, "temporal")
-                    )
-                    self.status.emit(f"Remaining after temporal: {len(dataset)}")
-                    self.progress.emit(
-                        55,
-                        f"Step 4/7 complete: temporal {len(before):,} → {len(dataset):,}",
-                    )
-                else:
-                    self.progress.emit(55, "Step 4/7 skipped: interval is 1")
-            else:
-                self.progress.emit(55, "Step 4/7 skipped: temporal filter disabled")
-            stats["after_temporal"] = len(dataset)
-
-            if not self._is_running:
-                self.stop()
+            dataset = self._run_temporal_stage(dataset, stats, removed_examples)
+            if self._should_abort():
                 return
 
-            if self.config.get("dedup_enabled"):
-                method = self.config.get("dedup_method", "phash")
-                raw_threshold = self.config.get("dedup_threshold", 2)
-                threshold = (
-                    float(raw_threshold) / 100.0
-                    if method == "histogram"
-                    else float(raw_threshold)
-                )
-                preserve_color = bool(
-                    self.config.get("preserve_color_diversity", False)
-                )
-                raw_color_threshold = self.config.get("color_threshold", 8)
-                color_threshold = (
-                    float(raw_color_threshold) / 100.0 if preserve_color else None
-                )
-                self.progress.emit(55, f"Step 5/7: Deduplicating with {method}")
-                self.status.emit(
-                    (
-                        f"Removing duplicates (method={method}, threshold={raw_threshold}, "
-                        f"preserve_color={'on' if preserve_color else 'off'})..."
-                    )
-                )
-                before = list(dataset)
+            dataset, duplicate_clusters = self._run_dedup_stage(
+                dataset,
+                stats,
+                removed_examples,
+            )
+            if self._should_abort():
+                return
 
-                dataset, duplicate_clusters = self.core.deduplicate_by_hash(
+            dataset = self._run_diversity_stage(dataset, stats, removed_examples)
+            if self._should_abort():
+                return
+
+            self.finished.emit(
+                self._finalize_result(
                     dataset,
-                    threshold=threshold,
-                    method=method,
-                    progress_callback=lambda cur, tot: self._emit_stage_progress(
-                        55, 85, cur, tot, "Deduplication"
-                    ),
-                    return_groups=True,
-                    color_threshold=color_threshold,
+                    stats,
+                    removed_examples,
+                    duplicate_clusters,
                 )
-                removed_examples.extend(
-                    self._collect_removed_examples(before, dataset, "duplicate")
-                )
-                self.status.emit(f"Remaining after deduplication: {len(dataset)}")
-                self.progress.emit(
-                    85,
-                    f"Step 5/7 complete: dedup {len(before):,} → {len(dataset):,}",
-                )
-            else:
-                self.progress.emit(85, "Step 5/7 skipped: deduplication disabled")
-            stats["after_dedup"] = len(dataset)
-
-            if not self._is_running:
-                self.stop()
-                return
-
-            if self.config.get("diversity_enabled"):
-                target = self.config.get("diversity_target", 1000)
-                if len(dataset) > target:
-                    self.progress.emit(85, "Step 6/7: Running diversity sampling")
-                    self.status.emit(
-                        f"Applying diversity sampling (target={target})..."
-                    )
-                    before = list(dataset)
-                    dataset = self.core.diversity_sample(dataset, target)
-                    removed_examples.extend(
-                        self._collect_removed_examples(before, dataset, "diversity")
-                    )
-                    self.status.emit(f"Remaining after diversity: {len(dataset)}")
-                    self.progress.emit(
-                        95,
-                        f"Step 6/7 complete: diversity {len(before):,} → {len(dataset):,}",
-                    )
-                else:
-                    self.progress.emit(
-                        95,
-                        f"Step 6/7 skipped: current set ({len(dataset):,}) <= target ({target:,})",
-                    )
-            else:
-                self.progress.emit(95, "Step 6/7 skipped: diversity sampling disabled")
-            stats["after_diversity"] = len(dataset)
-
-            if not self._is_running:
-                self.stop()
-                return
-
-            # Remove large integer/object fields before Qt signal crossing.
-            for item in dataset:
-                item.pop("dhash", None)
-                item.pop("dedup_signature", None)
-                item.pop("color_signature", None)
-                item.pop("features", None)
-
-            selected_sanitized = self._sanitize_items_for_qt(dataset)
-            self.progress.emit(100, "Step 7/7 complete: Finalized and ready to review")
-            result = {
-                "selected_dataset": selected_sanitized,
-                "stats": stats,
-                "removed_examples": removed_examples,
-                "duplicate_clusters": duplicate_clusters,
-                "config_used": dict(self.config),
-            }
-            self.finished.emit(result)
+            )
 
         except Exception as exc:
             self.error.emit(str(exc))

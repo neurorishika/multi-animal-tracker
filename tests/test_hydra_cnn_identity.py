@@ -138,7 +138,7 @@ def test_backend_predict_batch_cardinality():
 
     cfg = CNNIdentityConfig(model_path="/tmp/m.pth", confidence=0.5)
     crops = [np.zeros((64, 64, 3), dtype=np.uint8) for _ in range(3)]
-    backend = CNNIdentityBackend(cfg, model_path="/tmp/m.pth", compute_runtime="cpu")
+    backend = CNNIdentityBackend(cfg, compute_runtime="cpu")
 
     # Mock _ensure_loaded and _infer_fn together to avoid touching disk
     fixed_logits = np.array([[1.0, 2.0, 0.5]] * 3, dtype=np.float32)

@@ -1788,31 +1788,23 @@ class _SleapHttpService:
         sock.close()
         return port
 
-    def start(self, env_name: str, log_path: Optional[Path] = None) -> Tuple[bool, str]:
-        """start method documentation."""
-        if self.proc and self.proc.poll() is None and self.env_name == env_name:
-            return True, ""
-        self.stop()
-        self.log_path = log_path
-        if self.log_path:
-            try:
-                self.log_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(self.log_path, "a", encoding="utf-8") as f:
-                    f.write(f"[start] env={env_name}\n")
-            except Exception:
-                pass
-        if shutil.which("conda") is None:
-            return False, "Conda not found on PATH."
-        preflight_ok, preflight_err = _sleap_env_preflight(env_name)
-        if not preflight_ok:
-            if self.log_path:
-                try:
-                    with open(self.log_path, "a", encoding="utf-8") as f:
-                        f.write(f"[preflight] failed: {preflight_err}\n")
-                except Exception:
-                    pass
-            return False, preflight_err
-        port = self._pick_free_port()
+    def _append_log(self, message: str) -> None:
+        """Append a line to the log file if configured."""
+        if not self.log_path:
+            return
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(message + "\n")
+        except Exception:
+            pass
+
+    def _write_temp_files(
+        self, port: int
+    ) -> Tuple[Optional[Path], Optional[Path], str]:
+        """Write service config and code to temp files.
+
+        Returns (cfg_path, code_path, error_message).
+        """
         cfg = {"host": "127.0.0.1", "port": int(port)}
         if self.log_path:
             cfg["log_path"] = str(self.log_path)
@@ -1828,7 +1820,54 @@ class _SleapHttpService:
         try:
             code_path.write_text(_SLEAP_SERVICE_CODE, encoding="utf-8")
         except Exception:
-            return False, "Failed to write SLEAP service code."
+            return None, None, "Failed to write SLEAP service code."
+        return cfg_path, code_path, ""
+
+    def _wait_for_health(self, timeout: float = 15.0) -> Tuple[bool, str]:
+        """Poll the service health endpoint until ready or timeout."""
+        start = time.time()
+        while time.time() - start < timeout:
+            if self.proc.poll() is not None:
+                err = self._last_log or "SLEAP service failed to start."
+                if self.log_path:
+                    err = f"{err} (log: {self.log_path})"
+                return False, err
+            try:
+                url = f"http://127.0.0.1:{self.port}/health"
+                with urllib.request.urlopen(url, timeout=0.5) as resp:
+                    if resp.status == 200:
+                        self._append_log("[health] ok")
+                        return True, ""
+            except Exception:
+                time.sleep(0.2)
+        self.stop()
+        err = "Timed out starting SLEAP service."
+        if self.log_path:
+            err = f"{err} (log: {self.log_path})"
+        return False, err
+
+    def start(self, env_name: str, log_path: Optional[Path] = None) -> Tuple[bool, str]:
+        """start method documentation."""
+        if self.proc and self.proc.poll() is None and self.env_name == env_name:
+            return True, ""
+        self.stop()
+        self.log_path = log_path
+        if self.log_path:
+            try:
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            self._append_log(f"[start] env={env_name}")
+        if shutil.which("conda") is None:
+            return False, "Conda not found on PATH."
+        preflight_ok, preflight_err = _sleap_env_preflight(env_name)
+        if not preflight_ok:
+            self._append_log(f"[preflight] failed: {preflight_err}")
+            return False, preflight_err
+        port = self._pick_free_port()
+        cfg_path, code_path, err = self._write_temp_files(port)
+        if err:
+            return False, err
         self.proc = subprocess.Popen(
             [
                 "conda",
@@ -1848,33 +1887,9 @@ class _SleapHttpService:
         assert self.proc.stdout is not None
         self._stdout_thread = threading.Thread(target=self._drain_stdout, daemon=True)
         self._stdout_thread.start()
-        start = time.time()
         self.port = port
         self.env_name = env_name
-        while time.time() - start < 15:
-            if self.proc.poll() is not None:
-                err = self._last_log or "SLEAP service failed to start."
-                if self.log_path:
-                    err = f"{err} (log: {self.log_path})"
-                return False, err
-            try:
-                url = f"http://127.0.0.1:{self.port}/health"
-                with urllib.request.urlopen(url, timeout=0.5) as resp:
-                    if resp.status == 200:
-                        if self.log_path:
-                            try:
-                                with open(self.log_path, "a", encoding="utf-8") as f:
-                                    f.write("[health] ok\n")
-                            except Exception:
-                                pass
-                        return True, ""
-            except Exception:
-                time.sleep(0.2)
-        self.stop()
-        err = "Timed out starting SLEAP service."
-        if self.log_path:
-            err = f"{err} (log: {self.log_path})"
-        return False, err
+        return self._wait_for_health()
 
     def stop(self: object) -> object:
         """stop method documentation."""

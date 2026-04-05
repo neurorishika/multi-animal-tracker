@@ -146,6 +146,90 @@ def _extract_class_names(data: dict[str, Any]) -> dict[int, str]:
     return out
 
 
+def _resolve_yaml_labels_dir(
+    root: Path, data: dict[str, Any], split_path: Path
+) -> Path:
+    """Resolve the labels directory for one YAML-defined split."""
+    labels_dir = _resolve_data_path(root, data.get("labels"))
+    if labels_dir is None:
+        labels_dir = root / "labels"
+    if split_path.is_dir() and split_path.name in {"train", "val", "test"}:
+        split_labels = labels_dir / split_path.name
+        if split_labels.exists():
+            return split_labels
+    return labels_dir
+
+
+def _collect_yaml_split_items(
+    root: Path,
+    data: dict[str, Any],
+    split: str,
+) -> list[DatasetItem]:
+    """Collect items for one split declared in dataset.yaml."""
+    split_ref = data.get(split)
+    if split_ref is None:
+        return []
+
+    split_path = _resolve_data_path(root, split_ref)
+    if split_path is None:
+        return []
+
+    labels_dir = _resolve_yaml_labels_dir(root, data, split_path)
+    if split_path.suffix.lower() == ".txt":
+        return _collect_list_split(
+            root, split_path, split=split, labels_root=labels_dir
+        )
+    return _collect_dir_split(split_path, labels_dir, split=split)
+
+
+def _inspect_from_yaml(
+    root: Path, yaml_path: Path, inspection: DatasetInspection
+) -> bool:
+    """Try to populate inspection from dataset.yaml; return True if splits found."""
+    if not yaml_path.exists():
+        return False
+    data = _read_yaml(yaml_path)
+    inspection.class_names = _extract_class_names(data)
+
+    for split in ("train", "val", "test"):
+        items = _collect_yaml_split_items(root, data, split)
+        if items:
+            inspection.splits[split] = items
+
+    if inspection.splits:
+        inspection.metadata["source"] = "dataset.yaml"
+        return True
+    return False
+
+
+def _inspect_from_directory_layout(root: Path, inspection: DatasetInspection) -> bool:
+    """Try to populate inspection from standard images/labels directory layout."""
+    images_root = root / "images"
+    labels_root = root / "labels"
+    if not (images_root.exists() and labels_root.exists()):
+        return False
+
+    split_items: dict[str, list[DatasetItem]] = {}
+    split_found = False
+    for split in ("train", "val", "test"):
+        img_dir = images_root / split
+        lbl_dir = labels_root / split if (labels_root / split).exists() else labels_root
+        if img_dir.exists():
+            split_items[split] = _collect_dir_split(img_dir, lbl_dir, split)
+            split_found = True
+    if split_found:
+        inspection.splits = split_items
+        inspection.metadata["source"] = "images/labels split"
+        return True
+
+    # Unsplit dataset (images + labels roots)
+    inspection.splits = {
+        "all": _collect_dir_split(images_root, labels_root, split="all"),
+    }
+    inspection.metadata["source"] = "images/labels unsplit"
+    return True
+
+
 def inspect_obb_or_detect_dataset(root_dir: str | Path) -> DatasetInspection:
     """Inspect a YOLO OBB/detect dataset and return resolved split items."""
 
@@ -154,65 +238,10 @@ def inspect_obb_or_detect_dataset(root_dir: str | Path) -> DatasetInspection:
         raise RuntimeError(f"Dataset root not found: {root}")
 
     inspection = DatasetInspection(root_dir=str(root))
-    yaml_path = root / "dataset.yaml"
 
-    if yaml_path.exists():
-        data = _read_yaml(yaml_path)
-        inspection.class_names = _extract_class_names(data)
-
-        for split in ("train", "val", "test"):
-            split_ref = data.get(split)
-            if split_ref is None:
-                continue
-            split_path = _resolve_data_path(root, split_ref)
-            if split_path is None:
-                continue
-            labels_dir = _resolve_data_path(root, data.get("labels"))
-            if labels_dir is None:
-                labels_dir = root / "labels"
-
-            if split_path.suffix.lower() == ".txt":
-                items = _collect_list_split(
-                    root, split_path, split=split, labels_root=labels_dir
-                )
-            else:
-                # If split_path is images/<split>, labels should be labels/<split>
-                if split_path.is_dir() and split_path.name in {"train", "val", "test"}:
-                    split_labels = labels_dir / split_path.name
-                    if split_labels.exists():
-                        labels_dir = split_labels
-                items = _collect_dir_split(split_path, labels_dir, split=split)
-            if items:
-                inspection.splits[split] = items
-
-        if inspection.splits:
-            inspection.metadata["source"] = "dataset.yaml"
-            return inspection
-
-    # Standard directory layouts fallback
-    images_root = root / "images"
-    labels_root = root / "labels"
-    if images_root.exists() and labels_root.exists():
-        split_items: dict[str, list[DatasetItem]] = {}
-        split_found = False
-        for split in ("train", "val", "test"):
-            img_dir = images_root / split
-            lbl_dir = (
-                labels_root / split if (labels_root / split).exists() else labels_root
-            )
-            if img_dir.exists():
-                split_items[split] = _collect_dir_split(img_dir, lbl_dir, split)
-                split_found = True
-        if split_found:
-            inspection.splits = split_items
-            inspection.metadata["source"] = "images/labels split"
-            return inspection
-
-        # Unsplit dataset (images + labels roots)
-        inspection.splits = {
-            "all": _collect_dir_split(images_root, labels_root, split="all"),
-        }
-        inspection.metadata["source"] = "images/labels unsplit"
+    if _inspect_from_yaml(root, root / "dataset.yaml", inspection):
+        return inspection
+    if _inspect_from_directory_layout(root, inspection):
         return inspection
 
     raise RuntimeError(f"No valid OBB/detect dataset layout found in {root}")
@@ -234,6 +263,81 @@ class OBBSizeStats:
     img_heights: list[int] = field(default_factory=list)
 
 
+def _parse_obb_object_from_line(ln: str, w: int, h: int):
+    """Parse one OBB label line and return (bw, bh) in pixels, or None."""
+    import numpy as np
+
+    ln = ln.strip()
+    if not ln:
+        return None
+    parts = ln.split()
+    if len(parts) != 9:
+        return None
+    try:
+        coords = np.asarray([float(v) for v in parts[1:]], dtype=np.float32).reshape(
+            4, 2
+        )
+    except Exception:
+        return None
+    px = coords[:, 0] * float(w)
+    py = coords[:, 1] * float(h)
+    bw = max(1.0, float(np.max(px)) - float(np.min(px)))
+    bh = max(1.0, float(np.max(py)) - float(np.min(py)))
+    return bw, bh
+
+
+def _compute_crop_size(
+    bw: float, bh: float, pad_ratio: float, min_crop_size_px: int, enforce_square: bool
+) -> float:
+    """Compute the crop size for an object with the given dimensions."""
+    crop_w = max(float(min_crop_size_px), bw * (1.0 + 2.0 * max(0.0, pad_ratio)))
+    crop_h = max(float(min_crop_size_px), bh * (1.0 + 2.0 * max(0.0, pad_ratio)))
+    if enforce_square:
+        crop_w = crop_h = max(crop_w, crop_h)
+    return max(crop_w, crop_h)
+
+
+def _analyze_obb_item(
+    item: DatasetItem,
+    stats: OBBSizeStats,
+    pad_ratio: float,
+    min_crop_size_px: int,
+    enforce_square: bool,
+) -> None:
+    """Accumulate size statistics from one dataset item."""
+    lbl_path = Path(item.label_path)
+    img_path = Path(item.image_path)
+    if not lbl_path.exists() or not img_path.exists():
+        return
+
+    import cv2
+
+    img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+    if img is None or img.size == 0:
+        return
+    h, w = img.shape[:2]
+    stats.n_images += 1
+    stats.img_widths.append(w)
+    stats.img_heights.append(h)
+
+    try:
+        lines = lbl_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+
+    for ln in lines:
+        result = _parse_obb_object_from_line(ln, w, h)
+        if result is None:
+            continue
+        bw, bh = result
+        stats.obj_widths.append(bw)
+        stats.obj_heights.append(bh)
+        stats.n_objects += 1
+        stats.crop_sizes.append(
+            _compute_crop_size(bw, bh, pad_ratio, min_crop_size_px, enforce_square)
+        )
+
+
 def analyze_obb_sizes(
     inspection: DatasetInspection,
     pad_ratio: float = 0.15,
@@ -247,9 +351,6 @@ def analyze_obb_sizes(
     """
     import random
 
-    import cv2
-    import numpy as np
-
     stats = OBBSizeStats()
     all_items: list[DatasetItem] = []
     for split_items in inspection.splits.values():
@@ -262,61 +363,13 @@ def analyze_obb_sizes(
         all_items = rng.sample(all_items, max_images)
 
     for item in all_items:
-        lbl_path = Path(item.label_path)
-        img_path = Path(item.image_path)
-        if not lbl_path.exists() or not img_path.exists():
-            continue
-
-        img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-        if img is None or img.size == 0:
-            continue
-        h, w = img.shape[:2]
-        stats.n_images += 1
-        stats.img_widths.append(w)
-        stats.img_heights.append(h)
-
-        try:
-            lines = lbl_path.read_text(encoding="utf-8").splitlines()
-        except Exception:
-            continue
-
-        for ln in lines:
-            ln = ln.strip()
-            if not ln:
-                continue
-            parts = ln.split()
-            if len(parts) != 9:
-                continue
-            try:
-                coords = np.asarray(
-                    [float(v) for v in parts[1:]], dtype=np.float32
-                ).reshape(4, 2)
-            except Exception:
-                continue
-
-            # Denormalize to pixels.
-            px = coords[:, 0] * float(w)
-            py = coords[:, 1] * float(h)
-            x1, x2 = float(np.min(px)), float(np.max(px))
-            y1, y2 = float(np.min(py)), float(np.max(py))
-            bw = max(1.0, x2 - x1)
-            bh = max(1.0, y2 - y1)
-            stats.obj_widths.append(bw)
-            stats.obj_heights.append(bh)
-            stats.n_objects += 1
-
-            # Simulate crop sizing (same logic as dataset_builders + inference).
-            crop_w = max(
-                float(min_crop_size_px), bw * (1.0 + 2.0 * max(0.0, pad_ratio))
-            )
-            crop_h = max(
-                float(min_crop_size_px), bh * (1.0 + 2.0 * max(0.0, pad_ratio))
-            )
-            if enforce_square:
-                side = max(crop_w, crop_h)
-                crop_w = side
-                crop_h = side
-            stats.crop_sizes.append(max(crop_w, crop_h))
+        _analyze_obb_item(
+            item,
+            stats,
+            pad_ratio,
+            min_crop_size_px,
+            enforce_square,
+        )
 
     return stats
 
@@ -501,6 +554,36 @@ def _read_class_ids_from_label(label_path: str) -> set[int]:
         return set()
 
 
+def _split_by_ratio(
+    items: list[DatasetItem],
+    train_r: float,
+    val_r: float,
+) -> tuple[list[DatasetItem], list[DatasetItem], list[DatasetItem]]:
+    """Split items list into (train, val, test) by ratio with guardrails."""
+    n = len(items)
+    n_train = int(round(n * train_r))
+    n_val = int(round(n * val_r))
+    if n >= 2:
+        n_train = max(1, min(n - 1, n_train))
+        n_val = max(1, min(n - n_train, n_val))
+    return items[:n_train], items[n_train : n_train + n_val], items[n_train + n_val :]
+
+
+def _label_splits(
+    train: list[DatasetItem],
+    val: list[DatasetItem],
+    test: list[DatasetItem],
+) -> dict[str, list[DatasetItem]]:
+    """Assign split labels and return the standard split dict."""
+    for it in train:
+        it.split = "train"
+    for it in val:
+        it.split = "val"
+    for it in test:
+        it.split = "test"
+    return {"train": train, "val": val, "test": test}
+
+
 def stratified_split_items(
     items: list[DatasetItem],
     split_cfg: tuple[float, float, float],
@@ -531,7 +614,6 @@ def stratified_split_items(
         if not cls_ids:
             fallback_items.append(item)
         else:
-            # Dominant class = most frequent; ties broken by lowest id
             counter = Counter(cls_ids)
             dominant = min(counter, key=lambda c: (-counter[c], c))
             buckets[dominant].append(item)
@@ -540,22 +622,8 @@ def stratified_split_items(
     if len(buckets) <= 1:
         all_items = list(items)
         rng.shuffle(all_items)
-        n = len(all_items)
-        n_train = int(round(n * train_r))
-        n_val = int(round(n * val_r))
-        if n >= 2:
-            n_train = max(1, min(n - 1, n_train))
-            n_val = max(1, min(n - n_train, n_val))
-        train = all_items[:n_train]
-        val = all_items[n_train : n_train + n_val]
-        test = all_items[n_train + n_val :]
-        for it in train:
-            it.split = "train"
-        for it in val:
-            it.split = "val"
-        for it in test:
-            it.split = "test"
-        return {"train": train, "val": val, "test": test}
+        train, val, test = _split_by_ratio(all_items, train_r, val_r)
+        return _label_splits(train, val, test)
 
     # Put fallback items into an artificial bucket
     if fallback_items:
@@ -567,29 +635,14 @@ def stratified_split_items(
 
     for _cls_id, bucket in sorted(buckets.items()):
         rng.shuffle(bucket)
-        n = len(bucket)
-        n_train = int(round(n * train_r))
-        n_val = int(round(n * val_r))
-
-        # Ensure at least 1 item per class in val if bucket has >= 2 items
-        if n >= 2:
-            n_train = max(1, min(n - 1, n_train))
-            n_val = max(1, min(n - n_train, n_val))
-
-        train_out.extend(bucket[:n_train])
-        val_out.extend(bucket[n_train : n_train + n_val])
-        test_out.extend(bucket[n_train + n_val :])
+        tr, va, te = _split_by_ratio(bucket, train_r, val_r)
+        train_out.extend(tr)
+        val_out.extend(va)
+        test_out.extend(te)
 
     # Shuffle within each split to avoid class clustering
     rng.shuffle(train_out)
     rng.shuffle(val_out)
     rng.shuffle(test_out)
 
-    for it in train_out:
-        it.split = "train"
-    for it in val_out:
-        it.split = "val"
-    for it in test_out:
-        it.split = "test"
-
-    return {"train": train_out, "val": val_out, "test": test_out}
+    return _label_splits(train_out, val_out, test_out)

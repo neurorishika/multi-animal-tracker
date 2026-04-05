@@ -6,6 +6,7 @@ ENV_NAME_GPU = hydra-cuda
 ENV_NAME_MPS = hydra-mps
 ENV_NAME_ROCM = hydra-rocm
 CUDA_MAJOR ?= 13
+PYTEST ?= pytest
 
 # =============================================================================
 # ENVIRONMENT SETUP
@@ -125,15 +126,33 @@ test:
 
 pytest:
 	@echo "🧪 Running pytest..."
-	python -m pytest
+	$(PYTEST)
 
 test-cov:
 	@echo "🧪 Running pytest with coverage..."
-	python -m pytest --cov=src/hydra_suite --cov-report=term
+	@if ! $(PYTEST) --help 2>/dev/null | grep -q -- '--cov'; then \
+		echo "ERROR: pytest-cov is not available in the active pytest environment."; \
+		echo "Current pytest: $$(command -v $(PYTEST) || printf 'not found')"; \
+		echo "Install dev tools in the active environment:"; \
+		echo "  make install-dev"; \
+		echo "Or point Make at a pytest entrypoint that already has pytest-cov:"; \
+		echo "  PYTEST=./.conda/bin/pytest make test-cov"; \
+		exit 1; \
+	fi
+	$(PYTEST) --cov=src/hydra_suite --cov-report=term
 
 test-cov-html:
 	@echo "🧪 Running pytest with HTML coverage report..."
-	python -m pytest --cov=src/hydra_suite --cov-report=html --cov-report=term
+	@if ! $(PYTEST) --help 2>/dev/null | grep -q -- '--cov'; then \
+		echo "ERROR: pytest-cov is not available in the active pytest environment."; \
+		echo "Current pytest: $$(command -v $(PYTEST) || printf 'not found')"; \
+		echo "Install dev tools in the active environment:"; \
+		echo "  make install-dev"; \
+		echo "Or point Make at a pytest entrypoint that already has pytest-cov:"; \
+		echo "  PYTEST=./.conda/bin/pytest make test-cov-html"; \
+		exit 1; \
+	fi
+	$(PYTEST) --cov=src/hydra_suite --cov-report=html --cov-report=term
 	@echo "📊 Coverage report generated in htmlcov/index.html"
 
 verify-rocm:

@@ -30,6 +30,28 @@ _NEW_ID_OFFSET = 100_000
 # ---------------------------------------------------------------------------
 
 
+def apply_split_and_swap(
+    df: pd.DataFrame,
+    track_a: int,
+    track_b: int,
+    split_frame: int,
+    swap_post: bool,
+) -> pd.DataFrame:
+    """Split two tracks at ``split_frame``, optionally swapping post-split IDs."""
+    df = df.copy()
+    mask_a_post = (df["TrajectoryID"] == track_a) & (df["FrameID"] >= split_frame)
+    mask_b_post = (df["TrajectoryID"] == track_b) & (df["FrameID"] >= split_frame)
+
+    if swap_post:
+        df.loc[mask_a_post, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
+        df.loc[mask_b_post, "TrajectoryID"] = track_a + _NEW_ID_OFFSET
+    else:
+        df.loc[mask_a_post, "TrajectoryID"] = track_a + _NEW_ID_OFFSET
+        df.loc[mask_b_post, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
+
+    return df
+
+
 def merge_fragments(
     df: pd.DataFrame,
     track_ids: List[int],
@@ -75,6 +97,25 @@ class CorrectionWriter:
         if self._df is None:
             raise RuntimeError("Call open() before apply_merge()")
         self._df = merge_fragments(self._df, track_ids)
+        self._write_atomic()
+
+    def apply_correction(
+        self,
+        track_a: int,
+        track_b: int,
+        split_frame: int,
+        swap_post: bool,
+    ) -> None:
+        """Apply the legacy split-and-swap correction workflow and persist."""
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_correction()")
+        self._df = apply_split_and_swap(
+            self._df,
+            track_a=track_a,
+            track_b=track_b,
+            split_frame=split_frame,
+            swap_post=swap_post,
+        )
         self._write_atomic()
 
     def apply_swap_merge(

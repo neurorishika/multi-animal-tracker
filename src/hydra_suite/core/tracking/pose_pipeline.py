@@ -303,6 +303,25 @@ class PosePipeline:
         self._closed = False
         self._async_cache_closed = False
 
+    def _filter_canonical_affines(self, raw_affines, raw_ids, det_ids):
+        """Map raw canonical affines to filtered detection indices."""
+        if raw_affines is None or not raw_ids:
+            return None
+        raw_id_map = {int(rid): idx for idx, rid in enumerate(raw_ids)}
+        filtered = {}
+        for di, did in enumerate(det_ids):
+            raw_idx = raw_id_map.get(int(did))
+            if (
+                raw_idx is not None
+                and raw_idx < len(raw_affines)
+                and raw_affines[raw_idx] is not None
+            ):
+                M_inv = cv2.invertAffineTransform(
+                    np.asarray(raw_affines[raw_idx], dtype=np.float64)
+                )
+                filtered[di] = M_inv.astype(np.float32)
+        return filtered if filtered else None
+
     # ------------------------------------------------------------------ #
     # Public API                                                          #
     # ------------------------------------------------------------------ #
@@ -381,23 +400,11 @@ class PosePipeline:
             all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
 
             # --- filter canonical affines to match filtered detections ---
-            filtered_M_inv: Optional[Dict[int, np.ndarray]] = None
-            if raw_canonical_affines is not None and raw_ids:
-                raw_id_map: Dict[int, int] = {}
-                for idx, rid in enumerate(raw_ids):
-                    raw_id_map[int(rid)] = idx
-                filtered_M_inv = {}
-                for di, did in enumerate(det_ids):
-                    raw_idx = raw_id_map.get(int(did))
-                    if (
-                        raw_idx is not None
-                        and raw_idx < len(raw_canonical_affines)
-                        and raw_canonical_affines[raw_idx] is not None
-                    ):
-                        M_inv = cv2.invertAffineTransform(
-                            np.asarray(raw_canonical_affines[raw_idx], dtype=np.float64)
-                        )
-                        filtered_M_inv[di] = M_inv.astype(np.float32)
+            filtered_M_inv = self._filter_canonical_affines(
+                raw_canonical_affines,
+                raw_ids,
+                det_ids,
+            )
 
             # --- extract crops (parallel across detections) ---
             fcr = self._extract_frame_crops(

@@ -1175,6 +1175,18 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
     return final_segments
 
 
+def _merge_col(r1, r2, col, merge_fn):
+    """Merge a column from two row dicts using merge_fn, handling NaN."""
+    if col not in r1 or col not in r2:
+        return None
+    v1, v2 = r1.get(col), r2.get(col)
+    if pd.isna(v1):
+        return v2
+    if pd.isna(v2):
+        return v1
+    return merge_fn(v1, v2)
+
+
 def _average_trajectory_rows(r1, r2):
     """
     Average two trajectory row dictionaries.
@@ -1193,43 +1205,67 @@ def _average_trajectory_rows(r1, r2):
         result["Y"] = r2.get("Y")
 
     # Average theta (circular)
-    if "Theta" in r1 and "Theta" in r2:
-        t1, t2 = r1.get("Theta"), r2.get("Theta")
-        if not pd.isna(t1) and not pd.isna(t2):
-            result["Theta"] = _merge_angle_mean(float(t1), float(t2))
-        elif pd.isna(t1):
-            result["Theta"] = t2
+    merged_theta = _merge_col(
+        r1, r2, "Theta", lambda t1, t2: _merge_angle_mean(float(t1), float(t2))
+    )
+    if merged_theta is not None:
+        result["Theta"] = merged_theta
 
     # For confidence metrics, take the max (more informative)
     for col in ["DetectionConfidence", "AssignmentConfidence"]:
-        if col in r1 and col in r2:
-            v1, v2 = r1.get(col), r2.get(col)
-            if pd.isna(v1):
-                result[col] = v2
-            elif pd.isna(v2):
-                result[col] = v1
-            else:
-                result[col] = max(v1, v2)
+        merged = _merge_col(r1, r2, col, max)
+        if merged is not None:
+            result[col] = merged
 
     # For uncertainty, take the min (lower = more confident)
-    if "PositionUncertainty" in r1 and "PositionUncertainty" in r2:
-        v1, v2 = r1.get("PositionUncertainty"), r2.get("PositionUncertainty")
-        if pd.isna(v1):
-            result["PositionUncertainty"] = v2
-        elif pd.isna(v2):
-            result["PositionUncertainty"] = v1
-        else:
-            result["PositionUncertainty"] = min(v1, v2)
+    merged_unc = _merge_col(r1, r2, "PositionUncertainty", min)
+    if merged_unc is not None:
+        result["PositionUncertainty"] = merged_unc
 
     # State: prefer "active" over "occluded"/"lost"
     if "State" in r1 and "State" in r2:
         s1, s2 = r1.get("State", "active"), r2.get("State", "active")
-        if s1 == "active" or s2 == "active":
-            result["State"] = "active"
-        else:
-            result["State"] = s1
+        result["State"] = "active" if (s1 == "active" or s2 == "active") else s1
 
     return result
+
+
+def _find_agreeing_frames(a_by_frame, b_by_frame, agreement_distance):
+    """Return set of frames where B's position agrees with A within distance."""
+    agreeing = set()
+    for frame, (bx, by) in b_by_frame.items():
+        if frame in a_by_frame:
+            ax, ay = a_by_frame[frame]
+            dist = np.sqrt((bx - ax) ** 2 + (by - ay) ** 2)
+            if dist <= agreement_distance:
+                agreeing.add(frame)
+    return agreeing
+
+
+def _trim_or_remove_trajectory(
+    idx_b,
+    trajectories,
+    agreeing_frame_set,
+    agreeing_frames,
+    total_b_frames,
+    agreement_ratio,
+    trimmed_replacements,
+    redundant_indices,
+):
+    """Trim a partially redundant trajectory to unique frames, or remove it."""
+    traj_b = trajectories[idx_b]
+    unique_mask = ~traj_b["FrameID"].isin(agreeing_frame_set)
+    trimmed = traj_b.loc[unique_mask].copy()
+    if not trimmed.empty:
+        trimmed_replacements[idx_b] = trimmed
+        logger.debug(
+            f"Trimming partially redundant trajectory: "
+            f"{agreeing_frames}/{total_b_frames} "
+            f"({agreement_ratio:.1%}) redundant, "
+            f"preserving {len(trimmed)} unique frames"
+        )
+    else:
+        redundant_indices.add(idx_b)
 
 
 def _remove_spatially_redundant_trajectories(
@@ -1269,61 +1305,46 @@ def _remove_spatially_redundant_trajectories(
         }
         traj_arrays.append((idx, frame_to_pos, np.sum(valid_mask)))
 
-    # Instead of outright removing "redundant" trajectories, we trim them to
-    # only their unique frames (not covered by a longer agreeing trajectory).
-    # This prevents losing detections that exist only in the shorter trajectory.
     trimmed_replacements = {}  # idx -> trimmed DataFrame (or None to remove)
 
     for i, (idx_a, a_by_frame, _) in enumerate(traj_arrays):
         if idx_a in redundant_indices:
             continue
 
-        # Check all shorter trajectories against this one
         for idx_b, b_by_frame, total_b_frames in traj_arrays[i + 1 :]:
-            if idx_b in redundant_indices:
+            if idx_b in redundant_indices or total_b_frames == 0:
                 continue
 
-            if total_b_frames == 0:
+            agreeing_frame_set = _find_agreeing_frames(
+                a_by_frame, b_by_frame, agreement_distance
+            )
+            agreeing_frames = len(agreeing_frame_set)
+
+            if agreeing_frames < min(min_overlap, total_b_frames):
                 continue
 
-            # Count overlapping frames where positions agree
-            agreeing_frames = 0
-            agreeing_frame_set = set()
-            for frame, (bx, by) in b_by_frame.items():
-                if frame in a_by_frame:
-                    ax, ay = a_by_frame[frame]
-                    dist = np.sqrt((bx - ax) ** 2 + (by - ay) ** 2)
-                    if dist <= agreement_distance:
-                        agreeing_frames += 1
-                        agreeing_frame_set.add(frame)
+            agreement_ratio = agreeing_frames / total_b_frames
+            if agreement_ratio < 0.7:
+                continue
 
-            # If most of B's frames agree with A, B is (mostly) redundant
-            if agreeing_frames >= min(min_overlap, total_b_frames):
-                agreement_ratio = agreeing_frames / total_b_frames
-                if agreement_ratio >= 0.7:
-                    if agreement_ratio >= 0.95:
-                        # Nearly fully covered — safe to remove entirely
-                        redundant_indices.add(idx_b)
-                        logger.debug(
-                            f"Removing fully redundant trajectory: "
-                            f"{agreeing_frames}/{total_b_frames} "
-                            f"({agreement_ratio:.1%}) frames agree"
-                        )
-                    else:
-                        # Partially redundant — trim to unique frames only
-                        traj_b = trajectories[idx_b]
-                        unique_mask = ~traj_b["FrameID"].isin(agreeing_frame_set)
-                        trimmed = traj_b.loc[unique_mask].copy()
-                        if not trimmed.empty:
-                            trimmed_replacements[idx_b] = trimmed
-                            logger.debug(
-                                f"Trimming partially redundant trajectory: "
-                                f"{agreeing_frames}/{total_b_frames} "
-                                f"({agreement_ratio:.1%}) redundant, "
-                                f"preserving {len(trimmed)} unique frames"
-                            )
-                        else:
-                            redundant_indices.add(idx_b)
+            if agreement_ratio >= 0.95:
+                redundant_indices.add(idx_b)
+                logger.debug(
+                    f"Removing fully redundant trajectory: "
+                    f"{agreeing_frames}/{total_b_frames} "
+                    f"({agreement_ratio:.1%}) frames agree"
+                )
+            else:
+                _trim_or_remove_trajectory(
+                    idx_b,
+                    trajectories,
+                    agreeing_frame_set,
+                    agreeing_frames,
+                    total_b_frames,
+                    agreement_ratio,
+                    trimmed_replacements,
+                    redundant_indices,
+                )
 
     # Build result: replace trimmed, skip removed
     result = []
@@ -1930,95 +1951,94 @@ def _merge_overlapping_agreeing_trajectories(
     return trajectories
 
 
+def _build_stitch_info(trajectories):
+    """Build start/end frame and position lookup for stitching."""
+    traj_info = {}
+    for idx, df in enumerate(trajectories):
+        if df.empty:
+            continue
+        traj_info[idx] = {
+            "start_frame": df["FrameID"].iat[0],
+            "end_frame": df["FrameID"].iat[-1],
+            "start_pos": (df["X"].iat[0], df["Y"].iat[0]),
+            "end_pos": (df["X"].iat[-1], df["Y"].iat[-1]),
+            "df": df,
+        }
+    sorted_indices = sorted(traj_info.keys(), key=lambda i: traj_info[i]["start_frame"])
+    return traj_info, sorted_indices
+
+
+def _find_best_stitch_candidate(
+    info_a,
+    sorted_indices,
+    idx_ptr,
+    traj_info,
+    used,
+    agreement_distance,
+    max_gap,
+):
+    """Find the closest spatial stitch candidate within max_gap frames."""
+    best_idx = -1
+    min_dist = float("inf")
+    for idx_next in range(idx_ptr + 1, len(sorted_indices)):
+        idx_b = sorted_indices[idx_next]
+        if idx_b in used:
+            continue
+        info_b = traj_info[idx_b]
+        gap = info_b["start_frame"] - info_a["end_frame"]
+        if gap <= 0:
+            continue
+        if gap > max_gap:
+            break
+        ax, ay = info_a["end_pos"]
+        bx, by = info_b["start_pos"]
+        if pd.isna(ax) or pd.isna(bx):
+            continue
+        dist = np.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+        if dist <= agreement_distance and dist < min_dist:
+            min_dist = dist
+            best_idx = idx_b
+    return best_idx, min_dist
+
+
 def _stitch_broken_trajectory_fragments(trajectories, agreement_distance, max_gap=2):
     """
     Stitch together trajectories that are likely fragmented parts of the same track.
 
     This handles sequential fragments where T2 starts shortly after T1 ends,
     and they are spatially close (within agreement_distance).
-
-    Args:
-        trajectories: List of trajectory DataFrames
-        agreement_distance: Max spatial distance to allow stitching
-        max_gap: Max frame gap between end of T1 and start of T2
     """
     if not trajectories:
         return trajectories
 
-    # Iterative stitching
     max_iterations = 20
-    iteration = 0
     current_trajectories = trajectories
 
-    while iteration < max_iterations:
-        iteration += 1
+    for iteration in range(1, max_iterations + 1):
         merged_any = False
         used = set()
         new_trajectories = []
-
-        # Build lookup for start/end info, then sort by start frame for efficient searching.
-        traj_info = {}
-        for idx, df in enumerate(current_trajectories):
-            if df.empty:
-                continue
-            start_frame = df["FrameID"].iat[0]
-            end_frame = df["FrameID"].iat[-1]
-            traj_info[idx] = {
-                "start_frame": start_frame,
-                "end_frame": end_frame,
-                "start_pos": (df["X"].iat[0], df["Y"].iat[0]),
-                "end_pos": (df["X"].iat[-1], df["Y"].iat[-1]),
-                "df": df,
-            }
-        sorted_indices = sorted(
-            traj_info.keys(), key=lambda i: traj_info[i]["start_frame"]
-        )
+        traj_info, sorted_indices = _build_stitch_info(current_trajectories)
 
         idx_ptr = 0
         while idx_ptr < len(sorted_indices):
             idx_a = sorted_indices[idx_ptr]
-
             if idx_a in used:
                 idx_ptr += 1
                 continue
 
             info_a = traj_info[idx_a]
-            best_idx_b = -1
-            min_dist = float("inf")
-
-            # Look ahead for stitch candidates
-            for idx_next in range(idx_ptr + 1, len(sorted_indices)):
-                idx_b = sorted_indices[idx_next]
-                if idx_b in used:
-                    continue
-
-                info_b = traj_info[idx_b]
-
-                # Check frame gap
-                gap = info_b["start_frame"] - info_a["end_frame"]
-
-                if gap <= 0:
-                    continue  # Overlapping (handled by other function)
-
-                if gap > max_gap:
-                    break  # Too far ahead (list is sorted)
-
-                # Check spatial distance
-                ax, ay = info_a["end_pos"]
-                bx, by = info_b["start_pos"]
-
-                if pd.isna(ax) or pd.isna(bx):
-                    continue
-
-                dist = np.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
-
-                if dist <= agreement_distance:
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_idx_b = idx_b
+            best_idx_b, min_dist = _find_best_stitch_candidate(
+                info_a,
+                sorted_indices,
+                idx_ptr,
+                traj_info,
+                used,
+                agreement_distance,
+                max_gap,
+            )
 
             if best_idx_b != -1:
-                # Merge sequential fragments
                 merged = pd.concat(
                     [info_a["df"], traj_info[best_idx_b]["df"]], ignore_index=True
                 )
@@ -2026,9 +2046,6 @@ def _stitch_broken_trajectory_fragments(trajectories, agreement_distance, max_ga
                 used.add(idx_a)
                 used.add(best_idx_b)
                 merged_any = True
-                logger.debug(
-                    f"Stitched fragment {idx_a} -> {best_idx_b} (gap: {traj_info[best_idx_b]['start_frame'] - info_a['end_frame']} frames, dist: {min_dist:.2f}px)"
-                )
             else:
                 new_trajectories.append(info_a["df"])
                 used.add(idx_a)
@@ -2696,67 +2713,59 @@ def relink_trajectories_with_pose(
     return result_df
 
 
+def _make_interp_func(method, valid_frames, valid_values, n_valid):
+    """Create an interpolation function for the given method, or None."""
+
+    def _linear():
+        return interp1d(
+            valid_frames,
+            valid_values,
+            kind="linear",
+            bounds_error=False,
+            fill_value=np.nan,
+        )
+
+    if method == "linear":
+        return _linear()
+    if method == "cubic":
+        if n_valid < 4:
+            return _linear()
+        return CubicSpline(
+            valid_frames, valid_values, bc_type="natural", extrapolate=False
+        )
+    if method == "spline":
+        if n_valid < 4:
+            return _linear()
+        return UnivariateSpline(valid_frames, valid_values, s=None, k=3)
+    return None
+
+
 def _interpolate_column(frames, values, method="linear", max_gap=10):
     """Interpolate a single column with gap limit."""
-    # Find valid (non-NaN) indices
     valid_mask = ~np.isnan(values)
     valid_indices = np.where(valid_mask)[0]
 
     if len(valid_indices) < 2:
-        return values  # Need at least 2 points to interpolate
+        return values
 
-    valid_frames = frames[valid_indices]
-    valid_values = values[valid_indices]
-
-    # Create interpolation function
     try:
-        if method == "linear":
-            interp_func = interp1d(
-                valid_frames,
-                valid_values,
-                kind="linear",
-                bounds_error=False,
-                fill_value=np.nan,
-            )
-        elif method == "cubic":
-            if len(valid_indices) < 4:
-                # Fall back to linear if not enough points
-                interp_func = interp1d(
-                    valid_frames,
-                    valid_values,
-                    kind="linear",
-                    bounds_error=False,
-                    fill_value=np.nan,
-                )
-            else:
-                interp_func = CubicSpline(
-                    valid_frames, valid_values, bc_type="natural", extrapolate=False
-                )
-        elif method == "spline":
-            if len(valid_indices) < 4:
-                # Fall back to linear if not enough points
-                interp_func = interp1d(
-                    valid_frames,
-                    valid_values,
-                    kind="linear",
-                    bounds_error=False,
-                    fill_value=np.nan,
-                )
-            else:
-                # Smoothing spline with automatic smoothing factor
-                interp_func = UnivariateSpline(valid_frames, valid_values, s=None, k=3)
-        else:
-            return values
+        interp_func = _make_interp_func(
+            method,
+            frames[valid_indices],
+            values[valid_indices],
+            len(valid_indices),
+        )
     except Exception as e:
         logger.warning(f"Interpolation failed: {e}, keeping original values")
         return values
 
+    if interp_func is None:
+        return values
+
     result = values.copy()
 
-    # Build a single boolean mask covering every position that falls inside a
-    # within-limit gap, then call interp_func once with all those positions.
-    # This replaces N_gap individual calls with one vectorised call, which is
-    # substantially faster for scipy interp1d / CubicSpline.
+    # Build a single boolean mask for all within-limit gaps, then call
+    # interp_func once (vectorised, much faster than per-gap calls).
     fill_mask = np.zeros(len(frames), dtype=bool)
     for i in range(len(valid_indices) - 1):
         gap_size = valid_indices[i + 1] - valid_indices[i] - 1
@@ -2767,9 +2776,46 @@ def _interpolate_column(frames, values, method="linear", max_gap=10):
         try:
             result[fill_mask] = interp_func(frames[fill_mask])
         except Exception:
-            pass  # Keep NaN if interpolation fails
+            pass
 
     return result
+
+
+def _circ_diff(a, b):
+    """Absolute circular difference in [0, pi]."""
+    two_pi = 2.0 * np.pi
+    d = abs(a - b) % two_pi
+    return min(d, two_pi - d)
+
+
+def _find_prev_valid(result, i):
+    """Find the last non-NaN index before i, or -1."""
+    prev_idx = i - 1
+    while prev_idx >= 0 and np.isnan(result[prev_idx]):
+        prev_idx -= 1
+    return prev_idx
+
+
+def _find_next_valid(result, start, n):
+    """Find the first non-NaN index at or after start, or n."""
+    idx = start
+    while idx < n and np.isnan(result[idx]):
+        idx += 1
+    return idx
+
+
+def _measure_flip_burst(result, start, n, prev_val, max_burst):
+    """Find the end of a contiguous flipped burst starting at 'start'."""
+    burst_end = start + 1
+    while burst_end < n and burst_end - start < max_burst + 1:
+        if np.isnan(result[burst_end]):
+            burst_end += 1
+            continue
+        if _circ_diff(result[burst_end], prev_val) > np.pi / 2:
+            burst_end += 1
+        else:
+            break
+    return burst_end
 
 
 def _fix_heading_flips(theta: np.ndarray, max_burst: int = 5) -> np.ndarray:
@@ -2798,71 +2844,40 @@ def _fix_heading_flips(theta: np.ndarray, max_burst: int = 5) -> np.ndarray:
     if n < 3:
         return result
 
-    def _circ_diff(a, b):
-        """Absolute circular difference in [0, pi]."""
-        d = abs(a - b) % two_pi
-        return min(d, two_pi - d)
-
     # Iterative passes — a single pass may leave residual flips when bursts
     # are adjacent.  Three passes is sufficient for typical data.
     for _pass in range(3):
         changed = False
         i = 0
         while i < n:
-            # Skip NaN values
             if np.isnan(result[i]):
                 i += 1
                 continue
 
-            # Find the last valid value before this position
-            prev_idx = i - 1
-            while prev_idx >= 0 and np.isnan(result[prev_idx]):
-                prev_idx -= 1
+            prev_idx = _find_prev_valid(result, i)
             if prev_idx < 0:
                 i += 1
                 continue
 
             prev_val = result[prev_idx]
-            cur_val = result[i]
-
-            # Check if this frame is a potential flip (>90° from previous)
-            if _circ_diff(cur_val, prev_val) <= np.pi / 2:
+            if _circ_diff(result[i], prev_val) <= np.pi / 2:
                 i += 1
                 continue
 
-            # Found a potential flip start at index i.  Find how long it lasts.
-            burst_end = i + 1
-            while burst_end < n and burst_end - i < max_burst + 1:
-                if np.isnan(result[burst_end]):
-                    burst_end += 1
-                    continue
-                # Is this frame still flipped relative to prev_val?
-                if _circ_diff(result[burst_end], prev_val) > np.pi / 2:
-                    burst_end += 1
-                else:
-                    break
-
+            # Found a potential flip burst starting at i
+            burst_end = _measure_flip_burst(result, i, n, prev_val, max_burst)
             burst_len = burst_end - i
-            # Only correct if the burst is short enough AND there's a valid
-            # frame after the burst that agrees with the pre-flip heading
-            # (confirming it was a transient flip, not a real turn).
-            if burst_len <= max_burst:
-                # Check the frame at burst_end: it should be close to prev_val
-                post_idx = burst_end
-                while post_idx < n and np.isnan(result[post_idx]):
-                    post_idx += 1
-                if post_idx < n:
-                    post_val = result[post_idx]
-                    if _circ_diff(post_val, prev_val) <= np.pi / 2:
-                        # Confirmed isolated flip burst — correct it
-                        for j in range(i, burst_end):
-                            if not np.isnan(result[j]):
-                                result[j] = (result[j] + np.pi) % two_pi
-                        changed = True
-                        i = burst_end
-                        continue
 
-            # Either burst too long or no confirming post-value — skip
+            if burst_len <= max_burst:
+                post_idx = _find_next_valid(result, burst_end, n)
+                if post_idx < n and _circ_diff(result[post_idx], prev_val) <= np.pi / 2:
+                    for j in range(i, burst_end):
+                        if not np.isnan(result[j]):
+                            result[j] = (result[j] + np.pi) % two_pi
+                    changed = True
+                    i = burst_end
+                    continue
+
             i = burst_end if burst_len > max_burst else i + 1
 
         if not changed:

@@ -554,206 +554,312 @@ class ExportWorker(QRunnable):
             split_by_index[int(idx)] = "val"
         return split_by_index
 
+    def _prepare_export_workspace(self) -> None:
+        """Create a temporary expansion workspace when label expansion is enabled."""
+        if self.label_expansion and self.temp_dir is None:
+            import tempfile
+
+            self._expansion_tmpdir = tempfile.mkdtemp(prefix="classkit_exp_")
+            self.temp_dir = Path(self._expansion_tmpdir)
+        else:
+            self._expansion_tmpdir = None
+
+    def _collect_valid_labels(
+        self,
+    ) -> tuple[List[Path], List[int], List[str], Dict[int, str]]:
+        """Return filtered image/label/split data for labeled samples only."""
+        valid = [
+            (img_path, int(label))
+            for img_path, label in zip(self.image_paths, self.labels)
+            if int(label) >= 0
+        ]
+        if not valid:
+            raise RuntimeError("No labeled samples found to export.")
+
+        image_paths = [item[0] for item in valid]
+        labels = [item[1] for item in valid]
+        splits = [
+            split
+            for split, (_, lbl) in zip(
+                self._build_splits(), zip(self.image_paths, self.labels)
+            )
+            if int(lbl) >= 0
+        ]
+        class_names = {label: self._class_name(label) for label in set(labels)}
+        return image_paths, labels, splits, class_names
+
+    @staticmethod
+    def _resolve_expanded_label(
+        mapping: Dict[str, str],
+        src_name: str,
+        name_to_int: Dict[str, int],
+        name_to_int_ci: Dict[str, int],
+    ) -> tuple[bool, Optional[int]]:
+        """Resolve one expansion rule to a destination label and match status."""
+        dst_name = mapping.get(src_name)
+        if dst_name is None:
+            src_name_ci = str(src_name).strip().lower()
+            for key, value in mapping.items():
+                if str(key).strip().lower() == src_name_ci:
+                    dst_name = value
+                    break
+        if dst_name is None:
+            return False, None
+
+        dst_name_clean = str(dst_name).strip()
+        dst_int = name_to_int.get(dst_name_clean)
+        if dst_int is None:
+            dst_int = name_to_int_ci.get(dst_name_clean.lower())
+        return True, dst_int
+
+    def _apply_label_expansion(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+    ) -> tuple[List[Path], List[int], List[str]]:
+        """Materialize deterministic flip-based label expansion for training samples."""
+        if not self.label_expansion or not self.temp_dir:
+            return image_paths, labels, splits
+
+        import cv2
+
+        name_to_int = {v: k for k, v in class_names.items()}
+        name_to_int_ci = {str(v).strip().lower(): k for k, v in class_names.items()}
+        flip_code = {"fliplr": 1, "flipud": 0}
+        exp_dir = Path(self.temp_dir) / "label_expansion"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+
+        extra_paths: List[Path] = []
+        extra_labels: List[int] = []
+        extra_splits: List[str] = []
+        n_exp = 0
+        n_skipped_unknown_dst = 0
+
+        for axis, mapping in self.label_expansion.items():
+            code = flip_code.get(axis)
+            if code is None:
+                continue
+            axis_paths, axis_labels, skipped = self._expand_label_axis(
+                axis,
+                mapping,
+                code,
+                exp_dir,
+                image_paths,
+                labels,
+                splits,
+                class_names,
+                name_to_int,
+                name_to_int_ci,
+                n_exp,
+                cv2,
+            )
+            extra_paths.extend(axis_paths)
+            extra_labels.extend(axis_labels)
+            extra_splits.extend(["train"] * len(axis_paths))
+            n_skipped_unknown_dst += skipped
+            n_exp += len(axis_paths)
+
+        if n_exp:
+            self.signals.progress.emit(55, f"Added {n_exp} label-expansion copies")
+            self.copy_files = True
+        if n_skipped_unknown_dst:
+            self.signals.progress.emit(
+                58,
+                f"Skipped {n_skipped_unknown_dst} expansion rows with unknown destination class",
+            )
+
+        return (
+            image_paths + extra_paths,
+            labels + extra_labels,
+            splits + extra_splits,
+        )
+
+    def _expand_label_axis(
+        self,
+        axis: str,
+        mapping: Dict[str, str],
+        code: int,
+        exp_dir: Path,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+        name_to_int: Dict[str, int],
+        name_to_int_ci: Dict[str, int],
+        start_index: int,
+        cv2_module,
+    ) -> tuple[List[Path], List[int], int]:
+        """Expand one configured axis and return new samples plus skipped count."""
+        extra_paths: List[Path] = []
+        extra_labels: List[int] = []
+        n_skipped_unknown_dst = 0
+        n_exp = start_index
+
+        for img_path, label_int, split in zip(image_paths, labels, splits):
+            if split != "train":
+                continue
+            matched_rule, dst_int = self._resolve_expanded_label(
+                mapping,
+                class_names.get(label_int, ""),
+                name_to_int,
+                name_to_int_ci,
+            )
+            if not matched_rule:
+                continue
+            img = cv2_module.imread(str(img_path), cv2_module.IMREAD_COLOR)
+            if img is None:
+                raise FileNotFoundError(
+                    f"Failed to read image for label expansion: {img_path}"
+                )
+            if dst_int is None:
+                n_skipped_unknown_dst += 1
+                continue
+            flipped = cv2_module.flip(img, code)
+            stem = f"expn_{axis}_{n_exp}_{img_path.stem}"
+            out_p = exp_dir / (stem + img_path.suffix)
+            cv2_module.imwrite(str(out_p), flipped)
+            extra_paths.append(out_p)
+            extra_labels.append(dst_int)
+            n_exp += 1
+
+        return extra_paths, extra_labels, n_skipped_unknown_dst
+
+    def _export_imagefolder(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+    ) -> None:
+        from ..export.imagefolder import export_to_imagefolder
+
+        records = [
+            (path, class_names[label], split)
+            for path, label, split in zip(image_paths, labels, splits)
+        ]
+        export_to_imagefolder(
+            dataset_root=self.output_path,
+            images=records,
+            copy=self.copy_files,
+        )
+
+    def _export_csv(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+    ) -> None:
+        from ..export.parquet_csv import export_to_csv
+
+        csv_path = self.output_path
+        if csv_path.suffix.lower() != ".csv":
+            csv_path = csv_path / "labels.csv"
+        export_to_csv(
+            output_path=csv_path,
+            image_paths=image_paths,
+            labels=labels,
+            class_names=class_names,
+            splits=splits,
+            include_header=True,
+        )
+        self.output_path = csv_path
+
+    def _export_parquet(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+    ) -> None:
+        from ..export.parquet_csv import export_to_parquet
+
+        parquet_path = self.output_path
+        if parquet_path.suffix.lower() != ".parquet":
+            parquet_path = parquet_path / "labels.parquet"
+        export_to_parquet(
+            output_path=parquet_path,
+            image_paths=image_paths,
+            labels=labels,
+            class_names=class_names,
+            splits=splits,
+        )
+        self.output_path = parquet_path
+
+    def _export_ultralytics(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+    ) -> None:
+        from ..export.ultralytics_classify import export_ultralytics_classify
+
+        train_images, train_labels = [], []
+        val_images, val_labels = [], []
+        test_images, test_labels = [], []
+        for path, label, split in zip(image_paths, labels, splits):
+            if split == "val":
+                val_images.append(path)
+                val_labels.append(label)
+            elif split == "test":
+                test_images.append(path)
+                test_labels.append(label)
+            else:
+                train_images.append(path)
+                train_labels.append(label)
+
+        if not val_images and train_images:
+            val_images.append(train_images[-1])
+            val_labels.append(train_labels[-1])
+            train_images = train_images[:-1]
+            train_labels = train_labels[:-1]
+
+        export_ultralytics_classify(
+            output_path=self.output_path,
+            train_images=train_images,
+            train_labels=train_labels,
+            val_images=val_images,
+            val_labels=val_labels,
+            test_images=test_images if test_images else None,
+            test_labels=test_labels if test_labels else None,
+            class_names=class_names,
+            copy=self.copy_files,
+        )
+
+    def _export_dataset(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+        class_names: Dict[int, str],
+    ) -> None:
+        """Dispatch to the requested dataset export format."""
+        exporters = {
+            "imagefolder": self._export_imagefolder,
+            "csv": self._export_csv,
+            "parquet": self._export_parquet,
+            "ultralytics": self._export_ultralytics,
+        }
+        exporter = exporters.get(self.format)
+        if exporter is None:
+            raise ValueError(f"Unsupported export format: {self.format}")
+        exporter(image_paths, labels, splits, class_names)
+
     @Slot()
     def run(self):
         try:
             self.signals.started.emit()
             self.signals.progress.emit(0, f"Exporting to {self.format}...")
 
-            # Ensure temp_dir exists when label expansion is requested
-            if self.label_expansion and self.temp_dir is None:
-                import tempfile
-
-                self._expansion_tmpdir = tempfile.mkdtemp(prefix="classkit_exp_")
-                self.temp_dir = Path(self._expansion_tmpdir)
-            else:
-                self._expansion_tmpdir = None
-
-            valid = [
-                (img_path, int(label))
-                for img_path, label in zip(self.image_paths, self.labels)
-                if int(label) >= 0
-            ]
-
-            if not valid:
-                raise RuntimeError("No labeled samples found to export.")
-
-            image_paths = [item[0] for item in valid]
-            labels = [item[1] for item in valid]
-
-            splits = self._build_splits()
-            splits = [
-                split
-                for split, (_, lbl) in zip(splits, zip(self.image_paths, self.labels))
-                if int(lbl) >= 0
-            ]
-
-            class_names = {label: self._class_name(label) for label in set(labels)}
-
-            # ----------------------------------------------------------------
-            # Label-switching expansion: physically write flipped copies with
-            # the remapped label so the training split contains both the
-            # original and its mirror with correct labels.
-            # Only added to the train split to avoid leaking flipped versions
-            # into the evaluation set.
-            # ----------------------------------------------------------------
-            if self.label_expansion and self.temp_dir:
-                import cv2
-
-                # Build reverse name→int map so we can look up the remapped int label.
-                name_to_int = {v: k for k, v in class_names.items()}
-                name_to_int_ci = {
-                    str(v).strip().lower(): k for k, v in class_names.items()
-                }
-
-                # CV2 flip codes: 0=vertical (flipud), 1=horizontal (fliplr)
-                flip_code = {"fliplr": 1, "flipud": 0}
-
-                exp_dir = Path(self.temp_dir) / "label_expansion"
-                exp_dir.mkdir(parents=True, exist_ok=True)
-
-                extra_paths: List[Path] = []
-                extra_labels: List[int] = []
-                extra_splits: List[str] = []
-                n_exp = 0
-                n_skipped_unknown_dst = 0
-
-                for axis, mapping in self.label_expansion.items():
-                    if axis not in flip_code:
-                        continue
-                    code = flip_code[axis]
-
-                    for img_path, label_int, split in zip(image_paths, labels, splits):
-                        if split != "train":
-                            continue  # only expand training data
-                        src_name = class_names.get(label_int, "")
-                        dst_name = mapping.get(src_name)
-                        if dst_name is None:
-                            # Backward compatibility for legacy configs with case drift.
-                            src_name_ci = str(src_name).strip().lower()
-                            for key, value in mapping.items():
-                                if str(key).strip().lower() == src_name_ci:
-                                    dst_name = value
-                                    break
-                        if dst_name is None:
-                            continue  # label not in this expansion rule
-
-                        dst_name_clean = str(dst_name).strip()
-                        dst_int = name_to_int.get(dst_name_clean)
-                        if dst_int is None:
-                            dst_int = name_to_int_ci.get(dst_name_clean.lower())
-                        if dst_int is None:
-                            # Unknown destinations usually come from stale free-text
-                            # mappings. Skip rather than inventing a synthetic class.
-                            n_skipped_unknown_dst += 1
-                            continue
-
-                        img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-                        if img is None:
-                            continue
-                        flipped = cv2.flip(img, code)
-                        stem = f"expn_{axis}_{n_exp}_{img_path.stem}"
-                        out_p = exp_dir / (stem + img_path.suffix)
-                        cv2.imwrite(str(out_p), flipped)
-                        extra_paths.append(out_p)
-                        extra_labels.append(dst_int)
-                        extra_splits.append("train")
-                        n_exp += 1
-
-                if n_exp:
-                    self.signals.progress.emit(
-                        55, f"Added {n_exp} label-expansion copies"
-                    )
-                    image_paths = image_paths + extra_paths
-                    labels = labels + extra_labels
-                    splits = splits + extra_splits
-                    self.copy_files = True  # expanded images live in temp_dir
-                if n_skipped_unknown_dst:
-                    self.signals.progress.emit(
-                        58,
-                        f"Skipped {n_skipped_unknown_dst} expansion rows with unknown destination class",
-                    )
-
-            if self.format == "imagefolder":
-                from ..export.imagefolder import export_to_imagefolder
-
-                records = [
-                    (path, class_names[label], split)
-                    for path, label, split in zip(image_paths, labels, splits)
-                ]
-                export_to_imagefolder(
-                    dataset_root=self.output_path,
-                    images=records,
-                    copy=self.copy_files,
-                )
-            elif self.format == "csv":
-                from ..export.parquet_csv import export_to_csv
-
-                csv_path = self.output_path
-                if csv_path.suffix.lower() != ".csv":
-                    csv_path = csv_path / "labels.csv"
-
-                export_to_csv(
-                    output_path=csv_path,
-                    image_paths=image_paths,
-                    labels=labels,
-                    class_names=class_names,
-                    splits=splits,
-                    include_header=True,
-                )
-                self.output_path = csv_path
-            elif self.format == "parquet":
-                from ..export.parquet_csv import export_to_parquet
-
-                parquet_path = self.output_path
-                if parquet_path.suffix.lower() != ".parquet":
-                    parquet_path = parquet_path / "labels.parquet"
-
-                export_to_parquet(
-                    output_path=parquet_path,
-                    image_paths=image_paths,
-                    labels=labels,
-                    class_names=class_names,
-                    splits=splits,
-                )
-                self.output_path = parquet_path
-            elif self.format == "ultralytics":
-                from ..export.ultralytics_classify import export_ultralytics_classify
-
-                train_images, train_labels = [], []
-                val_images, val_labels = [], []
-                test_images, test_labels = [], []
-
-                for path, label, split in zip(image_paths, labels, splits):
-                    if split == "val":
-                        val_images.append(path)
-                        val_labels.append(label)
-                    elif split == "test":
-                        test_images.append(path)
-                        test_labels.append(label)
-                    else:
-                        train_images.append(path)
-                        train_labels.append(label)
-
-                if not val_images and train_images:
-                    val_images.append(train_images[-1])
-                    val_labels.append(train_labels[-1])
-                    train_images = train_images[:-1]
-                    train_labels = train_labels[:-1]
-
-                export_ultralytics_classify(
-                    output_path=self.output_path,
-                    train_images=train_images,
-                    train_labels=train_labels,
-                    val_images=val_images,
-                    val_labels=val_labels,
-                    test_images=test_images if test_images else None,
-                    test_labels=test_labels if test_labels else None,
-                    class_names=class_names,
-                    copy=self.copy_files,
-                )
-            else:
-                raise ValueError(f"Unsupported export format: {self.format}")
+            self._prepare_export_workspace()
+            image_paths, labels, splits, class_names = self._collect_valid_labels()
+            image_paths, labels, splits = self._apply_label_expansion(
+                image_paths, labels, splits, class_names
+            )
+            self._export_dataset(image_paths, labels, splits, class_names)
 
             self.signals.progress.emit(100, "Complete!")
             self.signals.success.emit(
@@ -773,11 +879,10 @@ class ExportWorker(QRunnable):
             # Clean up auto-created expansion temp dir (if we made it)
             if getattr(self, "_expansion_tmpdir", None):
                 import shutil
+                from contextlib import suppress
 
-                try:
+                with suppress(Exception):
                     shutil.rmtree(self._expansion_tmpdir, ignore_errors=True)
-                except Exception:
-                    pass
                 self._expansion_tmpdir = None
 
 
@@ -797,9 +902,11 @@ class YoloInferenceWorker(QRunnable):
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.model_path = Path(model_path)
         self.image_paths = list(image_paths)
-        if not compute_runtime or compute_runtime == "cpu":
-            if device and device not in ("", "cpu"):
-                compute_runtime = device
+        if (not compute_runtime or compute_runtime == "cpu") and device not in (
+            "",
+            "cpu",
+        ):
+            compute_runtime = device
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
         self.signals = TaskSignals()
@@ -814,125 +921,134 @@ class YoloInferenceWorker(QRunnable):
             return "cuda"  # PyTorch uses "cuda" namespace for ROCm.
         return "cpu"
 
+    @staticmethod
+    def _validate_model_suffix(model_path: Path) -> None:
+        model_suffix = model_path.suffix.lower()
+        if model_suffix == ".pth":
+            raise ValueError(
+                f"YoloInferenceWorker requires a YOLO classify artifact (.pt/.onnx/.engine/.trt); got {model_path.name}. "
+                "Tiny CNN (.pth) models are not supported here."
+            )
+        if model_suffix not in {".pt", ".onnx", ".engine", ".trt"}:
+            raise ValueError(
+                f"Unsupported YOLO model artifact for inference: {model_path.name}"
+            )
+
+    def _export_runtime_artifact(self, rt: str, model_path: Path):
+        from ultralytics import YOLO
+
+        use_onnx = rt.startswith("onnx_")
+        artifact_suffix = ".onnx" if use_onnx else ".engine"
+        artifact_path = model_path.with_name(
+            f"{model_path.stem}_classify_b1{artifact_suffix}"
+        )
+        needs_export = (not artifact_path.exists()) or (
+            artifact_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
+        )
+        if not needs_export:
+            return artifact_path
+
+        self.signals.progress.emit(
+            1,
+            f"Preparing YOLO classify {artifact_suffix} runtime artifact...",
+        )
+        export_model = YOLO(str(model_path), task="classify")
+        if use_onnx:
+            export_path = export_model.export(
+                format="onnx",
+                dynamic=False,
+                simplify=False,
+                opset=17,
+                batch=1,
+                verbose=False,
+            )
+        else:
+            export_device = self._torch_device(rt)
+            export_model.to(export_device)
+            export_path = export_model.export(
+                format="engine",
+                device=export_device,
+                half=True,
+                workspace=4,
+                dynamic=False,
+                batch=1,
+                verbose=False,
+            )
+        exported = Path(export_path).expanduser().resolve()
+        if not exported.exists():
+            raise RuntimeError(f"YOLO runtime export output missing: {exported}")
+        if exported != artifact_path:
+            shutil.copy2(str(exported), str(artifact_path))
+        return artifact_path
+
+    def _resolve_model_path(self, rt: str) -> Path:
+        model_path = self.model_path
+        self._validate_model_suffix(model_path)
+        use_exported_runtime = rt.startswith("onnx_") or rt == "tensorrt"
+        if model_path.suffix.lower() == ".pt" and use_exported_runtime:
+            model_path = self._export_runtime_artifact(rt, model_path)
+        self._validate_model_suffix(model_path)
+        return model_path
+
+    def _load_model(self, rt: str, model_path: Path):
+        from ultralytics import YOLO
+
+        self.signals.progress.emit(
+            0, f"Loading YOLO model ({rt}): {model_path.name}..."
+        )
+        model = YOLO(str(model_path), task="classify")
+        class_names = (
+            [model.names[i] for i in sorted(model.names.keys())]
+            if hasattr(model, "names")
+            else []
+        )
+        predict_device = None
+        if model_path.suffix.lower() == ".pt":
+            predict_device = self._torch_device(rt)
+            try:
+                model.to(predict_device)
+                predict_device = None
+            except Exception:
+                pass
+        return model, class_names, predict_device
+
+    def _run_batches(self, model, class_names, predict_device):
+        import numpy as np
+
+        num_images = len(self.image_paths)
+        self.signals.progress.emit(
+            5, f"Running inference on {num_images:,} images ({self.compute_runtime})..."
+        )
+        all_probs = []
+        for batch_start in range(0, num_images, self.batch_size):
+            batch_paths = self.image_paths[batch_start : batch_start + self.batch_size]
+            batch_input = [str(p) for p in batch_paths]
+            kwargs = {"verbose": False}
+            if predict_device is not None:
+                kwargs["device"] = predict_device
+            results = model(batch_input, **kwargs)
+            for result in results:
+                if result.probs is not None:
+                    all_probs.append(result.probs.data.cpu().numpy())
+                else:
+                    n_cls = max(len(class_names), 1)
+                    all_probs.append(np.ones(n_cls) / n_cls)
+            done = batch_start + len(batch_paths)
+            pct = min(95, 5 + int(90 * done / num_images))
+            self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
+        return np.array(all_probs)
+
     @Slot()
     def run(self):
         try:
             self.signals.started.emit()
-            import numpy as np
-            from ultralytics import YOLO
 
             from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
-            use_onnx = rt.startswith("onnx_")
-            use_tensorrt = rt == "tensorrt"
-
-            model_path = self.model_path
-            model_suffix = model_path.suffix.lower()
-
-            if model_suffix == ".pth":
-                raise ValueError(
-                    f"YoloInferenceWorker requires a YOLO classify artifact (.pt/.onnx/.engine/.trt); got {model_path.name}. "
-                    "Tiny CNN (.pth) models are not supported here."
-                )
-
-            if model_suffix == ".pt" and (use_onnx or use_tensorrt):
-                artifact_suffix = ".onnx" if use_onnx else ".engine"
-                artifact_path = model_path.with_name(
-                    f"{model_path.stem}_classify_b1{artifact_suffix}"
-                )
-                needs_export = (not artifact_path.exists()) or (
-                    artifact_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
-                )
-                if needs_export:
-                    self.signals.progress.emit(
-                        1,
-                        f"Preparing YOLO classify {artifact_suffix} runtime artifact...",
-                    )
-                    export_model = YOLO(str(model_path), task="classify")
-                    if use_onnx:
-                        export_path = export_model.export(
-                            format="onnx",
-                            dynamic=False,
-                            simplify=False,
-                            opset=17,
-                            batch=1,
-                            verbose=False,
-                        )
-                    else:
-                        export_device = self._torch_device(rt)
-                        export_model.to(export_device)
-                        export_path = export_model.export(
-                            format="engine",
-                            device=export_device,
-                            half=True,
-                            workspace=4,
-                            dynamic=False,
-                            batch=1,
-                            verbose=False,
-                        )
-                    exported = Path(export_path).expanduser().resolve()
-                    if not exported.exists():
-                        raise RuntimeError(
-                            f"YOLO runtime export output missing: {exported}"
-                        )
-                    if exported != artifact_path:
-                        shutil.copy2(str(exported), str(artifact_path))
-                model_path = artifact_path
-
-            if model_path.suffix.lower() not in {".pt", ".onnx", ".engine", ".trt"}:
-                raise ValueError(
-                    f"Unsupported YOLO model artifact for inference: {model_path.name}"
-                )
-
-            self.signals.progress.emit(
-                0, f"Loading YOLO model ({rt}): {model_path.name}..."
-            )
-            model = YOLO(str(model_path), task="classify")
-            class_names = (
-                [model.names[i] for i in sorted(model.names.keys())]
-                if hasattr(model, "names")
-                else []
-            )
-
-            predict_device = None
-            if model_path.suffix.lower() == ".pt":
-                # Place native PyTorch model on requested torch device.
-                # For exported runtimes, device routing is backend/provider-driven.
-                predict_device = self._torch_device(rt)
-                try:
-                    model.to(predict_device)
-                    predict_device = None
-                except Exception:
-                    pass
-
-            num_images = len(self.image_paths)
-            self.signals.progress.emit(
-                5, f"Running inference on {num_images:,} images ({rt})..."
-            )
-            all_probs = []
-
-            for batch_start in range(0, num_images, self.batch_size):
-                batch_paths = self.image_paths[
-                    batch_start : batch_start + self.batch_size
-                ]
-                batch_input = [str(p) for p in batch_paths]
-                kwargs = {"verbose": False}
-                if predict_device is not None:
-                    kwargs["device"] = predict_device
-                results = model(batch_input, **kwargs)
-                for r in results:
-                    if r.probs is not None:
-                        all_probs.append(r.probs.data.cpu().numpy())
-                    else:
-                        n_cls = max(len(class_names), 1)
-                        all_probs.append(np.ones(n_cls) / n_cls)
-
-                done = batch_start + len(batch_paths)
-                pct = min(95, 5 + int(90 * done / num_images))
-                self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
-
-            probs = np.array(all_probs)  # (N, num_classes)
+            model_path = self._resolve_model_path(rt)
+            model, class_names, predict_device = self._load_model(rt, model_path)
+            probs = self._run_batches(model, class_names, predict_device)
             self.signals.progress.emit(100, "Inference complete!")
             self.signals.success.emit({"probs": probs, "class_names": class_names})
 
@@ -1146,9 +1262,11 @@ class TinyCNNInferenceWorker(QRunnable):
         self.image_paths = list(image_paths)
         self.class_names = list(class_names)
         # Backward-compat: if caller only passed the old `device` kwarg, honour it.
-        if not compute_runtime or compute_runtime == "cpu":
-            if device and device not in ("", "cpu"):
-                compute_runtime = device
+        if (not compute_runtime or compute_runtime == "cpu") and device not in (
+            "",
+            "cpu",
+        ):
+            compute_runtime = device
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
         self.signals = TaskSignals()
@@ -1166,140 +1284,133 @@ class TinyCNNInferenceWorker(QRunnable):
             return "cuda"  # PyTorch uses "cuda" for ROCm
         return "cpu"
 
+    @staticmethod
+    def _load_batch_images(batch_paths, input_w, input_h):
+        import cv2
+        import numpy as np
+
+        tensors = []
+        for path in batch_paths:
+            try:
+                img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                if img is None:
+                    tensors.append(np.zeros((3, input_h, input_w), dtype=np.float32))
+                    continue
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = cv2.resize(
+                    img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
+                )
+                tensors.append(img.transpose(2, 0, 1).astype(np.float32) / 255.0)
+            except Exception:
+                tensors.append(np.zeros((3, input_h, input_w), dtype=np.float32))
+        if tensors:
+            return np.stack(tensors, axis=0)
+        return np.zeros((0, 3, input_h, input_w), dtype=np.float32)
+
+    def _resolve_tiny_runtime(self, rt: str) -> tuple[bool, Path]:
+        onnx_path = self.model_path.with_suffix(".onnx")
+        use_onnx = rt.startswith("onnx_") or rt == "tensorrt"
+        if use_onnx and not onnx_path.exists():
+            use_onnx = False
+        return use_onnx, onnx_path
+
+    def _run_tiny_onnx(self, rt: str, onnx_path: Path, num_images: int):
+        import torch
+
+        from ...training.tiny_model import load_tiny_onnx, run_tiny_onnx
+
+        resolved_names = list(self.class_names)
+        try:
+            ckpt = torch.load(
+                str(self.model_path), map_location="cpu", weights_only=False
+            )
+            input_w, input_h = ckpt.get("input_size", [128, 64])
+            ckpt_names = ckpt.get("class_names")
+            if ckpt_names:
+                resolved_names = list(ckpt_names)
+        except Exception:
+            input_w, input_h = 128, 64
+
+        session = load_tiny_onnx(str(onnx_path), compute_runtime=rt)
+        self.signals.progress.emit(
+            5, f"Tiny CNN ONNX inference on {num_images:,} images..."
+        )
+        all_probs = []
+        for batch_start in range(0, num_images, self.batch_size):
+            batch_paths = self.image_paths[batch_start : batch_start + self.batch_size]
+            batch_np = self._load_batch_images(batch_paths, input_w, input_h)
+            if batch_np.shape[0] == 0:
+                continue
+            all_probs.append(run_tiny_onnx(session, batch_np))
+            done = batch_start + len(batch_paths)
+            pct = min(95, 5 + int(90 * done / num_images))
+            self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
+        return all_probs, resolved_names
+
+    def _run_tiny_torch(self, rt: str, num_images: int):
+        import torch
+        import torch.nn.functional as F
+
+        from ...training.tiny_model import load_tiny_classifier
+
+        resolved_names = list(self.class_names)
+        torch_device = self._torch_device(rt)
+        model, ckpt = load_tiny_classifier(str(self.model_path), device=torch_device)
+        input_w, input_h = ckpt.get("input_size", [128, 64])
+        ckpt_names = ckpt.get("class_names")
+        if ckpt_names:
+            resolved_names = list(ckpt_names)
+
+        self.signals.progress.emit(5, f"Tiny CNN inference on {num_images:,} images...")
+        all_probs = []
+        for batch_start in range(0, num_images, self.batch_size):
+            batch_paths = self.image_paths[batch_start : batch_start + self.batch_size]
+            batch_np = self._load_batch_images(batch_paths, input_w, input_h)
+            if batch_np.shape[0] == 0:
+                continue
+            x = torch.from_numpy(batch_np).to(torch_device)
+            with torch.no_grad():
+                logits = model(x)
+                all_probs.append(F.softmax(logits, dim=1).cpu().numpy())
+            done = batch_start + len(batch_paths)
+            pct = min(95, 5 + int(90 * done / num_images))
+            self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
+        return all_probs, resolved_names
+
+    @staticmethod
+    def _finalize_tiny_probs(all_probs, resolved_names, num_images):
+        import numpy as np
+
+        if all_probs:
+            return np.concatenate(all_probs, axis=0)
+        n_cls = max(len(resolved_names), 1)
+        return np.full((num_images, n_cls), 1.0 / n_cls)
+
     @Slot()
     def run(self):
         try:
             self.signals.started.emit()
-            import cv2
-            import numpy as np
 
             from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
-            use_onnx = rt.startswith("onnx_") or rt == "tensorrt"
-            onnx_path = self.model_path.with_suffix(".onnx")
-            if use_onnx and not onnx_path.exists():
-                # ONNX file not available — fall back to PyTorch silently.
-                use_onnx = False
+            use_onnx, onnx_path = self._resolve_tiny_runtime(rt)
 
             self.signals.progress.emit(
                 0, f"Loading tiny CNN ({rt}): {self.model_path.name}..."
             )
 
             num_images = len(self.image_paths)
-
-            # ── Image-loading helper (shared between both inference paths) ────
-            def _load_batch_images(batch_paths, input_w, input_h):
-                tensors = []
-                for p in batch_paths:
-                    try:
-                        img = cv2.imread(str(p), cv2.IMREAD_COLOR)
-                        if img is None:
-                            tensors.append(
-                                np.zeros((3, input_h, input_w), dtype=np.float32)
-                            )
-                            continue
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        img = cv2.resize(
-                            img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
-                        )
-                        tensors.append(
-                            img.transpose(2, 0, 1).astype(np.float32) / 255.0
-                        )
-                    except Exception:
-                        tensors.append(
-                            np.zeros((3, input_h, input_w), dtype=np.float32)
-                        )
-                return (
-                    np.stack(tensors, axis=0)
-                    if tensors
-                    else np.zeros((0, 3, input_h, input_w), dtype=np.float32)
-                )
-
-            all_probs: list = []
-            resolved_names: list = list(self.class_names)
-
-            # ── ONNX / TensorRT inference path ────────────────────────────────
             if use_onnx:
-                import torch  # for reading ckpt metadata only
-
-                from ...training.tiny_model import load_tiny_onnx, run_tiny_onnx
-
-                # Read input size from .pth checkpoint (no GPU needed)
-                try:
-                    _ckpt = torch.load(
-                        str(self.model_path), map_location="cpu", weights_only=False
-                    )
-                    input_w, input_h = _ckpt.get("input_size", [128, 64])
-                    ckpt_names = _ckpt.get("class_names")
-                    if ckpt_names:
-                        resolved_names = list(ckpt_names)
-                except Exception:
-                    input_w, input_h = 128, 64
-
-                session = load_tiny_onnx(str(onnx_path), compute_runtime=rt)
-                self.signals.progress.emit(
-                    5, f"Tiny CNN ONNX inference on {num_images:,} images..."
+                all_probs, resolved_names = self._run_tiny_onnx(
+                    rt, onnx_path, num_images
                 )
-
-                for batch_start in range(0, num_images, self.batch_size):
-                    batch_paths = self.image_paths[
-                        batch_start : batch_start + self.batch_size
-                    ]
-                    batch_np = _load_batch_images(batch_paths, input_w, input_h)
-                    if batch_np.shape[0] == 0:
-                        continue
-                    probs = run_tiny_onnx(session, batch_np)
-                    all_probs.append(probs)
-                    done = batch_start + len(batch_paths)
-                    pct = min(95, 5 + int(90 * done / num_images))
-                    self.signals.progress.emit(
-                        pct, f"Processed {done:,}/{num_images:,}"
-                    )
-
-            # ── PyTorch inference path ─────────────────────────────────────────
             else:
-                import torch
-                import torch.nn.functional as F
+                all_probs, resolved_names = self._run_tiny_torch(rt, num_images)
 
-                from ...training.tiny_model import load_tiny_classifier
-
-                torch_device = self._torch_device(rt)
-                model, ckpt = load_tiny_classifier(
-                    str(self.model_path), device=torch_device
-                )
-                input_w, input_h = ckpt.get("input_size", [128, 64])
-                ckpt_names = ckpt.get("class_names")
-                if ckpt_names:
-                    resolved_names = list(ckpt_names)
-
-                self.signals.progress.emit(
-                    5, f"Tiny CNN inference on {num_images:,} images..."
-                )
-
-                for batch_start in range(0, num_images, self.batch_size):
-                    batch_paths = self.image_paths[
-                        batch_start : batch_start + self.batch_size
-                    ]
-                    batch_np = _load_batch_images(batch_paths, input_w, input_h)
-                    if batch_np.shape[0] == 0:
-                        continue
-                    x = torch.from_numpy(batch_np).to(torch_device)
-                    with torch.no_grad():
-                        logits = model(x)
-                        probs = F.softmax(logits, dim=1).cpu().numpy()
-                    all_probs.append(probs)
-                    done = batch_start + len(batch_paths)
-                    pct = min(95, 5 + int(90 * done / num_images))
-                    self.signals.progress.emit(
-                        pct, f"Processed {done:,}/{num_images:,}"
-                    )
-
-            if all_probs:
-                result_probs = np.concatenate(all_probs, axis=0)
-            else:
-                n_cls = max(len(resolved_names), 1)
-                result_probs = np.full((num_images, n_cls), 1.0 / n_cls)
+            result_probs = self._finalize_tiny_probs(
+                all_probs, resolved_names, num_images
+            )
 
             self.signals.progress.emit(100, "Tiny CNN inference complete!")
             self.signals.success.emit(
@@ -1351,92 +1462,102 @@ class TorchvisionInferenceWorker(QRunnable):
             return "cuda"
         return "cpu"
 
-    @Slot()
-    def run(self) -> None:
-        import numpy as _np
-        import torch
+    def _build_transform(self):
         from torchvision import transforms
 
+        sz = self.input_size
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+        return transforms.Compose(
+            [
+                transforms.Resize((sz, sz)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean, std),
+            ]
+        )
+
+    def _create_infer_fn(self, rt: str):
+        import torch
+
+        use_onnx = rt in ("onnx_cpu", "onnx_cuda", "onnx_rocm", "tensorrt")
+        onnx_path = self.model_path.with_suffix(".onnx")
+        if use_onnx and onnx_path.exists():
+            import onnxruntime as ort
+
+            providers = (
+                ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                if "cuda" in rt
+                else ["CPUExecutionProvider"]
+            )
+            sess = ort.InferenceSession(str(onnx_path), providers=providers)
+            input_name = sess.get_inputs()[0].name
+
+            def _infer(batch_np):
+                return sess.run(None, {input_name: batch_np})[0]
+
+            return _infer
+
+        from ...training.torchvision_model import load_torchvision_classifier
+
+        device = self._torch_device(rt)
+        model, _ = load_torchvision_classifier(str(self.model_path), device=device)
+
+        def _infer(batch_np):
+            t = torch.from_numpy(batch_np).to(device)
+            with torch.no_grad():
+                return model(t).cpu().numpy()
+
+        return _infer
+
+    def _load_batch_tensors(self, batch_paths, transform):
+        import numpy as np
+        from PIL import Image
+
+        batch_tensors = []
+        sz = self.input_size
+        for path in batch_paths:
+            try:
+                img = Image.open(str(path)).convert("RGB")
+                batch_tensors.append(transform(img).numpy())
+            except Exception:
+                batch_tensors.append(np.zeros((3, sz, sz), dtype=np.float32))
+        return np.stack(batch_tensors).astype(np.float32)
+
+    @staticmethod
+    def _softmax_numpy(logits):
+        import numpy as np
+
+        exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)
+
+    def _run_inference_batches(self, infer_fn, transform):
+        import numpy as np
+
+        all_probs = []
+        total = len(self.image_paths)
+        for i in range(0, total, self.batch_size):
+            batch_paths = self.image_paths[i : i + self.batch_size]
+            batch_np = self._load_batch_tensors(batch_paths, transform)
+            logits = infer_fn(batch_np)
+            all_probs.append(self._softmax_numpy(logits))
+            done = min(i + self.batch_size, total)
+            pct = int(done * 100 / total) if total else 100
+            self.signals.progress.emit(pct, f"Inferring {done}/{total}")
+
+        if all_probs:
+            return np.concatenate(all_probs, axis=0)
+        return np.zeros((0, len(self.class_names)))
+
+    @Slot()
+    def run(self) -> None:
         try:
             self.signals.started.emit()
             from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
-            sz = self.input_size
-            mean = [0.485, 0.456, 0.406]
-            std = [0.229, 0.224, 0.225]
-            tf = transforms.Compose(
-                [
-                    transforms.Resize((sz, sz)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean, std),
-                ]
-            )
-
-            use_onnx = rt in ("onnx_cpu", "onnx_cuda", "onnx_rocm", "tensorrt")
-            if use_onnx:
-                onnx_path = self.model_path.with_suffix(".onnx")
-                if not onnx_path.exists():
-                    use_onnx = False
-
-            if use_onnx:
-                import onnxruntime as ort
-
-                onnx_path = self.model_path.with_suffix(".onnx")
-                # ROCm: onnxruntime has no ROCMExecutionProvider; falls through to CPU
-                providers = (
-                    ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                    if "cuda" in rt
-                    else ["CPUExecutionProvider"]
-                )
-                sess = ort.InferenceSession(str(onnx_path), providers=providers)
-                input_name = sess.get_inputs()[0].name
-
-                def _infer(batch_np):
-                    return sess.run(None, {input_name: batch_np})[0]
-
-            else:
-                from ...training.torchvision_model import load_torchvision_classifier
-
-                device = self._torch_device(rt)
-                model, _ = load_torchvision_classifier(
-                    str(self.model_path), device=device
-                )
-
-                def _infer(batch_np):
-                    t = torch.from_numpy(batch_np).to(device)
-                    with torch.no_grad():
-                        return model(t).cpu().numpy()
-
-            from PIL import Image
-
-            all_probs = []
-            total = len(self.image_paths)
-            for i in range(0, total, self.batch_size):
-                batch_paths = self.image_paths[i : i + self.batch_size]
-                batch_tensors = []
-                for p in batch_paths:
-                    try:
-                        img = Image.open(str(p)).convert("RGB")
-                        batch_tensors.append(tf(img).numpy())
-                    except Exception:
-                        batch_tensors.append(_np.zeros((3, sz, sz), dtype=_np.float32))
-                batch_np = _np.stack(batch_tensors).astype(_np.float32)
-                logits = _infer(batch_np)
-                # Softmax
-                exp = _np.exp(logits - logits.max(axis=1, keepdims=True))
-                probs = exp / exp.sum(axis=1, keepdims=True)
-                all_probs.append(probs)
-                pct = int(min(i + self.batch_size, total) * 100 / total)
-                self.signals.progress.emit(
-                    pct, f"Inferring {min(i + self.batch_size, total)}/{total}"
-                )
-
-            all_probs_np = (
-                _np.concatenate(all_probs, axis=0)
-                if all_probs
-                else _np.zeros((0, len(self.class_names)))
-            )
+            transform = self._build_transform()
+            infer_fn = self._create_infer_fn(rt)
+            all_probs_np = self._run_inference_batches(infer_fn, transform)
             self.signals.success.emit(
                 {"probs": all_probs_np, "class_names": self.class_names}
             )

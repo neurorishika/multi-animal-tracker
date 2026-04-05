@@ -494,6 +494,51 @@ def build_swap_candidates(
 # ---------------------------------------------------------------------------
 
 
+def _purge_stale_candidates(
+    candidates: Dict[int, List[MergeCandidate]],
+    source_id: int,
+    target_id: int,
+) -> Dict[int, List[MergeCandidate]]:
+    """Remove old source/target entries and stale target references."""
+    new_candidates = {
+        k: v for k, v in candidates.items() if k not in (source_id, target_id)
+    }
+    for k in list(new_candidates.keys()):
+        new_candidates[k] = [c for c in new_candidates[k] if c.target_id != target_id]
+        if not new_candidates[k]:
+            del new_candidates[k]
+    return new_candidates
+
+
+def _recompute_candidates_for_merged(
+    merged: "TrackSegment",
+    new_segments: List["TrackSegment"],
+    new_candidates: Dict[int, List[MergeCandidate]],
+) -> None:
+    """Compute new candidate links from *merged* segment's death point."""
+    if merged.is_alive_at_end:
+        return
+    targets_by_birth = sorted(new_segments, key=lambda s: s.frame_birth)
+    merged_cands: List[MergeCandidate] = []
+    window_start = merged.frame_death - MAX_OVERLAP
+    window_end = merged.frame_death + MAX_GAP
+
+    for t in targets_by_birth:
+        if t.track_id == merged.track_id:
+            continue
+        if t.frame_birth < window_start:
+            continue
+        if t.frame_birth > window_end:
+            break
+        mc = _score_candidate(merged, t, MAX_GAP, MAX_OVERLAP, MAX_DIST, MAX_PRED_DIST)
+        if mc is not None and mc.score >= MIN_SCORE:
+            merged_cands.append(mc)
+
+    if merged_cands:
+        merged_cands.sort(key=lambda c: c.score, reverse=True)
+        new_candidates[merged.track_id] = merged_cands
+
+
 def update_after_merge(
     segments: List[TrackSegment],
     candidates: Dict[int, List[MergeCandidate]],
@@ -513,7 +558,6 @@ def update_after_merge(
     if source is None or target is None:
         return segments, candidates
 
-    # Create merged segment
     merged = TrackSegment(
         track_id=source.track_id,
         frame_birth=source.frame_birth,
@@ -527,44 +571,10 @@ def update_after_merge(
         is_alive_at_end=target.is_alive_at_end,
     )
 
-    # Rebuild segment list
     new_segments = [s for s in segments if s.track_id not in (source_id, target_id)]
     new_segments.append(merged)
 
-    # Remove old candidate entries
-    new_candidates = {
-        k: v for k, v in candidates.items() if k not in (source_id, target_id)
-    }
-
-    # Remove stale references to the target from other candidate lists
-    for k in list(new_candidates.keys()):
-        new_candidates[k] = [c for c in new_candidates[k] if c.target_id != target_id]
-        if not new_candidates[k]:
-            del new_candidates[k]
-
-    # If the merged segment doesn't survive to end, compute new candidates
-    if not merged.is_alive_at_end:
-        targets_by_birth = sorted(new_segments, key=lambda s: s.frame_birth)
-        merged_cands: List[MergeCandidate] = []
-        window_start = merged.frame_death - MAX_OVERLAP
-        window_end = merged.frame_death + MAX_GAP
-
-        for t in targets_by_birth:
-            if t.track_id == merged.track_id:
-                continue
-            if t.frame_birth < window_start:
-                continue
-            if t.frame_birth > window_end:
-                break
-
-            mc = _score_candidate(
-                merged, t, MAX_GAP, MAX_OVERLAP, MAX_DIST, MAX_PRED_DIST
-            )
-            if mc is not None and mc.score >= MIN_SCORE:
-                merged_cands.append(mc)
-
-        if merged_cands:
-            merged_cands.sort(key=lambda c: c.score, reverse=True)
-            new_candidates[merged.track_id] = merged_cands
+    new_candidates = _purge_stale_candidates(candidates, source_id, target_id)
+    _recompute_candidates_for_merged(merged, new_segments, new_candidates)
 
     return new_segments, new_candidates

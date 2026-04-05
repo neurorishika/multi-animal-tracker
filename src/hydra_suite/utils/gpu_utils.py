@@ -129,6 +129,71 @@ GPU_AVAILABLE = CUDA_AVAILABLE or MPS_AVAILABLE
 ANY_ACCELERATION = GPU_AVAILABLE or NUMBA_AVAILABLE
 
 
+def _safe_assign(info: dict, key: str, getter) -> None:
+    """Safely assign a lazily-evaluated value into *info*."""
+    try:
+        info[key] = getter()
+    except Exception:
+        pass
+
+
+def _collect_version_info(info: dict) -> None:
+    """Populate library version strings into *info* dict."""
+    version_sources = [
+        (CUPY_AVAILABLE, "cupy_version", lambda: cp.__version__),
+        (TORCH_AVAILABLE, "torch_version", lambda: torch.__version__),
+        (
+            TENSORRT_AVAILABLE and trt is not None,
+            "tensorrt_version",
+            lambda: trt.__version__,
+        ),
+        (
+            ONNXRUNTIME_AVAILABLE and ort is not None,
+            "onnxruntime_version",
+            lambda: ort.__version__,
+        ),
+    ]
+
+    for is_available, key, getter in version_sources:
+        if is_available:
+            _safe_assign(info, key, getter)
+
+    if NUMBA_AVAILABLE:
+        try:
+            import numba
+
+            _safe_assign(info, "numba_version", lambda: numba.__version__)
+        except Exception:
+            pass
+
+
+def _collect_device_details(info: dict) -> None:
+    """Populate hardware-specific device details into *info* dict."""
+    if CUDA_AVAILABLE:
+        _safe_assign(
+            info, "cuda_device_count", lambda: cp.cuda.runtime.getDeviceCount()
+        )
+        _safe_assign(
+            info, "cuda_device_name", lambda: cp.cuda.Device(0).compute_capability
+        )
+
+    if MPS_AVAILABLE:
+        info["mps_device"] = "Apple Silicon (Metal)"
+
+    if TORCH_CUDA_AVAILABLE:
+        _safe_assign(info, "torch_cuda_device_count", lambda: torch.cuda.device_count())
+        _safe_assign(
+            info, "torch_cuda_device_name", lambda: torch.cuda.get_device_name(0)
+        )
+
+        if ROCM_AVAILABLE:
+            if hasattr(torch.version, "hip"):
+                _safe_assign(info, "rocm_version", lambda: torch.version.hip)
+            info["backend"] = "ROCm (AMD GPU)"
+        else:
+            info["backend"] = "CUDA (NVIDIA GPU)"
+
+
 def get_device_info() -> object:
     """
     Get information about available compute devices.
@@ -156,66 +221,60 @@ def get_device_info() -> object:
         "any_acceleration": ANY_ACCELERATION,
     }
 
-    # Add version information
-    if CUPY_AVAILABLE:
-        try:
-            info["cupy_version"] = cp.__version__
-        except Exception:
-            pass
-
-    if TORCH_AVAILABLE:
-        try:
-            info["torch_version"] = torch.__version__
-        except Exception:
-            pass
-
-    if NUMBA_AVAILABLE:
-        try:
-            import numba
-
-            info["numba_version"] = numba.__version__
-        except Exception:
-            pass
-
-    if TENSORRT_AVAILABLE and trt is not None:
-        try:
-            info["tensorrt_version"] = trt.__version__
-        except Exception:
-            pass
-
-    if ONNXRUNTIME_AVAILABLE and ort is not None:
-        try:
-            info["onnxruntime_version"] = ort.__version__
-        except Exception:
-            pass
-
-    # Add device details if available
-    if CUDA_AVAILABLE:
-        try:
-            info["cuda_device_count"] = cp.cuda.runtime.getDeviceCount()
-            info["cuda_device_name"] = cp.cuda.Device(0).compute_capability
-        except Exception:
-            pass
-
-    if MPS_AVAILABLE:
-        info["mps_device"] = "Apple Silicon (Metal)"
-
-    if TORCH_CUDA_AVAILABLE:
-        try:
-            info["torch_cuda_device_count"] = torch.cuda.device_count()
-            info["torch_cuda_device_name"] = torch.cuda.get_device_name(0)
-
-            # Add ROCm-specific info
-            if ROCM_AVAILABLE:
-                if hasattr(torch.version, "hip"):
-                    info["rocm_version"] = torch.version.hip
-                info["backend"] = "ROCm (AMD GPU)"
-            else:
-                info["backend"] = "CUDA (NVIDIA GPU)"
-        except Exception:
-            pass
+    _collect_version_info(info)
+    _collect_device_details(info)
 
     return info
+
+
+def _log_status(label: str, available: bool, details: list[str] | None = None) -> None:
+    """Log a status line with optional indented detail lines."""
+    prefix = "✓" if available else "✗"
+    availability = "Available" if available else "Not available"
+    logger.info(f"{prefix} {label}: {availability}")
+    for detail in details or []:
+        logger.info(f"  {detail}")
+
+
+def _cuda_log_details(info: dict) -> list[str]:
+    details = []
+    if "cuda_device_count" in info:
+        details.append(f"Devices: {info['cuda_device_count']}")
+    return details
+
+
+def _torch_cuda_log_details(info: dict) -> list[str]:
+    details = []
+    if "torch_cuda_device_name" in info:
+        details.append(f"Device: {info['torch_cuda_device_name']}")
+    if info.get("rocm_available"):
+        details.append("Backend: ROCm (AMD GPU)")
+        if "rocm_version" in info:
+            details.append(f"ROCm Version: {info['rocm_version']}")
+    else:
+        details.append("Backend: CUDA (NVIDIA GPU)")
+    return details
+
+
+def _tensorrt_log_details() -> list[str]:
+    if trt is None:
+        return []
+    return [f"Version: {trt.__version__}"]
+
+
+def _onnxruntime_log_details(info: dict) -> list[str]:
+    providers = ", ".join(info.get("onnxruntime_providers", [])) or "unknown"
+    return [f"Providers: {providers}"]
+
+
+def _log_acceleration_summary(info: dict) -> None:
+    if info["gpu_available"]:
+        logger.info("GPU acceleration: ENABLED")
+        return
+    if info["numba_available"]:
+        logger.info("CPU acceleration: Numba JIT")
+        return
+    logger.info("CPU acceleration: NumPy only (slow)")
 
 
 def log_device_info() -> object:
@@ -226,63 +285,82 @@ def log_device_info() -> object:
     logger.info("Available Compute Devices:")
     logger.info("-" * 60)
 
-    if info["cuda_available"]:
-        logger.info("✓ CUDA (CuPy): Available")
-        if "cuda_device_count" in info:
-            logger.info(f"  Devices: {info['cuda_device_count']}")
-    else:
-        logger.info("✗ CUDA (CuPy): Not available")
-
-    if info["mps_available"]:
-        logger.info("✓ MPS (Apple Silicon): Available")
-    else:
-        logger.info("✗ MPS (Apple Silicon): Not available")
-
-    if info["torch_cuda_available"]:
-        logger.info("✓ CUDA (PyTorch): Available")
-        if "torch_cuda_device_name" in info:
-            logger.info(f"  Device: {info['torch_cuda_device_name']}")
-        if info.get("rocm_available"):
-            logger.info("  Backend: ROCm (AMD GPU)")
-            if "rocm_version" in info:
-                logger.info(f"  ROCm Version: {info['rocm_version']}")
-        else:
-            logger.info("  Backend: CUDA (NVIDIA GPU)")
-    else:
-        logger.info("✗ CUDA (PyTorch): Not available")
-
-    if info["tensorrt_available"]:
-        logger.info("✓ TensorRT (NVIDIA): Available")
-        if trt is not None:
-            logger.info(f"  Version: {trt.__version__}")
-    else:
-        logger.info("✗ TensorRT (NVIDIA): Not available")
-
-    if info["onnxruntime_available"]:
-        providers = ", ".join(info.get("onnxruntime_providers", [])) or "unknown"
-        logger.info("✓ ONNX Runtime: Available")
-        logger.info(f"  Providers: {providers}")
-    else:
-        logger.info("✗ ONNX Runtime: Not available")
-
-    if info["sleap_nn_export_available"]:
-        logger.info("✓ SLEAP export predictors: Available")
-    else:
-        logger.info("✗ SLEAP export predictors: Not available")
-
-    if info["numba_available"]:
-        logger.info("✓ Numba JIT: Available")
-    else:
-        logger.info("✗ Numba JIT: Not available")
+    _log_status("CUDA (CuPy)", info["cuda_available"], _cuda_log_details(info))
+    _log_status("MPS (Apple Silicon)", info["mps_available"])
+    _log_status(
+        "CUDA (PyTorch)",
+        info["torch_cuda_available"],
+        _torch_cuda_log_details(info) if info["torch_cuda_available"] else None,
+    )
+    _log_status(
+        "TensorRT (NVIDIA)",
+        info["tensorrt_available"],
+        _tensorrt_log_details() if info["tensorrt_available"] else None,
+    )
+    _log_status(
+        "ONNX Runtime",
+        info["onnxruntime_available"],
+        _onnxruntime_log_details(info) if info["onnxruntime_available"] else None,
+    )
+    _log_status("SLEAP export predictors", info["sleap_nn_export_available"])
+    _log_status("Numba JIT", info["numba_available"])
 
     logger.info("-" * 60)
-    if info["gpu_available"]:
-        logger.info("GPU acceleration: ENABLED")
-    elif info["numba_available"]:
-        logger.info("CPU acceleration: Numba JIT")
-    else:
-        logger.info("CPU acceleration: NumPy only (slow)")
+    _log_acceleration_summary(info)
     logger.info("=" * 60)
+    return info
+
+
+def _append_runtime_option(
+    options: list[tuple[str, str]], label: str, value: str
+) -> None:
+    options.append((label, value))
+
+
+def _add_macos_pose_runtime_options(
+    options: list[tuple[str, str]],
+    supports_onnx: bool,
+) -> None:
+    if MPS_AVAILABLE:
+        _append_runtime_option(options, "MPS", "mps")
+    _append_runtime_option(options, "CPU", "cpu")
+    if supports_onnx:
+        _append_runtime_option(options, "ONNX (CPU)", "onnx_cpu")
+
+
+def _add_linux_pose_runtime_options(
+    options: list[tuple[str, str]],
+    supports_onnx: bool,
+    supports_tensorrt: bool,
+    cuda_like: bool,
+) -> None:
+    _append_runtime_option(options, "CPU", "cpu")
+
+    if TORCH_CUDA_AVAILABLE and not ROCM_AVAILABLE:
+        _append_runtime_option(options, "CUDA", "cuda")
+    if ROCM_AVAILABLE:
+        _append_runtime_option(options, "ROCm", "rocm")
+
+    if supports_onnx:
+        _append_runtime_option(options, "ONNX (CPU)", "onnx_cpu")
+        if ONNXRUNTIME_CUDA_AVAILABLE and TORCH_CUDA_AVAILABLE and not ROCM_AVAILABLE:
+            _append_runtime_option(options, "ONNX (CUDA)", "onnx_cuda")
+        if ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE:
+            _append_runtime_option(options, "ONNX (ROCm)", "onnx_rocm")
+
+    if supports_tensorrt and cuda_like:
+        _append_runtime_option(options, "TensorRT (CUDA)", "tensorrt_cuda")
+
+
+def _dedupe_runtime_options(options: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen = set()
+    deduped = []
+    for label, value in options:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append((label, value))
+    return deduped
 
 
 def get_optimal_device(enable_gpu: object = True, prefer_cuda: object = True) -> object:
@@ -340,42 +418,16 @@ def get_pose_runtime_options(backend_family: str = "yolo"):
     cuda_like = CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE
 
     if is_mac:
-        # macOS: expose CPU/MPS native options and ONNX CPU only.
-        if MPS_AVAILABLE:
-            options.append(("MPS", "mps"))
-        options.append(("CPU", "cpu"))
-        if supports_onnx:
-            options.append(("ONNX (CPU)", "onnx_cpu"))
+        _add_macos_pose_runtime_options(options, supports_onnx)
     else:
-        options.append(("CPU", "cpu"))
-        if TORCH_CUDA_AVAILABLE and not ROCM_AVAILABLE:
-            options.append(("CUDA", "cuda"))
-        if ROCM_AVAILABLE:
-            options.append(("ROCm", "rocm"))
+        _add_linux_pose_runtime_options(
+            options,
+            supports_onnx,
+            supports_tensorrt,
+            cuda_like,
+        )
 
-        if supports_onnx:
-            options.append(("ONNX (CPU)", "onnx_cpu"))
-            if (
-                ONNXRUNTIME_CUDA_AVAILABLE
-                and TORCH_CUDA_AVAILABLE
-                and not ROCM_AVAILABLE
-            ):
-                options.append(("ONNX (CUDA)", "onnx_cuda"))
-            if ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE:
-                options.append(("ONNX (ROCm)", "onnx_rocm"))
-
-        if supports_tensorrt and cuda_like:
-            options.append(("TensorRT (CUDA)", "tensorrt_cuda"))
-
-    # Deduplicate by value while preserving order.
-    seen = set()
-    deduped = []
-    for label, value in options:
-        if value in seen:
-            continue
-        seen.add(value)
-        deduped.append((label, value))
-    return deduped
+    return _dedupe_runtime_options(options)
 
 
 # Export all availability flags and utilities

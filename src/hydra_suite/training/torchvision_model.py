@@ -99,6 +99,17 @@ def get_layer_groups(model: nn.Module, backbone: str) -> list[nn.Module]:
         raise ValueError(f"Unsupported backbone for layer groups: {backbone!r}")
 
 
+def _get_head_module(model: nn.Module, backbone: str) -> nn.Module | None:
+    """Return the classifier head module for a given backbone."""
+    if backbone.startswith("convnext") or backbone.startswith("efficientnet"):
+        return model.classifier
+    if backbone.startswith("resnet"):
+        return model.fc
+    if backbone == "vit_b_16":
+        return model.heads
+    return None
+
+
 def freeze_backbone(model: nn.Module, backbone: str, trainable_layers: int) -> None:
     """Freeze/unfreeze backbone parameters according to trainable_layers.
 
@@ -112,14 +123,9 @@ def freeze_backbone(model: nn.Module, backbone: str, trainable_layers: int) -> N
         p.requires_grad = False
 
     # Step 2: always unfreeze the head
-    if backbone.startswith("convnext") or backbone.startswith("efficientnet"):
-        for p in model.classifier.parameters():
-            p.requires_grad = True
-    elif backbone.startswith("resnet"):
-        for p in model.fc.parameters():
-            p.requires_grad = True
-    elif backbone == "vit_b_16":
-        for p in model.heads.parameters():
+    head = _get_head_module(model, backbone)
+    if head is not None:
+        for p in head.parameters():
             p.requires_grad = True
 
     # Step 3: apply backbone unfreezing
@@ -252,13 +258,25 @@ def export_torchvision_to_onnx(
     h, w = ckpt.get("input_size", (224, 224))
     dummy = torch.zeros(1, 3, h, w)
     model.eval()
-    torch.onnx.export(
-        model,
-        dummy,
-        str(onnx_path),
-        opset_version=17,
-        input_names=["input"],
-        output_names=["logits"],
-        dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
-    )
+    export_kwargs = {
+        "opset_version": 17,
+        "input_names": ["input"],
+        "output_names": ["logits"],
+        "dynamic_axes": {"input": {0: "batch"}, "logits": {0: "batch"}},
+    }
+    try:
+        torch.onnx.export(
+            model,
+            dummy,
+            str(onnx_path),
+            dynamo=False,
+            **export_kwargs,
+        )
+    except TypeError:
+        torch.onnx.export(
+            model,
+            dummy,
+            str(onnx_path),
+            **export_kwargs,
+        )
     return onnx_path

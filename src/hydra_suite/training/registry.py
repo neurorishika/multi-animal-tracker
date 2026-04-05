@@ -12,7 +12,20 @@ from typing import Any
 from .contracts import TrainingRunSpec
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _use_project_root_override() -> bool:
+    return getattr(_project_root, "__module__", __name__) != __name__
+
+
 def get_runs_root() -> Path:
+    if _use_project_root_override():
+        root = _project_root() / "training" / "runs"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     from hydra_suite.paths import get_training_runs_dir
 
     return get_training_runs_dir()

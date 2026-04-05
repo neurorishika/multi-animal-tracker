@@ -1868,6 +1868,57 @@ class MainWindow(QMainWindow):
         self.frame_list.setUpdatesEnabled(True)
         self._suppress_list_rebuild = False
 
+    @staticmethod
+    def _apply_item_data(item, color, text, pred_conf, pred_kpt_count, cluster_id):
+        """Apply visual properties and data roles to a list widget item."""
+        item.setForeground(color)
+        item.setText(text)
+        item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+        item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+        item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+
+    def _compute_frame_display_info(self, idx: int):
+        """Compute the marker tick, color, and text for a frame list item.
+
+        Returns (tick, color, item_text_suffix).
+        """
+        img_path = self.image_paths[idx]
+        is_saved = self._is_labeled(img_path)
+        in_cache = idx in self._frame_cache
+
+        if in_cache and not is_saved:
+            tick = "* "
+        elif is_saved:
+            tick = "\u2713 "
+        else:
+            tick = "  "
+
+        num_labeled = 0
+        total_kpts = len(self.project.keypoint_names)
+        if in_cache:
+            cached = self._frame_cache[idx]
+            num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
+        elif is_saved:
+            num_labeled = self._count_labeled_kpts(img_path)
+
+        if num_labeled == total_kpts:
+            color = QColor(0, 200, 0)
+        elif num_labeled > 0:
+            color = QColor(255, 165, 0)
+        else:
+            color = QColor(220, 220, 220)
+
+        item_text = f"{tick}{img_path.name}"
+        if len(self.project.sources) > 1:
+            src_id = self._image_source.get(str(img_path), "")
+            src = self._source_map.get(src_id)
+            badge = (src.description or src.source_id) if src else src_id
+            if len(badge) > 20:
+                badge = badge[:17] + "\u2026"
+            item_text = f"{tick}[{badge}] {img_path.name}"
+
+        return is_saved, color, item_text
+
     def _update_frame_item(
         self,
         idx: int,
@@ -1885,43 +1936,9 @@ class MainWindow(QMainWindow):
                 if cluster_id is not None:
                     item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
             return
-        img_path = self.image_paths[idx]
-        is_saved = self._is_labeled(img_path)
-        in_cache = idx in self._frame_cache
 
-        # Determine marker
-        if in_cache and not is_saved:
-            tick = "* "  # Modified but not saved
-        elif is_saved:
-            tick = "✓ "  # Saved to disk
-        else:
-            tick = "  "  # No changes
+        is_saved, color, item_text = self._compute_frame_display_info(idx)
 
-        # Count labeled keypoints
-        num_labeled = 0
-        total_kpts = len(self.project.keypoint_names)
-        if in_cache:
-            cached = self._frame_cache[idx]
-            num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
-        elif is_saved:
-            num_labeled = self._count_labeled_kpts(img_path)
-
-        # Determine color
-        if num_labeled == total_kpts:
-            color = QColor(0, 200, 0)  # Green
-        elif num_labeled > 0:
-            color = QColor(255, 165, 0)  # Orange
-        else:
-            color = QColor(220, 220, 220)  # White
-
-        item_text = f"{tick}{img_path.name}"
-        if len(self.project.sources) > 1:
-            src_id = self._image_source.get(str(img_path), "")
-            src = self._source_map.get(src_id)
-            badge = (src.description or src.source_id) if src else src_id
-            if len(badge) > 20:
-                badge = badge[:17] + "…"
-            item_text = f"{tick}[{badge}] {img_path.name}"
         if pred_conf is None:
             pred_conf = self._get_pred_conf_for_indices([idx]).get(idx)
         if pred_kpt_count is None:
@@ -1929,51 +1946,33 @@ class MainWindow(QMainWindow):
         if cluster_id is None:
             cluster_id = self._get_cluster_id_for_indices([idx]).get(idx)
 
-        # Find and update the item in the appropriate list.
-        # If the frame was just saved (is_saved True) and is currently sitting in
-        # the "all frames" (unlabeled) list, move it to the labeling list so the
-        # transfer is visible immediately without a full list rebuild.
+        # Try fast-path via _list_items cache.
         item = self._list_items.get(idx)
         if item is not None:
             needs_labeling = is_saved or (idx in self.labeling_frames)
             row_in_frame = self.frame_list.row(item)
             if needs_labeling and row_in_frame >= 0:
-                # Move item from unlabeled → labeling list
                 self.frame_list.takeItem(row_in_frame)
                 self.labeling_frames.add(idx)
-                item.setForeground(color)
-                item.setText(item_text)
-                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
-                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
-                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+                self._apply_item_data(
+                    item, color, item_text, pred_conf, pred_kpt_count, cluster_id
+                )
                 self.labeling_list.addItem(item)
             else:
-                item.setForeground(color)
-                item.setText(item_text)
-                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
-                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
-                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+                self._apply_item_data(
+                    item, color, item_text, pred_conf, pred_kpt_count, cluster_id
+                )
             return
 
-        for i in range(self.labeling_list.count()):
-            item = self.labeling_list.item(i)
-            if item.data(Qt.UserRole) == idx:
-                item.setForeground(color)
-                item.setText(item_text)
-                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
-                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
-                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
-                return
-
-        for i in range(self.frame_list.count()):
-            item = self.frame_list.item(i)
-            if item.data(Qt.UserRole) == idx:
-                item.setForeground(color)
-                item.setText(item_text)
-                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
-                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
-                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
-                return
+        # Fallback: scan both lists for the item by index.
+        for list_widget in (self.labeling_list, self.frame_list):
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                if item.data(Qt.UserRole) == idx:
+                    self._apply_item_data(
+                        item, color, item_text, pred_conf, pred_kpt_count, cluster_id
+                    )
+                    return
 
     def _clear_conf_display(self) -> None:
         if self._list_items:

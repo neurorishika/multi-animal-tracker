@@ -81,6 +81,130 @@ class ExplorerView(QGraphicsView):
         # 0 disables uncertainty outlines.
         self.uncertainty_outline_threshold = max(0.0, min(1.0, value))
 
+    def _set_view_state(
+        self,
+        labels,
+        confidences,
+        candidate_indices,
+        round_labeled_indices,
+        selected_index,
+        labeling_mode,
+        point_count: int,
+    ) -> None:
+        """Apply the current interaction state shared by update and rebuild flows."""
+        self._labels = labels
+        self._confidences = confidences
+        self.selected_index = selected_index
+        self.candidate_indices = set(candidate_indices or [])
+        self.round_labeled_indices = set(round_labeled_indices or [])
+        self.labeling_mode = labeling_mode
+        if self.labeling_mode:
+            self.interactive_indices = set(self.candidate_indices)
+            if self.selected_index is not None:
+                self.interactive_indices.add(self.selected_index)
+        else:
+            self.interactive_indices = set(range(point_count))
+
+    def _compute_base_style(
+        self, index: int, labels, category_colors, radius_scale: float
+    ):
+        """Return the base (color, radius) for a point before selection styling."""
+        color = QColor(100, 100, 255)
+        if labels is not None and len(labels) > index:
+            color = color_for_value(labels[index], category_colors, default=color)
+
+        if (
+            self.labeling_mode
+            and index not in self.candidate_indices
+            and index not in self.round_labeled_indices
+        ):
+            color = QColor(90, 90, 90)
+
+        base_radius = 3.0 * radius_scale
+        if index in self.candidate_indices:
+            base_radius = 6.0 * radius_scale
+        if index in self.round_labeled_indices:
+            base_radius = 5.0 * radius_scale
+        return color, base_radius
+
+    def _record_base_style(
+        self,
+        index: int,
+        labels,
+        category_colors,
+        radius_scale: float,
+    ) -> tuple[QColor, float]:
+        """Compute and cache the base style for a point."""
+        color, base_radius = self._compute_base_style(
+            index, labels, category_colors, radius_scale
+        )
+        self._base_colors.append(color)
+        self._base_radii.append(base_radius)
+        return color, base_radius
+
+    @staticmethod
+    def _normalize_coords(coords: np.ndarray) -> np.ndarray:
+        """Normalize coordinates into the explorer view box."""
+        min_vals = coords.min(axis=0)
+        max_vals = coords.max(axis=0)
+        span = max_vals - min_vals
+        span[span == 0] = 1
+        return (coords - min_vals) / span * 1000.0
+
+    def _update_existing_point_item(
+        self,
+        index: int,
+        item: QGraphicsEllipseItem,
+        labels,
+        category_colors,
+        radius_scale: float,
+    ) -> None:
+        """Refresh one already-created point item in place."""
+        color, base_radius = self._record_base_style(
+            index, labels, category_colors, radius_scale
+        )
+        if index < len(self._point_centers):
+            cx, cy = self._point_centers[index]
+            item.setRect(
+                cx - base_radius,
+                cy - base_radius,
+                base_radius * 2,
+                base_radius * 2,
+            )
+        item.setBrush(QBrush(color))
+        self._apply_item_style(index, item, radius_scale)
+
+    def _create_point_item(
+        self,
+        index: int,
+        x: float,
+        y: float,
+        labels,
+        category_colors,
+        radius_scale: float,
+    ) -> QGraphicsEllipseItem:
+        """Create, cache, and style a new point item."""
+        color, base_radius = self._record_base_style(
+            index, labels, category_colors, radius_scale
+        )
+        item = QGraphicsEllipseItem(
+            x - base_radius,
+            y - base_radius,
+            base_radius * 2,
+            base_radius * 2,
+        )
+        item.setBrush(QBrush(color))
+        item.setPen(QPen(Qt.NoPen))
+        item.setData(0, index)
+        item.setAcceptHoverEvents(True)
+        item.setAcceptedMouseButtons(Qt.LeftButton)
+        item.setFlag(QGraphicsItem.ItemIgnoresTransformations, False)
+        self.scene.addItem(item)
+        self.points.append(item)
+        self._point_centers.append((x, y))
+        self._apply_item_style(index, item, radius_scale)
+        return item
+
     def _apply_item_style(
         self, idx: int, item: QGraphicsEllipseItem, radius_scale: float
     ):
@@ -208,18 +332,15 @@ class ExplorerView(QGraphicsView):
         if len(self._coords) != point_count:
             return False
 
-        self._labels = labels
-        self._confidences = confidences
-        self.selected_index = selected_index
-        self.candidate_indices = set(candidate_indices or [])
-        self.round_labeled_indices = set(round_labeled_indices or [])
-        self.labeling_mode = labeling_mode
-        if self.labeling_mode:
-            self.interactive_indices = set(self.candidate_indices)
-            if self.selected_index is not None:
-                self.interactive_indices.add(self.selected_index)
-        else:
-            self.interactive_indices = set(range(point_count))
+        self._set_view_state(
+            labels,
+            confidences,
+            candidate_indices,
+            round_labeled_indices,
+            selected_index,
+            labeling_mode,
+            point_count,
+        )
 
         radius_scale = self._radius_scale()
         self._base_colors = []
@@ -227,36 +348,9 @@ class ExplorerView(QGraphicsView):
         category_colors = build_category_color_map(self._labels_for_color_map(labels))
 
         for i, item in enumerate(self.points):
-            color = QColor(100, 100, 255)
-            if labels is not None and len(labels) > i:
-                color = color_for_value(labels[i], category_colors, default=color)
-
-            if (
-                self.labeling_mode
-                and i not in self.candidate_indices
-                and i not in self.round_labeled_indices
-            ):
-                color = QColor(90, 90, 90)
-
-            base_radius = 3.0 * radius_scale
-            if i in self.candidate_indices:
-                base_radius = 6.0 * radius_scale
-            if i in self.round_labeled_indices:
-                base_radius = 5.0 * radius_scale
-
-            self._base_colors.append(color)
-            self._base_radii.append(base_radius)
-
-            if i < len(self._point_centers):
-                cx, cy = self._point_centers[i]
-                item.setRect(
-                    cx - base_radius,
-                    cy - base_radius,
-                    base_radius * 2,
-                    base_radius * 2,
-                )
-            item.setBrush(QBrush(color))
-            self._apply_item_style(i, item, radius_scale)
+            self._update_existing_point_item(
+                i, item, labels, category_colors, radius_scale
+            )
 
         return True
 
@@ -276,75 +370,32 @@ class ExplorerView(QGraphicsView):
         coords: (N, 2) normalized or raw UMAP coordinates.
         labels: check for coloring.
         """
-        self._coords = coords
-        self._labels = labels
-        self._confidences = confidences
-
-        self.scene.clear()
-        self.points = []
-        self._base_colors = []
-        self._base_radii = []
-        self._point_centers = []
-        self.selected_index = selected_index
+        self._set_view_state(
+            labels,
+            confidences,
+            candidate_indices,
+            round_labeled_indices,
+            selected_index,
+            labeling_mode,
+            len(coords),
+        )
         self.candidate_indices = set(candidate_indices or [])
         self.round_labeled_indices = set(round_labeled_indices or [])
         self.labeling_mode = labeling_mode
         if self.labeling_mode:
             self.interactive_indices = set(self.candidate_indices)
-            if self.selected_index is not None:
-                self.interactive_indices.add(self.selected_index)
-        else:
-            self.interactive_indices = set(range(len(coords)))
-        self._last_hover_idx = None
-
-        if len(coords) == 0:
-            return
-
-        # Normalize coordinates to fit in a reasonable view box (e.g. 0-1000)
-        min_vals = coords.min(axis=0)
-        max_vals = coords.max(axis=0)
-        span = max_vals - min_vals
-        if span[0] == 0:
-            span[0] = 1
-        if span[1] == 0:
-            span[1] = 1
-
-        norm_coords = (coords - min_vals) / span * 1000.0
-
-        # Draw points
-        default_radius = 3.0
-        radius_scale = self._radius_scale()
+        norm_coords = self._normalize_coords(coords)
+        self.scene.clear()
+        self.points = []
+        self._base_colors = []
+        self._base_radii = []
         category_colors = build_category_color_map(self._labels_for_color_map(labels))
+        radius_scale = self._radius_scale()
 
         for i, (x, y) in enumerate(norm_coords):
-            # Color logic
-            color = QColor(100, 100, 255)  # Default blue
-            if labels is not None and len(labels) > i:
-                color = color_for_value(labels[i], category_colors, default=color)
-
-            if (
-                self.labeling_mode
-                and i not in self.candidate_indices
-                and i not in self.round_labeled_indices
-            ):
-                color = QColor(90, 90, 90)
-
-            base_radius = default_radius * radius_scale
-            if i in self.candidate_indices:
-                base_radius = 6.0 * radius_scale
-            if i in self.round_labeled_indices:
-                base_radius = 5.0 * radius_scale
-
-            item = QGraphicsEllipseItem(
-                x - base_radius,
-                y - base_radius,
-                base_radius * 2,
-                base_radius * 2,
+            item = self._create_point_item(
+                i, x, y, labels, category_colors, radius_scale
             )
-            self._point_centers.append((x, y))
-            self._base_colors.append(color)
-            self._base_radii.append(base_radius)
-            self._apply_item_style(i, item, radius_scale)
             item.setFlag(QGraphicsItem.ItemIsSelectable)
             # Store index in data field or subclass
             item.setData(0, i)

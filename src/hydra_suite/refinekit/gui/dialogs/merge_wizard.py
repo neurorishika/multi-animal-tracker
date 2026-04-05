@@ -641,6 +641,84 @@ def _draw_detections(
     cv2.addWeighted(overlay, _DET_ALPHA, img, 1.0 - _DET_ALPHA, 0, img)
 
 
+def _draw_base_overlay(bgr, frame_idx, frame_dets, ox, oy, det_map, ctx_data):
+    """Draw detection outlines and context track tails onto *bgr* (shared logic)."""
+    if frame_dets is not None:
+        _draw_detections(
+            bgr,
+            frame_dets,
+            frame_idx,
+            ox,
+            oy,
+            _CONTEXT_COLOR,
+            1,
+            allowed_indices=det_map.get(frame_idx),
+        )
+    ctx_layer = bgr.copy()
+    for c_frames, c_xs, c_ys in ctx_data:
+        cmask = _tail_mask(c_frames, frame_idx)
+        if cmask.sum() < 2:
+            continue
+        cpts = np.column_stack((c_xs[cmask] - ox, c_ys[cmask] - oy)).astype(np.int32)
+        cv2.polylines(ctx_layer, [cpts], False, _CONTEXT_COLOR, 1, cv2.LINE_AA)
+        cv2.circle(ctx_layer, tuple(cpts[-1]), 3, _CONTEXT_COLOR, -1, cv2.LINE_AA)
+    cv2.addWeighted(ctx_layer, 0.4, bgr, 0.6, 0, bgr)
+
+
+def _extract_track_arrays(df, track_id):
+    """Return (frames, xs, ys) arrays for a single track."""
+    sub = df[df["TrajectoryID"] == track_id].dropna(subset=["X", "Y"])
+    sub = sub[(sub["X"] > 0) & (sub["Y"] > 0)]
+    return sub["FrameID"].values, sub["X"].values, sub["Y"].values
+
+
+def _extract_context_data(df, frame_start, frame_end, crop_box, exclude_ids):
+    """Return list of (frames, xs, ys) tuples for context tracks."""
+    cx1, cy1, cx2, cy2 = crop_box
+    ctx_df = df[
+        df["FrameID"].between(frame_start, frame_end)
+        & df["X"].between(cx1, cx2)
+        & df["Y"].between(cy1, cy2)
+        & (df["X"] > 0)
+        & (df["Y"] > 0)
+    ]
+    ctx_ids = sorted(set(ctx_df["TrajectoryID"].dropna().unique()) - set(exclude_ids))
+    ctx_data: list = []
+    for cid in ctx_ids:
+        cgrp = ctx_df[ctx_df["TrajectoryID"] == cid]
+        if len(cgrp) < 2:
+            continue
+        ctx_data.append((cgrp["FrameID"].values, cgrp["X"].values, cgrp["Y"].values))
+    return ctx_ids, ctx_data
+
+
+def _resolve_merge_head(
+    pts_s,
+    pts_t,
+    src_frames,
+    src_xs,
+    src_ys,
+    tgt_frames,
+    tgt_xs,
+    tgt_ys,
+    frame_idx,
+    ox,
+    oy,
+):
+    """Determine the head point for a merged overlay."""
+    if pts_t is not None and len(pts_t) > 0:
+        return tuple(pts_t[-1])
+    if len(tgt_frames) > 0 and frame_idx > src_frames[-1] and frame_idx < tgt_frames[0]:
+        gap_len = max(1, int(tgt_frames[0]) - int(src_frames[-1]))
+        t = (frame_idx - int(src_frames[-1])) / gap_len
+        ix = int(round(src_xs[-1] + t * (tgt_xs[0] - src_xs[-1]) - ox))
+        iy = int(round(src_ys[-1] + t * (tgt_ys[0] - src_ys[-1]) - oy))
+        return (ix, iy)
+    if pts_s is not None and len(pts_s) > 0:
+        return tuple(pts_s[-1])
+    return None
+
+
 def _make_overlay_fn(
     df: pd.DataFrame,
     source_id: int,
@@ -660,72 +738,20 @@ def _make_overlay_fn(
     real detection outlines are rendered for every frame.
     """
     ox, oy = crop_box[0], crop_box[1]
-    cx1, cy1, cx2, cy2 = crop_box
 
-    # --- Pre-extract source & target trajectories -----------------------
-    source_df = df[df["TrajectoryID"] == source_id].dropna(subset=["X", "Y"])
-    source_df = source_df[(source_df["X"] > 0) & (source_df["Y"] > 0)]
-    target_df = df[df["TrajectoryID"] == target_id].dropna(subset=["X", "Y"])
-    target_df = target_df[(target_df["X"] > 0) & (target_df["Y"] > 0)]
+    src_frames, src_xs, src_ys = _extract_track_arrays(df, source_id)
+    tgt_frames, tgt_xs, tgt_ys = _extract_track_arrays(df, target_id)
 
-    src_frames = source_df["FrameID"].values
-    src_xs = source_df["X"].values
-    src_ys = source_df["Y"].values
-
-    tgt_frames = target_df["FrameID"].values
-    tgt_xs = target_df["X"].values
-    tgt_ys = target_df["Y"].values
-
-    # --- Pre-extract context tracks (crop + time bounded) ---------------
-    ctx_df = df[
-        df["FrameID"].between(frame_start, frame_end)
-        & df["X"].between(cx1, cx2)
-        & df["Y"].between(cy1, cy2)
-        & (df["X"] > 0)
-        & (df["Y"] > 0)
-    ]
-    ctx_ids = sorted(
-        set(ctx_df["TrajectoryID"].dropna().unique()) - {source_id, target_id}
+    ctx_ids, ctx_data = _extract_context_data(
+        df, frame_start, frame_end, crop_box, {source_id, target_id}
     )
-    ctx_data: list = []
-    for cid in ctx_ids:
-        cgrp = ctx_df[ctx_df["TrajectoryID"] == cid]
-        if len(cgrp) < 2:
-            continue
-        ctx_data.append((cgrp["FrameID"].values, cgrp["X"].values, cgrp["Y"].values))
-
-    # --- Per-frame detection index map (only tracked detections) --------
     _visible_ids = {source_id, target_id} | set(ctx_ids)
     _det_map = _build_det_index_map(df, _visible_ids, frame_start, frame_end)
 
     def overlay(bgr: np.ndarray, frame_idx: int) -> np.ndarray:
-        # 0. Detection outlines (only those assigned to displayed tracks)
-        if frame_dets is not None:
-            _draw_detections(
-                bgr,
-                frame_dets,
-                frame_idx,
-                ox,
-                oy,
-                _CONTEXT_COLOR,
-                1,
-                allowed_indices=_det_map.get(frame_idx),
-            )
+        _draw_base_overlay(bgr, frame_idx, frame_dets, ox, oy, _det_map, ctx_data)
 
-        # 1. Draw context track tails (semi-transparent)
-        ctx_layer = bgr.copy()
-        for c_frames, c_xs, c_ys in ctx_data:
-            cmask = _tail_mask(c_frames, frame_idx)
-            if cmask.sum() < 2:
-                continue
-            cpts = np.column_stack((c_xs[cmask] - ox, c_ys[cmask] - oy)).astype(
-                np.int32
-            )
-            cv2.polylines(ctx_layer, [cpts], False, _CONTEXT_COLOR, 1, cv2.LINE_AA)
-            cv2.circle(ctx_layer, tuple(cpts[-1]), 3, _CONTEXT_COLOR, -1, cv2.LINE_AA)
-        cv2.addWeighted(ctx_layer, 0.4, bgr, 0.6, 0, bgr)
-
-        # 2. Source tail
+        # Source tail
         mask_s = _tail_mask(src_frames, frame_idx)
         pts_s = None
         if mask_s.any():
@@ -734,14 +760,13 @@ def _make_overlay_fn(
             )
             cv2.polylines(bgr, [pts_s], False, merged_color, 2, cv2.LINE_AA)
 
-        #    Bridge dashed line (visible once source is dead)
+        # Bridge dashed line (visible once source is dead)
         if pts_s is not None and frame_idx >= src_frames[-1] and len(tgt_frames) > 0:
-            # Show static end-point of source
             src_last = (int(src_xs[-1] - ox), int(src_ys[-1] - oy))
             tgt_start = (int(tgt_xs[0] - ox), int(tgt_ys[0] - oy))
             _draw_dashed_line(bgr, src_last, tgt_start, merged_color, 2, dash_len=6)
 
-        #    Target tail
+        # Target tail
         mask_t = _tail_mask(tgt_frames, frame_idx)
         pts_t = None
         if mask_t.any():
@@ -750,23 +775,20 @@ def _make_overlay_fn(
             )
             cv2.polylines(bgr, [pts_t], False, merged_color, 2, cv2.LINE_AA)
 
-        # 3. Head dot + label
-        head_pt = None
-        if pts_t is not None and len(pts_t) > 0:
-            head_pt = tuple(pts_t[-1])
-        elif (
-            len(tgt_frames) > 0
-            and frame_idx > src_frames[-1]
-            and frame_idx < tgt_frames[0]
-        ):
-            # Animate head dot linearly through the gap
-            gap_len = max(1, int(tgt_frames[0]) - int(src_frames[-1]))
-            t = (frame_idx - int(src_frames[-1])) / gap_len
-            ix = int(round(src_xs[-1] + t * (tgt_xs[0] - src_xs[-1]) - ox))
-            iy = int(round(src_ys[-1] + t * (tgt_ys[0] - src_ys[-1]) - oy))
-            head_pt = (ix, iy)
-        elif pts_s is not None and len(pts_s) > 0:
-            head_pt = tuple(pts_s[-1])
+        # Head dot + label
+        head_pt = _resolve_merge_head(
+            pts_s,
+            pts_t,
+            src_frames,
+            src_xs,
+            src_ys,
+            tgt_frames,
+            tgt_xs,
+            tgt_ys,
+            frame_idx,
+            ox,
+            oy,
+        )
         if head_pt is not None:
             cv2.circle(bgr, head_pt, 5, merged_color, -1, cv2.LINE_AA)
             cv2.putText(
@@ -783,6 +805,142 @@ def _make_overlay_fn(
         return bgr
 
     return overlay
+
+
+def _draw_swap_pre_target(
+    bgr,
+    frame_idx,
+    swap_frame,
+    tgt_pre_frames,
+    tgt_pre_xs,
+    tgt_pre_ys,
+    ox,
+    oy,
+    target_pre_color,
+    target_id,
+):
+    """Draw target's pre-swap trail and label."""
+    mask_pre = _tail_mask(tgt_pre_frames, frame_idx)
+    pts_pre = None
+    if mask_pre.sum() >= 2:
+        pts_pre = np.column_stack(
+            (tgt_pre_xs[mask_pre] - ox, tgt_pre_ys[mask_pre] - oy)
+        ).astype(np.int32)
+        cv2.polylines(bgr, [pts_pre], False, target_pre_color, 2, cv2.LINE_AA)
+    if pts_pre is not None and len(pts_pre) > 0 and frame_idx < swap_frame:
+        tp = tuple(pts_pre[-1])
+        cv2.circle(bgr, tp, 5, target_pre_color, -1, cv2.LINE_AA)
+        cv2.putText(
+            bgr,
+            f"T{target_id}",
+            (tp[0] + 8, tp[1] + 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            target_pre_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def _draw_swap_source(
+    bgr, frame_idx, src_frames, src_xs, src_ys, ox, oy, merged_color, source_id
+):
+    """Draw source trail with head label; return pts_s."""
+    mask_s = _tail_mask(src_frames, frame_idx)
+    pts_s = None
+    if mask_s.any():
+        pts_s = np.column_stack((src_xs[mask_s] - ox, src_ys[mask_s] - oy)).astype(
+            np.int32
+        )
+        cv2.polylines(bgr, [pts_s], False, merged_color, 2, cv2.LINE_AA)
+    if pts_s is not None and len(pts_s) > 0 and frame_idx <= src_frames[-1]:
+        sp = tuple(pts_s[-1])
+        cv2.circle(bgr, sp, 5, merged_color, -1, cv2.LINE_AA)
+        cv2.putText(
+            bgr,
+            f"T{source_id}",
+            (sp[0] + 8, sp[1] - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            merged_color,
+            1,
+            cv2.LINE_AA,
+        )
+    return pts_s
+
+
+def _draw_swap_post_and_markers(
+    bgr,
+    frame_idx,
+    swap_frame,
+    src_frames,
+    src_xs,
+    src_ys,
+    tgt_post_frames,
+    tgt_post_xs,
+    tgt_post_ys,
+    tgt_pre_frames,
+    tgt_pre_xs,
+    tgt_pre_ys,
+    ox,
+    oy,
+    merged_color,
+    source_id,
+    target_id,
+):
+    """Draw bridge, post-swap tail, diamond marker, head label, and orphan label."""
+    # Bridge
+    if frame_idx >= src_frames[-1] and len(tgt_post_frames) > 0 and len(src_frames) > 0:
+        src_end = (int(src_xs[-1] - ox), int(src_ys[-1] - oy))
+        swap_pt = (int(tgt_post_xs[0] - ox), int(tgt_post_ys[0] - oy))
+        _draw_dashed_line(bgr, src_end, swap_pt, merged_color, 2, dash_len=6)
+
+    # Post-swap tail
+    mask_post = _tail_mask(tgt_post_frames, frame_idx)
+    pts_post = None
+    if mask_post.any():
+        pts_post = np.column_stack(
+            (tgt_post_xs[mask_post] - ox, tgt_post_ys[mask_post] - oy)
+        ).astype(np.int32)
+        cv2.polylines(bgr, [pts_post], False, merged_color, 2, cv2.LINE_AA)
+
+    # Diamond marker at swap frame
+    if frame_idx >= swap_frame and len(tgt_post_frames) > 0:
+        sx = int(tgt_post_xs[0] - ox)
+        sy = int(tgt_post_ys[0] - oy)
+        cv2.drawMarker(
+            bgr, (sx, sy), _SWAP_MARKER_COLOR, cv2.MARKER_DIAMOND, 10, 2, cv2.LINE_AA
+        )
+
+    # Head dot + label for the "continued" track after swap
+    if pts_post is not None and len(pts_post) > 0:
+        head_pt = tuple(pts_post[-1])
+        cv2.circle(bgr, head_pt, 5, merged_color, -1, cv2.LINE_AA)
+        cv2.putText(
+            bgr,
+            f"T{source_id}(was T{target_id})",
+            (head_pt[0] + 8, head_pt[1] + 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            merged_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    # Orphan label after swap
+    if frame_idx >= swap_frame and len(tgt_pre_frames) > 0:
+        oend = (int(tgt_pre_xs[-1] - ox), int(tgt_pre_ys[-1] - oy))
+        cv2.circle(bgr, oend, 3, _ORPHAN_COLOR, -1, cv2.LINE_AA)
+        cv2.putText(
+            bgr,
+            f"T{target_id}(orphan)",
+            (oend[0] + 6, oend[1] - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            _ORPHAN_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
 
 
 def _make_swap_overlay_fn(
@@ -809,22 +967,10 @@ def _make_swap_overlay_fn(
     * Diamond marker at the swap frame.
     """
     ox, oy = crop_box[0], crop_box[1]
-    cx1, cy1, cx2, cy2 = crop_box
     _TARGET_PRE_COLOR = (255, 200, 0)  # cyan-ish in BGR for target's own trail
 
-    # --- Pre-extract source & target trajectories ---
-    source_df = df[df["TrajectoryID"] == source_id].dropna(subset=["X", "Y"])
-    source_df = source_df[(source_df["X"] > 0) & (source_df["Y"] > 0)]
-    target_df = df[df["TrajectoryID"] == target_id].dropna(subset=["X", "Y"])
-    target_df = target_df[(target_df["X"] > 0) & (target_df["Y"] > 0)]
-
-    src_frames = source_df["FrameID"].values
-    src_xs = source_df["X"].values
-    src_ys = source_df["Y"].values
-
-    tgt_frames = target_df["FrameID"].values
-    tgt_xs = target_df["X"].values
-    tgt_ys = target_df["Y"].values
+    src_frames, src_xs, src_ys = _extract_track_arrays(df, source_id)
+    tgt_frames, tgt_xs, tgt_ys = _extract_track_arrays(df, target_id)
 
     # Split target into pre-swap and post-swap
     tgt_pre_mask = tgt_frames < swap_frame
@@ -838,166 +984,51 @@ def _make_swap_overlay_fn(
     tgt_post_xs = tgt_xs[tgt_post_mask]
     tgt_post_ys = tgt_ys[tgt_post_mask]
 
-    # --- Pre-extract context tracks (crop + time bounded) ---
-    ctx_df = df[
-        df["FrameID"].between(frame_start, frame_end)
-        & df["X"].between(cx1, cx2)
-        & df["Y"].between(cy1, cy2)
-        & (df["X"] > 0)
-        & (df["Y"] > 0)
-    ]
-    ctx_ids = sorted(
-        set(ctx_df["TrajectoryID"].dropna().unique()) - {source_id, target_id}
+    ctx_ids, ctx_data = _extract_context_data(
+        df, frame_start, frame_end, crop_box, {source_id, target_id}
     )
-    ctx_data: list = []
-    for cid in ctx_ids:
-        cgrp = ctx_df[ctx_df["TrajectoryID"] == cid]
-        if len(cgrp) < 2:
-            continue
-        ctx_data.append((cgrp["FrameID"].values, cgrp["X"].values, cgrp["Y"].values))
-
-    # --- Per-frame detection index map (only tracked detections) --------
     _visible_ids = {source_id, target_id} | set(ctx_ids)
     _det_map = _build_det_index_map(df, _visible_ids, frame_start, frame_end)
 
     def overlay(bgr: np.ndarray, frame_idx: int) -> np.ndarray:
-        # 0. Detection outlines (only those assigned to displayed tracks)
-        if frame_dets is not None:
-            _draw_detections(
-                bgr,
-                frame_dets,
-                frame_idx,
-                ox,
-                oy,
-                _CONTEXT_COLOR,
-                1,
-                allowed_indices=_det_map.get(frame_idx),
-            )
+        _draw_base_overlay(bgr, frame_idx, frame_dets, ox, oy, _det_map, ctx_data)
 
-        # 1. Context track tails (semi-transparent)
-        ctx_layer = bgr.copy()
-        for c_frames, c_xs, c_ys in ctx_data:
-            cmask = _tail_mask(c_frames, frame_idx)
-            if cmask.sum() < 2:
-                continue
-            cpts = np.column_stack((c_xs[cmask] - ox, c_ys[cmask] - oy)).astype(
-                np.int32
-            )
-            cv2.polylines(ctx_layer, [cpts], False, _CONTEXT_COLOR, 1, cv2.LINE_AA)
-            cv2.circle(ctx_layer, tuple(cpts[-1]), 3, _CONTEXT_COLOR, -1, cv2.LINE_AA)
-        cv2.addWeighted(ctx_layer, 0.4, bgr, 0.6, 0, bgr)
+        _draw_swap_pre_target(
+            bgr,
+            frame_idx,
+            swap_frame,
+            tgt_pre_frames,
+            tgt_pre_xs,
+            tgt_pre_ys,
+            ox,
+            oy,
+            _TARGET_PRE_COLOR,
+            target_id,
+        )
 
-        # 2. Target pre-swap trail in distinct colour (its own identity)
-        mask_pre = _tail_mask(tgt_pre_frames, frame_idx)
-        pts_pre = None
-        if mask_pre.sum() >= 2:
-            pts_pre = np.column_stack(
-                (tgt_pre_xs[mask_pre] - ox, tgt_pre_ys[mask_pre] - oy)
-            ).astype(np.int32)
-            cv2.polylines(bgr, [pts_pre], False, _TARGET_PRE_COLOR, 2, cv2.LINE_AA)
-        # Label target head (pre-swap)
-        if pts_pre is not None and len(pts_pre) > 0 and frame_idx < swap_frame:
-            tp = tuple(pts_pre[-1])
-            cv2.circle(bgr, tp, 5, _TARGET_PRE_COLOR, -1, cv2.LINE_AA)
-            cv2.putText(
-                bgr,
-                f"T{target_id}",
-                (tp[0] + 8, tp[1] + 4),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                _TARGET_PRE_COLOR,
-                1,
-                cv2.LINE_AA,
-            )
+        _draw_swap_source(
+            bgr, frame_idx, src_frames, src_xs, src_ys, ox, oy, merged_color, source_id
+        )
 
-        # 3. Source trail in merged_color
-        mask_s = _tail_mask(src_frames, frame_idx)
-        pts_s = None
-        if mask_s.any():
-            pts_s = np.column_stack((src_xs[mask_s] - ox, src_ys[mask_s] - oy)).astype(
-                np.int32
-            )
-            cv2.polylines(bgr, [pts_s], False, merged_color, 2, cv2.LINE_AA)
-        # Label source head
-        if pts_s is not None and len(pts_s) > 0 and frame_idx <= src_frames[-1]:
-            sp = tuple(pts_s[-1])
-            cv2.circle(bgr, sp, 5, merged_color, -1, cv2.LINE_AA)
-            cv2.putText(
-                bgr,
-                f"T{source_id}",
-                (sp[0] + 8, sp[1] - 8),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                merged_color,
-                1,
-                cv2.LINE_AA,
-            )
-
-        # 4. Dashed bridge from source death to target at swap_frame
-        if (
-            frame_idx >= src_frames[-1]
-            and len(tgt_post_frames) > 0
-            and len(src_frames) > 0
-        ):
-            src_end = (int(src_xs[-1] - ox), int(src_ys[-1] - oy))
-            swap_pt = (
-                int(tgt_post_xs[0] - ox),
-                int(tgt_post_ys[0] - oy),
-            )
-            _draw_dashed_line(bgr, src_end, swap_pt, merged_color, 2, dash_len=6)
-
-        # 5. Target post-swap tail in merged_color (relabeled continuation)
-        mask_post = _tail_mask(tgt_post_frames, frame_idx)
-        pts_post = None
-        if mask_post.any():
-            pts_post = np.column_stack(
-                (tgt_post_xs[mask_post] - ox, tgt_post_ys[mask_post] - oy)
-            ).astype(np.int32)
-            cv2.polylines(bgr, [pts_post], False, merged_color, 2, cv2.LINE_AA)
-
-        # 6. Swap frame diamond marker
-        if frame_idx >= swap_frame and len(tgt_post_frames) > 0:
-            sx = int(tgt_post_xs[0] - ox)
-            sy = int(tgt_post_ys[0] - oy)
-            cv2.drawMarker(
-                bgr,
-                (sx, sy),
-                _SWAP_MARKER_COLOR,
-                cv2.MARKER_DIAMOND,
-                10,
-                2,
-                cv2.LINE_AA,
-            )
-
-        # 7. Head dot + label for the "continued" track after swap
-        if pts_post is not None and len(pts_post) > 0:
-            head_pt = tuple(pts_post[-1])
-            cv2.circle(bgr, head_pt, 5, merged_color, -1, cv2.LINE_AA)
-            cv2.putText(
-                bgr,
-                f"T{source_id}(was T{target_id})",
-                (head_pt[0] + 8, head_pt[1] + 4),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                merged_color,
-                1,
-                cv2.LINE_AA,
-            )
-
-        # 8. After swap, show orphaned target-pre tail endpoint label
-        if frame_idx >= swap_frame and len(tgt_pre_frames) > 0:
-            oend = (int(tgt_pre_xs[-1] - ox), int(tgt_pre_ys[-1] - oy))
-            cv2.circle(bgr, oend, 3, _ORPHAN_COLOR, -1, cv2.LINE_AA)
-            cv2.putText(
-                bgr,
-                f"T{target_id}(orphan)",
-                (oend[0] + 6, oend[1] - 4),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                _ORPHAN_COLOR,
-                1,
-                cv2.LINE_AA,
-            )
+        _draw_swap_post_and_markers(
+            bgr,
+            frame_idx,
+            swap_frame,
+            src_frames,
+            src_xs,
+            src_ys,
+            tgt_post_frames,
+            tgt_post_xs,
+            tgt_post_ys,
+            tgt_pre_frames,
+            tgt_pre_xs,
+            tgt_pre_ys,
+            ox,
+            oy,
+            merged_color,
+            source_id,
+            target_id,
+        )
 
         return bgr
 
@@ -1513,55 +1544,47 @@ class MergeWizardDialog(QDialog):
         key = event.key()
         mod = event.modifiers()
 
-        # 1 or Enter → accept the displayed hypothesis
+        if self._handle_key(key, mod):
+            return
+        super().keyPressEvent(event)
+
+    def _handle_key(self, key: int, mod) -> bool:
+        """Dispatch a single key press; return True if handled."""
+        # 1 or Enter -> accept the displayed hypothesis
         if key in (Qt.Key.Key_1, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self._model.current_hypotheses:
                 self._on_accept(0)
-                return
+                return True
+            return False
 
-        # F → flag current track for detailed editor
-        if key == Qt.Key.Key_F:
-            self._on_flag()
-            return
+        _SIMPLE_KEYS = {
+            Qt.Key.Key_F: self._on_flag,
+            Qt.Key.Key_N: self._on_next_page,
+            Qt.Key.Key_P: self._on_prev_page,
+            Qt.Key.Key_S: self._on_skip,
+            Qt.Key.Key_Space: self._grid.toggle_play,
+        }
+        handler = _SIMPLE_KEYS.get(key)
+        if handler is not None:
+            handler()
+            return True
 
-        # N → next page, P → prev page
-        if key == Qt.Key.Key_N:
-            self._on_next_page()
-            return
-        if key == Qt.Key.Key_P:
-            self._on_prev_page()
-            return
+        return self._handle_arrow_or_undo(key, mod)
 
-        # S → skip
-        if key == Qt.Key.Key_S:
-            self._on_skip()
-            return
+    def _handle_arrow_or_undo(self, key: int, mod) -> bool:
+        """Handle arrow navigation and Ctrl+Z undo."""
+        ctrl = bool(mod & Qt.KeyboardModifier.ControlModifier)
 
-        # Space → play/pause
-        if key == Qt.Key.Key_Space:
-            self._grid.toggle_play()
-            return
-
-        # Left/Right → navigate hypotheses (Ctrl+Left/Right → frame step)
         if key == Qt.Key.Key_Left:
-            if mod & Qt.KeyboardModifier.ControlModifier:
-                self._grid.step_back()
-            else:
-                self._on_prev_page()
-            return
+            (self._grid.step_back if ctrl else self._on_prev_page)()
+            return True
         if key == Qt.Key.Key_Right:
-            if mod & Qt.KeyboardModifier.ControlModifier:
-                self._grid.step_forward()
-            else:
-                self._on_next_page()
-            return
-
-        # Ctrl+Z → undo
-        if key == Qt.Key.Key_Z and mod & Qt.KeyboardModifier.ControlModifier:
+            (self._grid.step_forward if ctrl else self._on_next_page)()
+            return True
+        if key == Qt.Key.Key_Z and ctrl:
             self._on_undo()
-            return
-
-        super().keyPressEvent(event)
+            return True
+        return False
 
     def closeEvent(self, event) -> None:
         self._grid.cleanup()

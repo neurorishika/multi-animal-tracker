@@ -66,34 +66,33 @@ def pose_wide_columns_for_labels(labels: Sequence[str]) -> List[str]:
     return cols
 
 
+def _coerce_token(text: str) -> Any:
+    """Try to parse text as int, otherwise return as string."""
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
 def _parse_ignore_keypoint_tokens(ignore_keypoints: Any) -> List[Any]:
     if ignore_keypoints is None:
         return []
     if isinstance(ignore_keypoints, str):
-        out: List[Any] = []
-        for token in ignore_keypoints.split(","):
-            t = token.strip()
-            if not t:
-                continue
-            try:
-                out.append(int(t))
-            except ValueError:
-                out.append(t)
-        return out
-    if isinstance(ignore_keypoints, (list, tuple, set)):
-        out: List[Any] = []
-        for value in ignore_keypoints:
-            if value is None:
-                continue
-            text = str(value).strip()
-            if not text:
-                continue
-            try:
-                out.append(int(text))
-            except ValueError:
-                out.append(text)
-        return out
-    return []
+        raw_tokens = ignore_keypoints.split(",")
+    elif isinstance(ignore_keypoints, (list, tuple, set)):
+        raw_tokens = ignore_keypoints
+    else:
+        return []
+
+    out: List[Any] = []
+    for value in raw_tokens:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        out.append(_coerce_token(text))
+    return out
 
 
 def _resolve_ignored_keypoint_indices(
@@ -464,6 +463,76 @@ def merge_interpolated_pose_df(
 
 
 # ---------------------------------------------------------------------------
+# Shared interpolated merge helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_interp_columns(df: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    """Ensure columns exist in the dataframe, filling missing ones with NaN."""
+    out = df.copy()
+    for col in columns:
+        if col not in out.columns:
+            out[col] = np.nan
+    return out
+
+
+def _prepare_interp_join_keys(
+    trajectories_df: pd.DataFrame, interp_df: pd.DataFrame
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Add _frame_join and _traj_join keys to both dataframes."""
+    out = trajectories_df.copy()
+    out["_frame_join"] = (
+        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
+    )
+    out["_traj_join"] = (
+        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
+    )
+    interp = interp_df.copy()
+    interp["_frame_join"] = (
+        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
+    )
+    interp["_traj_join"] = (
+        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
+    )
+    return out, interp
+
+
+def _backfill_interp_columns(
+    merged: pd.DataFrame,
+    column_map: Dict[str, str],
+) -> pd.DataFrame:
+    """Fill target columns from source columns and drop source columns."""
+    for src_col, tgt_col in column_map.items():
+        if src_col in merged.columns:
+            if tgt_col not in merged.columns:
+                merged[tgt_col] = np.nan
+            merged[tgt_col] = merged[tgt_col].where(
+                merged[tgt_col].notna(), merged[src_col]
+            )
+            merged.drop(columns=[src_col], inplace=True, errors="ignore")
+    return merged
+
+
+def _can_merge_interp(
+    trajectories_df: pd.DataFrame,
+    interp_df: Optional[pd.DataFrame],
+    required_cols: Set[str],
+) -> bool:
+    """Check whether an interpolated merge is feasible."""
+    if trajectories_df is None or trajectories_df.empty:
+        return False
+    if interp_df is None or interp_df.empty:
+        return False
+    if "FrameID" not in trajectories_df.columns:
+        return False
+    if "TrajectoryID" not in trajectories_df.columns:
+        return False
+    if not required_cols.issubset(interp_df.columns):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # AprilTag interpolated merge
 # ---------------------------------------------------------------------------
 
@@ -481,37 +550,13 @@ def merge_interpolated_apriltag_df(
     """
     if trajectories_df is None or trajectories_df.empty:
         return trajectories_df
-    if (
-        interp_tag_df is None
-        or interp_tag_df.empty
-        or "FrameID" not in trajectories_df.columns
-        or "TrajectoryID" not in trajectories_df.columns
+    if not _can_merge_interp(
+        trajectories_df, interp_tag_df, {"frame_id", "trajectory_id", "tag_id"}
     ):
         return trajectories_df
 
-    needed = {"frame_id", "trajectory_id", "tag_id"}
-    if not needed.issubset(interp_tag_df.columns):
-        return trajectories_df
-
-    out = trajectories_df.copy()
-    for col in APRILTAG_INTERP_COLUMNS:
-        if col not in out.columns:
-            out[col] = np.nan
-
-    out["_frame_join"] = (
-        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
-    )
-    out["_traj_join"] = (
-        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
-    )
-
-    interp = interp_tag_df.copy()
-    interp["_frame_join"] = (
-        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
-    )
-    interp["_traj_join"] = (
-        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
-    )
+    out, interp = _prepare_interp_join_keys(trajectories_df, interp_tag_df)
+    out = _ensure_interp_columns(out, APRILTAG_INTERP_COLUMNS)
 
     tag_cols = ["tag_id"]
     if "hamming" in interp.columns:
@@ -531,21 +576,14 @@ def merge_interpolated_apriltag_df(
         sort=False,
     )
 
-    if "tag_id" in merged.columns:
-        merged["InterpTagID"] = merged["InterpTagID"].where(
-            merged["InterpTagID"].notna(), merged["tag_id"]
-        )
-        merged.drop(columns=["tag_id"], inplace=True, errors="ignore")
-    if "hamming" in merged.columns:
-        merged["InterpTagHamming"] = merged["InterpTagHamming"].where(
-            merged["InterpTagHamming"].notna(), merged["hamming"]
-        )
-        merged.drop(columns=["hamming"], inplace=True, errors="ignore")
-    if "confidence" in merged.columns:
-        merged["InterpTagConf"] = merged["InterpTagConf"].where(
-            merged["InterpTagConf"].notna(), merged["confidence"]
-        )
-        merged.drop(columns=["confidence"], inplace=True, errors="ignore")
+    merged = _backfill_interp_columns(
+        merged,
+        {
+            "tag_id": "InterpTagID",
+            "hamming": "InterpTagHamming",
+            "confidence": "InterpTagConf",
+        },
+    )
 
     merged.drop(
         columns=["_frame_join", "_traj_join"],
@@ -572,48 +610,19 @@ def merge_interpolated_cnn_df(
     """
     col_class = f"CNN_{label}_Class"
     col_conf = f"CNN_{label}_Conf"
+    output_cols = [col_class, col_conf]
 
     if trajectories_df is None or trajectories_df.empty:
         return trajectories_df
-    if (
-        interp_cnn_df is None
-        or interp_cnn_df.empty
-        or "FrameID" not in trajectories_df.columns
-        or "TrajectoryID" not in trajectories_df.columns
+    if not _can_merge_interp(
+        trajectories_df,
+        interp_cnn_df,
+        {"frame_id", "trajectory_id", "class_name", "confidence"},
     ):
-        out = trajectories_df.copy()
-        for c in (col_class, col_conf):
-            if c not in out.columns:
-                out[c] = np.nan
-        return out
+        return _ensure_interp_columns(trajectories_df, output_cols)
 
-    needed = {"frame_id", "trajectory_id", "class_name", "confidence"}
-    if not needed.issubset(interp_cnn_df.columns):
-        out = trajectories_df.copy()
-        for c in (col_class, col_conf):
-            if c not in out.columns:
-                out[c] = np.nan
-        return out
-
-    out = trajectories_df.copy()
-    for c in (col_class, col_conf):
-        if c not in out.columns:
-            out[c] = np.nan
-
-    out["_frame_join"] = (
-        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
-    )
-    out["_traj_join"] = (
-        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
-    )
-
-    interp = interp_cnn_df.copy()
-    interp["_frame_join"] = (
-        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
-    )
-    interp["_traj_join"] = (
-        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
-    )
+    out, interp = _prepare_interp_join_keys(trajectories_df, interp_cnn_df)
+    out = _ensure_interp_columns(out, output_cols)
 
     interp_lookup = interp[
         ["_frame_join", "_traj_join", "class_name", "confidence"]
@@ -627,16 +636,10 @@ def merge_interpolated_cnn_df(
         sort=False,
     )
 
-    if "class_name" in merged.columns:
-        merged[col_class] = merged[col_class].where(
-            merged[col_class].notna(), merged["class_name"]
-        )
-        merged.drop(columns=["class_name"], inplace=True, errors="ignore")
-    if "confidence" in merged.columns:
-        merged[col_conf] = merged[col_conf].where(
-            merged[col_conf].notna(), merged["confidence"]
-        )
-        merged.drop(columns=["confidence"], inplace=True, errors="ignore")
+    merged = _backfill_interp_columns(
+        merged,
+        {"class_name": col_class, "confidence": col_conf},
+    )
 
     merged.drop(
         columns=["_frame_join", "_traj_join"],
@@ -664,45 +667,13 @@ def merge_interpolated_headtail_df(
     """Merge interpolated head-tail direction into final trajectories."""
     if trajectories_df is None or trajectories_df.empty:
         return trajectories_df
-    if (
-        interp_ht_df is None
-        or interp_ht_df.empty
-        or "FrameID" not in trajectories_df.columns
-        or "TrajectoryID" not in trajectories_df.columns
+    if not _can_merge_interp(
+        trajectories_df, interp_ht_df, {"frame_id", "trajectory_id", "heading_rad"}
     ):
-        out = trajectories_df.copy()
-        for c in HEADTAIL_INTERP_COLUMNS:
-            if c not in out.columns:
-                out[c] = np.nan
-        return out
+        return _ensure_interp_columns(trajectories_df, HEADTAIL_INTERP_COLUMNS)
 
-    needed = {"frame_id", "trajectory_id", "heading_rad"}
-    if not needed.issubset(interp_ht_df.columns):
-        out = trajectories_df.copy()
-        for c in HEADTAIL_INTERP_COLUMNS:
-            if c not in out.columns:
-                out[c] = np.nan
-        return out
-
-    out = trajectories_df.copy()
-    for c in HEADTAIL_INTERP_COLUMNS:
-        if c not in out.columns:
-            out[c] = np.nan
-
-    out["_frame_join"] = (
-        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
-    )
-    out["_traj_join"] = (
-        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
-    )
-
-    interp = interp_ht_df.copy()
-    interp["_frame_join"] = (
-        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
-    )
-    interp["_traj_join"] = (
-        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
-    )
+    out, interp = _prepare_interp_join_keys(trajectories_df, interp_ht_df)
+    out = _ensure_interp_columns(out, HEADTAIL_INTERP_COLUMNS)
 
     ht_cols = ["heading_rad"]
     if "heading_conf" in interp.columns:
@@ -722,21 +693,14 @@ def merge_interpolated_headtail_df(
         sort=False,
     )
 
-    if "heading_rad" in merged.columns:
-        merged["InterpHeadingRad"] = merged["InterpHeadingRad"].where(
-            merged["InterpHeadingRad"].notna(), merged["heading_rad"]
-        )
-        merged.drop(columns=["heading_rad"], inplace=True, errors="ignore")
-    if "heading_conf" in merged.columns:
-        merged["InterpHeadingConf"] = merged["InterpHeadingConf"].where(
-            merged["InterpHeadingConf"].notna(), merged["heading_conf"]
-        )
-        merged.drop(columns=["heading_conf"], inplace=True, errors="ignore")
-    if "heading_directed" in merged.columns:
-        merged["InterpHeadingDirected"] = merged["InterpHeadingDirected"].where(
-            merged["InterpHeadingDirected"].notna(), merged["heading_directed"]
-        )
-        merged.drop(columns=["heading_directed"], inplace=True, errors="ignore")
+    merged = _backfill_interp_columns(
+        merged,
+        {
+            "heading_rad": "InterpHeadingRad",
+            "heading_conf": "InterpHeadingConf",
+            "heading_directed": "InterpHeadingDirected",
+        },
+    )
 
     merged.drop(
         columns=["_frame_join", "_traj_join"],

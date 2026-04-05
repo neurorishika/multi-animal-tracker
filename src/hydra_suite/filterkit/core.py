@@ -14,6 +14,161 @@ from sklearn.cluster import MiniBatchKMeans
 
 
 class FilterKitCore:
+    @staticmethod
+    def _should_report_progress(idx: int, total: int) -> bool:
+        return idx == 1 or idx % 250 == 0 or idx == total
+
+    def _maybe_report_progress(self, progress_callback, idx: int, total: int) -> None:
+        if progress_callback and self._should_report_progress(idx, total):
+            progress_callback(idx, total)
+
+    @staticmethod
+    def _is_exact_hash_dedup(
+        method: str, threshold: float, color_threshold: Optional[float]
+    ) -> bool:
+        return (
+            method in {"phash", "dhash", "ahash"}
+            and threshold <= 0
+            and color_threshold is None
+        )
+
+    @staticmethod
+    def _filter_duplicate_groups(
+        duplicate_groups: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        filtered_groups = []
+        for group in duplicate_groups:
+            group["count"] = len(group["paths"])
+            if group["count"] > 1:
+                filtered_groups.append(group)
+        filtered_groups.sort(key=lambda group: group["count"], reverse=True)
+        return filtered_groups
+
+    @staticmethod
+    def _append_group_path(
+        duplicate_groups: List[Dict[str, Any]],
+        group_index: int,
+        item: Dict[str, Any],
+    ) -> None:
+        if 0 <= group_index < len(duplicate_groups):
+            duplicate_groups[group_index]["paths"].append(str(item["path"]))
+
+    @staticmethod
+    def _add_duplicate_group(
+        duplicate_groups: List[Dict[str, Any]],
+        signature,
+        item: Dict[str, Any],
+        method: str,
+    ) -> None:
+        duplicate_groups.append(
+            {
+                "hash": str(signature),
+                "count": 1,
+                "paths": [str(item["path"])],
+                "method": method,
+            }
+        )
+
+    def _prepare_dedup_item(
+        self,
+        item: Dict[str, Any],
+        method: str,
+        color_threshold: Optional[float],
+    ) -> bool:
+        try:
+            if "dedup_signature" not in item:
+                img = cv2.imread(item["path"])
+                if img is None:
+                    return False
+                item["dedup_signature"] = self.compute_signature(img, method)
+                if color_threshold is not None:
+                    item["color_signature"] = self.compute_color_signature(img)
+            elif color_threshold is not None and "color_signature" not in item:
+                img = cv2.imread(item["path"])
+                if img is not None:
+                    item["color_signature"] = self.compute_color_signature(img)
+        except Exception:
+            return False
+        return True
+
+    def _record_exact_hash_item(
+        self,
+        item: Dict[str, Any],
+        signature,
+        method: str,
+        seen_exact_signatures: set,
+        sig_to_cluster_index: Dict[int, int],
+        duplicate_groups: List[Dict[str, Any]],
+        kept_items: List[Dict[str, Any]],
+        kept_color_signatures: List[Optional[np.ndarray]],
+    ) -> bool:
+        sig_key = int(signature)
+        if sig_key in seen_exact_signatures:
+            self._append_group_path(
+                duplicate_groups,
+                sig_to_cluster_index.get(sig_key, -1),
+                item,
+            )
+            return False
+
+        seen_exact_signatures.add(sig_key)
+        sig_to_cluster_index[sig_key] = len(duplicate_groups)
+        kept_items.append(item)
+        kept_color_signatures.append(None)
+        self._add_duplicate_group(duplicate_groups, sig_key, item, method)
+        return True
+
+    def _find_matching_signature_index(
+        self,
+        signature,
+        current_color_signature,
+        kept_signatures: List,
+        kept_color_signatures: List[Optional[np.ndarray]],
+        threshold: float,
+        method: str,
+        color_threshold: Optional[float],
+    ) -> int:
+        for sig_idx, existing_signature in enumerate(kept_signatures):
+            if not self.is_duplicate(signature, existing_signature, threshold, method):
+                continue
+            if color_threshold is None:
+                return sig_idx
+
+            existing_color_signature = kept_color_signatures[sig_idx]
+            if (
+                current_color_signature is not None
+                and existing_color_signature is not None
+                and self.color_distance(
+                    current_color_signature, existing_color_signature
+                )
+                > color_threshold
+            ):
+                continue
+            return sig_idx
+
+        return -1
+
+    def _record_signature_item(
+        self,
+        item: Dict[str, Any],
+        signature,
+        current_color_signature,
+        matched_index: int,
+        method: str,
+        kept_signatures: List,
+        kept_items: List[Dict[str, Any]],
+        kept_color_signatures: List[Optional[np.ndarray]],
+        duplicate_groups: List[Dict[str, Any]],
+    ) -> None:
+        if matched_index == -1:
+            kept_signatures.append(signature)
+            kept_items.append(item)
+            kept_color_signatures.append(current_color_signature)
+            self._add_duplicate_group(duplicate_groups, signature, item, method)
+            return
+
+        self._append_group_path(duplicate_groups, matched_index, item)
+
     def available_dedup_methods(self) -> List[str]:
         return ["phash", "dhash", "ahash", "histogram"]
 
@@ -271,108 +426,51 @@ class FilterKitCore:
 
         total = len(dataset_sorted)
         for idx, item in enumerate(dataset_sorted, start=1):
-            try:
-                if "dedup_signature" not in item:
-                    img = cv2.imread(item["path"])
-                    if img is None:
-                        if progress_callback and (
-                            idx == 1 or idx % 250 == 0 or idx == total
-                        ):
-                            progress_callback(idx, total)
-                        continue
-                    item["dedup_signature"] = self.compute_signature(img, method)
-                    if color_threshold is not None:
-                        item["color_signature"] = self.compute_color_signature(img)
-                elif color_threshold is not None and "color_signature" not in item:
-                    img = cv2.imread(item["path"])
-                    if img is not None:
-                        item["color_signature"] = self.compute_color_signature(img)
-            except Exception:
-                if progress_callback and (idx == 1 or idx % 250 == 0 or idx == total):
-                    progress_callback(idx, total)
+            if not self._prepare_dedup_item(item, method, color_threshold):
+                self._maybe_report_progress(progress_callback, idx, total)
                 continue
 
             signature = item["dedup_signature"]
             current_color_signature = item.get("color_signature")
 
-            if (
-                method in {"phash", "dhash", "ahash"}
-                and float(threshold) <= 0
-                and color_threshold is None
-            ):
-                sig_key = int(signature)
-                if sig_key in seen_exact_signatures:
-                    cluster_idx = sig_to_cluster_index.get(sig_key)
-                    if cluster_idx is not None:
-                        duplicate_groups[cluster_idx]["paths"].append(str(item["path"]))
-                    if progress_callback and (
-                        idx == 1 or idx % 250 == 0 or idx == total
-                    ):
-                        progress_callback(idx, total)
-                    continue
-                seen_exact_signatures.add(sig_key)
-                sig_to_cluster_index[sig_key] = len(duplicate_groups)
-                kept_items.append(item)
-                kept_color_signatures.append(None)
-                duplicate_groups.append(
-                    {
-                        "hash": str(sig_key),
-                        "count": 1,
-                        "paths": [str(item["path"])],
-                        "method": method,
-                    }
+            if self._is_exact_hash_dedup(method, float(threshold), color_threshold):
+                self._record_exact_hash_item(
+                    item,
+                    signature,
+                    method,
+                    seen_exact_signatures,
+                    sig_to_cluster_index,
+                    duplicate_groups,
+                    kept_items,
+                    kept_color_signatures,
                 )
-                if progress_callback and (idx == 1 or idx % 250 == 0 or idx == total):
-                    progress_callback(idx, total)
+                self._maybe_report_progress(progress_callback, idx, total)
                 continue
 
-            is_dup = False
-            matched_index = -1
-            for sig_idx, existing_signature in enumerate(kept_signatures):
-                if self.is_duplicate(
-                    signature, existing_signature, float(threshold), method
-                ):
-                    if color_threshold is not None:
-                        existing_color_signature = kept_color_signatures[sig_idx]
-                        if (
-                            current_color_signature is not None
-                            and existing_color_signature is not None
-                            and self.color_distance(
-                                current_color_signature, existing_color_signature
-                            )
-                            > float(color_threshold)
-                        ):
-                            continue
-                    is_dup = True
-                    matched_index = sig_idx
-                    break
-
-            if not is_dup:
-                kept_signatures.append(signature)
-                kept_items.append(item)
-                kept_color_signatures.append(current_color_signature)
-                duplicate_groups.append(
-                    {
-                        "hash": str(signature),
-                        "count": 1,
-                        "paths": [str(item["path"])],
-                        "method": method,
-                    }
-                )
-            elif 0 <= matched_index < len(duplicate_groups):
-                duplicate_groups[matched_index]["paths"].append(str(item["path"]))
-
-            if progress_callback and (idx == 1 or idx % 250 == 0 or idx == total):
-                progress_callback(idx, total)
+            matched_index = self._find_matching_signature_index(
+                signature,
+                current_color_signature,
+                kept_signatures,
+                kept_color_signatures,
+                float(threshold),
+                method,
+                color_threshold,
+            )
+            self._record_signature_item(
+                item,
+                signature,
+                current_color_signature,
+                matched_index,
+                method,
+                kept_signatures,
+                kept_items,
+                kept_color_signatures,
+                duplicate_groups,
+            )
+            self._maybe_report_progress(progress_callback, idx, total)
 
         if return_groups:
-            filtered_groups = []
-            for grp in duplicate_groups:
-                grp["count"] = len(grp["paths"])
-                if grp["count"] > 1:
-                    filtered_groups.append(grp)
-            filtered_groups.sort(key=lambda g: g["count"], reverse=True)
-            return kept_items, filtered_groups
+            return kept_items, self._filter_duplicate_groups(duplicate_groups)
 
         return kept_items
 

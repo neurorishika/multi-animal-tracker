@@ -151,6 +151,24 @@ def apply_foreign_obb_mask(
     return out
 
 
+def _zero_keypoints_inside_poly(
+    arr: np.ndarray,
+    poly: np.ndarray,
+) -> None:
+    """Set confidence to zero for keypoints inside a polygon (in-place)."""
+    import cv2 as _cv2
+
+    for k in range(len(arr)):
+        if arr[k, 2] <= 0.0:
+            continue
+        x, y = float(arr[k, 0]), float(arr[k, 1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        dist = _cv2.pointPolygonTest(poly, (x, y), measureDist=False)
+        if dist >= 0.0:
+            arr[k, 2] = 0.0
+
+
 def filter_keypoints_by_foreign_obbs(
     keypoints,
     all_corners_list,
@@ -174,8 +192,6 @@ def filter_keypoints_by_foreign_obbs(
     if keypoints is None:
         return keypoints
 
-    import cv2 as _cv2
-
     arr = np.asarray(keypoints, dtype=np.float32).copy()
     if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
         return arr
@@ -189,15 +205,7 @@ def filter_keypoints_by_foreign_obbs(
             poly = np.asarray(corners, dtype=np.float32)
             if poly.shape != (4, 2):
                 continue
-            for k in range(len(arr)):
-                if arr[k, 2] <= 0.0:
-                    continue
-                x, y = float(arr[k, 0]), float(arr[k, 1])
-                if not (math.isfinite(x) and math.isfinite(y)):
-                    continue
-                dist = _cv2.pointPolygonTest(poly, (x, y), measureDist=False)
-                if dist >= 0.0:
-                    arr[k, 2] = 0.0
+            _zero_keypoints_inside_poly(arr, poly)
         except Exception:
             continue
 

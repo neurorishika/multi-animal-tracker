@@ -37,6 +37,256 @@ from hydra_suite.data.detection_cache import DetectionCache
 logger = logging.getLogger(__name__)
 
 
+def _preview_filter_cached_detections(det_filter, cache, f_idx, roi_mask):
+    """Read a frame from cache and apply detection filtering for preview."""
+    (
+        raw_meas,
+        raw_sizes,
+        raw_shapes,
+        raw_confs,
+        raw_obb,
+        raw_det_ids,
+        raw_heading_hints,
+        raw_directed_mask,
+        _raw_canonical_affines,
+        _raw_canvas_dims,
+        _raw_M_inverse,
+    ) = cache.get_frame(f_idx)
+    if raw_heading_hints:
+        filtered = det_filter.filter_raw_detections(
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            raw_confs,
+            raw_obb,
+            roi_mask=roi_mask,
+            detection_ids=raw_det_ids,
+            heading_hints=raw_heading_hints,
+            directed_mask=raw_directed_mask,
+        )
+        (
+            meas,
+            _,
+            shapes,
+            _confs,
+            _obb_out,
+            detection_ids,
+            _headtail_hints,
+            _headtail_directed,
+        ) = filtered
+    else:
+        filtered = det_filter.filter_raw_detections(
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            raw_confs,
+            raw_obb,
+            roi_mask=roi_mask,
+            detection_ids=raw_det_ids,
+        )
+        meas, _, shapes, _confs, _obb_out, detection_ids = filtered
+        _headtail_hints, _headtail_directed = [], []
+    return meas, shapes, _confs, detection_ids, _headtail_hints, _headtail_directed
+
+
+def _preview_compute_pose_features(
+    meas,
+    detection_ids,
+    f_idx,
+    pose_enabled,
+    pose_cache,
+    pose_kpt_map,
+    pose_kpt_map_frame,
+    pose_anterior,
+    pose_posterior,
+    pose_ignore,
+    pose_min_conf,
+):
+    """Compute per-detection pose features for preview; returns updated kpt_map state."""
+    _det_pose_kpts: list = [None] * len(meas)
+    _det_pose_vis = np.zeros(len(meas), dtype=np.float32)
+    _det_pose_headings: list = [None] * len(meas)
+    if pose_enabled and meas and detection_ids:
+        if pose_kpt_map_frame != f_idx:
+            pose_kpt_map = _pf_build_keypoint_map(pose_cache, f_idx)
+            pose_kpt_map_frame = f_idx
+        _det_pose_kpts, _det_pose_vis, _det_pose_headings = _pf_compute_det_features(
+            [int(d) for d in detection_ids],
+            pose_kpt_map,
+            pose_anterior,
+            pose_posterior,
+            pose_ignore,
+            pose_min_conf,
+            return_headings=True,
+        )
+    return (
+        _det_pose_kpts,
+        _det_pose_vis,
+        _det_pose_headings,
+        pose_kpt_map,
+        pose_kpt_map_frame,
+    )
+
+
+def _preview_process_matched_tracks(
+    matched_r,
+    matched_c,
+    meas,
+    detection_directed_mask,
+    detection_directed_heading,
+    kf_manager,
+    orientation_last,
+    track_states,
+    trail,
+    _det_pose_kpts,
+    track_pose_prototypes,
+):
+    """Correct KF state for matched tracks and update prototypes (preview)."""
+    for r, c in zip(matched_r, matched_c):
+        m = np.asarray(meas[c], dtype=np.float32)
+        _pose_d = (
+            bool(detection_directed_mask[c])
+            if c < len(detection_directed_mask)
+            else False
+        )
+        theta_cor = _pf_resolve_detection_tracking_theta(
+            r,
+            float(m[2]),
+            (
+                detection_directed_heading[c]
+                if c < len(detection_directed_heading)
+                else math.nan
+            ),
+            _pose_d,
+            orientation_last,
+        )
+        m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
+        if track_states[r] == "lost":
+            trail[r].clear()
+            kf_manager.initialize_filter(
+                r,
+                np.array([m_cor[0], m_cor[1], theta_cor, 0.0, 0.0], dtype=np.float32),
+            )
+        kf_manager.correct(r, m_cor)
+        orientation_last[r] = _pf_normalize_theta(float(kf_manager.X[r, 2]))
+
+    for r, c in zip(matched_r, matched_c):
+        proto = _det_pose_kpts[c] if c < len(_det_pose_kpts) else None
+        if proto is not None:
+            track_pose_prototypes[r] = np.asarray(proto, dtype=np.float32).copy()
+
+
+def _preview_init_free_detections(
+    free_dets,
+    N,
+    meas,
+    detection_directed_mask,
+    detection_directed_heading,
+    kf_manager,
+    orientation_last,
+    track_states,
+    trail,
+    matched_r,
+    _det_pose_kpts,
+    track_pose_prototypes,
+    missed_frames,
+    tracking_continuity,
+    trajectory_ids,
+    next_trajectory_id,
+):
+    """Assign free detections to lost track slots (preview worker)."""
+    newly_initialized: set = set()
+    existing_matched = set(matched_r)
+    for d_idx in free_dets:
+        for r in range(N):
+            if (
+                r not in existing_matched | newly_initialized
+                and track_states[r] == "lost"
+            ):
+                m = np.asarray(meas[d_idx], dtype=np.float32)
+                _pose_d = (
+                    bool(detection_directed_mask[d_idx])
+                    if d_idx < len(detection_directed_mask)
+                    else False
+                )
+                theta_cor = _pf_resolve_detection_tracking_theta(
+                    r,
+                    float(m[2]),
+                    (
+                        detection_directed_heading[d_idx]
+                        if d_idx < len(detection_directed_heading)
+                        else math.nan
+                    ),
+                    _pose_d,
+                    orientation_last,
+                )
+                kf_manager.initialize_filter(
+                    r,
+                    np.array([m[0], m[1], theta_cor, 0.0, 0.0], dtype=np.float32),
+                )
+                trail[r].clear()
+                orientation_last[r] = _pf_normalize_theta(theta_cor)
+                track_states[r] = "active"
+                missed_frames[r] = 0
+                tracking_continuity[r] = 0
+                trajectory_ids[r] = next_trajectory_id
+                next_trajectory_id += 1
+                newly_initialized.add(r)
+                proto = _det_pose_kpts[d_idx] if d_idx < len(_det_pose_kpts) else None
+                if proto is not None:
+                    track_pose_prototypes[r] = np.asarray(
+                        proto, dtype=np.float32
+                    ).copy()
+                break
+    return newly_initialized, next_trajectory_id
+
+
+def _preview_render_tracks(
+    display,
+    N,
+    track_states,
+    kf_manager,
+    trail,
+    trajectory_ids,
+    traj_colors,
+    show_circles,
+    show_orientation,
+    show_trails,
+    show_labels,
+):
+    """Render tracking overlay on the display frame."""
+    for r in range(N):
+        if track_states[r] == "lost":
+            continue
+        col = traj_colors[r % len(traj_colors)]
+        x, y = float(kf_manager.X[r, 0]), float(kf_manager.X[r, 1])
+        theta = float(kf_manager.X[r, 2])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        pt = (int(x), int(y))
+        if show_trails and len(trail[r]) > 1:
+            pts = np.array(list(trail[r]), dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(display, [pts], isClosed=False, color=col, thickness=2)
+        if show_circles:
+            cv2.circle(display, pt, 7, col, -1)
+        if show_orientation:
+            ex = int(x + 18 * math.cos(theta))
+            ey = int(y + 18 * math.sin(theta))
+            cv2.arrowedLine(display, pt, (ex, ey), col, 2, tipLength=0.4)
+        if show_labels:
+            state_tag = "" if track_states[r] == "active" else f" ({track_states[r]})"
+            cv2.putText(
+                display,
+                f"T{trajectory_ids[r]}{state_tag}",
+                (pt[0] + 10, pt[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                col,
+                1,
+                cv2.LINE_AA,
+            )
+
+
 class DetectionCacheBuilderWorker(QThread):
     """
     Phase-1-only worker: runs YOLO detection on a frame range and writes a
@@ -250,7 +500,6 @@ class TrackingPreviewWorker(QThread):
 
             N = self.params["MAX_TARGETS"]
 
-            # --- Pose context ---
             (
                 _pose_cache,
                 _pose_anterior,
@@ -268,7 +517,6 @@ class TrackingPreviewWorker(QThread):
             orientation_last: list = [None] * N
             last_shape_info = [None] * N
             lost_threshold = self.params.get("LOST_THRESHOLD_FRAMES", 5)
-
             resize_f = self.params.get("RESIZE_FACTOR", 1.0)
 
             traj_colors = self.params.get("TRAJECTORY_COLORS", [])
@@ -295,74 +543,37 @@ class TrackingPreviewWorker(QThread):
                     break
 
                 (
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confs,
-                    raw_obb,
-                    raw_det_ids,
-                    raw_heading_hints,
-                    raw_directed_mask,
-                    _raw_canonical_affines,
-                    _raw_canvas_dims,
-                    _raw_M_inverse,
-                ) = cache.get_frame(f_idx)
-                if raw_heading_hints:
-                    filtered = det_filter.filter_raw_detections(
-                        raw_meas,
-                        raw_sizes,
-                        raw_shapes,
-                        raw_confs,
-                        raw_obb,
-                        roi_mask=_roi_mask,
-                        detection_ids=raw_det_ids,
-                        heading_hints=raw_heading_hints,
-                        directed_mask=raw_directed_mask,
-                    )
-                    (
-                        meas,
-                        _,
-                        shapes,
-                        _confs,
-                        _obb_out,
-                        detection_ids,
-                        _headtail_hints,
-                        _headtail_directed,
-                    ) = filtered
-                else:
-                    filtered = det_filter.filter_raw_detections(
-                        raw_meas,
-                        raw_sizes,
-                        raw_shapes,
-                        raw_confs,
-                        raw_obb,
-                        roi_mask=_roi_mask,
-                        detection_ids=raw_det_ids,
-                    )
-                    meas, _, shapes, _confs, _obb_out, detection_ids = filtered
-                    _headtail_hints, _headtail_directed = [], []
+                    meas,
+                    shapes,
+                    _confs,
+                    detection_ids,
+                    _headtail_hints,
+                    _headtail_directed,
+                ) = _preview_filter_cached_detections(
+                    det_filter, cache, f_idx, _roi_mask
+                )
 
                 kf_manager.predict()
 
-                # --- Per-frame pose features ---
-                _det_pose_kpts: list = [None] * len(meas)
-                _det_pose_vis = np.zeros(len(meas), dtype=np.float32)
-                _det_pose_headings: list = [None] * len(meas)
-                if _pose_enabled and meas and detection_ids:
-                    if _pose_kpt_map_frame != f_idx:
-                        _pose_kpt_map = _pf_build_keypoint_map(_pose_cache, f_idx)
-                        _pose_kpt_map_frame = f_idx
-                    _det_pose_kpts, _det_pose_vis, _det_pose_headings = (
-                        _pf_compute_det_features(
-                            [int(d) for d in detection_ids],
-                            _pose_kpt_map,
-                            _pose_anterior,
-                            _pose_posterior,
-                            _pose_ignore,
-                            _pose_min_conf,
-                            return_headings=True,
-                        )
-                    )
+                (
+                    _det_pose_kpts,
+                    _det_pose_vis,
+                    _det_pose_headings,
+                    _pose_kpt_map,
+                    _pose_kpt_map_frame,
+                ) = _preview_compute_pose_features(
+                    meas,
+                    detection_ids,
+                    f_idx,
+                    _pose_enabled,
+                    _pose_cache,
+                    _pose_kpt_map,
+                    _pose_kpt_map_frame,
+                    _pose_anterior,
+                    _pose_posterior,
+                    _pose_ignore,
+                    _pose_min_conf,
+                )
                 detection_directed_heading, detection_directed_mask = (
                     _pf_build_direction_overrides(
                         len(meas),
@@ -411,96 +622,39 @@ class TrackingPreviewWorker(QThread):
                             next_trajectory_id,
                         )
                     )
-                    for r, c in zip(matched_r, matched_c):
-                        m = np.asarray(meas[c], dtype=np.float32)
-                        _pose_d = (
-                            bool(detection_directed_mask[c])
-                            if c < len(detection_directed_mask)
-                            else False
-                        )
-                        theta_cor = _pf_resolve_detection_tracking_theta(
-                            r,
-                            float(m[2]),
-                            (
-                                detection_directed_heading[c]
-                                if c < len(detection_directed_heading)
-                                else math.nan
-                            ),
-                            _pose_d,
+                    _preview_process_matched_tracks(
+                        matched_r,
+                        matched_c,
+                        meas,
+                        detection_directed_mask,
+                        detection_directed_heading,
+                        kf_manager,
+                        orientation_last,
+                        track_states,
+                        trail,
+                        _det_pose_kpts,
+                        track_pose_prototypes,
+                    )
+                    newly_initialized, next_trajectory_id = (
+                        _preview_init_free_detections(
+                            free_dets,
+                            N,
+                            meas,
+                            detection_directed_mask,
+                            detection_directed_heading,
+                            kf_manager,
                             orientation_last,
+                            track_states,
+                            trail,
+                            matched_r,
+                            _det_pose_kpts,
+                            track_pose_prototypes,
+                            missed_frames,
+                            tracking_continuity,
+                            trajectory_ids,
+                            next_trajectory_id,
                         )
-                        m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
-                        if track_states[r] == "lost":
-                            trail[r].clear()
-                            kf_manager.initialize_filter(
-                                r,
-                                np.array(
-                                    [m_cor[0], m_cor[1], theta_cor, 0.0, 0.0],
-                                    dtype=np.float32,
-                                ),
-                            )
-                        kf_manager.correct(r, m_cor)
-                        orientation_last[r] = _pf_normalize_theta(
-                            float(kf_manager.X[r, 2])
-                        )
-
-                    for r, c in zip(matched_r, matched_c):
-                        proto = _det_pose_kpts[c] if c < len(_det_pose_kpts) else None
-                        if proto is not None:
-                            track_pose_prototypes[r] = np.asarray(
-                                proto, dtype=np.float32
-                            ).copy()
-
-                    newly_initialized: set = set()
-                    existing_matched = set(matched_r)
-                    for d_idx in free_dets:
-                        for r in range(N):
-                            if (
-                                r not in existing_matched | newly_initialized
-                                and track_states[r] == "lost"
-                            ):
-                                m = np.asarray(meas[d_idx], dtype=np.float32)
-                                _pose_d = (
-                                    bool(detection_directed_mask[d_idx])
-                                    if d_idx < len(detection_directed_mask)
-                                    else False
-                                )
-                                theta_cor = _pf_resolve_detection_tracking_theta(
-                                    r,
-                                    float(m[2]),
-                                    (
-                                        detection_directed_heading[d_idx]
-                                        if d_idx < len(detection_directed_heading)
-                                        else math.nan
-                                    ),
-                                    _pose_d,
-                                    orientation_last,
-                                )
-                                kf_manager.initialize_filter(
-                                    r,
-                                    np.array(
-                                        [m[0], m[1], theta_cor, 0.0, 0.0],
-                                        dtype=np.float32,
-                                    ),
-                                )
-                                trail[r].clear()
-                                orientation_last[r] = _pf_normalize_theta(theta_cor)
-                                track_states[r] = "active"
-                                missed_frames[r] = 0
-                                tracking_continuity[r] = 0
-                                trajectory_ids[r] = next_trajectory_id
-                                next_trajectory_id += 1
-                                newly_initialized.add(r)
-                                proto = (
-                                    _det_pose_kpts[d_idx]
-                                    if d_idx < len(_det_pose_kpts)
-                                    else None
-                                )
-                                if proto is not None:
-                                    track_pose_prototypes[r] = np.asarray(
-                                        proto, dtype=np.float32
-                                    ).copy()
-                                break
+                    )
                 else:
                     matched_r, matched_c, newly_initialized = [], [], set()
 
@@ -531,49 +685,19 @@ class TrackingPreviewWorker(QThread):
                         trail[r].clear()
 
                 display = cv2.resize(frame, (0, 0), fx=resize_f, fy=resize_f)
-
-                for r in range(N):
-                    if track_states[r] == "lost":
-                        continue
-                    col = traj_colors[r % len(traj_colors)]
-
-                    x, y = float(kf_manager.X[r, 0]), float(kf_manager.X[r, 1])
-                    theta = float(kf_manager.X[r, 2])
-                    if not (math.isfinite(x) and math.isfinite(y)):
-                        continue
-
-                    pt = (int(x), int(y))
-
-                    if show_trails and len(trail[r]) > 1:
-                        pts = np.array(list(trail[r]), dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.polylines(
-                            display, [pts], isClosed=False, color=col, thickness=2
-                        )
-
-                    if show_circles:
-                        cv2.circle(display, pt, 7, col, -1)
-
-                    if show_orientation:
-                        ex = int(x + 18 * math.cos(theta))
-                        ey = int(y + 18 * math.sin(theta))
-                        cv2.arrowedLine(display, pt, (ex, ey), col, 2, tipLength=0.4)
-
-                    if show_labels:
-                        state_tag = (
-                            ""
-                            if track_states[r] == "active"
-                            else f" ({track_states[r]})"
-                        )
-                        cv2.putText(
-                            display,
-                            f"T{trajectory_ids[r]}{state_tag}",
-                            (pt[0] + 10, pt[1] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.45,
-                            col,
-                            1,
-                            cv2.LINE_AA,
-                        )
+                _preview_render_tracks(
+                    display,
+                    N,
+                    track_states,
+                    kf_manager,
+                    trail,
+                    trajectory_ids,
+                    traj_colors,
+                    show_circles,
+                    show_orientation,
+                    show_trails,
+                    show_labels,
+                )
 
                 self.frame_signal.emit(cv2.cvtColor(display, cv2.COLOR_BGR2RGB))
                 self.msleep(20)
