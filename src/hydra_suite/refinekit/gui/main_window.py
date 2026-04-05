@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from hydra_suite.core.tracking.confidence_density import load_regions
+from hydra_suite.refinekit.config.schemas import RefineKitConfig
 from hydra_suite.refinekit.core.correction_writer import CorrectionWriter
 from hydra_suite.refinekit.core.event_scorer import EventScorer
 from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
@@ -73,6 +74,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("RefineKit")
 
+        self.config = RefineKitConfig()
         self._sessions: List[str] = []
         self._session_idx: int = -1
         self._video_path: Optional[str] = None

@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.posekit.config.schemas import PoseKitConfig
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 from .canvas import FrameListDelegate, PoseCanvas
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, project: Project, image_paths: List[Path]):
         super().__init__()
+        self.config = PoseKitConfig()
         self.setWindowTitle("PoseKit Labeler")
         self.apply_stylesheet()
 
