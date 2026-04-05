@@ -1,24 +1,31 @@
 """DatasetPanel — active learning dataset generation controls."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
 
+if TYPE_CHECKING:
+    from hydra_suite.trackerkit.gui.main_window import MainWindow
+
 
 class DatasetPanel(QWidget):
-    """Active learning dataset generation: frame selection, export, and controls.
-
-    Signals
-    -------
-    config_changed(TrackerConfig)
-        Emitted when the user edits a dataset generation parameter.
-    """
+    """Active learning dataset generation: frame selection, export, and controls."""
 
     config_changed: Signal = Signal(object)
 
-    def __init__(self, config: TrackerConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        main_window: "MainWindow",
+        config: TrackerConfig,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._main_window = main_window
         self._config = config
         self._layout = QVBoxLayout(self)
         self._build_ui()
