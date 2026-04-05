@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.filterkit.config.schemas import FilterKitConfig
 from hydra_suite.filterkit.core import FilterKitCore
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.widgets.workers import BaseWorker
@@ -451,6 +452,7 @@ class FilterKitWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.config = FilterKitConfig()
         self.apply_stylesheet()
         self.setWindowTitle("FilterKit - Dataset Subsampling")
         self.resize(1400, 950)
