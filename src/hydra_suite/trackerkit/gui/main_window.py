@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -103,11 +102,6 @@ from hydra_suite.runtime.compute_runtime import (
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.geometry import fit_circle_to_points, wrap_angle_degs
-from hydra_suite.utils.gpu_utils import (
-    MPS_AVAILABLE,
-    TENSORRT_AVAILABLE,
-    TORCH_CUDA_AVAILABLE,
-)
 from hydra_suite.utils.pose_visualization import (
     is_renderable_pose_keypoint,
     normalize_pose_render_min_conf,
@@ -3872,9 +3866,15 @@ class MainWindow(QMainWindow):
         settings = self._ui_settings or {}
 
         detection_index = settings.get("detection_method_index")
-        if isinstance(detection_index, int) and hasattr(self, "combo_detection_method"):
-            self.combo_detection_method.setCurrentIndex(
-                max(0, min(detection_index, self.combo_detection_method.count() - 1))
+        if isinstance(detection_index, int) and hasattr(self, "_detection_panel"):
+            self._detection_panel.combo_detection_method.setCurrentIndex(
+                max(
+                    0,
+                    min(
+                        detection_index,
+                        self._detection_panel.combo_detection_method.count() - 1,
+                    ),
+                )
             )
 
         tab_index = settings.get("active_tab_index")
@@ -3905,8 +3905,8 @@ class MainWindow(QMainWindow):
             "active_tab_index": int(self.tabs.currentIndex()),
             "splitter_sizes": [int(size) for size in self.splitter.sizes()],
             "detection_method_index": (
-                int(self.combo_detection_method.currentIndex())
-                if hasattr(self, "combo_detection_method")
+                int(self._detection_panel.combo_detection_method.currentIndex())
+                if hasattr(self, "_detection_panel")
                 else 0
             ),
             "collapsed_sections": collapsed_sections,
@@ -4173,9 +4173,16 @@ class MainWindow(QMainWindow):
         self._on_runtime_context_changed()
 
         # Tab 2: Detection (Image, Method, Params)
-        self.tab_detection = QWidget()
-        self.setup_detection_ui()
-        self.tabs.addTab(self.tab_detection, "Find Animals")
+        from hydra_suite.trackerkit.gui.panels.detection_panel import DetectionPanel
+
+        self._detection_panel = DetectionPanel(
+            main_window=self, config=self.config, parent=self
+        )
+        self.tabs.addTab(self._detection_panel, "Find Animals")
+        # Post-construction bootstrap: populate YOLO model combos now that _detection_panel is assigned
+        self._refresh_yolo_model_combo()
+        self._refresh_yolo_detect_model_combo()
+        self._refresh_yolo_crop_obb_model_combo()
 
         # Tab 3: Individual Analysis (Identity)
         from hydra_suite.trackerkit.gui.panels.identity_panel import IdentityPanel
@@ -4371,1020 +4378,6 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # TAB UI BUILDERS
     # =========================================================================
-
-    def setup_detection_ui(self: object) -> object:
-        """Tab 2: Detection - Method, Image Proc, Algo specific."""
-        layout = QVBoxLayout(self.tab_detection)
-        layout.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content = QWidget()
-        vbox = QVBoxLayout(content)
-        vbox.setContentsMargins(6, 6, 6, 6)
-        vbox.setSpacing(8)
-        self._set_compact_scroll_layout(vbox)
-
-        # ============================================================
-        # 1. Detection Method Selector
-        # ============================================================
-        g_method = QGroupBox("Detection")
-        self._set_compact_section_widget(g_method)
-        l_method_outer = QVBoxLayout(g_method)
-        l_method_outer.setSpacing(6)
-        f_method = QFormLayout(None)
-        f_method.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        f_method.setHorizontalSpacing(10)
-        f_method.setVerticalSpacing(8)
-        method_help = self._create_help_label(
-            "Choose how to detect animals in each frame. Background subtraction models the static background and finds moving objects. YOLO uses deep learning to detect animals directly.",
-            attach_to_title=False,
-        )
-        self.combo_detection_method = QComboBox()
-        self.combo_detection_method.addItems(["Background Subtraction", "YOLO OBB"])
-        self.combo_detection_method.setFixedHeight(30)
-        self.combo_detection_method.currentIndexChanged.connect(
-            self._on_detection_method_changed_ui
-        )
-        method_row = QHBoxLayout()
-        method_row.setSpacing(6)
-        method_row.addWidget(self.combo_detection_method, 1)
-        method_row.addWidget(method_help, 0, Qt.AlignVCenter)
-        f_method.addRow("Method", method_row)
-
-        # Legacy device selection (hidden; derived from canonical runtime).
-        self.combo_device = QComboBox()
-        device_options = ["auto", "cpu"]
-        device_tooltip_parts = [
-            "Select compute device for detection:",
-            "  • auto - Automatically select best available device",
-            "  • cpu - CPU-only mode",
-        ]
-
-        if TORCH_CUDA_AVAILABLE:
-            device_options.append("cuda:0")
-            device_tooltip_parts.append("  • cuda:0 - NVIDIA GPU ✓ Available")
-        else:
-            device_tooltip_parts.append("  • cuda:0 - NVIDIA GPU (not available)")
-
-        if MPS_AVAILABLE:
-            device_options.append("mps")
-            device_tooltip_parts.append("  • mps - Apple Silicon GPU ✓ Available")
-        else:
-            device_tooltip_parts.append("  • mps - Apple Silicon GPU (not available)")
-
-        device_tooltip_parts.append(
-            "\nApplies to both YOLO and Background Subtraction GPU acceleration."
-        )
-
-        self.combo_device.addItems(device_options)
-        self.combo_device.setToolTip("\n".join(device_tooltip_parts))
-        f_method.addRow("Which compute device should run detection?", self.combo_device)
-        device_label = f_method.labelForField(self.combo_device)
-        if device_label is not None:
-            device_label.setVisible(False)
-        self.combo_device.setVisible(False)
-
-        l_method_outer.addLayout(f_method)
-        vbox.addWidget(g_method)
-
-        # Stacked Widget for Method Specific Params
-        self.stack_detection = QStackedWidget()
-        self.stack_detection.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-
-        # --- Page 0: Background Subtraction Params ---
-        page_bg = QWidget()
-        page_bg.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        l_bg = QVBoxLayout(page_bg)
-        l_bg.setContentsMargins(0, 0, 0, 0)
-        l_bg.setSpacing(6)
-
-        # Create accordion for BG subtraction settings
-        self.bg_accordion = AccordionContainer()
-
-        # Image Enhancement (Pre-processing)
-        self.g_img = CollapsibleGroupBox("Image")
-        self.bg_accordion.addCollapsible(self.g_img)
-        vl_img = QVBoxLayout()
-        vl_img.addWidget(
-            self._create_help_label(
-                "Adjust image properties before detection to improve contrast between animals and background. "
-                "Start with default values and adjust only if animals are hard to distinguish."
-            )
-        )
-
-        # Brightness slider
-        bright_layout = QVBoxLayout()
-        bright_label_row = QHBoxLayout()
-        bright_label_row.addWidget(QLabel("Brightness"))
-        self.label_brightness_val = QLabel("0")
-        self.label_brightness_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
-        bright_label_row.addWidget(self.label_brightness_val)
-        bright_label_row.addSpacing(6)
-        bright_layout.addLayout(bright_label_row)
-
-        self.slider_brightness = QSlider(Qt.Horizontal)
-        self.slider_brightness.setRange(-255, 255)
-        self.slider_brightness.setValue(0)
-        self.slider_brightness.setTickPosition(QSlider.TicksBelow)
-        self.slider_brightness.setTickInterval(50)
-        self.slider_brightness.valueChanged.connect(self._on_brightness_changed)
-        self.slider_brightness.setToolTip(
-            "Adjust overall image brightness.\n"
-            "Positive = lighter, Negative = darker.\n"
-            "Use to improve contrast between animals and background."
-        )
-        bright_layout.addWidget(self.slider_brightness)
-        vl_img.addLayout(bright_layout)
-
-        # Contrast slider
-        contrast_layout = QVBoxLayout()
-        contrast_label_row = QHBoxLayout()
-        contrast_label_row.addWidget(QLabel("Contrast"))
-        self.label_contrast_val = QLabel("1.0")
-        self.label_contrast_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
-        contrast_label_row.addWidget(self.label_contrast_val)
-        contrast_label_row.addSpacing(6)
-        contrast_layout.addLayout(contrast_label_row)
-
-        self.slider_contrast = QSlider(Qt.Horizontal)
-        self.slider_contrast.setRange(0, 300)  # 0.0 to 3.0, scaled by 100
-        self.slider_contrast.setValue(100)  # 1.0
-        self.slider_contrast.setTickPosition(QSlider.TicksBelow)
-        self.slider_contrast.setTickInterval(50)
-        self.slider_contrast.valueChanged.connect(self._on_contrast_changed)
-        self.slider_contrast.setToolTip(
-            "Adjust image contrast (difference between light and dark).\n"
-            "1.0 = original, >1.0 = more contrast, <1.0 = less contrast.\n"
-            "Increase to make animals stand out from background."
-        )
-        contrast_layout.addWidget(self.slider_contrast)
-        vl_img.addLayout(contrast_layout)
-
-        # Gamma slider
-        gamma_layout = QVBoxLayout()
-        gamma_label_row = QHBoxLayout()
-        gamma_label_row.addWidget(QLabel("Gamma"))
-        self.label_gamma_val = QLabel("1.0")
-        self.label_gamma_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
-        gamma_label_row.addWidget(self.label_gamma_val)
-        gamma_label_row.addSpacing(6)
-        gamma_layout.addLayout(gamma_label_row)
-
-        self.slider_gamma = QSlider(Qt.Horizontal)
-        self.slider_gamma.setRange(10, 300)  # 0.1 to 3.0, scaled by 100
-        self.slider_gamma.setValue(100)  # 1.0
-        self.slider_gamma.setTickPosition(QSlider.TicksBelow)
-        self.slider_gamma.setTickInterval(50)
-        self.slider_gamma.valueChanged.connect(self._on_gamma_changed)
-        self.slider_gamma.setToolTip(
-            "Adjust gamma correction (mid-tone brightness).\n"
-            "1.0 = original, >1.0 = brighter mid-tones, <1.0 = darker mid-tones.\n"
-            "Use to enhance detail in shadowed or bright areas."
-        )
-        gamma_layout.addWidget(self.slider_gamma)
-        vl_img.addLayout(gamma_layout)
-
-        # Dark on light checkbox
-        self.chk_dark_on_light = QCheckBox("Animals are darker than background")
-        self.chk_dark_on_light.setChecked(True)
-        self.chk_dark_on_light.setToolTip(
-            "Check if animals are darker than background (most common).\n"
-            "Uncheck if animals are lighter than background.\n"
-            "This inverts the foreground detection."
-        )
-        vl_img.addWidget(self.chk_dark_on_light)
-        self.g_img.setContentLayout(vl_img)
-        l_bg.addWidget(self.g_img)
-        self._remember_collapsible_state(
-            "detection.brightness_contrast_gamma", self.g_img
-        )
-
-        # Background Model
-        g_bg_model = CollapsibleGroupBox("Background")
-        self.bg_accordion.addCollapsible(g_bg_model)
-        vl_bg_model = QVBoxLayout()
-        vl_bg_model.addWidget(
-            self._create_help_label(
-                "Build a model of the static background. Priming frames establish initial model, learning rate "
-                "controls adaptation speed, threshold sets sensitivity. Lower threshold = more sensitive detection."
-            )
-        )
-        f_bg = QFormLayout(None)
-        f_bg.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        f_bg.setHorizontalSpacing(10)
-        f_bg.setVerticalSpacing(8)
-        self.spin_bg_prime = QDoubleSpinBox()
-        self.spin_bg_prime.setRange(0.0, 120.0)
-        self.spin_bg_prime.setSingleStep(0.5)
-        self.spin_bg_prime.setDecimals(2)
-        self.spin_bg_prime.setValue(0.33)
-        self.spin_bg_prime.setFixedHeight(30)
-        self.spin_bg_prime.setToolTip(
-            "Time to build background model (seconds).\n"
-            "Converted to frames using the acquisition frame rate.\n"
-            "Recommended: 0.3-3.0 s.\n"
-            "Use more if background varies or animals are present initially."
-        )
-        f_bg.addRow("Startup time (seconds)", self.spin_bg_prime)
-
-        self.chk_adaptive_bg = QCheckBox("Continuously update background model")
-        self.chk_adaptive_bg.setChecked(True)
-        self.chk_adaptive_bg.setToolTip(
-            "Continuously update background model during tracking.\n"
-            "Recommended: Enable for videos with changing lighting.\n"
-            "Disable for static background to improve performance."
-        )
-        f_bg.addRow(self.chk_adaptive_bg)
-
-        self.spin_bg_learning = QDoubleSpinBox()
-        self.spin_bg_learning.setRange(0.0001, 0.1)
-        self.spin_bg_learning.setDecimals(4)
-        self.spin_bg_learning.setValue(0.001)
-        self.spin_bg_learning.setFixedHeight(30)
-        self.spin_bg_learning.setToolTip(
-            "How quickly background adapts to changes (0.0001-0.1).\n"
-            "Lower = slower adaptation (stable, good for mostly static background).\n"
-            "Higher = faster adaptation (use for variable lighting/shadows)."
-        )
-        self.spin_threshold = QSpinBox()
-        self.spin_threshold.setRange(0, 255)
-        self.spin_threshold.setValue(50)
-        self.spin_threshold.setFixedHeight(30)
-        self.spin_threshold.setToolTip(
-            "Pixel intensity difference to detect foreground (0-255).\n"
-            "Lower = more sensitive (detects subtle animals, more noise).\n"
-            "Higher = less sensitive (cleaner, may miss animals).\n"
-            "Recommended: 30-70 depending on contrast."
-        )
-        _bg_rate_row = QHBoxLayout()
-        _bg_rate_row.addWidget(QLabel("Learn rate:"))
-        _bg_rate_row.addWidget(self.spin_bg_learning, 1)
-        _bg_rate_row.addSpacing(8)
-        _bg_rate_row.addWidget(QLabel("Threshold:"))
-        _bg_rate_row.addWidget(self.spin_threshold, 1)
-        f_bg.addRow(_bg_rate_row)
-        vl_bg_model.addLayout(f_bg)
-        g_bg_model.setContentLayout(vl_bg_model)
-        l_bg.addWidget(g_bg_model)
-        self._remember_collapsible_state("detection.background_estimation", g_bg_model)
-
-        # Lighting Stab
-        g_light = CollapsibleGroupBox("Lighting")
-        self.bg_accordion.addCollapsible(g_light)
-        vl_light = QVBoxLayout()
-        vl_light.addWidget(
-            self._create_help_label(
-                "Compensate for gradual lighting changes (clouds, time of day). Smoothing factor controls "
-                "adaptation speed - higher = slower/more stable. Enable for outdoor or variable-light videos."
-            )
-        )
-        f_light = QFormLayout(None)
-        f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        f_light.setHorizontalSpacing(10)
-        f_light.setVerticalSpacing(8)
-        self.chk_lighting_stab = QCheckBox("Enable Stabilization")
-        self.chk_lighting_stab.setChecked(True)
-        self.chk_lighting_stab.setToolTip(
-            "Compensate for gradual lighting changes over time.\n"
-            "Recommended: Enable for videos with variable lighting.\n"
-            "Disable for consistent illumination to improve speed."
-        )
-        f_light.addRow(self.chk_lighting_stab)
-
-        self.spin_lighting_smooth = QDoubleSpinBox()
-        self.spin_lighting_smooth.setRange(0.8, 0.999)
-        self.spin_lighting_smooth.setValue(0.95)
-        self.spin_lighting_smooth.setFixedHeight(30)
-        self.spin_lighting_smooth.setToolTip(
-            "Temporal smoothing factor for lighting correction (0.8-0.999).\n"
-            "Higher = smoother, slower adaptation to lighting changes.\n"
-            "Lower = faster response to sudden lighting shifts.\n"
-            "Recommended: 0.9-0.98"
-        )
-        self.spin_lighting_median = QSpinBox()
-        self.spin_lighting_median.setRange(3, 15)
-        self.spin_lighting_median.setSingleStep(2)
-        self.spin_lighting_median.setValue(5)
-        self.spin_lighting_median.setFixedHeight(30)
-        self.spin_lighting_median.setToolTip(
-            "Median filter window size (odd number, 3-15).\n"
-            "Larger window = smoother lighting estimate, slower response.\n"
-            "Smaller window = faster response, less smoothing.\n"
-            "Recommended: 5-9"
-        )
-        _light_row = QHBoxLayout()
-        _light_row.addWidget(QLabel("Smoothing:"))
-        _light_row.addWidget(self.spin_lighting_smooth, 1)
-        _light_row.addSpacing(8)
-        _light_row.addWidget(QLabel("Median (frames):"))
-        _light_row.addWidget(self.spin_lighting_median, 1)
-        f_light.addRow(_light_row)
-        vl_light.addLayout(f_light)
-        g_light.setContentLayout(vl_light)
-        l_bg.addWidget(g_light)
-        self._remember_collapsible_state("detection.scene_lighting", g_light)
-
-        # Morphology (Standard)
-        g_morph = CollapsibleGroupBox("Morphology")
-        self.bg_accordion.addCollapsible(g_morph)
-        vl_morph = QVBoxLayout()
-        vl_morph.addWidget(
-            self._create_help_label(
-                "Clean up detected blobs using morphological operations. Closing fills small holes, opening removes "
-                "small noise. Larger kernels = stronger effect but may distort shape. Use odd numbers only."
-            )
-        )
-        f_morph = QFormLayout(None)
-        f_morph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        f_morph.setHorizontalSpacing(10)
-        f_morph.setVerticalSpacing(8)
-        self.spin_morph_size = QSpinBox()
-        self.spin_morph_size.setRange(1, 25)
-        self.spin_morph_size.setSingleStep(2)
-        self.spin_morph_size.setValue(5)
-        self.spin_morph_size.setFixedHeight(30)
-        self.spin_morph_size.setToolTip(
-            "Morphological operation kernel size (odd number, 1-25).\n"
-            "Larger = more aggressive noise removal, may merge nearby animals.\n"
-            "Smaller = preserves detail, may leave noise.\n"
-            "Recommended: 3-7 for typical tracking scenarios."
-        )
-        f_morph.addRow("Kernel size", self.spin_morph_size)
-
-        self.spin_min_contour = QSpinBox()
-        self.spin_min_contour.setRange(0, 100000)
-        self.spin_min_contour.setValue(50)
-        self.spin_min_contour.setFixedHeight(30)
-        self.spin_min_contour.setToolTip(
-            "Minimum contour area in pixels² to keep.\n"
-            "Filters out small noise blobs after morphology.\n"
-            "Recommended: 20-100 depending on animal size and zoom.\n"
-            "Note: Similar to min object size but in absolute pixels."
-        )
-        self.spin_max_contour_multiplier = QSpinBox()
-        self.spin_max_contour_multiplier.setRange(5, 100)
-        self.spin_max_contour_multiplier.setValue(20)
-        self.spin_max_contour_multiplier.setFixedHeight(30)
-        self.spin_max_contour_multiplier.setToolTip(
-            "Maximum contour area as multiplier of minimum (5-100).\n"
-            "Max area = min_contour × this multiplier.\n"
-            "Filters out very large blobs (clusters, shadows, artifacts).\n"
-            "Recommended: 10-30"
-        )
-        _contour_row = QHBoxLayout()
-        _contour_row.addWidget(QLabel("Min area (px²):"))
-        _contour_row.addWidget(self.spin_min_contour, 1)
-        _contour_row.addSpacing(8)
-        _contour_row.addWidget(QLabel("Max multiplier:"))
-        _contour_row.addWidget(self.spin_max_contour_multiplier, 1)
-        f_morph.addRow(_contour_row)
-        vl_morph.addLayout(f_morph)
-        g_morph.setContentLayout(vl_morph)
-        l_bg.addWidget(g_morph)
-        self._remember_collapsible_state("detection.noise_removal", g_morph)
-
-        # Morphology (Advanced/Splitting)
-        g_split = CollapsibleGroupBox("Split Touching")
-        self.bg_accordion.addCollapsible(g_split)
-        vl_split = QVBoxLayout()
-        vl_split.addWidget(
-            self._create_help_label(
-                "Split touching animals using body-size-aware erosion only in locally crowded regions. "
-                "Enable only if animals frequently touch."
-            )
-        )
-        f_split = QFormLayout(None)
-        f_split.setHorizontalSpacing(10)
-        f_split.setVerticalSpacing(8)
-        self.chk_conservative_split = QCheckBox("Use conservative split")
-        self.chk_conservative_split.setChecked(True)
-        self.chk_conservative_split.setToolTip(
-            "Locally raise the detection threshold inside suspected merged\n"
-            "blobs to separate touching animals at their weakest connection\n"
-            "point while preserving body shape."
-        )
-        f_split.addRow(self.chk_conservative_split)
-
-        h_split = QHBoxLayout()
-        self.spin_conservative_kernel = QSpinBox()
-        self.spin_conservative_kernel.setRange(1, 15)
-        self.spin_conservative_kernel.setSingleStep(2)
-        self.spin_conservative_kernel.setValue(3)
-        self.spin_conservative_kernel.setFixedHeight(30)
-        self.spin_conservative_kernel.setToolTip(
-            "Gaussian blur kernel applied to the local difference\n"
-            "image before re-thresholding (odd number, 1-15).\n"
-            "Larger = smoother split boundaries.\n"
-            "1 = no smoothing. Recommended: 3-5"
-        )
-        self.spin_conservative_erode = QSpinBox()
-        self.spin_conservative_erode.setRange(1, 10)
-        self.spin_conservative_erode.setValue(1)
-        self.spin_conservative_erode.setFixedHeight(30)
-        self.spin_conservative_erode.setToolTip(
-            "Threshold boost steps (1-10).\n"
-            "Each step pulls the split threshold 25%% closer to\n"
-            "nearby local peaks inside suspected merged blobs.\n"
-            "Higher = more aggressive local separation.\n"
-            "Recommended: 1-3"
-        )
-        h_split.addWidget(QLabel("Blur kernel"))
-        h_split.addWidget(self.spin_conservative_kernel)
-        h_split.addWidget(QLabel("Boost steps"))
-        h_split.addWidget(self.spin_conservative_erode)
-        f_split.addRow(h_split)
-
-        self.chk_additional_dilation = QCheckBox("Reconnect thin parts (dilation)")
-        self.chk_additional_dilation.setToolTip(
-            "Use dilation to reconnect thin parts (e.g., legs, antennae).\n"
-            "Recommended: Enable if animals have thin appendages.\n"
-            "Disable to maintain accurate body shape."
-        )
-        f_split.addRow(self.chk_additional_dilation)
-
-        h_dil = QHBoxLayout()
-        self.spin_dilation_kernel_size = QSpinBox()
-        self.spin_dilation_kernel_size.setRange(1, 15)
-        self.spin_dilation_kernel_size.setSingleStep(2)
-        self.spin_dilation_kernel_size.setValue(3)
-        self.spin_dilation_kernel_size.setFixedHeight(30)
-        self.spin_dilation_kernel_size.setToolTip(
-            "Dilation kernel size (odd number, 1-15).\n"
-            "Larger = thicker reconnection.\n"
-            "Recommended: 3-5"
-        )
-        self.spin_dilation_iterations = QSpinBox()
-        self.spin_dilation_iterations.setRange(1, 10)
-        self.spin_dilation_iterations.setValue(2)
-        self.spin_dilation_iterations.setFixedHeight(30)
-        self.spin_dilation_iterations.setToolTip(
-            "Number of dilation iterations (1-10).\n"
-            "More iterations = thicker result.\n"
-            "Recommended: 1-3"
-        )
-        h_dil.addWidget(QLabel("Kernel size"))
-        h_dil.addWidget(self.spin_dilation_kernel_size)
-        h_dil.addWidget(QLabel("Iterations"))
-        h_dil.addWidget(self.spin_dilation_iterations)
-        f_split.addRow(h_dil)
-        vl_split.addLayout(f_split)
-        g_split.setContentLayout(vl_split)
-
-        l_bg.addWidget(g_split)
-        self._remember_collapsible_state("detection.split_touching", g_split)
-
-        # --- Auto-Tune Detection Parameters button ---
-        self.btn_bg_autotune = QPushButton("Auto-Tune Detection Parameters…")
-        self.btn_bg_autotune.setToolTip(
-            "Use Optuna to search for the best threshold, morphology,\n"
-            "and conservative-split settings for your video."
-        )
-        self.btn_bg_autotune.clicked.connect(self._open_bg_parameter_helper)
-        l_bg.addWidget(self.btn_bg_autotune)
-
-        # --- Page 1: YOLO Params ---
-        page_yolo = QWidget()
-        page_yolo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        l_yolo = QVBoxLayout(page_yolo)
-        l_yolo.setContentsMargins(0, 0, 0, 0)
-        l_yolo.setSpacing(6)
-
-        self.yolo_group = QGroupBox("YOLO")
-        self._set_compact_section_widget(self.yolo_group)
-        f_yolo = QFormLayout(self.yolo_group)
-        f_yolo.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        f_yolo.setHorizontalSpacing(10)
-        f_yolo.setVerticalSpacing(8)
-        self.yolo_group.layout().setContentsMargins(9, 10, 9, 9)
-        self.yolo_group.layout().setSpacing(8)
-        self.yolo_group.layout().addWidget(
-            self._create_help_label(
-                "YOLO uses a trained neural network to detect animals. Choose your model file and adjust thresholds to balance recall and false positives."
-            )
-        )
-
-        self.combo_yolo_obb_mode = QComboBox()
-        self.combo_yolo_obb_mode.addItems(["Direct", "Sequential (Faster)"])
-        self.combo_yolo_obb_mode.setFixedHeight(30)
-        self.combo_yolo_obb_mode.currentIndexChanged.connect(self._on_yolo_mode_changed)
-        self.combo_yolo_obb_mode.setToolTip(
-            "Direct: run OBB on full frame.\n"
-            "Sequential: run detect model first, crop detections, then run OBB on crops."
-        )
-        f_yolo.addRow("YOLO OBB mode", self.combo_yolo_obb_mode)
-
-        self.lbl_obb_mode_warning = QLabel()
-        self.lbl_obb_mode_warning.setWordWrap(True)
-        self.lbl_obb_mode_warning.setStyleSheet(
-            "color: #f0ad4e; font-style: italic; padding: 2px 0px;"
-        )
-        self.lbl_obb_mode_warning.setVisible(False)
-        f_yolo.addRow("", self.lbl_obb_mode_warning)
-
-        self.combo_yolo_model = QComboBox()
-        self._refresh_yolo_model_combo()
-        self.combo_yolo_model.activated.connect(self.on_yolo_model_changed)
-        self.combo_yolo_model.setFixedHeight(30)
-        self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
-        f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
-
-        self.combo_yolo_detect_model = QComboBox()
-        self._refresh_yolo_detect_model_combo()
-        self.combo_yolo_detect_model.activated.connect(
-            self.on_yolo_detect_model_changed
-        )
-        self.combo_yolo_detect_model.setFixedHeight(30)
-        self.combo_yolo_detect_model.setToolTip(
-            "Sequential stage-1 model (axis-aligned detect)."
-        )
-        f_yolo.addRow("Seq detect model", self.combo_yolo_detect_model)
-
-        self.combo_yolo_crop_obb_model = QComboBox()
-        self._refresh_yolo_crop_obb_model_combo()
-        self.combo_yolo_crop_obb_model.activated.connect(
-            self.on_yolo_crop_obb_model_changed
-        )
-        self.combo_yolo_crop_obb_model.setFixedHeight(30)
-        self.combo_yolo_crop_obb_model.setToolTip(
-            "Sequential stage-2 OBB model trained on cropped detections."
-        )
-        f_yolo.addRow("Seq crop OBB model", self.combo_yolo_crop_obb_model)
-
-        self.yolo_seq_advanced = CollapsibleGroupBox(
-            "Sequential Advanced Settings", initially_expanded=False
-        )
-        self.yolo_seq_advanced_content = QWidget()
-        f_seq_adv = QFormLayout(self.yolo_seq_advanced_content)
-        self.spin_yolo_seq_crop_pad = QDoubleSpinBox()
-        self.spin_yolo_seq_crop_pad.setRange(0.0, 1.0)
-        self.spin_yolo_seq_crop_pad.setSingleStep(0.01)
-        self.spin_yolo_seq_crop_pad.setValue(0.15)
-        self.spin_yolo_seq_crop_pad.setFixedHeight(30)
-        f_seq_adv.addRow("Crop pad ratio", self.spin_yolo_seq_crop_pad)
-        self.spin_yolo_seq_min_crop_px = QSpinBox()
-        self.spin_yolo_seq_min_crop_px.setRange(8, 1024)
-        self.spin_yolo_seq_min_crop_px.setValue(64)
-        self.spin_yolo_seq_min_crop_px.setFixedHeight(30)
-        f_seq_adv.addRow("Min crop size (px)", self.spin_yolo_seq_min_crop_px)
-        self.chk_yolo_seq_square_crop = QCheckBox("Enforce square crop")
-        self.chk_yolo_seq_square_crop.setChecked(True)
-        f_seq_adv.addRow("", self.chk_yolo_seq_square_crop)
-        self.spin_yolo_seq_detect_conf = QDoubleSpinBox()
-        self.spin_yolo_seq_detect_conf.setRange(0.01, 1.0)
-        self.spin_yolo_seq_detect_conf.setSingleStep(0.01)
-        self.spin_yolo_seq_detect_conf.setValue(0.25)
-        self.spin_yolo_seq_detect_conf.setFixedHeight(30)
-        self.spin_yolo_seq_detect_conf.setToolTip(
-            "Minimum confidence for the stage-1 detection model (sequential mode only).\n"
-            "Lower = more crops sent to stage-2 (higher recall, slower).\n"
-            "Higher = fewer crops (faster, may miss occluded animals).\n"
-            "Recommended: 0.1–0.3"
-        )
-        f_seq_adv.addRow("Stage-1 detect conf", self.spin_yolo_seq_detect_conf)
-        self.spin_yolo_seq_stage2_imgsz = QSpinBox()
-        self.spin_yolo_seq_stage2_imgsz.setRange(0, 2048)
-        self.spin_yolo_seq_stage2_imgsz.setValue(160)
-        self.spin_yolo_seq_stage2_imgsz.setFixedHeight(30)
-        self.spin_yolo_seq_stage2_imgsz.setToolTip(
-            "Crop OBB stage input size in pixels. Set 0 to disable pre-resize."
-        )
-        f_seq_adv.addRow("Stage-2 imgsz (px)", self.spin_yolo_seq_stage2_imgsz)
-        self.chk_yolo_seq_stage2_pow2_pad = QCheckBox(
-            "Pad stage-2 batch to power-of-two"
-        )
-        self.chk_yolo_seq_stage2_pow2_pad.setChecked(False)
-        self.chk_yolo_seq_stage2_pow2_pad.setToolTip(
-            "Reduces dynamic batch-size variants in sequential stage-2 inference."
-        )
-        f_seq_adv.addRow("", self.chk_yolo_seq_stage2_pow2_pad)
-        self.yolo_seq_advanced.setContentLayout(f_seq_adv)
-        f_yolo.addRow(self.yolo_seq_advanced)
-
-        self.spin_yolo_confidence = QDoubleSpinBox()
-        self.spin_yolo_confidence.setRange(0.01, 1.0)
-        self.spin_yolo_confidence.setValue(0.25)
-        self.spin_yolo_confidence.setFixedHeight(30)
-        self.spin_yolo_confidence.setToolTip(
-            "Minimum confidence score for YOLO detections (0.01-1.0).\n"
-            "Lower = more detections (more false positives).\n"
-            "Higher = fewer detections (may miss animals).\n"
-            "Recommended: 0.2-0.4"
-        )
-        self.spin_yolo_iou = QDoubleSpinBox()
-        self.spin_yolo_iou.setRange(0.01, 1.0)
-        self.spin_yolo_iou.setValue(0.7)
-        self.spin_yolo_iou.setFixedHeight(30)
-        self.spin_yolo_iou.setToolTip(
-            "Intersection-over-Union threshold for non-max suppression (0.01-1.0).\n"
-            "Lower = more aggressive duplicate removal.\n"
-            "Higher = keep more overlapping detections.\n"
-            "Recommended: 0.5-0.8"
-        )
-        _yolo_thresh_row = QHBoxLayout()
-        _yolo_thresh_row.addWidget(QLabel("Confidence:"))
-        _yolo_thresh_row.addWidget(self.spin_yolo_confidence, 1)
-        _yolo_thresh_row.addSpacing(8)
-        _yolo_thresh_row.addWidget(QLabel("IOU:"))
-        _yolo_thresh_row.addWidget(self.spin_yolo_iou, 1)
-        f_yolo.addRow(_yolo_thresh_row)
-
-        self.chk_use_custom_obb_iou = QCheckBox("Use custom OBB overlap filtering")
-        self.chk_use_custom_obb_iou.setChecked(True)
-        self.chk_use_custom_obb_iou.setEnabled(False)
-        self.chk_use_custom_obb_iou.setToolTip(
-            "Custom polygon-based OBB IOU filtering is always enabled.\n"
-            "This improves overlap handling consistency across cached and live detections."
-        )
-        self.chk_use_custom_obb_iou.setVisible(False)
-
-        self.line_yolo_classes = QLineEdit()
-        self.line_yolo_classes.setFixedHeight(30)
-        self.line_yolo_classes.setPlaceholderText("e.g. 15, 16 (Empty for all)")
-        self.line_yolo_classes.setToolTip(
-            "Comma-separated class IDs to detect (leave empty for all classes).\n"
-            "Example: '0,1,2' to detect only classes 0, 1, and 2.\n"
-            "Refer to your model's class definitions."
-        )
-        f_yolo.addRow("Classes (optional)", self.line_yolo_classes)
-        self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
-
-        l_yolo.addWidget(self.yolo_group)
-
-        # ============================================================
-        # YOLO Inference Acceleration (TensorRT + Batching)
-        # ============================================================
-        self.g_gpu_accel = QGroupBox("Inference Acceleration")
-        self._set_compact_section_widget(self.g_gpu_accel)
-        vl_gpu = QVBoxLayout(self.g_gpu_accel)
-        vl_gpu.setSpacing(6)
-        vl_gpu.addWidget(
-            self._create_help_label(
-                "Control YOLO throughput features. Use batching for faster full-run detection, and TensorRT when NVIDIA export/runtime support is available."
-            )
-        )
-
-        # TensorRT Optimization
-        self.chk_enable_tensorrt = QCheckBox("TensorRT engine")
-        self.chk_enable_tensorrt.setChecked(False)
-        self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
-
-        tensorrt_tooltip = (
-            "Enable NVIDIA TensorRT for 2-5× faster YOLO inference.\n"
-            "Requires NVIDIA GPU with CUDA.\n"
-            "First run will export model (1-5 min), then cached for future use.\n"
-            "Uses FP16 precision for maximum speed.\n"
-        )
-        if TENSORRT_AVAILABLE:
-            tensorrt_tooltip += "\n✓ TensorRT is available on this system"
-        else:
-            tensorrt_tooltip += (
-                "\n✗ TensorRT not available (requires NVIDIA GPU + tensorrt package)"
-            )
-
-        self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
-        self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
-
-        self.spin_tensorrt_batch = QSpinBox()
-        self.spin_tensorrt_batch.setRange(1, 64)
-        self.spin_tensorrt_batch.setValue(
-            self.advanced_config.get("tensorrt_max_batch_size", 16)
-        )
-        self.spin_tensorrt_batch.setFixedHeight(30)
-        self.spin_tensorrt_batch.setToolTip(
-            "Maximum batch size for TensorRT engine.\n"
-            "Higher = potentially faster, Lower = more stable.\n"
-            "Reduce if build fails (try 8, 4, or 1).\n"
-            "Typical: 16-32 (high-end), 8-16 (mid-range), 1-8 (low VRAM)"
-        )
-        self.lbl_tensorrt_batch = QLabel("TensorRT max batch")
-        self.lbl_tensorrt_batch.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
-        )
-
-        self.chk_enable_yolo_batching = QCheckBox("GPU batching")
-        self.chk_enable_yolo_batching.setChecked(
-            self.advanced_config.get("enable_yolo_batching", True)
-        )
-        self.chk_enable_yolo_batching.setToolTip(
-            "Process frames in batches on GPU for 2-5× faster detection.\n"
-            "Only works in full tracking mode (not preview)."
-        )
-        self.chk_enable_yolo_batching.stateChanged.connect(
-            self._on_yolo_batching_toggled
-        )
-
-        self.combo_yolo_batch_mode = QComboBox()
-        self.combo_yolo_batch_mode.addItems(["Auto", "Manual"])
-        self.combo_yolo_batch_mode.setFixedHeight(30)
-        self.combo_yolo_batch_mode.setToolTip(
-            "Auto: Automatically estimate batch size based on GPU memory.\n"
-            "Manual: Specify a fixed batch size."
-        )
-        self.combo_yolo_batch_mode.currentIndexChanged.connect(
-            self._on_yolo_batch_mode_changed
-        )
-        self.lbl_yolo_batch_mode = QLabel("Batch mode")
-        self.lbl_yolo_batch_mode.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
-        )
-
-        self.spin_yolo_batch_size = QSpinBox()
-        self.spin_yolo_batch_size.setRange(1, 64)
-        self.spin_yolo_batch_size.setValue(
-            self.advanced_config.get("yolo_manual_batch_size", 16)
-        )
-        self.spin_yolo_batch_size.setFixedHeight(30)
-        self.spin_yolo_batch_size.setToolTip(
-            "Manual batch size (only used when mode is Manual).\n"
-            "Larger = faster but uses more GPU memory.\n"
-            "Typical values: 8-32 depending on GPU."
-        )
-        self.spin_yolo_batch_size.valueChanged.connect(
-            self._on_yolo_manual_batch_size_changed
-        )
-        self.lbl_yolo_batch_size = QLabel("Manual batch")
-        self.lbl_yolo_batch_size.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
-        )
-
-        accel_toggle_grid = QGridLayout()
-        accel_toggle_grid.setContentsMargins(0, 0, 0, 0)
-        accel_toggle_grid.setHorizontalSpacing(12)
-        accel_toggle_grid.setVerticalSpacing(6)
-        accel_toggle_grid.addWidget(self.chk_enable_yolo_batching, 0, 0)
-        accel_toggle_grid.addWidget(self.chk_enable_tensorrt, 0, 1)
-        accel_toggle_grid.setColumnStretch(0, 1)
-        accel_toggle_grid.setColumnStretch(1, 1)
-        vl_gpu.addLayout(accel_toggle_grid)
-
-        accel_controls_grid = QGridLayout()
-        accel_controls_grid.setContentsMargins(0, 0, 0, 0)
-        accel_controls_grid.setHorizontalSpacing(12)
-        accel_controls_grid.setVerticalSpacing(4)
-        accel_controls_grid.addWidget(self.lbl_yolo_batch_mode, 0, 0)
-        accel_controls_grid.addWidget(self.lbl_yolo_batch_size, 0, 1)
-        accel_controls_grid.addWidget(self.lbl_tensorrt_batch, 0, 2)
-        accel_controls_grid.addWidget(self.combo_yolo_batch_mode, 1, 0)
-        accel_controls_grid.addWidget(self.spin_yolo_batch_size, 1, 1)
-        accel_controls_grid.addWidget(self.spin_tensorrt_batch, 1, 2)
-        accel_controls_grid.setColumnStretch(0, 1)
-        accel_controls_grid.setColumnStretch(1, 1)
-        accel_controls_grid.setColumnStretch(2, 1)
-        vl_gpu.addLayout(accel_controls_grid)
-        l_yolo.addWidget(self.g_gpu_accel)
-
-        # Set initial visibility for TensorRT widgets
-        self.chk_enable_tensorrt.setVisible(False)
-        self.spin_tensorrt_batch.setVisible(False)
-        self.lbl_tensorrt_batch.setVisible(False)
-
-        # Set initial visibility for batching widgets
-        initial_batching_enabled = self.chk_enable_yolo_batching.isChecked()
-        self.combo_yolo_batch_mode.setVisible(initial_batching_enabled)
-        self.lbl_yolo_batch_mode.setVisible(initial_batching_enabled)
-        self.spin_yolo_batch_size.setVisible(initial_batching_enabled)
-        self.lbl_yolo_batch_size.setVisible(initial_batching_enabled)
-        self.combo_yolo_batch_mode.setEnabled(initial_batching_enabled)
-        self.spin_yolo_batch_size.setEnabled(False)  # Auto mode by default
-        # Add pages to stack
-        self.stack_detection.addWidget(page_bg)
-        self.stack_detection.addWidget(page_yolo)
-
-        vbox.addWidget(self.stack_detection)
-
-        # ============================================================
-        # Detection Overlays (moved from Visuals tab)
-        # ============================================================
-        # Background Subtraction specific overlays
-        self.g_overlays_bg = QGroupBox("Background Diagnostics")
-        self._set_compact_section_widget(self.g_overlays_bg)
-        v_ov_bg = QVBoxLayout(self.g_overlays_bg)
-        v_ov_bg.addWidget(
-            self._create_help_label(
-                "Debug background subtraction by viewing the foreground mask (detected movement) "
-                "and background model (learned static image)."
-            )
-        )
-
-        self.chk_show_fg = QCheckBox("Show Foreground Mask")
-        self.chk_show_fg.setChecked(True)
-        self.chk_show_bg = QCheckBox("Show Background Model")
-        self.chk_show_bg.setChecked(True)
-        _bg_ov_row = QHBoxLayout()
-        _bg_ov_row.addWidget(self.chk_show_fg)
-        _bg_ov_row.addWidget(self.chk_show_bg)
-        v_ov_bg.addLayout(_bg_ov_row)
-
-        vbox.addWidget(self.g_overlays_bg)
-
-        # YOLO specific overlays
-        self.g_overlays_yolo = QGroupBox("YOLO Diagnostics")
-        self._set_compact_section_widget(self.g_overlays_yolo)
-        v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
-        v_ov_yolo.addWidget(
-            self._create_help_label(
-                "Show oriented bounding boxes from YOLO detection. Useful for debugging detection quality "
-                "and verifying model performance."
-            )
-        )
-
-        self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
-        self.chk_show_yolo_obb.setChecked(False)
-        v_ov_yolo.addWidget(self.chk_show_yolo_obb)
-
-        vbox.addWidget(self.g_overlays_yolo)
-
-        # Initially show/hide based on detection method (will be set properly by combo)
-        self.g_overlays_bg.setVisible(True)
-        self.g_overlays_yolo.setVisible(False)
-
-        # ============================================================
-        # Reference Scale (size + aspect ratio)
-        # ============================================================
-        g_ref_scale = QGroupBox("Reference Scale")
-        self._set_compact_section_widget(g_ref_scale)
-        vl_ref_scale = QVBoxLayout(g_ref_scale)
-        vl_ref_scale.addWidget(
-            self._create_help_label(
-                "Define the spatial scale for tracking. These reference values make all distance, "
-                "size, and shape parameters portable across videos and species. Set them BEFORE "
-                "configuring tracking parameters. Use 'Test Detection' then the Auto-Set buttons "
-                "to have values estimated automatically from a sample frame."
-            )
-        )
-        fl_ref = QFormLayout(None)
-        fl_ref.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        fl_ref.setHorizontalSpacing(10)
-        fl_ref.setVerticalSpacing(8)
-
-        self.spin_reference_body_size = QDoubleSpinBox()
-        self.spin_reference_body_size.setRange(1.0, 500.0)
-        self.spin_reference_body_size.setSingleStep(1.0)
-        self.spin_reference_body_size.setValue(20.0)
-        self.spin_reference_body_size.setDecimals(2)
-        self.spin_reference_body_size.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.spin_reference_body_size.setFixedHeight(30)
-        self.spin_reference_body_size.setToolTip(
-            "Reference animal body diameter in pixels (at resize=1.0).\n"
-            "All distance/size parameters are scaled relative to this value."
-        )
-        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_ref.addRow("Reference body size (px)", self.spin_reference_body_size)
-
-        self.label_body_size_info = QLabel()
-        self.label_body_size_info.setStyleSheet(
-            "color: #6a6a6a; font-size: 10px; font-style: italic;"
-        )
-        fl_ref.addRow("", self.label_body_size_info)
-
-        self.spin_reference_aspect_ratio = QDoubleSpinBox()
-        self.spin_reference_aspect_ratio.setRange(1.0, 20.0)
-        self.spin_reference_aspect_ratio.setSingleStep(0.1)
-        self.spin_reference_aspect_ratio.setDecimals(2)
-        self.spin_reference_aspect_ratio.setValue(2.0)
-        self.spin_reference_aspect_ratio.setFixedHeight(30)
-        self.spin_reference_aspect_ratio.setToolTip(
-            "Species-typical major/minor axis ratio.\n"
-            "Used for adaptive canonical crop dimensions and aspect ratio filtering.\n"
-            "Click 'Auto-Set Aspect Ratio' to detect from sample frames."
-        )
-        fl_ref.addRow("Reference aspect ratio", self.spin_reference_aspect_ratio)
-
-        vl_ref_scale.addLayout(fl_ref)
-
-        self.label_detection_stats = QLabel(
-            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
-        )
-        self.label_detection_stats.setStyleSheet(
-            "color: #9a9a9a; font-size: 11px; padding: 8px; "
-            "background-color: #252526; border-radius: 4px;"
-        )
-        self.label_detection_stats.setWordWrap(True)
-        vl_ref_scale.addWidget(self.label_detection_stats)
-
-        btn_layout = QHBoxLayout()
-        self.btn_auto_set_body_size = QPushButton("Auto-Set Body Size from Median")
-        self.btn_auto_set_body_size.clicked.connect(
-            self._auto_set_body_size_from_detection
-        )
-        self.btn_auto_set_body_size.setEnabled(False)
-        self.btn_auto_set_body_size.setToolTip(
-            "Automatically set reference body size to the median detected diameter"
-        )
-        btn_layout.addWidget(self.btn_auto_set_body_size)
-
-        self.btn_auto_set_aspect_ratio = QPushButton("Auto-Set Aspect Ratio")
-        self.btn_auto_set_aspect_ratio.clicked.connect(
-            self._auto_set_aspect_ratio_from_detection
-        )
-        self.btn_auto_set_aspect_ratio.setEnabled(False)
-        self.btn_auto_set_aspect_ratio.setToolTip(
-            "Set reference aspect ratio from the median detected major/minor ratio"
-        )
-        btn_layout.addWidget(self.btn_auto_set_aspect_ratio)
-        vl_ref_scale.addLayout(btn_layout)
-
-        vbox.addWidget(g_ref_scale)
-
-        # ============================================================
-        # Detection Filters (size + aspect ratio ranges)
-        # ============================================================
-        g_filters = QGroupBox("Detection Filters")
-        self._set_compact_section_widget(g_filters)
-        vl_filters = QVBoxLayout(g_filters)
-        vl_filters.addWidget(
-            self._create_help_label(
-                "Filter detections by size and aspect ratio relative to the reference values above. "
-                "Enabling these removes noise, debris, and erroneous clusters before tracking."
-            )
-        )
-        f_filters = QFormLayout(None)
-        f_filters.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        f_filters.setHorizontalSpacing(10)
-        f_filters.setVerticalSpacing(8)
-
-        self.chk_size_filtering = QCheckBox("Filter detections by size")
-        self.chk_size_filtering.setToolTip(
-            "Filter detected objects by area to remove noise and artifacts.\n"
-            "Recommended: Enable for cleaner tracking."
-        )
-        f_filters.addRow(self.chk_size_filtering)
-
-        h_sf = QHBoxLayout()
-        self.spin_min_object_size = QDoubleSpinBox()
-        self.spin_min_object_size.setRange(0.1, 5.0)
-        self.spin_min_object_size.setSingleStep(0.1)
-        self.spin_min_object_size.setDecimals(2)
-        self.spin_min_object_size.setValue(0.3)
-        self.spin_min_object_size.setFixedHeight(30)
-        self.spin_min_object_size.setToolTip(
-            "Minimum object area as multiple of reference body area.\n"
-            "Filters out small noise/artifacts.\n"
-            "Recommended: 0.2-0.5× (allows partial occlusion)"
-        )
-        self.spin_max_object_size = QDoubleSpinBox()
-        self.spin_max_object_size.setRange(0.5, 10.0)
-        self.spin_max_object_size.setSingleStep(0.1)
-        self.spin_max_object_size.setDecimals(2)
-        self.spin_max_object_size.setValue(3.0)
-        self.spin_max_object_size.setFixedHeight(30)
-        self.spin_max_object_size.setToolTip(
-            "Maximum object area as multiple of reference body area.\n"
-            "Filters out large clusters or artifacts.\n"
-            "Recommended: 2-4× (handles overlapping animals)"
-        )
-        h_sf.addWidget(QLabel("Min size (body lengths)"))
-        h_sf.addWidget(self.spin_min_object_size)
-        h_sf.addWidget(QLabel("Max size (body lengths)"))
-        h_sf.addWidget(self.spin_max_object_size)
-        f_filters.addRow(h_sf)
-
-        self.chk_enable_aspect_ratio_filtering = QCheckBox(
-            "Filter detections by aspect ratio"
-        )
-        self.chk_enable_aspect_ratio_filtering.setChecked(False)
-        self.chk_enable_aspect_ratio_filtering.setToolTip(
-            "Reject detections with aspect ratios outside the expected range.\n"
-            "Helps filter scratches, debris, and other non-animal detections."
-        )
-        f_filters.addRow(self.chk_enable_aspect_ratio_filtering)
-
-        h_ar_mult = QHBoxLayout()
-        self.spin_min_ar_multiplier = QDoubleSpinBox()
-        self.spin_min_ar_multiplier.setRange(0.1, 1.0)
-        self.spin_min_ar_multiplier.setSingleStep(0.05)
-        self.spin_min_ar_multiplier.setDecimals(2)
-        self.spin_min_ar_multiplier.setValue(0.5)
-        self.spin_min_ar_multiplier.setFixedHeight(30)
-        self.spin_min_ar_multiplier.setToolTip(
-            "Minimum aspect ratio = reference × this multiplier.\n"
-            "Detections more compact than this are rejected."
-        )
-        self.spin_max_ar_multiplier = QDoubleSpinBox()
-        self.spin_max_ar_multiplier.setRange(1.0, 10.0)
-        self.spin_max_ar_multiplier.setSingleStep(0.1)
-        self.spin_max_ar_multiplier.setDecimals(2)
-        self.spin_max_ar_multiplier.setValue(2.0)
-        self.spin_max_ar_multiplier.setFixedHeight(30)
-        self.spin_max_ar_multiplier.setToolTip(
-            "Maximum aspect ratio = reference × this multiplier.\n"
-            "Detections more elongated than this are rejected."
-        )
-        h_ar_mult.addWidget(QLabel("Min multiplier"))
-        h_ar_mult.addWidget(self.spin_min_ar_multiplier)
-        h_ar_mult.addWidget(QLabel("Max multiplier"))
-        h_ar_mult.addWidget(self.spin_max_ar_multiplier)
-        f_filters.addRow(h_ar_mult)
-
-        vl_filters.addLayout(f_filters)
-        vbox.addWidget(g_filters)
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
 
     def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
@@ -5613,11 +4606,13 @@ class MainWindow(QMainWindow):
             if new_params:
                 # Update UI elements with new parameters
                 if "YOLO_CONFIDENCE_THRESHOLD" in new_params:
-                    self.spin_yolo_confidence.setValue(
+                    self._detection_panel.spin_yolo_confidence.setValue(
                         new_params["YOLO_CONFIDENCE_THRESHOLD"]
                     )
                 if "YOLO_IOU_THRESHOLD" in new_params:
-                    self.spin_yolo_iou.setValue(new_params["YOLO_IOU_THRESHOLD"])
+                    self._detection_panel.spin_yolo_iou.setValue(
+                        new_params["YOLO_IOU_THRESHOLD"]
+                    )
                 if "MAX_DISTANCE_MULTIPLIER" in new_params:
                     self._tracking_panel.spin_max_dist.setValue(
                         new_params["MAX_DISTANCE_MULTIPLIER"]
@@ -5694,29 +4689,39 @@ class MainWindow(QMainWindow):
                 return
             # Apply optimised values back to the UI widgets
             if "THRESHOLD_VALUE" in new_p:
-                self.spin_threshold.setValue(new_p["THRESHOLD_VALUE"])
+                self._detection_panel.spin_threshold.setValue(new_p["THRESHOLD_VALUE"])
             if "MORPH_KERNEL_SIZE" in new_p:
-                self.spin_morph_size.setValue(new_p["MORPH_KERNEL_SIZE"])
+                self._detection_panel.spin_morph_size.setValue(
+                    new_p["MORPH_KERNEL_SIZE"]
+                )
             if "MIN_CONTOUR_AREA" in new_p:
-                self.spin_min_contour.setValue(new_p["MIN_CONTOUR_AREA"])
+                self._detection_panel.spin_min_contour.setValue(
+                    new_p["MIN_CONTOUR_AREA"]
+                )
             if "ENABLE_ADDITIONAL_DILATION" in new_p:
-                self.chk_additional_dilation.setChecked(
+                self._detection_panel.chk_additional_dilation.setChecked(
                     new_p["ENABLE_ADDITIONAL_DILATION"]
                 )
             if "DILATION_KERNEL_SIZE" in new_p:
-                self.spin_dilation_kernel_size.setValue(new_p["DILATION_KERNEL_SIZE"])
+                self._detection_panel.spin_dilation_kernel_size.setValue(
+                    new_p["DILATION_KERNEL_SIZE"]
+                )
             if "DILATION_ITERATIONS" in new_p:
-                self.spin_dilation_iterations.setValue(new_p["DILATION_ITERATIONS"])
+                self._detection_panel.spin_dilation_iterations.setValue(
+                    new_p["DILATION_ITERATIONS"]
+                )
             if "ENABLE_CONSERVATIVE_SPLIT" in new_p:
-                self.chk_conservative_split.setChecked(
+                self._detection_panel.chk_conservative_split.setChecked(
                     new_p["ENABLE_CONSERVATIVE_SPLIT"]
                 )
             if "CONSERVATIVE_KERNEL_SIZE" in new_p:
-                self.spin_conservative_kernel.setValue(
+                self._detection_panel.spin_conservative_kernel.setValue(
                     new_p["CONSERVATIVE_KERNEL_SIZE"]
                 )
             if "CONSERVATIVE_ERODE_ITER" in new_p:
-                self.spin_conservative_erode.setValue(new_p["CONSERVATIVE_ERODE_ITER"])
+                self._detection_panel.spin_conservative_erode.setValue(
+                    new_p["CONSERVATIVE_ERODE_ITER"]
+                )
             QMessageBox.information(
                 self,
                 "Parameters Applied",
@@ -7206,14 +6211,14 @@ class MainWindow(QMainWindow):
         self._update_obb_mode_warning()
         # Keep hidden legacy controls synchronized for compatibility paths.
         derived = derive_detection_runtime_settings(selected_runtime)
-        if hasattr(self, "combo_device"):
-            idx = self.combo_device.findText(
+        if hasattr(self, "_detection_panel"):
+            idx = self._detection_panel.combo_device.findText(
                 str(derived.get("yolo_device", "cpu")), Qt.MatchStartsWith
             )
             if idx >= 0:
-                self.combo_device.setCurrentIndex(idx)
-        if hasattr(self, "chk_enable_tensorrt"):
-            self.chk_enable_tensorrt.setChecked(
+                self._detection_panel.combo_device.setCurrentIndex(idx)
+        if hasattr(self, "_detection_panel"):
+            self._detection_panel.chk_enable_tensorrt.setChecked(
                 bool(derived.get("enable_tensorrt", False))
             )
         if (
@@ -7222,21 +6227,25 @@ class MainWindow(QMainWindow):
             and hasattr(self, "spin_yolo_batch_size")
             and hasattr(self, "chk_enable_yolo_batching")
         ):
-            self.chk_enable_yolo_batching.setChecked(True)
-            self.chk_enable_yolo_batching.setEnabled(False)
-            self.combo_yolo_batch_mode.setCurrentIndex(1)  # Manual
-            self.combo_yolo_batch_mode.setEnabled(False)
-            self.spin_yolo_batch_size.setEnabled(True)
+            self._detection_panel.chk_enable_yolo_batching.setChecked(True)
+            self._detection_panel.chk_enable_yolo_batching.setEnabled(False)
+            self._detection_panel.combo_yolo_batch_mode.setCurrentIndex(1)  # Manual
+            self._detection_panel.combo_yolo_batch_mode.setEnabled(False)
+            self._detection_panel.spin_yolo_batch_size.setEnabled(True)
             if hasattr(self, "spin_tensorrt_batch"):
-                self.spin_tensorrt_batch.setValue(self.spin_yolo_batch_size.value())
+                self._detection_panel.spin_tensorrt_batch.setValue(
+                    self._detection_panel.spin_yolo_batch_size.value()
+                )
         elif hasattr(self, "combo_yolo_batch_mode") and hasattr(
             self, "chk_enable_yolo_batching"
         ):
-            self.chk_enable_yolo_batching.setEnabled(True)
-            self.combo_yolo_batch_mode.setEnabled(
-                self.chk_enable_yolo_batching.isChecked()
+            self._detection_panel.chk_enable_yolo_batching.setEnabled(True)
+            self._detection_panel.combo_yolo_batch_mode.setEnabled(
+                self._detection_panel.chk_enable_yolo_batching.isChecked()
             )
-            self._on_yolo_batch_mode_changed(self.combo_yolo_batch_mode.currentIndex())
+            self._on_yolo_batch_mode_changed(
+                self._detection_panel.combo_yolo_batch_mode.currentIndex()
+            )
         if hasattr(self, "_identity_panel"):
             self._populate_pose_runtime_flavor_options(
                 backend=self._identity_panel.combo_pose_model_type.currentText()
@@ -7390,9 +6399,9 @@ class MainWindow(QMainWindow):
 
     def _is_yolo_detection_mode(self) -> bool:
         """Return True when current detection mode is YOLO OBB."""
-        if not hasattr(self, "combo_detection_method"):
+        if not hasattr(self, "_detection_panel"):
             return False
-        return self.combo_detection_method.currentIndex() == 1
+        return self._detection_panel.combo_detection_method.currentIndex() == 1
 
     def _is_individual_pipeline_enabled(self) -> bool:
         """Return effective runtime state for individual analysis pipeline."""
@@ -7527,7 +6536,7 @@ class MainWindow(QMainWindow):
             if tab_index >= 0:
                 if not is_yolo and self.tabs.currentWidget() is self._identity_panel:
                     fallback_index = self.tabs.indexOf(
-                        getattr(self, "tab_detection", self._setup_panel)
+                        getattr(self, "_detection_panel", self._setup_panel)
                     )
                     if fallback_index >= 0:
                         self.tabs.setCurrentIndex(fallback_index)
@@ -7711,72 +6720,74 @@ class MainWindow(QMainWindow):
         """Enable/disable YOLO batching controls based on checkbox."""
         if self._runtime_requires_fixed_yolo_batch():
             # TensorRT/ONNX runtimes require explicit fixed batch size.
-            if not self.chk_enable_yolo_batching.isChecked():
-                self.chk_enable_yolo_batching.setChecked(True)
-            self.chk_enable_yolo_batching.setEnabled(False)
-            self.combo_yolo_batch_mode.setVisible(True)
-            self.lbl_yolo_batch_mode.setVisible(True)
-            self.spin_yolo_batch_size.setVisible(True)
-            self.lbl_yolo_batch_size.setVisible(True)
-            self.combo_yolo_batch_mode.setCurrentIndex(1)
-            self.combo_yolo_batch_mode.setEnabled(False)
-            self.spin_yolo_batch_size.setEnabled(True)
+            if not self._detection_panel.chk_enable_yolo_batching.isChecked():
+                self._detection_panel.chk_enable_yolo_batching.setChecked(True)
+            self._detection_panel.chk_enable_yolo_batching.setEnabled(False)
+            self._detection_panel.combo_yolo_batch_mode.setVisible(True)
+            self._detection_panel.lbl_yolo_batch_mode.setVisible(True)
+            self._detection_panel.spin_yolo_batch_size.setVisible(True)
+            self._detection_panel.lbl_yolo_batch_size.setVisible(True)
+            self._detection_panel.combo_yolo_batch_mode.setCurrentIndex(1)
+            self._detection_panel.combo_yolo_batch_mode.setEnabled(False)
+            self._detection_panel.spin_yolo_batch_size.setEnabled(True)
             return
 
         # Directly check checkbox state for reliability
-        enabled = self.chk_enable_yolo_batching.isChecked()
+        enabled = self._detection_panel.chk_enable_yolo_batching.isChecked()
 
         # Hide/show batching widgets
-        self.combo_yolo_batch_mode.setVisible(enabled)
-        self.lbl_yolo_batch_mode.setVisible(enabled)
-        self.spin_yolo_batch_size.setVisible(enabled)
-        self.lbl_yolo_batch_size.setVisible(enabled)
+        self._detection_panel.combo_yolo_batch_mode.setVisible(enabled)
+        self._detection_panel.lbl_yolo_batch_mode.setVisible(enabled)
+        self._detection_panel.spin_yolo_batch_size.setVisible(enabled)
+        self._detection_panel.lbl_yolo_batch_size.setVisible(enabled)
 
         # Also control enable state
-        self.combo_yolo_batch_mode.setEnabled(enabled)
+        self._detection_panel.combo_yolo_batch_mode.setEnabled(enabled)
         # Manual batch size only enabled if batching is on AND mode is Manual
-        manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
-        self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
+        manual_mode = self._detection_panel.combo_yolo_batch_mode.currentIndex() == 1
+        self._detection_panel.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
 
     def _on_yolo_manual_batch_size_changed(self, value: int):
         """Keep legacy fixed-batch field synchronized for fixed runtimes."""
         if self._runtime_requires_fixed_yolo_batch() and hasattr(
             self, "spin_tensorrt_batch"
         ):
-            self.spin_tensorrt_batch.setValue(int(value))
+            self._detection_panel.spin_tensorrt_batch.setValue(int(value))
 
     def _on_yolo_batch_mode_changed(self, index):
         """Show/hide manual batch size based on selected mode."""
         if self._runtime_requires_fixed_yolo_batch():
             # TensorRT/ONNX runtimes require explicit fixed batch size.
-            if self.combo_yolo_batch_mode.currentIndex() != 1:
-                self.combo_yolo_batch_mode.setCurrentIndex(1)
-            self.spin_yolo_batch_size.setEnabled(True)
+            if self._detection_panel.combo_yolo_batch_mode.currentIndex() != 1:
+                self._detection_panel.combo_yolo_batch_mode.setCurrentIndex(1)
+            self._detection_panel.spin_yolo_batch_size.setEnabled(True)
             return
         # index 0 = Auto, index 1 = Manual
         is_manual = index == 1
-        batching_enabled = self.chk_enable_yolo_batching.isChecked()
-        self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
+        batching_enabled = self._detection_panel.chk_enable_yolo_batching.isChecked()
+        self._detection_panel.spin_yolo_batch_size.setEnabled(
+            batching_enabled and is_manual
+        )
 
     def _on_tensorrt_toggled(self, state):
         """Enable/disable TensorRT batch size control based on checkbox."""
         # TensorRT toggles are now derived from canonical compute runtime.
         # Keep legacy widgets hidden from UI.
-        if not self.chk_enable_tensorrt.isVisible():
-            self.spin_tensorrt_batch.setVisible(False)
-            self.lbl_tensorrt_batch.setVisible(False)
+        if not self._detection_panel.chk_enable_tensorrt.isVisible():
+            self._detection_panel.spin_tensorrt_batch.setVisible(False)
+            self._detection_panel.lbl_tensorrt_batch.setVisible(False)
             return
 
         # Directly check checkbox state for reliability
-        enabled = self.chk_enable_tensorrt.isChecked()
+        enabled = self._detection_panel.chk_enable_tensorrt.isChecked()
 
         # Hide/show TensorRT batch size widgets
-        self.spin_tensorrt_batch.setVisible(enabled)
-        self.lbl_tensorrt_batch.setVisible(enabled)
+        self._detection_panel.spin_tensorrt_batch.setVisible(enabled)
+        self._detection_panel.lbl_tensorrt_batch.setVisible(enabled)
 
         # Also control enable state
-        self.spin_tensorrt_batch.setEnabled(enabled)
-        self.lbl_tensorrt_batch.setEnabled(enabled)
+        self._detection_panel.spin_tensorrt_batch.setEnabled(enabled)
+        self._detection_panel.lbl_tensorrt_batch.setEnabled(enabled)
 
     def _on_confidence_density_map_toggled(self, state):
         """Show or hide the density-map controls from the top-level tracking toggle."""
@@ -7879,13 +6890,13 @@ class MainWindow(QMainWindow):
 
     def _on_detection_method_changed_ui(self, index):
         """Update stack widget when detection method changes."""
-        self.stack_detection.setCurrentIndex(index)
+        self._detection_panel.stack_detection.setCurrentIndex(index)
         # Show image adjustments only for Background Subtraction (index 0)
         is_background_subtraction = index == 0
-        self.g_img.setVisible(is_background_subtraction)
+        self._detection_panel.g_img.setVisible(is_background_subtraction)
         # Show/hide method-specific overlay groups
-        self.g_overlays_bg.setVisible(is_background_subtraction)
-        self.g_overlays_yolo.setVisible(not is_background_subtraction)
+        self._detection_panel.g_overlays_bg.setVisible(is_background_subtraction)
+        self._detection_panel.g_overlays_yolo.setVisible(not is_background_subtraction)
         # Refresh preview to show correct mode
         self._update_preview_display()
         self.on_detection_method_changed(index)
@@ -8503,21 +7514,21 @@ class MainWindow(QMainWindow):
 
     def _on_brightness_changed(self, value):
         """Handle brightness slider change."""
-        self.label_brightness_val.setText(str(value))
+        self._detection_panel.label_brightness_val.setText(str(value))
         self.detection_test_result = None  # Clear test result
         self._update_preview_display()
 
     def _on_contrast_changed(self, value):
         """Handle contrast slider change."""
         contrast_val = value / 100.0
-        self.label_contrast_val.setText(f"{contrast_val:.2f}")
+        self._detection_panel.label_contrast_val.setText(f"{contrast_val:.2f}")
         self.detection_test_result = None  # Clear test result
         self._update_preview_display()
 
     def _on_gamma_changed(self, value):
         """Handle gamma slider change."""
         gamma_val = value / 100.0
-        self.label_gamma_val.setText(f"{gamma_val:.2f}")
+        self._detection_panel.label_gamma_val.setText(f"{gamma_val:.2f}")
         self.detection_test_result = None  # Clear test result
         self._update_preview_display()
 
@@ -8538,9 +7549,9 @@ class MainWindow(QMainWindow):
         """Update the info label showing calculated body area."""
         import math
 
-        body_size = self.spin_reference_body_size.value()
+        body_size = self._detection_panel.spin_reference_body_size.value()
         body_area = math.pi * (body_size / 2.0) ** 2
-        self.label_body_size_info.setText(
+        self._detection_panel.label_body_size_info.setText(
             f"≈ {body_area:.1f} px² area (all size/distance params scale with this)"
         )
 
@@ -8595,10 +7606,10 @@ class MainWindow(QMainWindow):
             resize_factor: Factor by which frame was resized (to scale back to original)
         """
         if not detected_dimensions or len(detected_dimensions) == 0:
-            self.label_detection_stats.setText(
+            self._detection_panel.label_detection_stats.setText(
                 "No detections found.\nAdjust parameters and try again."
             )
-            self.btn_auto_set_body_size.setEnabled(False)
+            self._detection_panel.btn_auto_set_body_size.setEnabled(False)
             self.detected_sizes = None
             return
 
@@ -8676,9 +7687,9 @@ class MainWindow(QMainWindow):
             f"Recommended Body Size: {stats['geometric_mean']['median']:.1f} px\n"
             f"  (geometric mean of dimensions)"
         )
-        self.label_detection_stats.setText(stats_text)
-        self.btn_auto_set_body_size.setEnabled(True)
-        self.btn_auto_set_aspect_ratio.setEnabled(True)
+        self._detection_panel.label_detection_stats.setText(stats_text)
+        self._detection_panel.btn_auto_set_body_size.setEnabled(True)
+        self._detection_panel.btn_auto_set_aspect_ratio.setEnabled(True)
 
     def _auto_set_body_size_from_detection(self):
         """Auto-set reference body size from detected geometric mean."""
@@ -8687,7 +7698,7 @@ class MainWindow(QMainWindow):
 
         recommended_size = self.detected_sizes["recommended_body_size"]
         stats = self.detected_sizes["stats"]
-        self.spin_reference_body_size.setValue(recommended_size)
+        self._detection_panel.spin_reference_body_size.setValue(recommended_size)
 
         # Show confirmation with aspect ratio info
         QMessageBox.information(
@@ -8707,7 +7718,7 @@ class MainWindow(QMainWindow):
         if self.detected_sizes is None:
             return
         recommended_ar = self.detected_sizes["recommended_aspect_ratio"]
-        self.spin_reference_aspect_ratio.setValue(recommended_ar)
+        self._detection_panel.spin_reference_aspect_ratio.setValue(recommended_ar)
         QMessageBox.information(
             self,
             "Aspect Ratio Updated",
@@ -8766,12 +7777,12 @@ class MainWindow(QMainWindow):
             return
 
         # Get current adjustment values
-        brightness = self.slider_brightness.value()
-        contrast = self.slider_contrast.value() / 100.0
-        gamma = self.slider_gamma.value() / 100.0
+        brightness = self._detection_panel.slider_brightness.value()
+        contrast = self._detection_panel.slider_contrast.value() / 100.0
+        gamma = self._detection_panel.slider_gamma.value() / 100.0
 
         # Get detection method
-        detection_method = self.combo_detection_method.currentText()
+        detection_method = self._detection_panel.combo_detection_method.currentText()
         is_background_subtraction = detection_method == "Background Subtraction"
 
         # Apply adjustments
@@ -8849,8 +7860,8 @@ class MainWindow(QMainWindow):
         # If detection filters are enabled, ask user whether to use them for the test.
         use_detection_filters = False
         detection_filters_enabled = bool(
-            self.chk_size_filtering.isChecked()
-            or self.chk_enable_aspect_ratio_filtering.isChecked()
+            self._detection_panel.chk_size_filtering.isChecked()
+            or self._detection_panel.chk_enable_aspect_ratio_filtering.isChecked()
         )
         if detection_filters_enabled:
             msg = QMessageBox(self)
@@ -8931,11 +7942,11 @@ class MainWindow(QMainWindow):
             selected_runtime, backend_family=pose_backend_family
         )
         trt_batch_size = (
-            self.spin_yolo_batch_size.value()
+            self._detection_panel.spin_yolo_batch_size.value()
             if self._runtime_requires_fixed_yolo_batch(selected_runtime)
-            else self.spin_tensorrt_batch.value()
+            else self._detection_panel.spin_tensorrt_batch.value()
         )
-        class_text = self.line_yolo_classes.text().strip()
+        class_text = self._detection_panel.line_yolo_classes.text().strip()
         target_classes = None
         if class_text:
             try:
@@ -8944,33 +7955,33 @@ class MainWindow(QMainWindow):
                 target_classes = None
 
         return {
-            "detection_method": self.combo_detection_method.currentIndex(),
+            "detection_method": self._detection_panel.combo_detection_method.currentIndex(),
             "video_path": self._setup_panel.file_line.text(),
-            "bg_prime_seconds": self.spin_bg_prime.value(),
+            "bg_prime_seconds": self._detection_panel.spin_bg_prime.value(),
             "fps": self._setup_panel.spin_fps.value(),
-            "brightness": self.slider_brightness.value(),
-            "contrast": self.slider_contrast.value() / 100.0,
-            "gamma": self.slider_gamma.value() / 100.0,
+            "brightness": self._detection_panel.slider_brightness.value(),
+            "contrast": self._detection_panel.slider_contrast.value() / 100.0,
+            "gamma": self._detection_panel.slider_gamma.value() / 100.0,
             "roi_mask": self.roi_mask.copy() if self.roi_mask is not None else None,
             "resize_factor": self._setup_panel.spin_resize.value(),
-            "dark_on_light": self.chk_dark_on_light.isChecked(),
-            "threshold_value": self.spin_threshold.value(),
-            "morph_kernel_size": self.spin_morph_size.value(),
-            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
-            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
-            "dilation_iterations": self.spin_dilation_iterations.value(),
-            "min_contour": self.spin_min_contour.value(),
-            "reference_body_size": self.spin_reference_body_size.value(),
-            "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
-            "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
-            "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
-            "max_aspect_ratio_multiplier": self.spin_max_ar_multiplier.value(),
-            "min_object_size": self.spin_min_object_size.value(),
-            "max_object_size": self.spin_max_object_size.value(),
+            "dark_on_light": self._detection_panel.chk_dark_on_light.isChecked(),
+            "threshold_value": self._detection_panel.spin_threshold.value(),
+            "morph_kernel_size": self._detection_panel.spin_morph_size.value(),
+            "enable_additional_dilation": self._detection_panel.chk_additional_dilation.isChecked(),
+            "dilation_kernel_size": self._detection_panel.spin_dilation_kernel_size.value(),
+            "dilation_iterations": self._detection_panel.spin_dilation_iterations.value(),
+            "min_contour": self._detection_panel.spin_min_contour.value(),
+            "reference_body_size": self._detection_panel.spin_reference_body_size.value(),
+            "reference_aspect_ratio": self._detection_panel.spin_reference_aspect_ratio.value(),
+            "enable_aspect_ratio_filtering": self._detection_panel.chk_enable_aspect_ratio_filtering.isChecked(),
+            "min_aspect_ratio_multiplier": self._detection_panel.spin_min_ar_multiplier.value(),
+            "max_aspect_ratio_multiplier": self._detection_panel.spin_max_ar_multiplier.value(),
+            "min_object_size": self._detection_panel.spin_min_object_size.value(),
+            "max_object_size": self._detection_panel.spin_max_object_size.value(),
             "compute_runtime": selected_runtime,
             "yolo_obb_mode": (
                 "sequential"
-                if self.combo_yolo_obb_mode.currentIndex() == 1
+                if self._detection_panel.combo_yolo_obb_mode.currentIndex() == 1
                 else "direct"
             ),
             "yolo_model_path": self._get_selected_yolo_model_path(),
@@ -8979,15 +7990,15 @@ class MainWindow(QMainWindow):
             "yolo_crop_obb_model_path": self._get_selected_yolo_crop_obb_model_path(),
             "yolo_headtail_model_path": self._get_selected_yolo_headtail_model_path(),
             "pose_overrides_headtail": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
-            "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
-            "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
-            "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
-            "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
-            "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
-            "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
+            "yolo_seq_crop_pad_ratio": self._detection_panel.spin_yolo_seq_crop_pad.value(),
+            "yolo_seq_min_crop_size_px": self._detection_panel.spin_yolo_seq_min_crop_px.value(),
+            "yolo_seq_enforce_square_crop": self._detection_panel.chk_yolo_seq_square_crop.isChecked(),
+            "yolo_seq_stage2_imgsz": self._detection_panel.spin_yolo_seq_stage2_imgsz.value(),
+            "yolo_seq_stage2_pow2_pad": self._detection_panel.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "yolo_seq_detect_conf_threshold": self._detection_panel.spin_yolo_seq_detect_conf.value(),
             "yolo_headtail_conf_threshold": self._identity_panel.spin_yolo_headtail_conf.value(),
-            "yolo_confidence": self.spin_yolo_confidence.value(),
-            "yolo_iou": self.spin_yolo_iou.value(),
+            "yolo_confidence": self._detection_panel.spin_yolo_confidence.value(),
+            "yolo_iou": self._detection_panel.spin_yolo_iou.value(),
             "yolo_target_classes": target_classes,
             "yolo_device": runtime_detection["yolo_device"],
             "enable_gpu_background": runtime_detection["enable_gpu_background"],
@@ -8995,10 +8006,10 @@ class MainWindow(QMainWindow):
             "enable_onnx_runtime": runtime_detection["enable_onnx_runtime"],
             "tensorrt_max_batch_size": trt_batch_size,
             "max_targets": self._setup_panel.spin_max_targets.value(),
-            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
-            "enable_conservative_split": self.chk_conservative_split.isChecked(),
-            "conservative_kernel_size": self.spin_conservative_kernel.value(),
-            "conservative_erode_iterations": self.spin_conservative_erode.value(),
+            "max_contour_multiplier": self._detection_panel.spin_max_contour_multiplier.value(),
+            "enable_conservative_split": self._detection_panel.chk_conservative_split.isChecked(),
+            "conservative_kernel_size": self._detection_panel.spin_conservative_kernel.value(),
+            "conservative_erode_iterations": self._detection_panel.spin_conservative_erode.value(),
             "use_apriltags": identity_cfg.get("use_apriltags", False),
             "cnn_classifiers": identity_cfg.get("cnn_classifiers", []),
             "apriltag_family": self._identity_panel.combo_apriltag_family.currentText(),
@@ -10017,7 +9028,7 @@ class MainWindow(QMainWindow):
     def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
         """Populate direct OBB model combo from repository models."""
         self._populate_yolo_model_combo(
-            self.combo_yolo_model,
+            self._detection_panel.combo_yolo_model,
             preferred_model_path=preferred_model_path,
             default_path="",
             include_none=False,
@@ -10030,7 +9041,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_yolo_detect_model_combo(self, preferred_model_path: object = None):
         self._populate_yolo_model_combo(
-            self.combo_yolo_detect_model,
+            self._detection_panel.combo_yolo_detect_model,
             preferred_model_path=preferred_model_path,
             default_path="",
             include_none=True,
@@ -10043,7 +9054,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_yolo_crop_obb_model_combo(self, preferred_model_path: object = None):
         self._populate_yolo_model_combo(
-            self.combo_yolo_crop_obb_model,
+            self._detection_panel.combo_yolo_crop_obb_model,
             preferred_model_path=preferred_model_path,
             default_path="",
             include_none=True,
@@ -10159,22 +9170,22 @@ class MainWindow(QMainWindow):
 
     def _get_selected_yolo_model_path(self) -> object:
         """Return currently selected direct OBB model path."""
-        if not hasattr(self, "combo_yolo_model"):
+        if not hasattr(self, "_detection_panel"):
             return ""
         return self._get_selected_model_path_from_selector(
-            self.combo_yolo_model,
+            self._detection_panel.combo_yolo_model,
             default_path="",
         )
 
     def _get_selected_yolo_detect_model_path(self) -> object:
         return self._get_selected_model_path_from_selector(
-            self.combo_yolo_detect_model,
+            self._detection_panel.combo_yolo_detect_model,
             default_path="",
         )
 
     def _get_selected_yolo_crop_obb_model_path(self) -> object:
         return self._get_selected_model_path_from_selector(
-            self.combo_yolo_crop_obb_model,
+            self._detection_panel.combo_yolo_crop_obb_model,
             default_path="",
         )
 
@@ -10186,19 +9197,19 @@ class MainWindow(QMainWindow):
 
     def _set_yolo_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
-            self.combo_yolo_model,
+            self._detection_panel.combo_yolo_model,
             model_path,
         )
 
     def _set_yolo_detect_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
-            self.combo_yolo_detect_model,
+            self._detection_panel.combo_yolo_detect_model,
             model_path,
         )
 
     def _set_yolo_crop_obb_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
-            self.combo_yolo_crop_obb_model,
+            self._detection_panel.combo_yolo_crop_obb_model,
             model_path,
         )
 
@@ -10210,7 +9221,11 @@ class MainWindow(QMainWindow):
 
     def _on_yolo_mode_changed(self, _index: object) -> object:
         """Toggle direct/sequential model controls."""
-        form = self.yolo_group.layout() if hasattr(self, "yolo_group") else None
+        form = (
+            self._detection_panel.yolo_group.layout()
+            if hasattr(self, "_detection_panel")
+            else None
+        )
 
         def _set_row_visible(widget: object, visible: bool):
             if widget is None:
@@ -10226,25 +9241,41 @@ class MainWindow(QMainWindow):
                 label.setVisible(bool(visible))
 
         sequential = (
-            hasattr(self, "combo_yolo_obb_mode")
-            and self.combo_yolo_obb_mode.currentIndex() == 1
+            hasattr(self, "_detection_panel")
+            and self._detection_panel.combo_yolo_obb_mode.currentIndex() == 1
         )
 
         _set_row_visible(
-            getattr(self, "combo_yolo_model", None),
+            (
+                getattr(self._detection_panel, "combo_yolo_model", None)
+                if hasattr(self, "_detection_panel")
+                else None
+            ),
             not sequential,
         )
 
         _set_row_visible(
-            getattr(self, "combo_yolo_detect_model", None),
+            (
+                getattr(self._detection_panel, "combo_yolo_detect_model", None)
+                if hasattr(self, "_detection_panel")
+                else None
+            ),
             sequential,
         )
         _set_row_visible(
-            getattr(self, "combo_yolo_crop_obb_model", None),
+            (
+                getattr(self._detection_panel, "combo_yolo_crop_obb_model", None)
+                if hasattr(self, "_detection_panel")
+                else None
+            ),
             sequential,
         )
         _set_row_visible(
-            getattr(self, "yolo_seq_advanced", None),
+            (
+                getattr(self._detection_panel, "yolo_seq_advanced", None)
+                if hasattr(self, "_detection_panel")
+                else None
+            ),
             sequential,
         )
         _set_row_visible(
@@ -10264,14 +9295,14 @@ class MainWindow(QMainWindow):
 
     def _update_obb_mode_warning(self) -> None:
         """Show a performance hint when device/mode is a suboptimal combination."""
-        if not hasattr(self, "lbl_obb_mode_warning"):
+        if not hasattr(self, "_detection_panel"):
             return
         runtime = (
             self._selected_compute_runtime() if hasattr(self, "_setup_panel") else ""
         )
         sequential = (
-            hasattr(self, "combo_yolo_obb_mode")
-            and self.combo_yolo_obb_mode.currentIndex() == 1
+            hasattr(self, "_detection_panel")
+            and self._detection_panel.combo_yolo_obb_mode.currentIndex() == 1
         )
         is_mps = "mps" in runtime.lower()
         is_cuda = "cuda" in runtime.lower()
@@ -10287,14 +9318,17 @@ class MainWindow(QMainWindow):
             )
         else:
             msg = ""
-        self.lbl_obb_mode_warning.setText(msg)
-        self.lbl_obb_mode_warning.setVisible(bool(msg))
+        self._detection_panel.lbl_obb_mode_warning.setText(msg)
+        self._detection_panel.lbl_obb_mode_warning.setVisible(bool(msg))
 
     def on_yolo_model_changed(self: object, index: object) -> object:
         """Handle direct OBB model selection — triggers import when 'Add New' chosen."""
-        if self.combo_yolo_model.itemData(index, Qt.UserRole) == "__add_new__":
+        if (
+            self._detection_panel.combo_yolo_model.itemData(index, Qt.UserRole)
+            == "__add_new__"
+        ):
             self._handle_add_new_yolo_model(
-                combo=self.combo_yolo_model,
+                combo=self._detection_panel.combo_yolo_model,
                 refresh_callback=self._refresh_yolo_model_combo,
                 selection_callback=self._set_yolo_model_selection,
                 task_family="obb",
@@ -10305,9 +9339,12 @@ class MainWindow(QMainWindow):
         self._on_yolo_mode_changed(index)
 
     def on_yolo_detect_model_changed(self: object, index: object) -> object:
-        if self.combo_yolo_detect_model.itemData(index, Qt.UserRole) == "__add_new__":
+        if (
+            self._detection_panel.combo_yolo_detect_model.itemData(index, Qt.UserRole)
+            == "__add_new__"
+        ):
             self._handle_add_new_yolo_model(
-                combo=self.combo_yolo_detect_model,
+                combo=self._detection_panel.combo_yolo_detect_model,
                 refresh_callback=self._refresh_yolo_detect_model_combo,
                 selection_callback=self._set_yolo_detect_model_selection,
                 task_family="detect",
@@ -10318,9 +9355,12 @@ class MainWindow(QMainWindow):
         self._on_yolo_mode_changed(index)
 
     def on_yolo_crop_obb_model_changed(self: object, index: object) -> object:
-        if self.combo_yolo_crop_obb_model.itemData(index, Qt.UserRole) == "__add_new__":
+        if (
+            self._detection_panel.combo_yolo_crop_obb_model.itemData(index, Qt.UserRole)
+            == "__add_new__"
+        ):
             self._handle_add_new_yolo_model(
-                combo=self.combo_yolo_crop_obb_model,
+                combo=self._detection_panel.combo_yolo_crop_obb_model,
                 refresh_callback=self._refresh_yolo_crop_obb_model_combo,
                 selection_callback=self._set_yolo_crop_obb_model_selection,
                 task_family="obb",
@@ -10344,19 +9384,19 @@ class MainWindow(QMainWindow):
         applied = []
         if "imgsz" in tp:
             val = int(tp["imgsz"])
-            self.spin_yolo_seq_stage2_imgsz.setValue(val)
+            self._detection_panel.spin_yolo_seq_stage2_imgsz.setValue(val)
             applied.append(f"stage2_imgsz={val}")
         if "crop_pad_ratio" in tp:
             val = float(tp["crop_pad_ratio"])
-            self.spin_yolo_seq_crop_pad.setValue(val)
+            self._detection_panel.spin_yolo_seq_crop_pad.setValue(val)
             applied.append(f"crop_pad={val}")
         if "min_crop_size_px" in tp:
             val = int(tp["min_crop_size_px"])
-            self.spin_yolo_seq_min_crop_px.setValue(val)
+            self._detection_panel.spin_yolo_seq_min_crop_px.setValue(val)
             applied.append(f"min_crop={val}")
         if "enforce_square" in tp:
             val = bool(tp["enforce_square"])
-            self.chk_yolo_seq_square_crop.setChecked(val)
+            self._detection_panel.chk_yolo_seq_square_crop.setChecked(val)
             applied.append(f"square={val}")
         if applied:
             logger.info(
@@ -10541,9 +9581,9 @@ class MainWindow(QMainWindow):
         self._setup_panel.chk_show_labels.setEnabled(True)
         self._setup_panel.chk_show_state.setEnabled(True)
         self._setup_panel.chk_show_kalman_uncertainty.setEnabled(True)
-        self.chk_show_fg.setEnabled(True)
-        self.chk_show_bg.setEnabled(True)
-        self.chk_show_yolo_obb.setEnabled(True)
+        self._detection_panel.chk_show_fg.setEnabled(True)
+        self._detection_panel.chk_show_bg.setEnabled(True)
+        self._detection_panel.chk_show_yolo_obb.setEnabled(True)
 
         # Only affect display during active tracking (not setup/preview)
         if is_tracking_active and is_viz_free and not is_preview_active:
@@ -13974,12 +13014,14 @@ class MainWindow(QMainWindow):
 
         det_method = (
             "background_subtraction"
-            if self.combo_detection_method.currentIndex() == 0
+            if self._detection_panel.combo_detection_method.currentIndex() == 0
             else "yolo_obb"
         )
 
         yolo_mode = (
-            "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
+            "sequential"
+            if self._detection_panel.combo_yolo_obb_mode.currentIndex() == 1
+            else "direct"
         )
         yolo_direct_path = resolve_model_path(
             self._get_selected_yolo_model_path() or ""
@@ -13996,16 +13038,17 @@ class MainWindow(QMainWindow):
         yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
 
         yolo_cls = None
-        if self.line_yolo_classes.text().strip():
+        if self._detection_panel.line_yolo_classes.text().strip():
             try:
                 yolo_cls = [
-                    int(x.strip()) for x in self.line_yolo_classes.text().split(",")
+                    int(x.strip())
+                    for x in self._detection_panel.line_yolo_classes.text().split(",")
                 ]
             except ValueError:
                 pass
 
         # Calculate actual pixel values from body-size multipliers
-        reference_body_size = self.spin_reference_body_size.value()
+        reference_body_size = self._detection_panel.spin_reference_body_size.value()
         resize_factor = self._setup_panel.spin_resize.value()
         scaled_body_size = reference_body_size * resize_factor
 
@@ -14017,10 +13060,10 @@ class MainWindow(QMainWindow):
 
         # Convert multipliers to actual pixels
         min_object_size_pixels = int(
-            self.spin_min_object_size.value() * scaled_body_area
+            self._detection_panel.spin_min_object_size.value() * scaled_body_area
         )
         max_object_size_pixels = int(
-            self.spin_max_object_size.value() * scaled_body_area
+            self._detection_panel.spin_max_object_size.value() * scaled_body_area
         )
         max_distance_pixels = (
             self._tracking_panel.spin_max_dist.value() * scaled_body_size
@@ -14054,7 +13097,9 @@ class MainWindow(QMainWindow):
         kalman_maturity_age = _seconds_to_frames(
             self._tracking_panel.spin_kalman_maturity_age.value()
         )
-        bg_prime_frames = _seconds_to_frames(self.spin_bg_prime.value(), min_frames=0)
+        bg_prime_frames = _seconds_to_frames(
+            self._detection_panel.spin_bg_prime.value(), min_frames=0
+        )
         min_detections_to_start = _seconds_to_frames(
             self._tracking_panel.spin_min_detections_to_start.value()
         )
@@ -14076,12 +13121,16 @@ class MainWindow(QMainWindow):
         # YOLO Batching settings from UI (overrides advanced_config defaults)
         advanced_config = self.advanced_config.copy()
         advanced_config["enable_yolo_batching"] = (
-            self.chk_enable_yolo_batching.isChecked()
+            self._detection_panel.chk_enable_yolo_batching.isChecked()
         )
         advanced_config["yolo_batch_size_mode"] = (
-            "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
+            "auto"
+            if self._detection_panel.combo_yolo_batch_mode.currentIndex() == 0
+            else "manual"
         )
-        advanced_config["yolo_manual_batch_size"] = self.spin_yolo_batch_size.value()
+        advanced_config["yolo_manual_batch_size"] = (
+            self._detection_panel.spin_yolo_batch_size.value()
+        )
         advanced_config["video_show_pose"] = (
             self._postprocess_panel.check_video_show_pose.isChecked()
         )
@@ -14106,16 +13155,16 @@ class MainWindow(QMainWindow):
         ]
         # Canonical crop / aspect ratio params (from UI widgets)
         advanced_config["reference_aspect_ratio"] = (
-            self.spin_reference_aspect_ratio.value()
+            self._detection_panel.spin_reference_aspect_ratio.value()
         )
         advanced_config["enable_aspect_ratio_filtering"] = (
-            self.chk_enable_aspect_ratio_filtering.isChecked()
+            self._detection_panel.chk_enable_aspect_ratio_filtering.isChecked()
         )
         advanced_config["min_aspect_ratio_multiplier"] = (
-            self.spin_min_ar_multiplier.value()
+            self._detection_panel.spin_min_ar_multiplier.value()
         )
         advanced_config["max_aspect_ratio_multiplier"] = (
-            self.spin_max_ar_multiplier.value()
+            self._detection_panel.spin_max_ar_multiplier.value()
         )
 
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
@@ -14126,9 +13175,9 @@ class MainWindow(QMainWindow):
         compute_runtime = self._selected_compute_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
-            self.spin_yolo_batch_size.value()
+            self._detection_panel.spin_yolo_batch_size.value()
             if self._runtime_requires_fixed_yolo_batch(compute_runtime)
-            else self.spin_tensorrt_batch.value()
+            else self._detection_panel.spin_tensorrt_batch.value()
         )
         trt_build_batch_size_raw = advanced_config.get(
             "tensorrt_build_batch_size", None
@@ -14162,15 +13211,15 @@ class MainWindow(QMainWindow):
             "YOLO_CROP_OBB_MODEL_PATH": yolo_crop_obb_path,
             "YOLO_HEADTAIL_MODEL_PATH": yolo_headtail_path,
             "POSE_OVERRIDES_HEADTAIL": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
-            "YOLO_SEQ_CROP_PAD_RATIO": self.spin_yolo_seq_crop_pad.value(),
-            "YOLO_SEQ_MIN_CROP_SIZE_PX": self.spin_yolo_seq_min_crop_px.value(),
-            "YOLO_SEQ_ENFORCE_SQUARE_CROP": self.chk_yolo_seq_square_crop.isChecked(),
-            "YOLO_SEQ_STAGE2_IMGSZ": self.spin_yolo_seq_stage2_imgsz.value(),
-            "YOLO_SEQ_STAGE2_POW2_PAD": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
-            "YOLO_SEQ_DETECT_CONF_THRESHOLD": self.spin_yolo_seq_detect_conf.value(),
+            "YOLO_SEQ_CROP_PAD_RATIO": self._detection_panel.spin_yolo_seq_crop_pad.value(),
+            "YOLO_SEQ_MIN_CROP_SIZE_PX": self._detection_panel.spin_yolo_seq_min_crop_px.value(),
+            "YOLO_SEQ_ENFORCE_SQUARE_CROP": self._detection_panel.chk_yolo_seq_square_crop.isChecked(),
+            "YOLO_SEQ_STAGE2_IMGSZ": self._detection_panel.spin_yolo_seq_stage2_imgsz.value(),
+            "YOLO_SEQ_STAGE2_POW2_PAD": self._detection_panel.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "YOLO_SEQ_DETECT_CONF_THRESHOLD": self._detection_panel.spin_yolo_seq_detect_conf.value(),
             "YOLO_HEADTAIL_CONF_THRESHOLD": self._identity_panel.spin_yolo_headtail_conf.value(),
-            "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
-            "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
+            "YOLO_CONFIDENCE_THRESHOLD": self._detection_panel.spin_yolo_confidence.value(),
+            "YOLO_IOU_THRESHOLD": self._detection_panel.spin_yolo_iou.value(),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
             "YOLO_TARGET_CLASSES": yolo_cls,
             "COMPUTE_RUNTIME": compute_runtime,
@@ -14184,13 +13233,13 @@ class MainWindow(QMainWindow):
             ),
             "TENSORRT_BUILD_BATCH_SIZE": trt_build_batch_size,
             "MAX_TARGETS": N,
-            "THRESHOLD_VALUE": self.spin_threshold.value(),
-            "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
-            "MIN_CONTOUR_AREA": self.spin_min_contour.value(),
-            "ENABLE_SIZE_FILTERING": self.chk_size_filtering.isChecked(),
+            "THRESHOLD_VALUE": self._detection_panel.spin_threshold.value(),
+            "MORPH_KERNEL_SIZE": self._detection_panel.spin_morph_size.value(),
+            "MIN_CONTOUR_AREA": self._detection_panel.spin_min_contour.value(),
+            "ENABLE_SIZE_FILTERING": self._detection_panel.chk_size_filtering.isChecked(),
             "MIN_OBJECT_SIZE": min_object_size_pixels,
             "MAX_OBJECT_SIZE": max_object_size_pixels,
-            "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
+            "MAX_CONTOUR_MULTIPLIER": self._detection_panel.spin_max_contour_multiplier.value(),
             "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
             "MAX_DISTANCE_MULTIPLIER": self._tracking_panel.spin_max_dist.value(),
             "ENABLE_POSTPROCESSING": self._postprocess_panel.enable_postprocessing.isChecked(),
@@ -14216,11 +13265,11 @@ class MainWindow(QMainWindow):
             "MIN_TRACKING_COUNTS": min_tracking_counts,
             "TRAJECTORY_HISTORY_SECONDS": self._setup_panel.spin_traj_hist.value(),
             "BACKGROUND_PRIME_FRAMES": bg_prime_frames,
-            "ENABLE_LIGHTING_STABILIZATION": self.chk_lighting_stab.isChecked(),
-            "ENABLE_ADAPTIVE_BACKGROUND": self.chk_adaptive_bg.isChecked(),
-            "BACKGROUND_LEARNING_RATE": self.spin_bg_learning.value(),
-            "LIGHTING_SMOOTH_FACTOR": self.spin_lighting_smooth.value(),
-            "LIGHTING_MEDIAN_WINDOW": self.spin_lighting_median.value(),
+            "ENABLE_LIGHTING_STABILIZATION": self._detection_panel.chk_lighting_stab.isChecked(),
+            "ENABLE_ADAPTIVE_BACKGROUND": self._detection_panel.chk_adaptive_bg.isChecked(),
+            "BACKGROUND_LEARNING_RATE": self._detection_panel.spin_bg_learning.value(),
+            "LIGHTING_SMOOTH_FACTOR": self._detection_panel.spin_lighting_smooth.value(),
+            "LIGHTING_MEDIAN_WINDOW": self._detection_panel.spin_lighting_median.value(),
             "KALMAN_NOISE_COVARIANCE": self._tracking_panel.spin_kalman_noise.value(),
             "KALMAN_MEASUREMENT_NOISE_COVARIANCE": self._tracking_panel.spin_kalman_meas.value(),
             "KALMAN_DAMPING": self._tracking_panel.spin_kalman_damping.value(),
@@ -14237,16 +13286,16 @@ class MainWindow(QMainWindow):
                 / max(self._tracking_panel.spin_kalman_lateral_noise.value(), 1e-6),
             ),
             "RESIZE_FACTOR": self._setup_panel.spin_resize.value(),
-            "ENABLE_CONSERVATIVE_SPLIT": self.chk_conservative_split.isChecked(),
-            "CONSERVATIVE_KERNEL_SIZE": self.spin_conservative_kernel.value(),
-            "CONSERVATIVE_ERODE_ITER": self.spin_conservative_erode.value(),
-            "ENABLE_ADDITIONAL_DILATION": self.chk_additional_dilation.isChecked(),
-            "DILATION_ITERATIONS": self.spin_dilation_iterations.value(),
-            "DILATION_KERNEL_SIZE": self.spin_dilation_kernel_size.value(),
-            "BRIGHTNESS": self.slider_brightness.value(),
-            "CONTRAST": self.slider_contrast.value() / 100.0,
-            "GAMMA": self.slider_gamma.value() / 100.0,
-            "DARK_ON_LIGHT_BACKGROUND": self.chk_dark_on_light.isChecked(),
+            "ENABLE_CONSERVATIVE_SPLIT": self._detection_panel.chk_conservative_split.isChecked(),
+            "CONSERVATIVE_KERNEL_SIZE": self._detection_panel.spin_conservative_kernel.value(),
+            "CONSERVATIVE_ERODE_ITER": self._detection_panel.spin_conservative_erode.value(),
+            "ENABLE_ADDITIONAL_DILATION": self._detection_panel.chk_additional_dilation.isChecked(),
+            "DILATION_ITERATIONS": self._detection_panel.spin_dilation_iterations.value(),
+            "DILATION_KERNEL_SIZE": self._detection_panel.spin_dilation_kernel_size.value(),
+            "BRIGHTNESS": self._detection_panel.slider_brightness.value(),
+            "CONTRAST": self._detection_panel.slider_contrast.value() / 100.0,
+            "GAMMA": self._detection_panel.slider_gamma.value() / 100.0,
+            "DARK_ON_LIGHT_BACKGROUND": self._detection_panel.chk_dark_on_light.isChecked(),
             "VELOCITY_THRESHOLD": velocity_threshold_pixels_per_frame,
             "INSTANT_FLIP_ORIENTATION": self._tracking_panel.chk_instant_flip.isChecked(),
             "MAX_ORIENT_DELTA_STOPPED": self._tracking_panel.spin_max_orient.value(),
@@ -14274,11 +13323,11 @@ class MainWindow(QMainWindow):
             "TRACK_FEATURE_EMA_ALPHA": self._tracking_panel.spin_track_feature_ema_alpha.value(),
             "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD": self._tracking_panel.spin_assoc_high_conf_threshold.value(),
             "TRAJECTORY_COLORS": colors,
-            "SHOW_FG": self.chk_show_fg.isChecked(),
-            "SHOW_BG": self.chk_show_bg.isChecked(),
+            "SHOW_FG": self._detection_panel.chk_show_fg.isChecked(),
+            "SHOW_BG": self._detection_panel.chk_show_bg.isChecked(),
             "SHOW_CIRCLES": self._setup_panel.chk_show_circles.isChecked(),
             "SHOW_ORIENTATION": self._setup_panel.chk_show_orientation.isChecked(),
-            "SHOW_YOLO_OBB": self.chk_show_yolo_obb.isChecked(),
+            "SHOW_YOLO_OBB": self._detection_panel.chk_show_yolo_obb.isChecked(),
             "SHOW_TRAJECTORIES": self._setup_panel.chk_show_trajectories.isChecked(),
             "SHOW_LABELS": self._setup_panel.chk_show_labels.isChecked(),
             "SHOW_STATE": self._setup_panel.chk_show_state.isChecked(),
@@ -14518,7 +13567,9 @@ class MainWindow(QMainWindow):
                 # Load reference body size if saved in config
                 saved_body_size = get_cfg("reference_body_size", default=None)
                 if saved_body_size is not None:
-                    self.spin_reference_body_size.setValue(saved_body_size)
+                    self._detection_panel.spin_reference_body_size.setValue(
+                        saved_body_size
+                    )
 
                 # Load frame range if saved in config
                 saved_start_frame = get_cfg("start_frame", default=None)
@@ -14551,31 +13602,37 @@ class MainWindow(QMainWindow):
 
             # === DETECTION STRATEGY ===
             det_method = get_cfg("detection_method", default="background_subtraction")
-            self.combo_detection_method.setCurrentIndex(
+            self._detection_panel.combo_detection_method.setCurrentIndex(
                 0 if det_method == "background_subtraction" else 1
             )
 
             # === SIZE FILTERING ===
-            self.chk_size_filtering.setChecked(
+            self._detection_panel.chk_size_filtering.setChecked(
                 get_cfg("enable_size_filtering", default=False)
             )
-            self.spin_min_object_size.setValue(
+            self._detection_panel.spin_min_object_size.setValue(
                 get_cfg("min_object_size_multiplier", default=0.3)
             )
-            self.spin_max_object_size.setValue(
+            self._detection_panel.spin_max_object_size.setValue(
                 get_cfg("max_object_size_multiplier", default=3.0)
             )
 
             # === IMAGE ENHANCEMENT ===
-            self.slider_brightness.setValue(int(get_cfg("brightness", default=0.0)))
-            self.slider_contrast.setValue(int(get_cfg("contrast", default=1.0) * 100))
-            self.slider_gamma.setValue(int(get_cfg("gamma", default=1.0) * 100))
-            self.chk_dark_on_light.setChecked(
+            self._detection_panel.slider_brightness.setValue(
+                int(get_cfg("brightness", default=0.0))
+            )
+            self._detection_panel.slider_contrast.setValue(
+                int(get_cfg("contrast", default=1.0) * 100)
+            )
+            self._detection_panel.slider_gamma.setValue(
+                int(get_cfg("gamma", default=1.0) * 100)
+            )
+            self._detection_panel.chk_dark_on_light.setChecked(
                 get_cfg("dark_on_light_background", default=True)
             )
 
             # === BACKGROUND SUBTRACTION ===
-            self.spin_bg_prime.setValue(
+            self._detection_panel.spin_bg_prime.setValue(
                 get_cfg_time(
                     "background_prime_seconds",
                     "background_prime_frames",
@@ -14583,61 +13640,65 @@ class MainWindow(QMainWindow):
                     default_seconds=0.33,
                 )
             )
-            self.chk_adaptive_bg.setChecked(
+            self._detection_panel.chk_adaptive_bg.setChecked(
                 get_cfg(
                     "enable_adaptive_background", "adaptive_background", default=True
                 )
             )
-            self.spin_bg_learning.setValue(
+            self._detection_panel.spin_bg_learning.setValue(
                 get_cfg("background_learning_rate", default=0.001)
             )
-            self.spin_threshold.setValue(
+            self._detection_panel.spin_threshold.setValue(
                 get_cfg("subtraction_threshold", "threshold_value", default=50)
             )
 
             # === LIGHTING STABILIZATION ===
-            self.chk_lighting_stab.setChecked(
+            self._detection_panel.chk_lighting_stab.setChecked(
                 get_cfg(
                     "enable_lighting_stabilization",
                     "lighting_stabilization",
                     default=True,
                 )
             )
-            self.spin_lighting_smooth.setValue(
+            self._detection_panel.spin_lighting_smooth.setValue(
                 get_cfg("lighting_smooth_factor", default=0.95)
             )
-            self.spin_lighting_median.setValue(
+            self._detection_panel.spin_lighting_median.setValue(
                 get_cfg("lighting_median_window", default=5)
             )
 
             # === MORPHOLOGY & NOISE ===
-            self.spin_morph_size.setValue(get_cfg("morph_kernel_size", default=5))
-            self.spin_min_contour.setValue(get_cfg("min_contour_area", default=50))
-            self.spin_max_contour_multiplier.setValue(
+            self._detection_panel.spin_morph_size.setValue(
+                get_cfg("morph_kernel_size", default=5)
+            )
+            self._detection_panel.spin_min_contour.setValue(
+                get_cfg("min_contour_area", default=50)
+            )
+            self._detection_panel.spin_max_contour_multiplier.setValue(
                 get_cfg("max_contour_multiplier", default=20)
             )
 
             # === ADVANCED SEPARATION ===
-            self.chk_conservative_split.setChecked(
+            self._detection_panel.chk_conservative_split.setChecked(
                 get_cfg("enable_conservative_split", default=True)
             )
-            self.spin_conservative_kernel.setValue(
+            self._detection_panel.spin_conservative_kernel.setValue(
                 get_cfg("conservative_kernel_size", default=3)
             )
-            self.spin_conservative_erode.setValue(
+            self._detection_panel.spin_conservative_erode.setValue(
                 get_cfg(
                     "conservative_erode_iterations",
                     "conservative_erode_iter",
                     default=1,
                 )
             )
-            self.chk_additional_dilation.setChecked(
+            self._detection_panel.chk_additional_dilation.setChecked(
                 get_cfg("enable_additional_dilation", default=False)
             )
-            self.spin_dilation_kernel_size.setValue(
+            self._detection_panel.spin_dilation_kernel_size.setValue(
                 get_cfg("dilation_kernel_size", default=3)
             )
-            self.spin_dilation_iterations.setValue(
+            self._detection_panel.spin_dilation_iterations.setValue(
                 get_cfg("dilation_iterations", default=2)
             )
 
@@ -14645,7 +13706,7 @@ class MainWindow(QMainWindow):
             yolo_mode = str(get_cfg("yolo_obb_mode", default="direct")).strip().lower()
             if yolo_mode not in {"direct", "sequential"}:
                 yolo_mode = "direct"
-            self.combo_yolo_obb_mode.setCurrentIndex(
+            self._detection_panel.combo_yolo_obb_mode.setCurrentIndex(
                 1 if yolo_mode == "sequential" else 0
             )
 
@@ -14726,51 +13787,57 @@ class MainWindow(QMainWindow):
             self._identity_panel.chk_pose_overrides_headtail.setChecked(
                 bool(get_cfg("pose_overrides_headtail", default=True))
             )
-            self.spin_yolo_seq_crop_pad.setValue(
+            self._detection_panel.spin_yolo_seq_crop_pad.setValue(
                 float(get_cfg("yolo_seq_crop_pad_ratio", default=0.15))
             )
-            self.spin_yolo_seq_min_crop_px.setValue(
+            self._detection_panel.spin_yolo_seq_min_crop_px.setValue(
                 int(get_cfg("yolo_seq_min_crop_size_px", default=64))
             )
-            self.chk_yolo_seq_square_crop.setChecked(
+            self._detection_panel.chk_yolo_seq_square_crop.setChecked(
                 bool(get_cfg("yolo_seq_enforce_square_crop", default=True))
             )
-            self.spin_yolo_seq_stage2_imgsz.setValue(
+            self._detection_panel.spin_yolo_seq_stage2_imgsz.setValue(
                 int(get_cfg("yolo_seq_stage2_imgsz", default=160))
             )
-            self.chk_yolo_seq_stage2_pow2_pad.setChecked(
+            self._detection_panel.chk_yolo_seq_stage2_pow2_pad.setChecked(
                 bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
             )
-            self.spin_yolo_seq_detect_conf.setValue(
+            self._detection_panel.spin_yolo_seq_detect_conf.setValue(
                 float(get_cfg("yolo_seq_detect_conf_threshold", default=0.25))
             )
             self._identity_panel.spin_yolo_headtail_conf.setValue(
                 float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
             )
-            self.spin_reference_aspect_ratio.setValue(
+            self._detection_panel.spin_reference_aspect_ratio.setValue(
                 float(get_cfg("reference_aspect_ratio", default=2.0))
             )
-            self.chk_enable_aspect_ratio_filtering.setChecked(
+            self._detection_panel.chk_enable_aspect_ratio_filtering.setChecked(
                 bool(get_cfg("enable_aspect_ratio_filtering", default=False))
             )
-            self.spin_min_ar_multiplier.setValue(
+            self._detection_panel.spin_min_ar_multiplier.setValue(
                 float(get_cfg("min_aspect_ratio_multiplier", default=0.5))
             )
-            self.spin_max_ar_multiplier.setValue(
+            self._detection_panel.spin_max_ar_multiplier.setValue(
                 float(get_cfg("max_aspect_ratio_multiplier", default=2.0))
             )
-            self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
+            self._on_yolo_mode_changed(
+                self._detection_panel.combo_yolo_obb_mode.currentIndex()
+            )
 
-            self.spin_yolo_confidence.setValue(
+            self._detection_panel.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
             )
-            self.spin_yolo_iou.setValue(get_cfg("yolo_iou_threshold", default=0.7))
-            self.chk_use_custom_obb_iou.setChecked(True)
+            self._detection_panel.spin_yolo_iou.setValue(
+                get_cfg("yolo_iou_threshold", default=0.7)
+            )
+            self._detection_panel.chk_use_custom_obb_iou.setChecked(True)
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
-                self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
+                self._detection_panel.line_yolo_classes.setText(
+                    ",".join(map(str, yolo_cls))
+                )
             else:
-                self.line_yolo_classes.clear()
+                self._detection_panel.line_yolo_classes.clear()
 
             compute_runtime_cfg = (
                 str(
@@ -14794,17 +13861,17 @@ class MainWindow(QMainWindow):
             self._on_runtime_context_changed()
 
             # TensorRT batch size is still configurable (runtime-derived usage).
-            self.spin_tensorrt_batch.setValue(
+            self._detection_panel.spin_tensorrt_batch.setValue(
                 get_cfg("tensorrt_max_batch_size", default=16)
             )
-            self.spin_tensorrt_batch.setEnabled(
+            self._detection_panel.spin_tensorrt_batch.setEnabled(
                 bool(
                     derive_detection_runtime_settings(self._selected_compute_runtime())[
                         "enable_tensorrt"
                     ]
                 )
             )
-            self.lbl_tensorrt_batch.setEnabled(
+            self._detection_panel.lbl_tensorrt_batch.setEnabled(
                 bool(
                     derive_detection_runtime_settings(self._selected_compute_runtime())[
                         "enable_tensorrt"
@@ -14813,12 +13880,14 @@ class MainWindow(QMainWindow):
             )
 
             # YOLO Batching settings
-            self.chk_enable_yolo_batching.setChecked(
+            self._detection_panel.chk_enable_yolo_batching.setChecked(
                 get_cfg("enable_yolo_batching", default=True)
             )
             batch_mode = get_cfg("yolo_batch_size_mode", default="auto")
-            self.combo_yolo_batch_mode.setCurrentIndex(0 if batch_mode == "auto" else 1)
-            self.spin_yolo_batch_size.setValue(
+            self._detection_panel.combo_yolo_batch_mode.setCurrentIndex(
+                0 if batch_mode == "auto" else 1
+            )
+            self._detection_panel.spin_yolo_batch_size.setValue(
                 get_cfg("yolo_manual_batch_size", default=16)
             )
             # Re-apply runtime-derived constraints (e.g., TensorRT => manual batch mode).
@@ -15223,13 +14292,15 @@ class MainWindow(QMainWindow):
             self._setup_panel.chk_show_kalman_uncertainty.setChecked(
                 get_cfg("show_kalman_uncertainty", default=False)
             )
-            self.chk_show_fg.setChecked(
+            self._detection_panel.chk_show_fg.setChecked(
                 get_cfg("show_foreground_mask", "show_fg", default=True)
             )
-            self.chk_show_bg.setChecked(
+            self._detection_panel.chk_show_bg.setChecked(
                 get_cfg("show_background_model", "show_bg", default=True)
             )
-            self.chk_show_yolo_obb.setChecked(get_cfg("show_yolo_obb", default=False))
+            self._detection_panel.chk_show_yolo_obb.setChecked(
+                get_cfg("show_yolo_obb", default=False)
+            )
             self._setup_panel.spin_traj_hist.setValue(
                 get_cfg("trajectory_history_seconds", "traj_history", default=5)
             )
@@ -15548,7 +14619,9 @@ class MainWindow(QMainWindow):
             bool: True if config was saved successfully, False if cancelled or failed
         """
         yolo_mode = (
-            "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
+            "sequential"
+            if self._detection_panel.combo_yolo_obb_mode.currentIndex() == 1
+            else "direct"
         )
         yolo_direct_path = self._get_selected_yolo_model_path()
         yolo_detect_path = self._get_selected_yolo_detect_model_path()
@@ -15556,8 +14629,11 @@ class MainWindow(QMainWindow):
         yolo_headtail_path = self._get_selected_yolo_headtail_model_path()
         yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
         yolo_cls = (
-            [int(x.strip()) for x in self.line_yolo_classes.text().split(",")]
-            if self.line_yolo_classes.text().strip()
+            [
+                int(x.strip())
+                for x in self._detection_panel.line_yolo_classes.text().split(",")
+            ]
+            if self._detection_panel.line_yolo_classes.text().strip()
             else None
         )
 
@@ -15584,7 +14660,7 @@ class MainWindow(QMainWindow):
                     "video_output_path": self._postprocess_panel.video_out_line.text(),
                     # Video-specific reference parameters
                     "fps": self._setup_panel.spin_fps.value(),
-                    "reference_body_size": self.spin_reference_body_size.value(),
+                    "reference_body_size": self._detection_panel.spin_reference_body_size.value(),
                     # Frame range
                     "start_frame": (
                         self._setup_panel.spin_start_frame.value()
@@ -15617,38 +14693,38 @@ class MainWindow(QMainWindow):
                 # === DETECTION STRATEGY ===
                 "detection_method": (
                     "background_subtraction"
-                    if self.combo_detection_method.currentIndex() == 0
+                    if self._detection_panel.combo_detection_method.currentIndex() == 0
                     else "yolo_obb"
                 ),
                 # === SIZE FILTERING ===
-                "enable_size_filtering": self.chk_size_filtering.isChecked(),
-                "min_object_size_multiplier": self.spin_min_object_size.value(),
-                "max_object_size_multiplier": self.spin_max_object_size.value(),
+                "enable_size_filtering": self._detection_panel.chk_size_filtering.isChecked(),
+                "min_object_size_multiplier": self._detection_panel.spin_min_object_size.value(),
+                "max_object_size_multiplier": self._detection_panel.spin_max_object_size.value(),
                 # === IMAGE ENHANCEMENT ===
-                "brightness": self.slider_brightness.value(),
-                "contrast": self.slider_contrast.value() / 100.0,
-                "gamma": self.slider_gamma.value() / 100.0,
-                "dark_on_light_background": self.chk_dark_on_light.isChecked(),
+                "brightness": self._detection_panel.slider_brightness.value(),
+                "contrast": self._detection_panel.slider_contrast.value() / 100.0,
+                "gamma": self._detection_panel.slider_gamma.value() / 100.0,
+                "dark_on_light_background": self._detection_panel.chk_dark_on_light.isChecked(),
                 # === BACKGROUND SUBTRACTION ===
-                "background_prime_seconds": self.spin_bg_prime.value(),
-                "enable_adaptive_background": self.chk_adaptive_bg.isChecked(),
-                "background_learning_rate": self.spin_bg_learning.value(),
-                "subtraction_threshold": self.spin_threshold.value(),
+                "background_prime_seconds": self._detection_panel.spin_bg_prime.value(),
+                "enable_adaptive_background": self._detection_panel.chk_adaptive_bg.isChecked(),
+                "background_learning_rate": self._detection_panel.spin_bg_learning.value(),
+                "subtraction_threshold": self._detection_panel.spin_threshold.value(),
                 # === LIGHTING STABILIZATION ===
-                "enable_lighting_stabilization": self.chk_lighting_stab.isChecked(),
-                "lighting_smooth_factor": self.spin_lighting_smooth.value(),
-                "lighting_median_window": self.spin_lighting_median.value(),
+                "enable_lighting_stabilization": self._detection_panel.chk_lighting_stab.isChecked(),
+                "lighting_smooth_factor": self._detection_panel.spin_lighting_smooth.value(),
+                "lighting_median_window": self._detection_panel.spin_lighting_median.value(),
                 # === MORPHOLOGY & NOISE ===
-                "morph_kernel_size": self.spin_morph_size.value(),
-                "min_contour_area": self.spin_min_contour.value(),
-                "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+                "morph_kernel_size": self._detection_panel.spin_morph_size.value(),
+                "min_contour_area": self._detection_panel.spin_min_contour.value(),
+                "max_contour_multiplier": self._detection_panel.spin_max_contour_multiplier.value(),
                 # === ADVANCED SEPARATION ===
-                "enable_conservative_split": self.chk_conservative_split.isChecked(),
-                "conservative_kernel_size": self.spin_conservative_kernel.value(),
-                "conservative_erode_iterations": self.spin_conservative_erode.value(),
-                "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
-                "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
-                "dilation_iterations": self.spin_dilation_iterations.value(),
+                "enable_conservative_split": self._detection_panel.chk_conservative_split.isChecked(),
+                "conservative_kernel_size": self._detection_panel.spin_conservative_kernel.value(),
+                "conservative_erode_iterations": self._detection_panel.spin_conservative_erode.value(),
+                "enable_additional_dilation": self._detection_panel.chk_additional_dilation.isChecked(),
+                "dilation_kernel_size": self._detection_panel.spin_dilation_kernel_size.value(),
+                "dilation_iterations": self._detection_panel.spin_dilation_iterations.value(),
                 # === YOLO CONFIGURATION ===
                 # Store relative path if model is in archive, otherwise absolute
                 "yolo_model_path": make_model_path_relative(yolo_path),
@@ -15665,20 +14741,20 @@ class MainWindow(QMainWindow):
                 ),
                 "yolo_headtail_model_type": self._identity_panel.combo_yolo_headtail_model_type.currentText(),
                 "pose_overrides_headtail": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
-                "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
-                "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
-                "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
-                "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
-                "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
-                "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
+                "yolo_seq_crop_pad_ratio": self._detection_panel.spin_yolo_seq_crop_pad.value(),
+                "yolo_seq_min_crop_size_px": self._detection_panel.spin_yolo_seq_min_crop_px.value(),
+                "yolo_seq_enforce_square_crop": self._detection_panel.chk_yolo_seq_square_crop.isChecked(),
+                "yolo_seq_stage2_imgsz": self._detection_panel.spin_yolo_seq_stage2_imgsz.value(),
+                "yolo_seq_stage2_pow2_pad": self._detection_panel.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+                "yolo_seq_detect_conf_threshold": self._detection_panel.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self._identity_panel.spin_yolo_headtail_conf.value(),
-                "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
-                "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
-                "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
-                "max_aspect_ratio_multiplier": self.spin_max_ar_multiplier.value(),
-                "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
-                "yolo_iou_threshold": self.spin_yolo_iou.value(),
-                "use_custom_obb_iou_filtering": self.chk_use_custom_obb_iou.isChecked(),
+                "reference_aspect_ratio": self._detection_panel.spin_reference_aspect_ratio.value(),
+                "enable_aspect_ratio_filtering": self._detection_panel.chk_enable_aspect_ratio_filtering.isChecked(),
+                "min_aspect_ratio_multiplier": self._detection_panel.spin_min_ar_multiplier.value(),
+                "max_aspect_ratio_multiplier": self._detection_panel.spin_max_ar_multiplier.value(),
+                "yolo_confidence_threshold": self._detection_panel.spin_yolo_confidence.value(),
+                "yolo_iou_threshold": self._detection_panel.spin_yolo_iou.value(),
+                "use_custom_obb_iou_filtering": self._detection_panel.chk_use_custom_obb_iou.isChecked(),
                 "yolo_target_classes": yolo_cls,
             }
         )
@@ -15720,18 +14796,18 @@ class MainWindow(QMainWindow):
                 # TensorRT
                 "enable_tensorrt": runtime_detection["enable_tensorrt"],
                 "tensorrt_max_batch_size": (
-                    self.spin_yolo_batch_size.value()
+                    self._detection_panel.spin_yolo_batch_size.value()
                     if self._runtime_requires_fixed_yolo_batch(compute_runtime)
-                    else self.spin_tensorrt_batch.value()
+                    else self._detection_panel.spin_tensorrt_batch.value()
                 ),
                 # YOLO Batching
-                "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
+                "enable_yolo_batching": self._detection_panel.chk_enable_yolo_batching.isChecked(),
                 "yolo_batch_size_mode": (
                     "auto"
-                    if self.combo_yolo_batch_mode.currentIndex() == 0
+                    if self._detection_panel.combo_yolo_batch_mode.currentIndex() == 0
                     else "manual"
                 ),
-                "yolo_manual_batch_size": self.spin_yolo_batch_size.value(),
+                "yolo_manual_batch_size": self._detection_panel.spin_yolo_batch_size.value(),
                 # === CORE TRACKING ===
                 "max_targets": self._setup_panel.spin_max_targets.value(),
                 "max_assignment_distance_multiplier": self._tracking_panel.spin_max_dist.value(),
@@ -15841,9 +14917,9 @@ class MainWindow(QMainWindow):
                 "show_id_labels": self._setup_panel.chk_show_labels.isChecked(),
                 "show_state_text": self._setup_panel.chk_show_state.isChecked(),
                 "show_kalman_uncertainty": self._setup_panel.chk_show_kalman_uncertainty.isChecked(),
-                "show_foreground_mask": self.chk_show_fg.isChecked(),
-                "show_background_model": self.chk_show_bg.isChecked(),
-                "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
+                "show_foreground_mask": self._detection_panel.chk_show_fg.isChecked(),
+                "show_background_model": self._detection_panel.chk_show_bg.isChecked(),
+                "show_yolo_obb": self._detection_panel.chk_show_yolo_obb.isChecked(),
                 "trajectory_history_seconds": self._setup_panel.spin_traj_hist.value(),
                 "debug_logging": self._setup_panel.chk_debug_logging.isChecked(),
                 "enable_profiling": self._setup_panel.chk_enable_profiling.isChecked(),

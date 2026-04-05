@@ -22,20 +22,8 @@ _PANEL_MAP = {
     "TrackingPanel": "hydra_suite.trackerkit.gui.panels.tracking_panel",
 }
 
-# Panels whose _build_ui is still a stub (safe to instantiate with MagicMock).
-# Remove a panel from this dict once its _build_ui is populated.
-_STUB_PANEL_MAP = {
-    k: v
-    for k, v in _PANEL_MAP.items()
-    if k
-    not in {
-        "DatasetPanel",
-        "SetupPanel",
-        "TrackingPanel",
-        "PostProcessPanel",
-        "IdentityPanel",
-    }
-}
+# All panels are now fully extracted — no stubs remain.
+_STUB_PANEL_MAP: dict[str, str] = {}
 
 
 @pytest.fixture(scope="module")
@@ -123,3 +111,13 @@ def test_identity_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._identity_panel, IdentityPanel)
     assert hasattr(main_window._identity_panel, "combo_yolo_headtail_model")
     assert hasattr(main_window._identity_panel, "combo_yolo_headtail_model_type")
+
+
+def test_detection_panel_wired_in_main_window(main_window):
+    """DetectionPanel is accessible on MainWindow and exposes key widgets."""
+    from hydra_suite.trackerkit.gui.panels.detection_panel import DetectionPanel
+
+    assert hasattr(main_window, "_detection_panel")
+    assert isinstance(main_window._detection_panel, DetectionPanel)
+    assert hasattr(main_window._detection_panel, "combo_detection_method")
+    assert hasattr(main_window._detection_panel, "stack_detection")
