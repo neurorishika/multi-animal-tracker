@@ -6957,11 +6957,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_pose_direction_keypoint_lists(self):
         """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
-        if (
-            not hasattr(self, "_identity_panel")
-            or not hasattr(self, "_identity_panel")
-            or not hasattr(self, "_identity_panel")
-        ):
+        if not hasattr(self, "_identity_panel"):
             return
 
         prev_ignore = self._selected_pose_group_keypoints(
