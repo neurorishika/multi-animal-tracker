@@ -23,7 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -121,6 +121,7 @@ from hydra_suite.utils.video_artifacts import (
     find_existing_detection_cache_path,
     iter_detection_cache_candidates,
 )
+from hydra_suite.widgets.workers import BaseWorker
 
 from .dialogs.bg_parameter_helper import BgParameterHelperDialog
 from .dialogs.parameter_helper import ParameterHelperDialog
@@ -308,7 +309,7 @@ class CurrentPageStackedWidget(QStackedWidget):
         return super().minimumSizeHint()
 
 
-class MergeWorker(QThread):
+class MergeWorker(BaseWorker):
     """Worker thread for merging trajectories without blocking the UI."""
 
     progress_signal = Signal(int, str)  # progress value, status message
@@ -350,8 +351,8 @@ class MergeWorker(QThread):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
-    def run(self: object) -> object:
-        """run method documentation."""
+    def execute(self: object) -> object:
+        """execute method documentation."""
         from hydra_suite.core.tracking.profiler import TrackingProfiler
 
         profiler = TrackingProfiler(enabled=self.enable_profiling)
@@ -517,7 +518,7 @@ class MergeWorker(QThread):
             self.error_signal.emit(str(e))
 
 
-class InterpolatedCropsWorker(QThread):
+class InterpolatedCropsWorker(BaseWorker):
     """Worker thread for interpolating occluded crops without blocking the UI."""
 
     progress_signal = Signal(int, str)
@@ -1257,7 +1258,7 @@ class InterpolatedCropsWorker(QThread):
             except Exception:
                 pass
 
-    def run(self: object) -> object:
+    def execute(self: object) -> object:
         """Generate interpolated crops for occluded trajectory gaps."""
         from hydra_suite.core.canonicalization.crop import (
             compute_native_scale_affine as _compute_native_scale,
@@ -1751,7 +1752,7 @@ class InterpolatedCropsWorker(QThread):
             )
 
 
-class OrientedTrackVideoWorker(QThread):
+class OrientedTrackVideoWorker(BaseWorker):
     """Worker thread for exporting orientation-fixed per-track videos."""
 
     progress_signal = Signal(int, str)
@@ -1789,8 +1790,8 @@ class OrientedTrackVideoWorker(QThread):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
-    def run(self: object) -> object:
-        """run method documentation."""
+    def execute(self: object) -> object:
+        """execute method documentation."""
         try:
             exporter = OrientedTrackVideoExporter(
                 self.dataset_dir,
@@ -1814,7 +1815,7 @@ class OrientedTrackVideoWorker(QThread):
                 self.error_signal.emit(str(exc))
 
 
-class DatasetGenerationWorker(QThread):
+class DatasetGenerationWorker(BaseWorker):
     """Worker thread for generating training datasets without blocking the UI."""
 
     progress_signal = Signal(int, str)  # progress value, status message
@@ -1856,8 +1857,8 @@ class DatasetGenerationWorker(QThread):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
-    def run(self: object) -> object:
-        """run method documentation."""
+    def execute(self: object) -> object:
+        """execute method documentation."""
         detection_cache = None
         try:
             from hydra_suite.data.dataset_generation import (
@@ -2085,7 +2086,7 @@ def _draw_preview_pose_points(
         cv2.circle(image, (x, y), 3, color, -1, lineType=cv2.LINE_AA)
 
 
-class PreviewDetectionWorker(QThread):
+class PreviewDetectionWorker(BaseWorker):
     """Worker thread for non-blocking preview detection."""
 
     finished_signal = Signal(dict)
@@ -2097,7 +2098,7 @@ class PreviewDetectionWorker(QThread):
         self.context = context
         self.use_detection_filters = bool(use_detection_filters)
 
-    def run(self):
+    def execute(self):
         try:
             result = _run_preview_detection_job(
                 self.preview_frame_rgb,
