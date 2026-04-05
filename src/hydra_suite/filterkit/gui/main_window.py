@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import QRectF, QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -34,9 +34,10 @@ from PySide6.QtWidgets import (
 
 from hydra_suite.filterkit.core import FilterKitCore
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+from hydra_suite.widgets.workers import BaseWorker
 
 
-class SieveWorker(QThread):
+class SieveWorker(BaseWorker):
     status = Signal(str)
     progress = Signal(int, str)
     finished = Signal(object)
@@ -111,7 +112,7 @@ class SieveWorker(QThread):
                 self._emit_stage_progress(25, 40, idx, total, "Quality filter")
         return kept
 
-    def run(self):
+    def execute(self):
         try:
             self.progress.emit(0, "Step 1/7: Loading dataset metadata")
             self.status.emit("Loading dataset...")
