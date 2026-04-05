@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.detectkit.config.schemas import DetectKitConfig
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 from .canvas import OBBCanvas
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("DetectKit")
         self.setStyleSheet(_DARK_STYLESHEET)
 
+        self.config = DetectKitConfig()
         self._project: Optional[DetectKitProject] = None
 
         # Central stacked widget: welcome (0) vs workspace (1)
