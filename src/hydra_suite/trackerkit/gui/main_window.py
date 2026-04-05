@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
@@ -4179,9 +4178,26 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_detection, "Find Animals")
 
         # Tab 3: Individual Analysis (Identity)
-        self.tab_individual = QWidget()
-        self.setup_individual_analysis_ui()
-        self.tabs.addTab(self.tab_individual, "Analyze Individuals")
+        from hydra_suite.trackerkit.gui.panels.identity_panel import IdentityPanel
+
+        self._identity_panel = IdentityPanel(
+            main_window=self, config=self.config, parent=self
+        )
+        self.tabs.addTab(self._identity_panel, "Analyze Individuals")
+        # Post-construction bootstrap calls now that _identity_panel is assigned
+        self._refresh_cnn_identity_model_combo()
+        self._refresh_yolo_headtail_model_combo()
+        self._update_background_color_button()
+        self._populate_pose_runtime_flavor_options(backend="yolo")
+        self._set_form_row_visible(
+            self._identity_panel.form_pose_runtime,
+            self._identity_panel.combo_pose_runtime_flavor,
+            False,
+        )
+        self._refresh_pose_model_combo()
+        self._refresh_pose_sleap_envs()
+        self._refresh_pose_direction_keypoint_lists()
+        self._sync_pose_backend_ui()
         self._sync_individual_analysis_mode_ui()
 
         # Tab 4: Tracking (Kalman, Logic, Lifecycle)
@@ -5370,503 +5386,6 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_individual_analysis_ui(self: object) -> object:
-        """Tab 7: Individual Analysis - Real-time Identity & Post-hoc Pose Analysis."""
-        layout = QVBoxLayout(self.tab_individual)
-        layout.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content = QWidget()
-        form = QVBoxLayout(content)
-        form.setContentsMargins(6, 6, 6, 6)
-        form.setSpacing(8)
-        self._set_compact_scroll_layout(form)
-
-        self.lbl_individual_yolo_only_notice = self._create_help_label(
-            "Individual analysis requires YOLO OBB mode.\n"
-            "Switch detection method to YOLO OBB to enable this pipeline.",
-            attach_to_title=False,
-        )
-        self.lbl_individual_yolo_only_notice.setVisible(False)
-        form.addWidget(self.lbl_individual_yolo_only_notice)
-
-        # Identity Classification Section
-        self.g_identity = QGroupBox("Enable Identity Classification")
-        self.g_identity.setCheckable(True)
-        self.g_identity.setChecked(False)
-        self.g_identity.toggled.connect(self._on_identity_analysis_toggled)
-        self._set_compact_section_widget(self.g_identity)
-        vl_identity = QVBoxLayout(self.g_identity)
-        self.identity_content = QWidget()
-        self.identity_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        identity_content_layout = QVBoxLayout(self.identity_content)
-        identity_content_layout.setContentsMargins(0, 0, 0, 0)
-        identity_content_layout.setSpacing(8)
-        self.lbl_identity_help = self._create_help_label(
-            "Classify individual identity during tracking. Extracts crops around each detection "
-            "and processes them with the selected method."
-        )
-        identity_content_layout.addWidget(self.lbl_identity_help)
-
-        # Hidden legacy widgets (referenced by model-import dialog)
-        self.line_color_tag_model = QLineEdit()
-        self.line_color_tag_model.setPlaceholderText("path/to/color_tag_model.pt")
-        self.line_color_tag_model.setVisible(False)
-        self.spin_color_tag_conf = QDoubleSpinBox()
-        self.spin_color_tag_conf.setRange(0.01, 1.0)
-        self.spin_color_tag_conf.setValue(0.5)
-        self.spin_color_tag_conf.setSingleStep(0.05)
-        self.spin_color_tag_conf.setToolTip(
-            "Minimum confidence for color tag detection"
-        )
-        self.spin_color_tag_conf.setVisible(False)
-
-        # --- Shared identity cost controls ---
-        fl_identity_cost = QFormLayout()
-        fl_identity_cost.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.spin_identity_match_bonus = QDoubleSpinBox()
-        self.spin_identity_match_bonus.setRange(0.0, 200.0)
-        self.spin_identity_match_bonus.setSingleStep(5.0)
-        self.spin_identity_match_bonus.setValue(20.0)
-        self.spin_identity_match_bonus.setToolTip(
-            "Cost bonus (subtracted) when an identity observation matches the track.\n"
-            "Divided equally across all active identity sources (AprilTags + each CNN)."
-        )
-        fl_identity_cost.addRow("Identity match bonus", self.spin_identity_match_bonus)
-        self.spin_identity_mismatch_penalty = QDoubleSpinBox()
-        self.spin_identity_mismatch_penalty.setRange(0.0, 500.0)
-        self.spin_identity_mismatch_penalty.setSingleStep(5.0)
-        self.spin_identity_mismatch_penalty.setValue(50.0)
-        self.spin_identity_mismatch_penalty.setToolTip(
-            "Cost penalty (added) when an identity observation conflicts with the track.\n"
-            "Divided equally across all active identity sources (AprilTags + each CNN)."
-        )
-        fl_identity_cost.addRow(
-            "Identity mismatch penalty", self.spin_identity_mismatch_penalty
-        )
-        identity_content_layout.addLayout(fl_identity_cost)
-
-        # --- AprilTags group ---
-        self.g_apriltags = QGroupBox("AprilTags")
-        self.g_apriltags.setCheckable(True)
-        self.g_apriltags.setChecked(False)
-        self.g_apriltags.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        vl_apriltags_outer = QVBoxLayout(self.g_apriltags)
-        vl_apriltags_outer.setContentsMargins(0, 0, 0, 0)
-        self.apriltag_settings_widget = QWidget()
-        self.apriltag_settings_widget.setVisible(False)
-        fl_apriltags = QFormLayout(self.apriltag_settings_widget)
-        fl_apriltags.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.combo_apriltag_family = QComboBox()
-        self.combo_apriltag_family.addItems(self._get_apriltag_families())
-        self.combo_apriltag_family.setToolTip(
-            "AprilTag family to detect.\n"
-            "The list is populated from your installed apriltag library."
-        )
-        fl_apriltags.addRow("AprilTag family", self.combo_apriltag_family)
-        self.spin_apriltag_decimate = QDoubleSpinBox()
-        self.spin_apriltag_decimate.setRange(1.0, 4.0)
-        self.spin_apriltag_decimate.setValue(1.0)
-        self.spin_apriltag_decimate.setSingleStep(0.5)
-        self.spin_apriltag_decimate.setToolTip(
-            "Decimation factor for faster detection (higher = faster but less accurate)"
-        )
-        fl_apriltags.addRow("AprilTag downsampling", self.spin_apriltag_decimate)
-        vl_apriltags_outer.addWidget(self.apriltag_settings_widget)
-        self.g_apriltags.toggled.connect(self.apriltag_settings_widget.setVisible)
-        identity_content_layout.addWidget(self.g_apriltags)
-
-        # --- CNN Classifiers group ---
-        self.g_cnn_classifiers = QGroupBox("CNN Classifiers")
-        self._set_compact_section_widget(self.g_cnn_classifiers)
-        vl_cnn = QVBoxLayout(self.g_cnn_classifiers)
-        vl_cnn.setSpacing(4)
-        self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
-        self.btn_add_cnn_classifier.clicked.connect(self._add_cnn_classifier_row)
-        vl_cnn.addWidget(self.btn_add_cnn_classifier)
-        self.cnn_scroll_area = QScrollArea()
-        self.cnn_scroll_area.setWidgetResizable(True)
-        self.cnn_scroll_area.setFrameShape(QFrame.NoFrame)
-        self.cnn_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        self.cnn_scroll_area.setMinimumHeight(0)
-        self.cnn_scroll_area.setMaximumHeight(200)
-        self.cnn_scroll_area.setVisible(False)
-        cnn_scroll_widget = QWidget()
-        cnn_scroll_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        self.cnn_rows_layout = QVBoxLayout(cnn_scroll_widget)
-        self.cnn_rows_layout.setSpacing(6)
-        self.cnn_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.cnn_scroll_area.setWidget(cnn_scroll_widget)
-        vl_cnn.addWidget(self.cnn_scroll_area)
-        identity_content_layout.addWidget(self.g_cnn_classifiers)
-
-        # Hidden sentinel combo for model import dialog (reused by CNNClassifierRow)
-        self.combo_cnn_identity_model = QComboBox()
-        self.combo_cnn_identity_model.setVisible(False)
-        self._refresh_cnn_identity_model_combo()
-        # Hidden verification labels (may be queried by model import dialog)
-        self.lbl_cnn_arch = QLabel("—")
-        self.lbl_cnn_num_classes = QLabel("—")
-        self.lbl_cnn_class_names = QLabel("—")
-        self.lbl_cnn_input_size = QLabel("—")
-        self.lbl_cnn_label = QLabel("—")
-        self.spin_cnn_confidence = QDoubleSpinBox()
-        self.spin_cnn_confidence.setRange(0.0, 1.0)
-        self.spin_cnn_confidence.setSingleStep(0.05)
-        self.spin_cnn_confidence.setValue(0.5)
-        self.spin_cnn_window = QSpinBox()
-        self.spin_cnn_window.setRange(1, 100)
-        self.spin_cnn_window.setValue(10)
-        vl_identity.addWidget(self.identity_content)
-
-        self.g_individual_pipeline_common = QGroupBox(
-            "Individual Analysis Pipeline Settings"
-        )
-        self._set_compact_section_widget(self.g_individual_pipeline_common)
-        fl_common = QFormLayout(self.g_individual_pipeline_common)
-
-        self.chk_individual_interpolate = QCheckBox(
-            "Interpolate Occluded Frames After Tracking"
-        )
-        self.chk_individual_interpolate.setChecked(True)
-        self.chk_individual_interpolate.setToolTip(
-            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
-            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
-        )
-        fl_common.addRow("Interpolate occluded frames", self.chk_individual_interpolate)
-
-        self.spin_individual_padding = QDoubleSpinBox()
-        self.spin_individual_padding.setRange(0.0, 0.5)
-        self.spin_individual_padding.setValue(0.1)
-        self.spin_individual_padding.setSingleStep(0.05)
-        self.spin_individual_padding.setDecimals(2)
-        self.spin_individual_padding.setToolTip(
-            "Padding around OBB bounding box as fraction of size.\n"
-            "0.1 = 10% padding on each side.\n"
-            "Applies to all precompute phases: pose, AprilTag, and CNN identity."
-        )
-        fl_common.addRow(
-            "Crop padding fraction (all phases)", self.spin_individual_padding
-        )
-
-        bg_color_layout = QHBoxLayout()
-        self.btn_background_color = QPushButton()
-        self.btn_background_color.setMaximumWidth(60)
-        self.btn_background_color.setMinimumHeight(30)
-        self.btn_background_color.setToolTip("Click to choose background color")
-        self.btn_background_color.clicked.connect(
-            self._select_individual_background_color
-        )
-        self._background_color = (0, 0, 0)  # BGR
-        bg_color_layout.addWidget(self.btn_background_color)
-
-        self.btn_median_color = QPushButton("Use Median from Frame")
-        self.btn_median_color.setToolTip(
-            "Compute median color from the preview frame and use as background"
-        )
-        self.btn_median_color.clicked.connect(self._compute_median_background_color)
-        bg_color_layout.addWidget(self.btn_median_color)
-
-        self.lbl_background_color = QLabel("(0, 0, 0)")
-        self.lbl_background_color.setToolTip("Current background color in BGR format")
-        bg_color_layout.addWidget(self.lbl_background_color)
-        self._update_background_color_button()
-        fl_common.addRow("Crop background color", bg_color_layout)
-
-        self.chk_suppress_foreign_obb = QCheckBox("Suppress foreign animal regions")
-        self.chk_suppress_foreign_obb.setChecked(True)
-        self.chk_suppress_foreign_obb.setToolTip(
-            "Fill overlapping animals' OBB areas with the background color before\n"
-            "pose inference, and zero out any keypoints that fall inside another\n"
-            "animal's bounding box after inference.\n"
-            "\n"
-            "Prevents pose contamination when animals are close or overlapping.\n"
-            "Disable only if you observe incorrect masking of valid keypoints."
-        )
-        fl_common.addRow(
-            "Pose contamination suppression", self.chk_suppress_foreign_obb
-        )
-
-        # Head-tail orientation classifier
-        self.combo_yolo_headtail_model_type = QComboBox()
-        self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
-        self.combo_yolo_headtail_model_type.setFixedHeight(30)
-        self.combo_yolo_headtail_model_type.setToolTip(
-            "Architecture family of the head-tail classifier.\n"
-            "YOLO → models/classification/orientation/YOLO/\n"
-            "tiny → models/classification/orientation/tiny/"
-        )
-        self.combo_yolo_headtail_model_type.currentIndexChanged.connect(
-            self._on_headtail_model_type_changed
-        )
-
-        self.combo_yolo_headtail_model = QComboBox()
-        self._refresh_yolo_headtail_model_combo()
-        self.combo_yolo_headtail_model.activated.connect(
-            self.on_yolo_headtail_model_changed
-        )
-        self.combo_yolo_headtail_model.setFixedHeight(30)
-        self.combo_yolo_headtail_model.setToolTip(
-            "Optional classifier to resolve head vs. tail orientation along the OBB major axis.\n"
-            "Runs during tracking and post-hoc individual analysis."
-        )
-
-        self.headtail_model_row_widget = QWidget()
-        _headtail_row = QHBoxLayout(self.headtail_model_row_widget)
-        _headtail_row.setContentsMargins(0, 0, 0, 0)
-        _headtail_row.setSpacing(4)
-        _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
-        _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
-        fl_common.addRow("Head-tail model", self.headtail_model_row_widget)
-
-        self.spin_yolo_headtail_conf = QDoubleSpinBox()
-        self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
-        self.spin_yolo_headtail_conf.setSingleStep(0.01)
-        self.spin_yolo_headtail_conf.setValue(0.50)
-        self.spin_yolo_headtail_conf.setFixedHeight(30)
-        self.spin_yolo_headtail_conf.setToolTip(
-            "Minimum classifier confidence for a head-tail assignment to be accepted (0–1).\n"
-            "Lower = more assignments accepted; higher = fewer but more reliable."
-        )
-        fl_common.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
-
-        self.chk_pose_overrides_headtail = QCheckBox(
-            "Pose orientation overrides head-tail"
-        )
-        self.chk_pose_overrides_headtail.setChecked(True)
-        self.chk_pose_overrides_headtail.setToolTip(
-            "When enabled, valid pose heading takes precedence over head-tail heading."
-        )
-        fl_common.addRow("", self.chk_pose_overrides_headtail)
-
-        form.addWidget(self.g_individual_pipeline_common)
-        form.addWidget(self.g_identity)
-
-        self.g_pose_runtime = QGroupBox("Enable Pose Extraction")
-        self.g_pose_runtime.setCheckable(True)
-        self.g_pose_runtime.setChecked(False)
-        self.g_pose_runtime.toggled.connect(self._on_pose_analysis_toggled)
-        self.g_pose_runtime.toggled.connect(self._sync_video_pose_overlay_controls)
-        self.g_pose_runtime.toggled.connect(self._on_runtime_context_changed)
-        self.g_pose_runtime.toggled.connect(self._on_cleaning_toggled)
-        self.chk_enable_pose_extractor = self.g_pose_runtime
-        self._set_compact_section_widget(self.g_pose_runtime)
-        vl_pose = QVBoxLayout(self.g_pose_runtime)
-        self.pose_runtime_content = QWidget()
-        self.pose_runtime_content.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Maximum
-        )
-        pose_runtime_content_layout = QVBoxLayout(self.pose_runtime_content)
-        pose_runtime_content_layout.setContentsMargins(0, 0, 0, 0)
-        pose_runtime_content_layout.setSpacing(8)
-        self.lbl_pose_runtime_help = self._create_help_label(
-            "Minimum runtime pose settings used by the individual-analysis pipeline."
-        )
-        pose_runtime_content_layout.addWidget(self.lbl_pose_runtime_help)
-        fl_pose = QFormLayout(None)
-        fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.form_pose_runtime = fl_pose
-
-        self.combo_pose_model_type = QComboBox()
-        self.combo_pose_model_type.addItems(["YOLO", "SLEAP", "ViTPose"])
-        self.combo_pose_model_type.setToolTip("Pose backend for individual analysis.")
-        self.combo_pose_model_type.currentIndexChanged.connect(
-            self._sync_pose_backend_ui
-        )
-        fl_pose.addRow("Pose model type", self.combo_pose_model_type)
-
-        self.combo_pose_runtime_flavor = QComboBox()
-        self.combo_pose_runtime_flavor.setToolTip(
-            "Pose runtime implementation.\n"
-            "Auto/Native uses default backend runtime.\n"
-            "ONNX/TensorRT artifacts are exported and reused automatically."
-        )
-        self._populate_pose_runtime_flavor_options(backend="yolo")
-        self.combo_pose_runtime_flavor.currentIndexChanged.connect(
-            self._sync_pose_backend_ui
-        )
-        fl_pose.addRow("Pose runtime", self.combo_pose_runtime_flavor)
-        self._set_form_row_visible(fl_pose, self.combo_pose_runtime_flavor, False)
-
-        self.combo_pose_model = QComboBox()
-        self.combo_pose_model.setToolTip(
-            "Pose model for individual analysis.\n"
-            "Choose an imported model or select '＋ Add New Model…' to browse and import."
-        )
-        self.combo_pose_model.currentIndexChanged.connect(self.on_pose_model_changed)
-        self._refresh_pose_model_combo()
-        fl_pose.addRow("Pose model", self.combo_pose_model)
-
-        self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
-        self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
-        self.spin_pose_min_kpt_conf_valid.setSingleStep(0.05)
-        self.spin_pose_min_kpt_conf_valid.setDecimals(2)
-        self.spin_pose_min_kpt_conf_valid.setValue(0.2)
-        self.spin_pose_min_kpt_conf_valid.setToolTip(
-            "Minimum per-keypoint confidence to consider a keypoint valid."
-        )
-        fl_pose.addRow("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid)
-
-        self.spin_pose_batch = QSpinBox()
-        self.spin_pose_batch.setRange(1, 256)
-        self.spin_pose_batch.setValue(
-            int(self.advanced_config.get("pose_batch_size", 4))
-        )
-        self.spin_pose_batch.setToolTip(
-            "Shared batch size for pose inference across YOLO and SLEAP backends."
-        )
-        fl_pose.addRow("Pose batch size", self.spin_pose_batch)
-
-        h_pose_skeleton = QHBoxLayout()
-        self.line_pose_skeleton_file = QLineEdit()
-        self.line_pose_skeleton_file.setPlaceholderText(
-            "Select skeleton JSON (keypoint_names + skeleton_edges)..."
-        )
-        default_skeleton = str(
-            self.advanced_config.get("pose_skeleton_file", "")
-        ).strip()
-        if not default_skeleton:
-            from hydra_suite.paths import get_skeleton_dir
-
-            candidate = get_skeleton_dir() / "ooceraea_biroi.json"
-            if candidate.exists():
-                default_skeleton = str(candidate)
-        if default_skeleton:
-            self.line_pose_skeleton_file.setText(default_skeleton)
-        self.btn_browse_pose_skeleton_file = QPushButton("Browse...")
-        self.btn_browse_pose_skeleton_file.clicked.connect(
-            self._select_pose_skeleton_file
-        )
-        self.line_pose_skeleton_file.textChanged.connect(
-            self._refresh_pose_direction_keypoint_lists
-        )
-        h_pose_skeleton.addWidget(self.line_pose_skeleton_file)
-        h_pose_skeleton.addWidget(self.btn_browse_pose_skeleton_file)
-        fl_pose.addRow("Skeleton file", h_pose_skeleton)
-
-        self.list_pose_ignore_keypoints = QListWidget()
-        self.list_pose_ignore_keypoints.setSelectionMode(
-            QListWidget.SelectionMode.MultiSelection
-        )
-        self.list_pose_ignore_keypoints.setMinimumHeight(96)
-        self.list_pose_ignore_keypoints.setMaximumHeight(120)
-        self.list_pose_ignore_keypoints.setToolTip(
-            "Select keypoints to ignore in pose export and orientation logic."
-        )
-
-        self.list_pose_direction_anterior = QListWidget()
-        self.list_pose_direction_anterior.setSelectionMode(
-            QListWidget.SelectionMode.MultiSelection
-        )
-        self.list_pose_direction_anterior.setMinimumHeight(96)
-        self.list_pose_direction_anterior.setMaximumHeight(120)
-        self.list_pose_direction_anterior.setToolTip(
-            "Select anterior keypoints from skeleton keypoint list."
-        )
-
-        self.list_pose_direction_posterior = QListWidget()
-        self.list_pose_direction_posterior.setSelectionMode(
-            QListWidget.SelectionMode.MultiSelection
-        )
-        self.list_pose_direction_posterior.setMinimumHeight(96)
-        self.list_pose_direction_posterior.setMaximumHeight(120)
-        self.list_pose_direction_posterior.setToolTip(
-            "Select posterior keypoints from skeleton keypoint list."
-        )
-
-        pose_kpt_groups_widget = QWidget()
-        pose_kpt_groups_layout = QHBoxLayout(pose_kpt_groups_widget)
-        pose_kpt_groups_layout.setContentsMargins(0, 0, 0, 0)
-        pose_kpt_groups_layout.setSpacing(8)
-
-        ignore_col = QVBoxLayout()
-        ignore_label = QLabel("Ignore")
-        ignore_label.setStyleSheet("font-weight: bold;")
-        ignore_col.addWidget(ignore_label)
-        ignore_col.addWidget(self.list_pose_ignore_keypoints)
-        pose_kpt_groups_layout.addLayout(ignore_col, 1)
-
-        anterior_col = QVBoxLayout()
-        anterior_label = QLabel("Anterior")
-        anterior_label.setStyleSheet("font-weight: bold;")
-        anterior_col.addWidget(anterior_label)
-        anterior_col.addWidget(self.list_pose_direction_anterior)
-        pose_kpt_groups_layout.addLayout(anterior_col, 1)
-
-        posterior_col = QVBoxLayout()
-        posterior_label = QLabel("Posterior")
-        posterior_label.setStyleSheet("font-weight: bold;")
-        posterior_col.addWidget(posterior_label)
-        posterior_col.addWidget(self.list_pose_direction_posterior)
-        pose_kpt_groups_layout.addLayout(posterior_col, 1)
-
-        fl_pose.addRow("Keypoint groups", pose_kpt_groups_widget)
-        self.list_pose_ignore_keypoints.itemSelectionChanged.connect(
-            lambda: self._on_pose_keypoint_group_changed("ignore")
-        )
-        self.list_pose_direction_anterior.itemSelectionChanged.connect(
-            lambda: self._on_pose_keypoint_group_changed("anterior")
-        )
-        self.list_pose_direction_posterior.itemSelectionChanged.connect(
-            lambda: self._on_pose_keypoint_group_changed("posterior")
-        )
-
-        h_sleap_env = QHBoxLayout()
-        self.combo_pose_sleap_env = QComboBox()
-        self.combo_pose_sleap_env.setToolTip(
-            "Conda environment name must start with 'sleap'."
-        )
-        h_sleap_env.addWidget(self.combo_pose_sleap_env, 1)
-        self.btn_refresh_pose_sleap_envs = QPushButton("Refresh")
-        self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
-        self.btn_refresh_pose_sleap_envs.clicked.connect(self._refresh_pose_sleap_envs)
-        h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
-        self.pose_sleap_env_row_widget = QWidget()
-        self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
-        fl_pose.addRow("SLEAP env", self.pose_sleap_env_row_widget)
-
-        self.chk_sleap_experimental_features = QCheckBox("Allow experimental features")
-        self.chk_sleap_experimental_features.setChecked(False)
-        self.chk_sleap_experimental_features.setToolTip(
-            "Enable experimental SLEAP features (ONNX/TensorRT runtimes).\n"
-            "When disabled, ONNX/TensorRT runtime selections will revert to native runtime.\n"
-            "Experimental features may have stability or accuracy issues."
-        )
-        self.chk_sleap_experimental_features.stateChanged.connect(
-            self._on_sleap_experimental_toggled
-        )
-        self.pose_sleap_experimental_row_widget = QWidget()
-        sleap_exp_layout = QHBoxLayout()
-        sleap_exp_layout.setContentsMargins(0, 0, 0, 0)
-        sleap_exp_layout.addWidget(self.chk_sleap_experimental_features)
-        self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
-        fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
-
-        pose_runtime_content_layout.addLayout(fl_pose)
-        vl_pose.addWidget(self.pose_runtime_content)
-        form.addWidget(self.g_pose_runtime)
-
-        self._refresh_pose_sleap_envs()
-        self._set_form_row_visible(
-            fl_pose, self.pose_sleap_experimental_row_widget, False
-        )
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-
-        # Initially disable all controls (sync will show/hide based on state)
-        self.g_identity.setVisible(False)
-        self.g_identity.setEnabled(False)
-        self.g_individual_pipeline_common.setVisible(False)
-        self.g_individual_pipeline_common.setEnabled(False)
-        self.g_pose_runtime.setVisible(False)
-        self.g_pose_runtime.setEnabled(False)
-        self._refresh_pose_direction_keypoint_lists()
-        self._sync_pose_backend_ui()
-        self._sync_individual_analysis_mode_ui()
-
     def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
         # Hide/show entire content container
@@ -6583,8 +6102,10 @@ class MainWindow(QMainWindow):
         """Browse for color tag YOLO model."""
         # Default to models directory
         start_dir = get_models_directory()
-        if self.line_color_tag_model.text():
-            current_path = resolve_model_path(self.line_color_tag_model.text())
+        if self._identity_panel.line_color_tag_model.text():
+            current_path = resolve_model_path(
+                self._identity_panel.line_color_tag_model.text()
+            )
             if os.path.exists(current_path):
                 start_dir = os.path.dirname(current_path)
 
@@ -6645,7 +6166,7 @@ class MainWindow(QMainWindow):
                             f"Could not copy model to archive:\n{e}\n\nUsing original path.",
                         )
 
-            self.line_color_tag_model.setText(filepath)
+            self._identity_panel.line_color_tag_model.setText(filepath)
 
     class CNNClassifierRow(QWidget):
         """Self-contained widget for one CNN classifier configuration row."""
@@ -6818,28 +6339,32 @@ class MainWindow(QMainWindow):
         """Add a new CNN classifier row and return it."""
         row = self.CNNClassifierRow(self)
         row.remove_requested.connect(self._remove_cnn_classifier_row)
-        self.cnn_rows_layout.addWidget(row)
-        self.cnn_scroll_area.setVisible(True)
+        self._identity_panel.cnn_rows_layout.addWidget(row)
+        self._identity_panel.cnn_scroll_area.setVisible(True)
         return row
 
     def _remove_cnn_classifier_row(self, row: "CNNClassifierRow"):
         """Remove a CNN classifier row."""
-        self.cnn_rows_layout.removeWidget(row)
+        self._identity_panel.cnn_rows_layout.removeWidget(row)
         row.setParent(None)
         row.deleteLater()
-        self.cnn_scroll_area.setVisible(bool(self._cnn_classifier_rows()))
+        self._identity_panel.cnn_scroll_area.setVisible(
+            bool(self._cnn_classifier_rows())
+        )
 
     def _cnn_classifier_rows(self) -> list:
         """Return list of all CNNClassifierRow instances."""
         rows = []
-        for i in range(self.cnn_rows_layout.count()):
-            item = self.cnn_rows_layout.itemAt(i)
+        for i in range(self._identity_panel.cnn_rows_layout.count()):
+            item = self._identity_panel.cnn_rows_layout.itemAt(i)
             if item and isinstance(item.widget(), self.CNNClassifierRow):
                 rows.append(item.widget())
         return rows
 
     def _refresh_cnn_identity_model_combo(self) -> None:
         """Populate the CNN identity model combo from model_registry.json."""
+        if not hasattr(self, "_identity_panel"):
+            return
         registry_path = get_yolo_model_registry_path()
         try:
             with open(registry_path) as f:
@@ -6847,10 +6372,10 @@ class MainWindow(QMainWindow):
         except (FileNotFoundError, json.JSONDecodeError):
             registry = {}
 
-        self.combo_cnn_identity_model.blockSignals(True)
-        current_path = self.combo_cnn_identity_model.currentData()
-        self.combo_cnn_identity_model.clear()
-        self.combo_cnn_identity_model.addItem("— select model —", "")
+        self._identity_panel.combo_cnn_identity_model.blockSignals(True)
+        current_path = self._identity_panel.combo_cnn_identity_model.currentData()
+        self._identity_panel.combo_cnn_identity_model.clear()
+        self._identity_panel.combo_cnn_identity_model.addItem("— select model —", "")
         for rel_path, meta in registry.items():
             if meta.get("usage_role") != "cnn_identity":
                 continue
@@ -6863,19 +6388,19 @@ class MainWindow(QMainWindow):
                 display += f" | {species}"
             if label:
                 display += f" | {label}"
-            self.combo_cnn_identity_model.addItem(display, rel_path)
-        self.combo_cnn_identity_model.addItem(
+            self._identity_panel.combo_cnn_identity_model.addItem(display, rel_path)
+        self._identity_panel.combo_cnn_identity_model.addItem(
             "\uff0b Add New Model\u2026", "__add_new__"
         )
 
-        idx = self.combo_cnn_identity_model.findData(current_path)
+        idx = self._identity_panel.combo_cnn_identity_model.findData(current_path)
         if idx >= 0:
-            self.combo_cnn_identity_model.setCurrentIndex(idx)
-        self.combo_cnn_identity_model.blockSignals(False)
+            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(idx)
+        self._identity_panel.combo_cnn_identity_model.blockSignals(False)
 
     def _on_cnn_identity_model_selected(self, index: int) -> None:
         """Handle combo activation — sentinel triggers import dialog."""
-        rel_path = self.combo_cnn_identity_model.itemData(index)
+        rel_path = self._identity_panel.combo_cnn_identity_model.itemData(index)
         if rel_path == "__add_new__":
             self._handle_add_new_cnn_identity_model()
             return
@@ -6890,20 +6415,24 @@ class MainWindow(QMainWindow):
         except Exception:
             return
         meta = registry.get(rel_path or "", {})
-        self.lbl_cnn_arch.setText(str(meta.get("arch", "\u2014")))
-        self.lbl_cnn_num_classes.setText(str(meta.get("num_classes", "\u2014")))
+        self._identity_panel.lbl_cnn_arch.setText(str(meta.get("arch", "\u2014")))
+        self._identity_panel.lbl_cnn_num_classes.setText(
+            str(meta.get("num_classes", "\u2014"))
+        )
         class_names = meta.get("class_names", [])
         preview = ", ".join(class_names[:12])
         if len(class_names) > 12:
             preview += f", \u2026 ({len(class_names)} total)"
-        self.lbl_cnn_class_names.setText(preview or "\u2014")
+        self._identity_panel.lbl_cnn_class_names.setText(preview or "\u2014")
         raw_size = meta.get("input_size", "\u2014")
-        self.lbl_cnn_input_size.setText(str(raw_size))
-        self.lbl_cnn_label.setText(str(meta.get("classification_label", "\u2014")))
+        self._identity_panel.lbl_cnn_input_size.setText(str(raw_size))
+        self._identity_panel.lbl_cnn_label.setText(
+            str(meta.get("classification_label", "\u2014"))
+        )
 
     def _handle_add_new_cnn_identity_model(self) -> None:
         """Import a ClassKit-trained .pth or YOLO .pt model for CNN identity."""
-        prev_data = self.combo_cnn_identity_model.currentData()
+        prev_data = self._identity_panel.combo_cnn_identity_model.currentData()
 
         src_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -6912,8 +6441,8 @@ class MainWindow(QMainWindow):
             "ClassKit Model Files (*.pth *.pt);;All Files (*)",
         )
         if not src_path:
-            idx = self.combo_cnn_identity_model.findData(prev_data)
-            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            idx = self._identity_panel.combo_cnn_identity_model.findData(prev_data)
+            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
 
         # Read checkpoint metadata
@@ -6950,16 +6479,16 @@ class MainWindow(QMainWindow):
                 "Import Error",
                 f"Could not read checkpoint metadata:\n{exc}",
             )
-            idx = self.combo_cnn_identity_model.findData(prev_data)
-            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            idx = self._identity_panel.combo_cnn_identity_model.findData(prev_data)
+            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
 
         from hydra_suite.trackerkit.gui.dialogs import CNNIdentityImportDialog
 
         dlg = CNNIdentityImportDialog(meta, parent=self)
         if dlg.exec() != QDialog.Accepted:
-            idx = self.combo_cnn_identity_model.findData(prev_data)
-            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            idx = self._identity_panel.combo_cnn_identity_model.findData(prev_data)
+            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
 
         species = dlg.species()
@@ -7000,9 +6529,9 @@ class MainWindow(QMainWindow):
             json.dump(registry, f, indent=2)
 
         self._refresh_cnn_identity_model_combo()
-        idx = self.combo_cnn_identity_model.findData(rel_path)
+        idx = self._identity_panel.combo_cnn_identity_model.findData(rel_path)
         if idx >= 0:
-            self.combo_cnn_identity_model.setCurrentIndex(idx)
+            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(idx)
             self._update_cnn_identity_verification_panel(rel_path)
 
     def _on_individual_dataset_toggled(self, enabled):
@@ -7014,9 +6543,11 @@ class MainWindow(QMainWindow):
             self._pose_model_path_by_backend = {"yolo": "", "sleap": "", "vitpose": ""}
 
     def _current_pose_backend_key(self):
-        if not hasattr(self, "combo_pose_model_type"):
+        if not hasattr(self, "_identity_panel"):
             return "yolo"
-        backend = self.combo_pose_model_type.currentText().strip().lower()
+        backend = (
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
         if backend == "sleap":
             return "sleap"
         if backend == "vitpose":
@@ -7064,7 +6595,9 @@ class MainWindow(QMainWindow):
                 self._set_model_selection_for_selector(combo, prev_data)
                 combo.blockSignals(False)
 
-        backend = self.combo_pose_model_type.currentText().strip().lower()
+        backend = (
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
         backend_key = (
             "sleap"
             if backend == "sleap"
@@ -7292,7 +6825,9 @@ class MainWindow(QMainWindow):
 
     def _select_pose_skeleton_file(self):
         """Select pose skeleton JSON file."""
-        start = self.line_pose_skeleton_file.text().strip() or str(Path.home())
+        start = self._identity_panel.line_pose_skeleton_file.text().strip() or str(
+            Path.home()
+        )
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "Select Pose Skeleton JSON",
@@ -7300,11 +6835,11 @@ class MainWindow(QMainWindow):
             "JSON Files (*.json);;All Files (*)",
         )
         if selected:
-            self.line_pose_skeleton_file.setText(selected)
+            self._identity_panel.line_pose_skeleton_file.setText(selected)
 
     def _load_pose_skeleton_keypoint_names(self):
         """Load keypoint names from selected skeleton JSON."""
-        skeleton_file = self.line_pose_skeleton_file.text().strip()
+        skeleton_file = self._identity_panel.line_pose_skeleton_file.text().strip()
         if not skeleton_file:
             return []
         try:
@@ -7423,44 +6958,48 @@ class MainWindow(QMainWindow):
     def _refresh_pose_direction_keypoint_lists(self):
         """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
         if (
-            not hasattr(self, "list_pose_ignore_keypoints")
-            or not hasattr(self, "list_pose_direction_anterior")
-            or not hasattr(self, "list_pose_direction_posterior")
+            not hasattr(self, "_identity_panel")
+            or not hasattr(self, "_identity_panel")
+            or not hasattr(self, "_identity_panel")
         ):
             return
 
         prev_ignore = self._selected_pose_group_keypoints(
-            self.list_pose_ignore_keypoints
+            self._identity_panel.list_pose_ignore_keypoints
         )
         prev_anterior = self._selected_pose_group_keypoints(
-            self.list_pose_direction_anterior
+            self._identity_panel.list_pose_direction_anterior
         )
         prev_posterior = self._selected_pose_group_keypoints(
-            self.list_pose_direction_posterior
+            self._identity_panel.list_pose_direction_posterior
         )
         names = self._load_pose_skeleton_keypoint_names()
 
-        self.list_pose_ignore_keypoints.blockSignals(True)
-        self.list_pose_direction_anterior.blockSignals(True)
-        self.list_pose_direction_posterior.blockSignals(True)
-        self.list_pose_ignore_keypoints.clear()
-        self.list_pose_direction_anterior.clear()
-        self.list_pose_direction_posterior.clear()
-        self.list_pose_ignore_keypoints.addItems(names)
-        self.list_pose_direction_anterior.addItems(names)
-        self.list_pose_direction_posterior.addItems(names)
-        self._set_pose_group_selection(self.list_pose_ignore_keypoints, prev_ignore)
-        self._set_pose_group_selection(self.list_pose_direction_anterior, prev_anterior)
+        self._identity_panel.list_pose_ignore_keypoints.blockSignals(True)
+        self._identity_panel.list_pose_direction_anterior.blockSignals(True)
+        self._identity_panel.list_pose_direction_posterior.blockSignals(True)
+        self._identity_panel.list_pose_ignore_keypoints.clear()
+        self._identity_panel.list_pose_direction_anterior.clear()
+        self._identity_panel.list_pose_direction_posterior.clear()
+        self._identity_panel.list_pose_ignore_keypoints.addItems(names)
+        self._identity_panel.list_pose_direction_anterior.addItems(names)
+        self._identity_panel.list_pose_direction_posterior.addItems(names)
         self._set_pose_group_selection(
-            self.list_pose_direction_posterior, prev_posterior
+            self._identity_panel.list_pose_ignore_keypoints, prev_ignore
+        )
+        self._set_pose_group_selection(
+            self._identity_panel.list_pose_direction_anterior, prev_anterior
+        )
+        self._set_pose_group_selection(
+            self._identity_panel.list_pose_direction_posterior, prev_posterior
         )
         enabled = len(names) > 0
-        self.list_pose_ignore_keypoints.setEnabled(enabled)
-        self.list_pose_direction_anterior.setEnabled(enabled)
-        self.list_pose_direction_posterior.setEnabled(enabled)
-        self.list_pose_ignore_keypoints.blockSignals(False)
-        self.list_pose_direction_anterior.blockSignals(False)
-        self.list_pose_direction_posterior.blockSignals(False)
+        self._identity_panel.list_pose_ignore_keypoints.setEnabled(enabled)
+        self._identity_panel.list_pose_direction_anterior.setEnabled(enabled)
+        self._identity_panel.list_pose_direction_posterior.setEnabled(enabled)
+        self._identity_panel.list_pose_ignore_keypoints.blockSignals(False)
+        self._identity_panel.list_pose_direction_anterior.blockSignals(False)
+        self._identity_panel.list_pose_direction_posterior.blockSignals(False)
         self._apply_pose_keypoint_selection_constraints("ignore")
 
     def _parse_pose_keypoint_tokens(self, raw):
@@ -7511,11 +7050,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_pose_sleap_envs(self):
         """Refresh conda environments starting with 'sleap'."""
-        if not hasattr(self, "combo_pose_sleap_env"):
+        if not hasattr(self, "_identity_panel"):
             return
 
-        self.combo_pose_sleap_env.clear()
-        self.combo_pose_sleap_env.setEnabled(True)
+        self._identity_panel.combo_pose_sleap_env.clear()
+        self._identity_panel.combo_pose_sleap_env.setEnabled(True)
         envs = []
         preferred = str(self.advanced_config.get("pose_sleap_env", "sleap")).strip()
         try:
@@ -7541,37 +7080,37 @@ class MainWindow(QMainWindow):
             envs = []
 
         if not envs:
-            self.combo_pose_sleap_env.addItem("No sleap envs found")
-            self.combo_pose_sleap_env.setEnabled(False)
+            self._identity_panel.combo_pose_sleap_env.addItem("No sleap envs found")
+            self._identity_panel.combo_pose_sleap_env.setEnabled(False)
             return
 
-        self.combo_pose_sleap_env.addItems(envs)
+        self._identity_panel.combo_pose_sleap_env.addItems(envs)
         if preferred and preferred in envs:
-            self.combo_pose_sleap_env.setCurrentText(preferred)
+            self._identity_panel.combo_pose_sleap_env.setCurrentText(preferred)
 
     def _selected_pose_sleap_env(self):
         """Return valid selected SLEAP env name or default."""
-        if not hasattr(self, "combo_pose_sleap_env"):
+        if not hasattr(self, "_identity_panel"):
             return "sleap"
-        txt = self.combo_pose_sleap_env.currentText().strip()
+        txt = self._identity_panel.combo_pose_sleap_env.currentText().strip()
         if not txt or txt.lower().startswith("no sleap envs"):
             return "sleap"
         return txt
 
     def _sleap_experimental_features_enabled(self):
         """Return True if SLEAP experimental features (ONNX/TensorRT) are allowed."""
-        if not hasattr(self, "chk_sleap_experimental_features"):
+        if not hasattr(self, "_identity_panel"):
             return False
-        return self.chk_sleap_experimental_features.isChecked()
+        return self._identity_panel.chk_sleap_experimental_features.isChecked()
 
     def _on_sleap_experimental_toggled(self):
         """Handle experimental features checkbox toggle."""
-        if not hasattr(self, "combo_pose_runtime_flavor"):
+        if not hasattr(self, "_identity_panel"):
             return
         # Refresh runtime options to show warning if needed
         backend = (
-            self.combo_pose_model_type.currentText().strip().lower()
-            if hasattr(self, "combo_pose_model_type")
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self, "_identity_panel")
             else "yolo"
         )
         if backend == "sleap":
@@ -7596,7 +7135,9 @@ class MainWindow(QMainWindow):
         if self._is_yolo_detection_mode():
             pipelines.append("yolo_obb_detection")
         if self._is_pose_inference_enabled():
-            backend = self.combo_pose_model_type.currentText().strip().lower()
+            backend = (
+                self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+            )
             if backend == "sleap":
                 pipelines.append("sleap_pose")
             else:
@@ -7700,9 +7241,11 @@ class MainWindow(QMainWindow):
                 self.chk_enable_yolo_batching.isChecked()
             )
             self._on_yolo_batch_mode_changed(self.combo_yolo_batch_mode.currentIndex())
-        if hasattr(self, "combo_pose_model_type"):
+        if hasattr(self, "_identity_panel"):
             self._populate_pose_runtime_flavor_options(
-                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                backend=self._identity_panel.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
                 preferred=self._selected_pose_runtime_flavor(),
             )
 
@@ -7716,9 +7259,9 @@ class MainWindow(QMainWindow):
     def _populate_pose_runtime_flavor_options(
         self, backend: str, preferred: str | None = None
     ):
-        if not hasattr(self, "combo_pose_runtime_flavor"):
+        if not hasattr(self, "_identity_panel"):
             return
-        combo = self.combo_pose_runtime_flavor
+        combo = self._identity_panel.combo_pose_runtime_flavor
         selected = (
             str(preferred or self._selected_pose_runtime_flavor() or "auto")
             .strip()
@@ -7738,8 +7281,8 @@ class MainWindow(QMainWindow):
 
     def _selected_pose_runtime_flavor(self) -> str:
         backend = (
-            self.combo_pose_model_type.currentText().strip().lower()
-            if hasattr(self, "combo_pose_model_type")
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self, "_identity_panel")
             else "yolo"
         )
         derived = derive_pose_runtime_settings(
@@ -7758,23 +7301,27 @@ class MainWindow(QMainWindow):
 
     def _sync_pose_backend_ui(self):
         """Show/hide backend-specific pose controls."""
-        if not hasattr(self, "combo_pose_model_type"):
+        if not hasattr(self, "_identity_panel"):
             return
-        backend = self.combo_pose_model_type.currentText().strip().lower()
+        backend = (
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
         self._populate_pose_runtime_flavor_options(backend=backend)
         is_sleap = backend == "sleap"
-        if hasattr(self, "form_pose_runtime") and hasattr(
-            self, "pose_sleap_env_row_widget"
+        if hasattr(self, "_identity_panel") and hasattr(
+            self._identity_panel, "pose_sleap_env_row_widget"
         ):
             self._set_form_row_visible(
-                self.form_pose_runtime, self.pose_sleap_env_row_widget, is_sleap
+                self._identity_panel.form_pose_runtime,
+                self._identity_panel.pose_sleap_env_row_widget,
+                is_sleap,
             )
-        if hasattr(self, "form_pose_runtime") and hasattr(
-            self, "pose_sleap_experimental_row_widget"
+        if hasattr(self, "_identity_panel") and hasattr(
+            self._identity_panel, "pose_sleap_experimental_row_widget"
         ):
             self._set_form_row_visible(
-                self.form_pose_runtime,
-                self.pose_sleap_experimental_row_widget,
+                self._identity_panel.form_pose_runtime,
+                self._identity_panel.pose_sleap_experimental_row_widget,
                 is_sleap,
             )
         # Refresh pose model combo to show models for the selected backend.
@@ -7787,8 +7334,8 @@ class MainWindow(QMainWindow):
         """Return whether pose inference is actively enabled for the run."""
         return bool(
             self._is_individual_pipeline_enabled()
-            and hasattr(self, "chk_enable_pose_extractor")
-            and self.chk_enable_pose_extractor.isChecked()
+            and hasattr(self, "_identity_panel")
+            and self._identity_panel.chk_enable_pose_extractor.isChecked()
         )
 
     def _sync_video_pose_overlay_controls(self, *_args):
@@ -7857,10 +7404,11 @@ class MainWindow(QMainWindow):
 
     def _is_identity_analysis_enabled(self) -> bool:
         """Return effective runtime state for identity classification."""
-        if not hasattr(self, "g_identity"):
+        if not hasattr(self, "_identity_panel"):
             return False
         return bool(
-            self.g_identity.isChecked() and self._is_individual_pipeline_enabled()
+            self._identity_panel.g_identity.isChecked()
+            and self._is_individual_pipeline_enabled()
         )
 
     def _selected_identity_method(self) -> str:
@@ -7891,15 +7439,18 @@ class MainWindow(QMainWindow):
         """
         if not self._is_identity_analysis_enabled():
             return {"use_apriltags": False, "cnn_classifiers": []}
-        use_apriltags = hasattr(self, "g_apriltags") and self.g_apriltags.isChecked()
+        use_apriltags = (
+            hasattr(self, "_identity_panel")
+            and self._identity_panel.g_apriltags.isChecked()
+        )
         match_bonus = float(
-            self.spin_identity_match_bonus.value()
-            if hasattr(self, "spin_identity_match_bonus")
+            self._identity_panel.spin_identity_match_bonus.value()
+            if hasattr(self, "_identity_panel")
             else 20.0
         )
         mismatch_penalty = float(
-            self.spin_identity_mismatch_penalty.value()
-            if hasattr(self, "spin_identity_mismatch_penalty")
+            self._identity_panel.spin_identity_mismatch_penalty.value()
+            if hasattr(self, "_identity_panel")
             else 50.0
         )
         cnn_classifiers = []
@@ -7920,16 +7471,16 @@ class MainWindow(QMainWindow):
     def _sync_identity_method_ui(self):
         """Show the active identity configuration only when enabled."""
         identity_enabled = self._is_identity_analysis_enabled()
-        if hasattr(self, "identity_content"):
-            self.identity_content.setVisible(identity_enabled)
-            self.identity_content.setEnabled(identity_enabled)
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.identity_content.setVisible(identity_enabled)
+            self._identity_panel.identity_content.setEnabled(identity_enabled)
 
     def _sync_pose_analysis_ui(self):
         """Show pose controls only when pose extraction is enabled."""
         pose_enabled = self._is_pose_inference_enabled()
-        if hasattr(self, "pose_runtime_content"):
-            self.pose_runtime_content.setVisible(pose_enabled)
-            self.pose_runtime_content.setEnabled(pose_enabled)
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.pose_runtime_content.setVisible(pose_enabled)
+            self._identity_panel.pose_runtime_content.setEnabled(pose_enabled)
 
     def _is_individual_image_save_enabled(self) -> bool:
         """Return effective runtime state for saving individual crops."""
@@ -7958,9 +7509,9 @@ class MainWindow(QMainWindow):
         - pose export is enabled (to fill occluded-frame pose rows in final CSV), or
         - oriented track video export is enabled (to cache interpolated ROI geometry).
         """
-        if not hasattr(self, "chk_individual_interpolate"):
+        if not hasattr(self, "_identity_panel"):
             return False
-        if not self.chk_individual_interpolate.isChecked():
+        if not self._identity_panel.chk_individual_interpolate.isChecked():
             return False
         if not self._is_individual_pipeline_enabled():
             return False
@@ -7975,10 +7526,10 @@ class MainWindow(QMainWindow):
         has_save_toggle = hasattr(self, "_dataset_panel")
         is_yolo = self._is_yolo_detection_mode()
 
-        if hasattr(self, "tabs") and hasattr(self, "tab_individual"):
-            tab_index = self.tabs.indexOf(self.tab_individual)
+        if hasattr(self, "tabs") and hasattr(self, "_identity_panel"):
+            tab_index = self.tabs.indexOf(self._identity_panel)
             if tab_index >= 0:
-                if not is_yolo and self.tabs.currentWidget() is self.tab_individual:
+                if not is_yolo and self.tabs.currentWidget() is self._identity_panel:
                     fallback_index = self.tabs.indexOf(
                         getattr(self, "tab_detection", self._setup_panel)
                     )
@@ -7994,18 +7545,22 @@ class MainWindow(QMainWindow):
 
         pipeline_enabled = self._is_individual_pipeline_enabled()
 
-        if hasattr(self, "lbl_individual_yolo_only_notice"):
-            self.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
 
-        if hasattr(self, "g_identity"):
-            self.g_identity.setVisible(pipeline_enabled)
-            self.g_identity.setEnabled(pipeline_enabled)
-        if hasattr(self, "g_pose_runtime"):
-            self.g_pose_runtime.setVisible(pipeline_enabled)
-            self.g_pose_runtime.setEnabled(pipeline_enabled)
-        if hasattr(self, "g_individual_pipeline_common"):
-            self.g_individual_pipeline_common.setVisible(pipeline_enabled)
-            self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.g_identity.setVisible(pipeline_enabled)
+            self._identity_panel.g_identity.setEnabled(pipeline_enabled)
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.g_pose_runtime.setVisible(pipeline_enabled)
+            self._identity_panel.g_pose_runtime.setEnabled(pipeline_enabled)
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.g_individual_pipeline_common.setVisible(
+                pipeline_enabled
+            )
+            self._identity_panel.g_individual_pipeline_common.setEnabled(
+                pipeline_enabled
+            )
         if hasattr(self, "_dataset_panel"):
             self._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
             self._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
@@ -8057,13 +7612,17 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QColorDialog
 
         # Convert current BGR to RGB for QColorDialog
-        b, g, r = self._background_color
+        b, g, r = self._identity_panel._background_color
         initial_color = QColor(r, g, b)
 
         color = QColorDialog.getColor(initial_color, self, "Choose Background Color")
         if color.isValid():
             # Convert RGB back to BGR for OpenCV
-            self._background_color = (color.blue(), color.green(), color.red())
+            self._identity_panel._background_color = (
+                color.blue(),
+                color.green(),
+                color.red(),
+            )
             self._update_background_color_button()
 
     def _select_video_pose_color(self):
@@ -8095,14 +7654,16 @@ class MainWindow(QMainWindow):
 
     def _update_background_color_button(self):
         """Update the color button display and label."""
-        b, g, r = self._background_color
+        b, g, r = self._identity_panel._background_color
         # Set button color
-        self.btn_background_color.setStyleSheet(
+        self._identity_panel.btn_background_color.setStyleSheet(
             f"background-color: rgb({r}, {g}, {b}); "
             f"border: 1px solid #333; border-radius: 2px;"
         )
         # Update label with BGR values
-        self.lbl_background_color.setText(f"{self._background_color}")
+        self._identity_panel.lbl_background_color.setText(
+            f"{self._identity_panel._background_color}"
+        )
 
     def _compute_median_background_color(self):
         """Compute median color from current preview frame or load from video."""
@@ -8138,7 +7699,7 @@ class MainWindow(QMainWindow):
             # Compute median color
             median_color = compute_median_color_from_frame(frame)
             # Convert numpy.uint8 to regular int for JSON serialization
-            self._background_color = tuple(int(c) for c in median_color)
+            self._identity_panel._background_color = tuple(int(c) for c in median_color)
             self._update_background_color_button()
 
             QMessageBox.information(
@@ -9367,7 +8928,9 @@ class MainWindow(QMainWindow):
         selected_runtime = self._preview_safe_runtime(self._selected_compute_runtime())
         runtime_detection = derive_detection_runtime_settings(selected_runtime)
         identity_cfg = self._identity_config()
-        pose_backend_family = self.combo_pose_model_type.currentText().strip().lower()
+        pose_backend_family = (
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
         runtime_pose = derive_pose_runtime_settings(
             selected_runtime, backend_family=pose_backend_family
         )
@@ -9419,14 +8982,14 @@ class MainWindow(QMainWindow):
             "yolo_detect_model_path": self._get_selected_yolo_detect_model_path(),
             "yolo_crop_obb_model_path": self._get_selected_yolo_crop_obb_model_path(),
             "yolo_headtail_model_path": self._get_selected_yolo_headtail_model_path(),
-            "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
+            "pose_overrides_headtail": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
             "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
             "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
             "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
             "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
             "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
             "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
-            "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
+            "yolo_headtail_conf_threshold": self._identity_panel.spin_yolo_headtail_conf.value(),
             "yolo_confidence": self.spin_yolo_confidence.value(),
             "yolo_iou": self.spin_yolo_iou.value(),
             "yolo_target_classes": target_classes,
@@ -9442,8 +9005,8 @@ class MainWindow(QMainWindow):
             "conservative_erode_iterations": self.spin_conservative_erode.value(),
             "use_apriltags": identity_cfg.get("use_apriltags", False),
             "cnn_classifiers": identity_cfg.get("cnn_classifiers", []),
-            "apriltag_family": self.combo_apriltag_family.currentText(),
-            "apriltag_decimate": self.spin_apriltag_decimate.value(),
+            "apriltag_family": self._identity_panel.combo_apriltag_family.currentText(),
+            "apriltag_decimate": self._identity_panel.spin_apriltag_decimate.value(),
             "enable_pose_extractor": self._is_pose_inference_enabled(),
             "pose_model_type": pose_backend_family,
             "pose_model_dir": resolve_pose_model_path(
@@ -9451,18 +9014,20 @@ class MainWindow(QMainWindow):
                 backend=pose_backend_family,
             ),
             "pose_runtime_flavor": runtime_pose["pose_runtime_flavor"],
-            "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
-            "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
+            "pose_min_kpt_conf_valid": self._identity_panel.spin_pose_min_kpt_conf_valid.value(),
+            "pose_skeleton_file": self._identity_panel.line_pose_skeleton_file.text().strip(),
             "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
             "pose_direction_anterior_keypoints": self._parse_pose_direction_anterior_keypoints(),
             "pose_direction_posterior_keypoints": self._parse_pose_direction_posterior_keypoints(),
-            "pose_batch_size": self.spin_pose_batch.value(),
+            "pose_batch_size": self._identity_panel.spin_pose_batch.value(),
             "pose_sleap_env": self._selected_pose_sleap_env(),
             "pose_sleap_device": runtime_pose["pose_sleap_device"],
             "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
-            "individual_crop_padding": self.spin_individual_padding.value(),
-            "individual_background_color": [int(c) for c in self._background_color],
-            "suppress_foreign_obb_regions": self.chk_suppress_foreign_obb.isChecked(),
+            "individual_crop_padding": self._identity_panel.spin_individual_padding.value(),
+            "individual_background_color": [
+                int(c) for c in self._identity_panel._background_color
+            ],
+            "suppress_foreign_obb_regions": self._identity_panel.chk_suppress_foreign_obb.isChecked(),
         }
 
     def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
@@ -10504,7 +10069,7 @@ class MainWindow(QMainWindow):
         )
         os.makedirs(repo_dir, exist_ok=True)
         self._populate_yolo_model_combo(
-            self.combo_yolo_headtail_model,
+            self._identity_panel.combo_yolo_headtail_model,
             preferred_model_path=preferred_model_path,
             default_path="",
             include_none=True,
@@ -10572,20 +10137,22 @@ class MainWindow(QMainWindow):
 
     def _refresh_pose_model_combo(self, preferred_model_path: object = None) -> None:
         """Refresh the pose model combo for the current backend."""
-        if not hasattr(self, "combo_pose_model"):
+        if not hasattr(self, "_identity_panel"):
             return
         backend = self._current_pose_backend_key()
         self._populate_pose_model_combo(
-            self.combo_pose_model,
+            self._identity_panel.combo_pose_model,
             backend=backend,
             preferred_model_path=preferred_model_path,
         )
 
     def on_pose_model_changed(self, index: int) -> None:
         """Handle selection change in the pose model combo."""
-        if not hasattr(self, "combo_pose_model"):
+        if not hasattr(self, "_identity_panel"):
             return
-        selected_data = self.combo_pose_model.itemData(index, Qt.UserRole)
+        selected_data = self._identity_panel.combo_pose_model.itemData(
+            index, Qt.UserRole
+        )
         if selected_data == "__add_new__":
             self._handle_add_new_pose_model()
             return
@@ -10617,7 +10184,7 @@ class MainWindow(QMainWindow):
 
     def _get_selected_yolo_headtail_model_path(self) -> object:
         return self._get_selected_model_path_from_selector(
-            self.combo_yolo_headtail_model,
+            self._identity_panel.combo_yolo_headtail_model,
             default_path="",
         )
 
@@ -10641,7 +10208,7 @@ class MainWindow(QMainWindow):
 
     def _set_yolo_headtail_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
-            self.combo_yolo_headtail_model,
+            self._identity_panel.combo_yolo_headtail_model,
             model_path,
         )
 
@@ -10689,8 +10256,8 @@ class MainWindow(QMainWindow):
             True,
         )
         _set_row_visible(getattr(self, "chk_pose_overrides_headtail", None), True)
-        if hasattr(self, "spin_yolo_headtail_conf"):
-            self.spin_yolo_headtail_conf.setEnabled(
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel.spin_yolo_headtail_conf.setEnabled(
                 bool(self._get_selected_yolo_headtail_model_path().strip())
             )
         self._update_obb_mode_warning()
@@ -10802,7 +10369,10 @@ class MainWindow(QMainWindow):
             )
 
     def on_yolo_headtail_model_changed(self: object, index: object) -> object:
-        if self.combo_yolo_headtail_model.itemData(index, Qt.UserRole) == "__add_new__":
+        if (
+            self._identity_panel.combo_yolo_headtail_model.itemData(index, Qt.UserRole)
+            == "__add_new__"
+        ):
             ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
             subdir = ht_type.currentText() if ht_type else "YOLO"
             repo_dir = os.path.join(
@@ -10813,7 +10383,7 @@ class MainWindow(QMainWindow):
             )
             os.makedirs(repo_dir, exist_ok=True)
             self._handle_add_new_yolo_model(
-                combo=self.combo_yolo_headtail_model,
+                combo=self._identity_panel.combo_yolo_headtail_model,
                 refresh_callback=self._refresh_yolo_headtail_model_combo,
                 selection_callback=self._set_yolo_headtail_model_selection,
                 task_family="classify",
@@ -12085,8 +11655,8 @@ class MainWindow(QMainWindow):
                 self.oriented_video_worker = None
 
             padding_fraction = (
-                float(self.spin_individual_padding.value())
-                if hasattr(self, "spin_individual_padding")
+                float(self._identity_panel.spin_individual_padding.value())
+                if hasattr(self, "_identity_panel")
                 else 0.1
             )
             self.oriented_video_worker = OrientedTrackVideoWorker(
@@ -12097,7 +11667,7 @@ class MainWindow(QMainWindow):
                 self.current_interpolated_roi_npz_path,
                 self._resolve_source_video_fps(),
                 max(0.0, padding_fraction),
-                tuple(int(c) for c in self._background_color),
+                tuple(int(c) for c in self._identity_panel._background_color),
                 bool(self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked()),
             )
             self.oriented_video_worker.progress_signal.connect(self.on_progress_update)
@@ -13067,8 +12637,8 @@ class MainWindow(QMainWindow):
         """Return True when pose extraction export should be produced."""
         return bool(
             self._is_individual_pipeline_enabled()
-            and hasattr(self, "chk_enable_pose_extractor")
-            and self.chk_enable_pose_extractor.isChecked()
+            and hasattr(self, "_identity_panel")
+            and self._identity_panel.chk_enable_pose_extractor.isChecked()
             and self._is_yolo_detection_mode()
         )
 
@@ -13140,7 +12710,9 @@ class MainWindow(QMainWindow):
         try:
             with_pose_df = trajectories_df
             if cache_available:
-                min_valid_conf = float(self.spin_pose_min_kpt_conf_valid.value())
+                min_valid_conf = float(
+                    self._identity_panel.spin_pose_min_kpt_conf_valid.value()
+                )
                 _resize_factor = float(
                     self.get_parameters_dict().get("RESIZE_FACTOR", 1.0)
                 )
@@ -13680,7 +13252,7 @@ class MainWindow(QMainWindow):
         try:
             if self._stop_all_requested:
                 return False
-            if not self.chk_individual_interpolate.isChecked():
+            if not self._identity_panel.chk_individual_interpolate.isChecked():
                 return False
 
             target_csv = None
@@ -14572,7 +14144,9 @@ class MainWindow(QMainWindow):
                 trt_build_batch_size = max(1, int(trt_build_batch_size_raw))
             except (TypeError, ValueError):
                 trt_build_batch_size = None
-        pose_backend_family = self.combo_pose_model_type.currentText().strip().lower()
+        pose_backend_family = (
+            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
         runtime_pose = derive_pose_runtime_settings(
             compute_runtime, backend_family=pose_backend_family
         )
@@ -14591,14 +14165,14 @@ class MainWindow(QMainWindow):
             "YOLO_DETECT_MODEL_PATH": yolo_detect_path,
             "YOLO_CROP_OBB_MODEL_PATH": yolo_crop_obb_path,
             "YOLO_HEADTAIL_MODEL_PATH": yolo_headtail_path,
-            "POSE_OVERRIDES_HEADTAIL": self.chk_pose_overrides_headtail.isChecked(),
+            "POSE_OVERRIDES_HEADTAIL": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
             "YOLO_SEQ_CROP_PAD_RATIO": self.spin_yolo_seq_crop_pad.value(),
             "YOLO_SEQ_MIN_CROP_SIZE_PX": self.spin_yolo_seq_min_crop_px.value(),
             "YOLO_SEQ_ENFORCE_SQUARE_CROP": self.chk_yolo_seq_square_crop.isChecked(),
             "YOLO_SEQ_STAGE2_IMGSZ": self.spin_yolo_seq_stage2_imgsz.value(),
             "YOLO_SEQ_STAGE2_POW2_PAD": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
             "YOLO_SEQ_DETECT_CONF_THRESHOLD": self.spin_yolo_seq_detect_conf.value(),
-            "YOLO_HEADTAIL_CONF_THRESHOLD": self.spin_yolo_headtail_conf.value(),
+            "YOLO_HEADTAIL_CONF_THRESHOLD": self._identity_panel.spin_yolo_headtail_conf.value(),
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
@@ -14760,41 +14334,47 @@ class MainWindow(QMainWindow):
             "IDENTITY_METHOD": identity_method,
             "USE_APRILTAGS": identity_cfg.get("use_apriltags", False),
             "CNN_CLASSIFIERS": identity_cfg.get("cnn_classifiers", []),
-            "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
-            "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
+            "COLOR_TAG_MODEL_PATH": self._identity_panel.line_color_tag_model.text(),
+            "COLOR_TAG_CONFIDENCE": self._identity_panel.spin_color_tag_conf.value(),
             "CNN_CLASSIFIER_MODEL_PATH": "",
             "CNN_CLASSIFIER_CONFIDENCE": 0.5,
             "CNN_CLASSIFIER_LABEL": "",
             "CNN_CLASSIFIER_BATCH_SIZE": 64,
-            "IDENTITY_MATCH_BONUS": self.spin_identity_match_bonus.value(),
-            "IDENTITY_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
-            "CNN_CLASSIFIER_MATCH_BONUS": self.spin_identity_match_bonus.value(),
-            "CNN_CLASSIFIER_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
+            "IDENTITY_MATCH_BONUS": self._identity_panel.spin_identity_match_bonus.value(),
+            "IDENTITY_MISMATCH_PENALTY": self._identity_panel.spin_identity_mismatch_penalty.value(),
+            "CNN_CLASSIFIER_MATCH_BONUS": self._identity_panel.spin_identity_match_bonus.value(),
+            "CNN_CLASSIFIER_MISMATCH_PENALTY": self._identity_panel.spin_identity_mismatch_penalty.value(),
             "CNN_CLASSIFIER_WINDOW": 10,
-            "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
-            "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
-            "TAG_MATCH_BONUS": self.spin_identity_match_bonus.value(),
-            "TAG_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
+            "APRILTAG_FAMILY": self._identity_panel.combo_apriltag_family.currentText(),
+            "APRILTAG_DECIMATE": self._identity_panel.spin_apriltag_decimate.value(),
+            "TAG_MATCH_BONUS": self._identity_panel.spin_identity_match_bonus.value(),
+            "TAG_MISMATCH_PENALTY": self._identity_panel.spin_identity_mismatch_penalty.value(),
             "ENABLE_POSE_EXTRACTOR": pose_extractor_enabled,
-            "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
+            "POSE_MODEL_TYPE": self._identity_panel.combo_pose_model_type.currentText()
+            .strip()
+            .lower(),
             "POSE_MODEL_DIR": resolve_pose_model_path(
                 self._pose_model_path_for_backend(
-                    self.combo_pose_model_type.currentText().strip().lower()
+                    self._identity_panel.combo_pose_model_type.currentText()
+                    .strip()
+                    .lower()
                 ),
-                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                backend=self._identity_panel.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
             ),
             "POSE_RUNTIME_FLAVOR": runtime_pose["pose_runtime_flavor"],
             "POSE_EXPORTED_MODEL_PATH": "",
-            "POSE_MIN_KPT_CONF_VALID": self.spin_pose_min_kpt_conf_valid.value(),
-            "POSE_SKELETON_FILE": self.line_pose_skeleton_file.text().strip(),
+            "POSE_MIN_KPT_CONF_VALID": self._identity_panel.spin_pose_min_kpt_conf_valid.value(),
+            "POSE_SKELETON_FILE": self._identity_panel.line_pose_skeleton_file.text().strip(),
             "POSE_IGNORE_KEYPOINTS": self._parse_pose_ignore_keypoints(),
             "POSE_DIRECTION_ANTERIOR_KEYPOINTS": self._parse_pose_direction_anterior_keypoints(),
             "POSE_DIRECTION_POSTERIOR_KEYPOINTS": self._parse_pose_direction_posterior_keypoints(),
-            "POSE_YOLO_BATCH": self.spin_pose_batch.value(),
-            "POSE_BATCH_SIZE": self.spin_pose_batch.value(),
+            "POSE_YOLO_BATCH": self._identity_panel.spin_pose_batch.value(),
+            "POSE_BATCH_SIZE": self._identity_panel.spin_pose_batch.value(),
             "POSE_SLEAP_ENV": self._selected_pose_sleap_env(),
             "POSE_SLEAP_DEVICE": runtime_pose["pose_sleap_device"],
-            "POSE_SLEAP_BATCH": self.spin_pose_batch.value(),
+            "POSE_SLEAP_BATCH": self._identity_panel.spin_pose_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
             "POSE_SLEAP_EXPERIMENTAL_FEATURES": self._sleap_experimental_features_enabled(),
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
@@ -14820,12 +14400,12 @@ class MainWindow(QMainWindow):
             ),
             "INDIVIDUAL_OUTPUT_FORMAT": self._dataset_panel.combo_individual_format.currentText().lower(),
             "INDIVIDUAL_SAVE_INTERVAL": self._dataset_panel.spin_individual_interval.value(),
-            "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self.chk_individual_interpolate.isChecked(),
-            "INDIVIDUAL_CROP_PADDING": self.spin_individual_padding.value(),
+            "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self._identity_panel.chk_individual_interpolate.isChecked(),
+            "INDIVIDUAL_CROP_PADDING": self._identity_panel.spin_individual_padding.value(),
             "INDIVIDUAL_BACKGROUND_COLOR": [
-                int(c) for c in self._background_color
+                int(c) for c in self._identity_panel._background_color
             ],  # Ensure JSON serializable
-            "SUPPRESS_FOREIGN_OBB_REGIONS": self.chk_suppress_foreign_obb.isChecked(),
+            "SUPPRESS_FOREIGN_OBB_REGIONS": self._identity_panel.chk_suppress_foreign_obb.isChecked(),
             "SUPPRESS_FOREIGN_OBB_DATASET": self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked(),
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
             "ENABLE_CONFIDENCE_DENSITY_MAP": self._tracking_panel.chk_enable_confidence_density_map.isChecked(),
@@ -15134,16 +14714,20 @@ class MainWindow(QMainWindow):
                 preferred_model_path=yolo_crop_obb_model
             )
             self._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
-            headtail_type_idx = self.combo_yolo_headtail_model_type.findText(
-                "tiny" if yolo_headtail_model_type.lower() == "tiny" else "YOLO"
+            headtail_type_idx = (
+                self._identity_panel.combo_yolo_headtail_model_type.findText(
+                    "tiny" if yolo_headtail_model_type.lower() == "tiny" else "YOLO"
+                )
             )
             if headtail_type_idx >= 0:
-                self.combo_yolo_headtail_model_type.setCurrentIndex(headtail_type_idx)
+                self._identity_panel.combo_yolo_headtail_model_type.setCurrentIndex(
+                    headtail_type_idx
+                )
             self._refresh_yolo_headtail_model_combo(
                 preferred_model_path=yolo_headtail_model
             )
             self._set_yolo_headtail_model_selection(resolved_yolo_headtail)
-            self.chk_pose_overrides_headtail.setChecked(
+            self._identity_panel.chk_pose_overrides_headtail.setChecked(
                 bool(get_cfg("pose_overrides_headtail", default=True))
             )
             self.spin_yolo_seq_crop_pad.setValue(
@@ -15164,7 +14748,7 @@ class MainWindow(QMainWindow):
             self.spin_yolo_seq_detect_conf.setValue(
                 float(get_cfg("yolo_seq_detect_conf_threshold", default=0.25))
             )
-            self.spin_yolo_headtail_conf.setValue(
+            self._identity_panel.spin_yolo_headtail_conf.setValue(
                 float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
             )
             self.spin_reference_aspect_ratio.setValue(
@@ -15711,13 +15295,13 @@ class MainWindow(QMainWindow):
             # Backward compat: rename color_tags_yolo -> cnn_classifier on load
             if old_method == "color_tags_yolo":
                 old_method = "cnn_classifier"
-            self.g_identity.setChecked(old_method != "none_disabled")
+            self._identity_panel.g_identity.setChecked(old_method != "none_disabled")
 
             # --- New format or migrate from old format ---
             _new_cnn_classifiers = get_cfg("cnn_classifiers", default=None)
             if _new_cnn_classifiers is not None:
                 # New format: load use_apriltags + cnn_classifiers list
-                self.g_apriltags.setChecked(
+                self._identity_panel.g_apriltags.setChecked(
                     bool(get_cfg("use_apriltags", default=False))
                 )
                 for entry in _new_cnn_classifiers or []:
@@ -15726,7 +15310,7 @@ class MainWindow(QMainWindow):
             else:
                 # Old single-method config: migrate
                 if old_method == "apriltags":
-                    self.g_apriltags.setChecked(True)
+                    self._identity_panel.g_apriltags.setChecked(True)
                 elif old_method in ("cnn_classifier",):
                     cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
                     if cnn_model_rel:
@@ -15761,7 +15345,7 @@ class MainWindow(QMainWindow):
                         )
 
             # Shared identity cost settings
-            self.spin_identity_match_bonus.setValue(
+            self._identity_panel.spin_identity_match_bonus.setValue(
                 float(
                     get_cfg(
                         "identity_match_bonus",
@@ -15771,7 +15355,7 @@ class MainWindow(QMainWindow):
                     )
                 )
             )
-            self.spin_identity_mismatch_penalty.setValue(
+            self._identity_panel.spin_identity_mismatch_penalty.setValue(
                 float(
                     get_cfg(
                         "identity_mismatch_penalty",
@@ -15782,9 +15366,9 @@ class MainWindow(QMainWindow):
                 )
             )
             apriltag_family = get_cfg("apriltag_family", default="tag36h11")
-            idx = self.combo_apriltag_family.findText(apriltag_family)
-            self.combo_apriltag_family.setCurrentIndex(max(0, idx))
-            self.spin_apriltag_decimate.setValue(
+            idx = self._identity_panel.combo_apriltag_family.findText(apriltag_family)
+            self._identity_panel.combo_apriltag_family.setCurrentIndex(max(0, idx))
+            self._identity_panel.spin_apriltag_decimate.setValue(
                 float(get_cfg("apriltag_decimate", default=1.0))
             )
 
@@ -15798,15 +15382,19 @@ class MainWindow(QMainWindow):
                     float(_legacy_crop_padding),
                 )
 
-            self.chk_enable_pose_extractor.setChecked(
+            self._identity_panel.chk_enable_pose_extractor.setChecked(
                 get_cfg("enable_pose_extractor", default=False)
             )
             pose_backend = (
                 str(get_cfg("pose_model_type", default="yolo")).strip().upper()
             )
-            pose_backend_idx = self.combo_pose_model_type.findText(pose_backend)
+            pose_backend_idx = self._identity_panel.combo_pose_model_type.findText(
+                pose_backend
+            )
             if pose_backend_idx >= 0:
-                self.combo_pose_model_type.setCurrentIndex(pose_backend_idx)
+                self._identity_panel.combo_pose_model_type.setCurrentIndex(
+                    pose_backend_idx
+                )
             yolo_pose_model = str(get_cfg("pose_yolo_model_dir", default="")).strip()
             sleap_pose_model = str(get_cfg("pose_sleap_model_dir", default="")).strip()
             legacy_pose_model = str(get_cfg("pose_model_dir", default="")).strip()
@@ -15816,40 +15404,50 @@ class MainWindow(QMainWindow):
                 sleap_pose_model = legacy_pose_model
             self._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
             self._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
-            active_backend = self.combo_pose_model_type.currentText().strip().lower()
+            active_backend = (
+                self._identity_panel.combo_pose_model_type.currentText().strip().lower()
+            )
             self._refresh_pose_model_combo(
                 preferred_model_path=self._pose_model_path_for_backend(active_backend)
             )
             pose_runtime_flavor = derive_pose_runtime_settings(
                 self._selected_compute_runtime(),
-                backend_family=self.combo_pose_model_type.currentText().strip().lower(),
+                backend_family=self._identity_panel.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
             )["pose_runtime_flavor"]
             self._populate_pose_runtime_flavor_options(
-                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                backend=self._identity_panel.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
                 preferred=pose_runtime_flavor,
             )
-            self.spin_pose_min_kpt_conf_valid.setValue(
+            self._identity_panel.spin_pose_min_kpt_conf_valid.setValue(
                 get_cfg("pose_min_kpt_conf_valid", default=0.2)
             )
-            self.line_pose_skeleton_file.setText(
+            self._identity_panel.line_pose_skeleton_file.setText(
                 get_cfg("pose_skeleton_file", default="")
             )
             self._refresh_pose_direction_keypoint_lists()
             ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
-            self._set_pose_group_selection(self.list_pose_ignore_keypoints, ignore_kpts)
+            self._set_pose_group_selection(
+                self._identity_panel.list_pose_ignore_keypoints, ignore_kpts
+            )
             ant_kpts = get_cfg("pose_direction_anterior_keypoints", default=[])
-            self._set_pose_group_selection(self.list_pose_direction_anterior, ant_kpts)
+            self._set_pose_group_selection(
+                self._identity_panel.list_pose_direction_anterior, ant_kpts
+            )
             post_kpts = get_cfg("pose_direction_posterior_keypoints", default=[])
             self._set_pose_group_selection(
-                self.list_pose_direction_posterior, post_kpts
+                self._identity_panel.list_pose_direction_posterior, post_kpts
             )
             self._apply_pose_keypoint_selection_constraints("ignore")
             self.advanced_config["pose_sleap_env"] = str(
                 get_cfg("pose_sleap_env", default="sleap")
             )
             self._refresh_pose_sleap_envs()
-            if hasattr(self, "chk_sleap_experimental_features"):
-                self.chk_sleap_experimental_features.setChecked(
+            if hasattr(self, "_identity_panel"):
+                self._identity_panel.chk_sleap_experimental_features.setChecked(
                     get_cfg("pose_sleap_experimental_features", default=False)
                 )
             shared_pose_batch = int(
@@ -15861,7 +15459,7 @@ class MainWindow(QMainWindow):
                     ),
                 )
             )
-            self.spin_pose_batch.setValue(shared_pose_batch)
+            self._identity_panel.spin_pose_batch.setValue(shared_pose_batch)
 
             # === REAL-TIME INDIVIDUAL DATASET ===
             self._dataset_panel.chk_suppress_foreign_obb_dataset.setChecked(
@@ -15886,18 +15484,18 @@ class MainWindow(QMainWindow):
             self._dataset_panel.spin_individual_interval.setValue(
                 get_cfg("individual_save_interval", default=1)
             )
-            self.chk_individual_interpolate.setChecked(
+            self._identity_panel.chk_individual_interpolate.setChecked(
                 get_cfg("individual_interpolate_occlusions", default=True)
             )
-            self.spin_individual_padding.setValue(
+            self._identity_panel.spin_individual_padding.setValue(
                 get_cfg("individual_crop_padding", default=0.1)
             )
             # Load background color
             bg_color = get_cfg("individual_background_color", default=[0, 0, 0])
             if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
-                self._background_color = tuple(bg_color)
+                self._identity_panel._background_color = tuple(bg_color)
             self._update_background_color_button()
-            self.chk_suppress_foreign_obb.setChecked(
+            self._identity_panel.chk_suppress_foreign_obb.setChecked(
                 get_cfg("suppress_foreign_obb_regions", default=True)
             )
             self._sync_individual_analysis_mode_ui()
@@ -16008,7 +15606,9 @@ class MainWindow(QMainWindow):
         compute_runtime = self._selected_compute_runtime()
         pose_runtime_derived = derive_pose_runtime_settings(
             compute_runtime,
-            backend_family=self.combo_pose_model_type.currentText().strip().lower(),
+            backend_family=self._identity_panel.combo_pose_model_type.currentText()
+            .strip()
+            .lower(),
         )
 
         cfg.update(
@@ -16067,15 +15667,15 @@ class MainWindow(QMainWindow):
                 "yolo_headtail_model_path": make_model_path_relative(
                     yolo_headtail_path
                 ),
-                "yolo_headtail_model_type": self.combo_yolo_headtail_model_type.currentText(),
-                "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
+                "yolo_headtail_model_type": self._identity_panel.combo_yolo_headtail_model_type.currentText(),
+                "pose_overrides_headtail": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
                 "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
                 "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
                 "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
                 "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
                 "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
                 "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
-                "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
+                "yolo_headtail_conf_threshold": self._identity_panel.spin_yolo_headtail_conf.value(),
                 "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
                 "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
                 "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
@@ -16288,28 +15888,30 @@ class MainWindow(QMainWindow):
                 "use_apriltags": self._identity_config().get("use_apriltags", False),
                 "cnn_classifiers": self._identity_config().get("cnn_classifiers", []),
                 # Legacy CNN Classifier settings (for backward compat on load)
-                "cnn_classifier_confidence": self.spin_cnn_confidence.value(),
-                "identity_match_bonus": self.spin_identity_match_bonus.value(),
-                "identity_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
-                "cnn_classifier_match_bonus": self.spin_identity_match_bonus.value(),
-                "cnn_classifier_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
-                "cnn_classifier_window": self.spin_cnn_window.value(),
+                "cnn_classifier_confidence": self._identity_panel.spin_cnn_confidence.value(),
+                "identity_match_bonus": self._identity_panel.spin_identity_match_bonus.value(),
+                "identity_mismatch_penalty": self._identity_panel.spin_identity_mismatch_penalty.value(),
+                "cnn_classifier_match_bonus": self._identity_panel.spin_identity_match_bonus.value(),
+                "cnn_classifier_mismatch_penalty": self._identity_panel.spin_identity_mismatch_penalty.value(),
+                "cnn_classifier_window": self._identity_panel.spin_cnn_window.value(),
             }
         )
 
         cfg.update(
             {
-                "apriltag_family": self.combo_apriltag_family.currentText(),
-                "apriltag_decimate": self.spin_apriltag_decimate.value(),
-                "tag_match_bonus": self.spin_identity_match_bonus.value(),
-                "tag_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
-                "enable_pose_extractor": self.chk_enable_pose_extractor.isChecked(),
-                "pose_model_type": self.combo_pose_model_type.currentText()
+                "apriltag_family": self._identity_panel.combo_apriltag_family.currentText(),
+                "apriltag_decimate": self._identity_panel.spin_apriltag_decimate.value(),
+                "tag_match_bonus": self._identity_panel.spin_identity_match_bonus.value(),
+                "tag_mismatch_penalty": self._identity_panel.spin_identity_mismatch_penalty.value(),
+                "enable_pose_extractor": self._identity_panel.chk_enable_pose_extractor.isChecked(),
+                "pose_model_type": self._identity_panel.combo_pose_model_type.currentText()
                 .strip()
                 .lower(),
                 "pose_model_dir": make_pose_model_path_relative(
                     self._pose_model_path_for_backend(
-                        self.combo_pose_model_type.currentText().strip().lower()
+                        self._identity_panel.combo_pose_model_type.currentText()
+                        .strip()
+                        .lower()
                     )
                 ),
                 "pose_yolo_model_dir": make_pose_model_path_relative(
@@ -16320,16 +15922,16 @@ class MainWindow(QMainWindow):
                 ),
                 "pose_runtime_flavor": pose_runtime_derived["pose_runtime_flavor"],
                 "pose_exported_model_path": "",
-                "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
-                "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
+                "pose_min_kpt_conf_valid": self._identity_panel.spin_pose_min_kpt_conf_valid.value(),
+                "pose_skeleton_file": self._identity_panel.line_pose_skeleton_file.text().strip(),
                 "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
                 "pose_direction_anterior_keypoints": self._parse_pose_direction_anterior_keypoints(),
                 "pose_direction_posterior_keypoints": self._parse_pose_direction_posterior_keypoints(),
-                "pose_batch_size": self.spin_pose_batch.value(),
-                "pose_yolo_batch": self.spin_pose_batch.value(),
+                "pose_batch_size": self._identity_panel.spin_pose_batch.value(),
+                "pose_yolo_batch": self._identity_panel.spin_pose_batch.value(),
                 "pose_sleap_env": self._selected_pose_sleap_env(),
                 "pose_sleap_device": pose_runtime_derived["pose_sleap_device"],
-                "pose_sleap_batch": self.spin_pose_batch.value(),
+                "pose_sleap_batch": self._identity_panel.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
                 "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
                 # === REAL-TIME INDIVIDUAL DATASET ===
@@ -16345,12 +15947,12 @@ class MainWindow(QMainWindow):
         cfg.update(
             {
                 "individual_save_interval": self._dataset_panel.spin_individual_interval.value(),
-                "individual_interpolate_occlusions": self.chk_individual_interpolate.isChecked(),
-                "individual_crop_padding": self.spin_individual_padding.value(),
+                "individual_interpolate_occlusions": self._identity_panel.chk_individual_interpolate.isChecked(),
+                "individual_crop_padding": self._identity_panel.spin_individual_padding.value(),
                 "individual_background_color": [
-                    int(c) for c in self._background_color
+                    int(c) for c in self._identity_panel._background_color
                 ],  # Ensure JSON serializable
-                "suppress_foreign_obb_regions": self.chk_suppress_foreign_obb.isChecked(),
+                "suppress_foreign_obb_regions": self._identity_panel.chk_suppress_foreign_obb.isChecked(),
                 "suppress_foreign_obb_dataset": self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked(),
             }
         )
@@ -16760,7 +16362,7 @@ class MainWindow(QMainWindow):
             pipelines.append("Backward tracking")
         if self._is_individual_pipeline_enabled():
             pipelines.append("Individual analysis")
-            if self.chk_enable_pose_extractor.isChecked():
+            if self._identity_panel.chk_enable_pose_extractor.isChecked():
                 pipelines.append("Pose extraction")
         if pipelines:
             lines.append("Pipelines: " + ", ".join(pipelines))

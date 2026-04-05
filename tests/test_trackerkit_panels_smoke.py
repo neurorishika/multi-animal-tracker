@@ -27,7 +27,14 @@ _PANEL_MAP = {
 _STUB_PANEL_MAP = {
     k: v
     for k, v in _PANEL_MAP.items()
-    if k not in {"DatasetPanel", "SetupPanel", "TrackingPanel", "PostProcessPanel"}
+    if k
+    not in {
+        "DatasetPanel",
+        "SetupPanel",
+        "TrackingPanel",
+        "PostProcessPanel",
+        "IdentityPanel",
+    }
 }
 
 
@@ -106,3 +113,13 @@ def test_postprocess_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._postprocess_panel, PostProcessPanel)
     assert hasattr(main_window._postprocess_panel, "enable_postprocessing")
     assert hasattr(main_window._postprocess_panel, "combo_interpolation_method")
+
+
+def test_identity_panel_wired_in_main_window(main_window):
+    """IdentityPanel is accessible on MainWindow and exposes key widgets."""
+    from hydra_suite.trackerkit.gui.panels.identity_panel import IdentityPanel
+
+    assert hasattr(main_window, "_identity_panel")
+    assert isinstance(main_window._identity_panel, IdentityPanel)
+    assert hasattr(main_window._identity_panel, "combo_yolo_headtail_model")
+    assert hasattr(main_window._identity_panel, "combo_yolo_headtail_model_type")

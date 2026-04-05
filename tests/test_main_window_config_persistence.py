@@ -67,11 +67,11 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     tmp_path: Path,
 ) -> None:
     window = _make_main_window(monkeypatch)
-    window.combo_yolo_headtail_model_type.setCurrentText("tiny")
+    window._identity_panel.combo_yolo_headtail_model_type.setCurrentText("tiny")
     window._refresh_yolo_headtail_model_combo()
 
     selected_model = _select_first_model_with_suffix(
-        window.combo_yolo_headtail_model,
+        window._identity_panel.combo_yolo_headtail_model,
         ".pth",
     )
     assert selected_model
@@ -85,7 +85,10 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     reloaded_window = _make_main_window(monkeypatch)
     reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
 
-    assert reloaded_window.combo_yolo_headtail_model_type.currentText() == "tiny"
+    assert (
+        reloaded_window._identity_panel.combo_yolo_headtail_model_type.currentText()
+        == "tiny"
+    )
     assert reloaded_window._get_selected_yolo_headtail_model_path() == selected_model
     reloaded_window.close()
 
