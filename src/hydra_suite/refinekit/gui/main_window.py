@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -34,6 +34,7 @@ from hydra_suite.refinekit.gui.widgets.suspicion_queue import SuspicionQueueWidg
 from hydra_suite.refinekit.gui.widgets.timeline_panel import TimelinePanelWidget
 from hydra_suite.refinekit.gui.widgets.video_player import VideoPlayerWidget
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+from hydra_suite.widgets.workers import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ _MAX_MANUAL_REGION = 300  # max frames for a user-selected manual review region
 # ---------------------------------------------------------------------------
 
 
-class _ScorerWorker(QThread):
+class _ScorerWorker(BaseWorker):
     """Run :meth:`EventScorer.score_all` off the GUI thread."""
 
     events_ready = Signal(list)
@@ -56,7 +57,7 @@ class _ScorerWorker(QThread):
         self._scorer = scorer
         self._df = df
 
-    def run(self) -> None:
+    def execute(self):
         try:
             events = self._scorer.score_all(self._df)
         except Exception:
