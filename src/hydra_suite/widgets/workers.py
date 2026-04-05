@@ -8,16 +8,20 @@ class BaseWorker(QThread):
 
     Subclasses implement ``execute()`` only.  ``run()`` is owned by this
     class and guarantees:
-    - ``finished`` is always emitted (success or failure).
     - Unhandled exceptions in ``execute()`` emit ``error`` instead of
       crashing the thread silently.
+    - Qt automatically emits the inherited ``QThread.finished`` signal
+      when ``run()`` returns, whether execution succeeded or failed.
+      Do not redefine ``finished`` in subclasses — it would shadow
+      Qt's mechanism and cause missed or double emissions.
 
     Standard signals
     ----------------
     progress(int)  — 0–100 completion percentage
     status(str)    — human-readable status update
     error(str)     — error message; emitted only on exception
-    finished()     — inherited from QThread; always emitted when the worker stops
+    finished()     — inherited from QThread; emitted automatically by Qt
+                     when run() returns (success or failure)
     """
 
     progress: Signal = Signal(int)
@@ -32,4 +36,4 @@ class BaseWorker(QThread):
 
     def execute(self) -> None:
         """Override in subclasses with the actual work."""
-        raise NotImplementedError
+        raise NotImplementedError(f"{type(self).__name__} must implement execute()")
