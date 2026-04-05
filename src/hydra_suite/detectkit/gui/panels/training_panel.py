@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,6 +42,7 @@ from hydra_suite.training import (
 from hydra_suite.training.validation import format_validation_report
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.gpu_utils import get_device_info
+from hydra_suite.widgets.workers import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class RoleTrainingWorker(QThread):
+class RoleTrainingWorker(BaseWorker):
     """Run selected role trainings sequentially in a background thread."""
 
     log_signal = Signal(str)
@@ -72,7 +73,7 @@ class RoleTrainingWorker(QThread):
     def _should_cancel(self) -> bool:
         return bool(self._cancel)
 
-    def run(self):
+    def execute(self):
         results = []
         parent_run = ""
         for entry in self.role_entries:
