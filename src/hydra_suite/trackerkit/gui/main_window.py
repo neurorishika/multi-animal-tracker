@@ -4162,9 +4162,16 @@ class MainWindow(QMainWindow):
         self.tabs.setElideMode(Qt.ElideNone)  # Don't truncate tab text
 
         # Tab 1: Setup (Files & Performance)
-        self.tab_setup = QWidget()
-        self.setup_setup_ui()
-        self.tabs.addTab(self.tab_setup, "Get Started")
+        from hydra_suite.trackerkit.gui.panels.setup_panel import SetupPanel
+
+        self._setup_panel = SetupPanel(
+            main_window=self, config=self.config, parent=self
+        )
+        self.tabs.addTab(self._setup_panel, "Get Started")
+        # Bootstrap calls that require _setup_panel to be assigned first
+        self._populate_preset_combo()
+        self._populate_compute_runtime_options(preferred="cpu")
+        self._on_runtime_context_changed()
 
         # Tab 2: Detection (Image, Method, Params)
         self.tab_detection = QWidget()
@@ -4342,703 +4349,6 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # TAB UI BUILDERS
     # =========================================================================
-
-    def setup_setup_ui(self: object) -> object:
-        """Tab 1: Setup - Files, Video, Display & Debug."""
-        layout = QVBoxLayout(self.tab_setup)
-        layout.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content = QWidget()
-        form = QVBoxLayout(content)
-        form.setContentsMargins(6, 6, 6, 6)
-        form.setSpacing(8)
-        self._set_compact_scroll_layout(form)
-
-        # ============================================================
-        # Preset Selector
-        # ============================================================
-        g_presets = QGroupBox("Presets")
-        self._set_compact_section_widget(g_presets)
-        vl_presets = QVBoxLayout(g_presets)
-        vl_presets.setSpacing(6)
-        vl_presets.addWidget(
-            self._create_help_label(
-                "Load optimized default values for different model organisms. Video-specific configs override presets."
-            )
-        )
-
-        preset_layout = QHBoxLayout()
-        preset_label = QLabel("Organism preset")
-        preset_label.setStyleSheet("font-weight: bold;")
-
-        self.combo_presets = QComboBox()
-        self.combo_presets.setToolTip(
-            "Select preset optimized for your organism.\n"
-            "Custom: Your personal saved defaults (if exists)"
-        )
-        self._populate_preset_combo()
-
-        self.btn_load_preset = QPushButton("Load Preset")
-        self.btn_load_preset.clicked.connect(self._load_selected_preset)
-        self.btn_load_preset.setToolTip("Apply selected preset to all parameters")
-
-        self.btn_save_custom = QPushButton("Save as Custom")
-        self.btn_save_custom.clicked.connect(self._save_custom_preset)
-        self.btn_save_custom.setToolTip("Save current settings as your custom defaults")
-
-        self.preset_status_label = QLabel("")
-        self.preset_status_label.setStyleSheet(
-            "color: #6a6a6a; font-style: italic; font-size: 10px;"
-        )
-        self.preset_status_label.setVisible(False)
-
-        preset_layout.addWidget(preset_label)
-        preset_layout.addWidget(self.combo_presets, stretch=1)
-        preset_layout.addWidget(self.btn_load_preset)
-        preset_layout.addWidget(self.btn_save_custom)
-
-        vl_presets.addLayout(preset_layout)
-        vl_presets.addWidget(self.preset_status_label)
-
-        # Description display
-        self.preset_description_label = QLabel("")
-        self.preset_description_label.setWordWrap(True)
-        self.preset_description_label.setStyleSheet(
-            "color: #9a9a9a; font-style: italic; font-size: 10px; padding: 5px; "
-            "background-color: #252526; border-radius: 3px;"
-        )
-        self.preset_description_label.setVisible(False)
-        vl_presets.addWidget(self.preset_description_label)
-
-        # Connect combo box to show description
-        self.combo_presets.currentIndexChanged.connect(
-            self._on_preset_selection_changed
-        )
-
-        form.addWidget(g_presets)
-
-        # ============================================================
-        # Video Setup (File Management + Frame Rate)
-        # ============================================================
-        g_files = QGroupBox("Video")
-        self._set_compact_section_widget(g_files)
-        vl_files = QVBoxLayout(g_files)
-        vl_files.setSpacing(6)
-        vl_files.addWidget(
-            self._create_help_label(
-                "Select your input video and output locations. Configuration is auto-saved per video - "
-                "next time you load the same video, your settings will be restored automatically."
-            )
-        )
-        fl = QFormLayout(None)
-        fl.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        fl.setHorizontalSpacing(10)
-        fl.setVerticalSpacing(8)
-
-        self.btn_file = QPushButton("Browse...")
-        self.btn_file.clicked.connect(self.select_file)
-        self.btn_file.setObjectName("SecondaryBtn")
-        self.btn_file.setFixedHeight(30)
-        self.file_line = QLineEdit()
-        self.file_line.setPlaceholderText("path/to/video.mp4")
-        self.file_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.file_line.setFixedHeight(30)
-        file_row = QHBoxLayout()
-        file_row.setSpacing(8)
-        file_row.addWidget(self.file_line, 1)
-        file_row.addWidget(self.btn_file)
-        fl.addRow("Input video", file_row)
-
-        # Acquisition controls on one compact row
-        acquisition_row = QHBoxLayout()
-        acquisition_row.setSpacing(8)
-        fps_caption = QLabel("FPS")
-        fps_caption.setStyleSheet("font-size: 10px; font-weight: 600; color: #bdbdbd;")
-        acquisition_row.addWidget(fps_caption)
-
-        self.spin_fps = QDoubleSpinBox()
-        self.spin_fps.setRange(1.0, 240.0)
-        self.spin_fps.setSingleStep(1.0)
-        self.spin_fps.setValue(30.0)
-        self.spin_fps.setDecimals(2)
-        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.spin_fps.setFixedHeight(30)
-        self.spin_fps.setMinimumWidth(92)
-        self.spin_fps.setToolTip(
-            "Acquisition frame rate (frames per second) at which the video was recorded.\n"
-            "NOTE: This may differ from the video file's playback framerate.\n"
-            "Use 'Detect from Video' to read from file metadata as a starting point.\n"
-            "Time-dependent parameters (velocity, durations) scale with this.\n"
-            "Affects: motion prediction, track lifecycle, velocity thresholds."
-        )
-        self.spin_fps.valueChanged.connect(self._update_fps_info)
-        acquisition_row.addWidget(self.spin_fps)
-
-        self.btn_detect_fps = QPushButton("Detect")
-        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
-        self.btn_detect_fps.setEnabled(False)
-        self.btn_detect_fps.setObjectName("SecondaryBtn")
-        self.btn_detect_fps.setFixedHeight(30)
-        self.btn_detect_fps.setToolTip(
-            "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
-        )
-        acquisition_row.addWidget(self.btn_detect_fps)
-
-        animal_caption = QLabel("Animals")
-        animal_caption.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd; margin-left: 6px;"
-        )
-        acquisition_row.addWidget(animal_caption)
-
-        self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 200)
-        self.spin_max_targets.setValue(4)
-        self.spin_max_targets.setFixedHeight(30)
-        self.spin_max_targets.setMinimumWidth(84)
-        self.spin_max_targets.setToolTip(
-            "Maximum number of animals to track simultaneously (1-200).\n"
-            "Set this to the expected number of animals in your video.\n"
-            "Higher values use more memory and may slow down processing."
-        )
-        acquisition_row.addWidget(self.spin_max_targets)
-        acquisition_row.addStretch(1)
-        fl.addRow("Acquisition", acquisition_row)
-
-        # FPS info label
-        self.label_fps_info = QLabel()
-        self.label_fps_info.setStyleSheet(
-            "color: #6a6a6a; font-size: 10px; font-style: italic;"
-        )
-        fl.addRow("", self.label_fps_info)
-
-        vl_files.addLayout(fl)
-
-        # Batch Mode Section
-        self.g_batch = QGroupBox("Batch")
-        self.g_batch.setCheckable(True)
-        self.g_batch.setChecked(False)
-        self.g_batch.toggled.connect(self._on_batch_mode_toggled)
-        self._set_compact_section_widget(self.g_batch)
-        vl_batch = QVBoxLayout(self.g_batch)
-        vl_batch.setSpacing(6)
-
-        # Warning label (visible only while batch mode is active)
-        self.lbl_batch_warning = QLabel(
-            "⚠️ All videos in this batch will use the parameters currently selected for the Keystone video."
-        )
-        self.lbl_batch_warning.setWordWrap(True)
-        self.lbl_batch_warning.setStyleSheet(
-            "color: #f39c12; font-weight: bold; font-size: 11px; margin-bottom: 5px;"
-        )
-        self.lbl_batch_warning.setVisible(False)
-        vl_batch.addWidget(self.lbl_batch_warning)
-
-        # Container for the rest of the batch UI
-        self.container_batch = QWidget()
-        v_container = QVBoxLayout(self.container_batch)
-        v_container.setContentsMargins(0, 0, 0, 0)
-
-        batch_help = self._create_help_label(
-            "The 'Keystone' video (top of list) defines the tracking parameters. "
-            "Additional videos will save their own results using these shared settings."
-        )
-        v_container.addWidget(batch_help)
-
-        self.list_batch_videos = QListWidget()
-        self.list_batch_videos.setMaximumHeight(120)
-        self.list_batch_videos.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.list_batch_videos.itemClicked.connect(self._on_batch_video_selected)
-        self.list_batch_videos.itemDoubleClicked.connect(self._on_batch_video_selected)
-        v_container.addWidget(self.list_batch_videos)
-
-        batch_btns = QHBoxLayout()
-        self.btn_add_batch = QPushButton("Add Videos...")
-        self.btn_add_batch.clicked.connect(self._add_videos_to_batch)
-        self.btn_add_batch.setObjectName("SecondaryBtn")
-        batch_btns.addWidget(self.btn_add_batch)
-
-        self.btn_remove_batch = QPushButton("Remove Selected")
-        self.btn_remove_batch.clicked.connect(self._remove_from_batch)
-        self.btn_remove_batch.setObjectName("SecondaryBtn")
-        batch_btns.addWidget(self.btn_remove_batch)
-
-        self.btn_clear_batch = QPushButton("Clear Additional")
-        self.btn_clear_batch.clicked.connect(self._clear_batch)
-        self.btn_clear_batch.setObjectName("SecondaryBtn")
-        batch_btns.addWidget(self.btn_clear_batch)
-        v_container.addLayout(batch_btns)
-
-        batch_io_btns = QHBoxLayout()
-        self.btn_export_batch = QPushButton("Export List...")
-        self.btn_export_batch.setToolTip(
-            "Save the current batch video list to a text file.\n"
-            "The first line will be the Keystone video path."
-        )
-        self.btn_export_batch.clicked.connect(self._export_batch_list)
-        self.btn_export_batch.setObjectName("SecondaryBtn")
-        batch_io_btns.addWidget(self.btn_export_batch)
-
-        self.btn_import_batch = QPushButton("Import List...")
-        self.btn_import_batch.setToolTip(
-            "Load a batch video list from a text file.\n"
-            "The first line must be the Keystone video.\n"
-            "Missing files will be reported before proceeding."
-        )
-        self.btn_import_batch.clicked.connect(self._import_batch_list)
-        self.btn_import_batch.setObjectName("SecondaryBtn")
-        batch_io_btns.addWidget(self.btn_import_batch)
-        v_container.addLayout(batch_io_btns)
-
-        vl_batch.addWidget(self.container_batch)
-        self.container_batch.setVisible(False)  # Default hidden
-
-        vl_files.addWidget(self.g_batch)
-        form.addWidget(g_files)
-
-        # ============================================================
-        # Video Player & Frame Range
-        # ============================================================
-        self.g_video_player = QGroupBox("Preview")
-        self._set_compact_section_widget(self.g_video_player)
-        vl_player = QVBoxLayout(self.g_video_player)
-        vl_player.setSpacing(6)
-        vl_player.addWidget(
-            self._create_help_label(
-                "Preview video and select frame range for tracking. Use the slider to seek through the video."
-            )
-        )
-
-        # Video info label
-        self.lbl_video_info = QLabel("No video loaded")
-        self.lbl_video_info.setStyleSheet(
-            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
-        )
-        vl_player.addWidget(self.lbl_video_info)
-
-        # Timeline slider
-        timeline_layout = QVBoxLayout()
-        self.lbl_current_frame = QLabel("Frame: -")
-        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #9a9a9a;")
-        timeline_layout.addWidget(self.lbl_current_frame)
-
-        self.slider_timeline = QSlider(Qt.Horizontal)
-        self.slider_timeline.setMinimum(0)
-        self.slider_timeline.setMaximum(0)
-        self.slider_timeline.setValue(0)
-        self.slider_timeline.setEnabled(False)
-        self.slider_timeline.setToolTip("Seek through video frames")
-        self.slider_timeline.valueChanged.connect(self._on_timeline_changed)
-        timeline_layout.addWidget(self.slider_timeline)
-        vl_player.addLayout(timeline_layout)
-
-        # Playback controls
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(6)
-
-        self.btn_first_frame = QPushButton("⏮")
-        self.btn_first_frame.setEnabled(False)
-        self.btn_first_frame.clicked.connect(self._goto_first_frame)
-        self.btn_first_frame.setToolTip("Go to first frame")
-        self.btn_first_frame.setObjectName("SecondaryBtn")
-        self.btn_first_frame.setFixedWidth(44)
-        controls_layout.addWidget(self.btn_first_frame)
-
-        self.btn_prev_frame = QPushButton("◀")
-        self.btn_prev_frame.setEnabled(False)
-        self.btn_prev_frame.clicked.connect(self._goto_prev_frame)
-        self.btn_prev_frame.setToolTip("Previous frame")
-        self.btn_prev_frame.setObjectName("SecondaryBtn")
-        self.btn_prev_frame.setFixedWidth(44)
-        controls_layout.addWidget(self.btn_prev_frame)
-
-        self.btn_play_pause = QPushButton("▶ Play")
-        self.btn_play_pause.setEnabled(False)
-        self.btn_play_pause.clicked.connect(self._toggle_playback)
-        self.btn_play_pause.setToolTip("Play/pause video")
-        controls_layout.addWidget(self.btn_play_pause)
-
-        self.btn_next_frame = QPushButton("▶")
-        self.btn_next_frame.setEnabled(False)
-        self.btn_next_frame.clicked.connect(self._goto_next_frame)
-        self.btn_next_frame.setToolTip("Next frame")
-        self.btn_next_frame.setObjectName("SecondaryBtn")
-        self.btn_next_frame.setFixedWidth(44)
-        controls_layout.addWidget(self.btn_next_frame)
-
-        self.btn_last_frame = QPushButton("⏭")
-        self.btn_last_frame.setEnabled(False)
-        self.btn_last_frame.clicked.connect(self._goto_last_frame)
-        self.btn_last_frame.setToolTip("Go to last frame")
-        self.btn_last_frame.setObjectName("SecondaryBtn")
-        self.btn_last_frame.setFixedWidth(44)
-        controls_layout.addWidget(self.btn_last_frame)
-
-        controls_layout.addSpacing(4)
-
-        self.btn_random_seek = QPushButton("🎲 Random")
-        self.btn_random_seek.setEnabled(False)
-        self.btn_random_seek.clicked.connect(self._goto_random_frame)
-        self.btn_random_seek.setToolTip("Jump to a random frame")
-        self.btn_random_seek.setObjectName("SecondaryBtn")
-        controls_layout.addWidget(self.btn_random_seek)
-
-        controls_layout.addSpacing(8)
-
-        # Playback speed control
-        speed_label = QLabel("Speed")
-        speed_label.setStyleSheet("color: #8a8a8a;")
-        controls_layout.addWidget(speed_label)
-        self.combo_playback_speed = QComboBox()
-        self.combo_playback_speed.addItems(["0.25x", "0.5x", "1x", "2x", "4x"])
-        self.combo_playback_speed.setCurrentText("1x")
-        self.combo_playback_speed.setEnabled(False)
-        self.combo_playback_speed.setToolTip("Playback speed")
-        self.combo_playback_speed.setMaximumWidth(84)
-        controls_layout.addWidget(self.combo_playback_speed)
-        controls_layout.addStretch(1)
-
-        vl_player.addLayout(controls_layout)
-
-        vl_player.addWidget(self._make_setup_divider())
-
-        # Frame range selection
-        range_label = QLabel("Frame range")
-        range_label.setStyleSheet("font-weight: 600; color: #d0d0d0;")
-        vl_player.addWidget(range_label)
-
-        # Compact single row: Start [spinbox] [↕] · End [spinbox] [↕] [Reset]
-        _range_row = QHBoxLayout()
-        _range_row.setSpacing(6)
-        _range_row.addWidget(QLabel("Start:"))
-        self.spin_start_frame = QSpinBox()
-        self.spin_start_frame.setMinimum(0)
-        self.spin_start_frame.setMaximum(0)
-        self.spin_start_frame.setValue(0)
-        self.spin_start_frame.setEnabled(False)
-        self.spin_start_frame.setToolTip("First frame to track (0-based index)")
-        self.spin_start_frame.valueChanged.connect(self._on_frame_range_changed)
-        _range_row.addWidget(self.spin_start_frame, 1)
-        self.btn_set_start_current = QPushButton("↕")
-        self.btn_set_start_current.setEnabled(False)
-        self.btn_set_start_current.setMaximumWidth(30)
-        self.btn_set_start_current.clicked.connect(self._set_start_to_current)
-        self.btn_set_start_current.setToolTip("Set start frame to current frame")
-        _range_row.addWidget(self.btn_set_start_current)
-        _range_row.addSpacing(10)
-        _range_row.addWidget(QLabel("End:"))
-        self.spin_end_frame = QSpinBox()
-        self.spin_end_frame.setMinimum(0)
-        self.spin_end_frame.setMaximum(0)
-        self.spin_end_frame.setValue(0)
-        self.spin_end_frame.setEnabled(False)
-        self.spin_end_frame.setToolTip("Last frame to track (0-based index, inclusive)")
-        self.spin_end_frame.valueChanged.connect(self._on_frame_range_changed)
-        _range_row.addWidget(self.spin_end_frame, 1)
-        self.btn_set_end_current = QPushButton("↕")
-        self.btn_set_end_current.setEnabled(False)
-        self.btn_set_end_current.setMaximumWidth(30)
-        self.btn_set_end_current.clicked.connect(self._set_end_to_current)
-        self.btn_set_end_current.setToolTip("Set end frame to current frame")
-        _range_row.addWidget(self.btn_set_end_current)
-        _range_row.addSpacing(10)
-        self.btn_reset_range = QPushButton("Reset")
-        self.btn_reset_range.setEnabled(False)
-        self.btn_reset_range.clicked.connect(self._reset_frame_range)
-        self.btn_reset_range.setToolTip("Reset to track entire video")
-        self.btn_reset_range.setObjectName("SecondaryBtn")
-        _range_row.addWidget(self.btn_reset_range)
-        vl_player.addLayout(_range_row)
-
-        # Range info
-        self.lbl_range_info = QLabel()
-        self.lbl_range_info.setStyleSheet(
-            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
-        )
-        vl_player.addWidget(self.lbl_range_info)
-        form.addWidget(self.g_video_player)
-
-        # Initially hide video player (shown when video is loaded)
-        self.g_video_player.setVisible(False)
-
-        # ============================================================
-        # Output Files
-        # ============================================================
-        g_output = QGroupBox("Outputs")
-        self._set_compact_section_widget(g_output)
-        vl_output = QVBoxLayout(g_output)
-        vl_output.setSpacing(6)
-        fl_output = QFormLayout(None)
-        fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        fl_output.setHorizontalSpacing(10)
-        fl_output.setVerticalSpacing(8)
-
-        self.btn_csv = QPushButton("Browse...")
-        self.btn_csv.clicked.connect(self.select_csv)
-        self.btn_csv.setObjectName("SecondaryBtn")
-        self.btn_csv.setFixedHeight(30)
-        self.csv_line = QLineEdit()
-        self.csv_line.setPlaceholderText("path/to/output.csv")
-        self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.csv_line.setFixedHeight(30)
-        csv_row = QHBoxLayout()
-        csv_row.setSpacing(8)
-        csv_row.addWidget(self.csv_line, 1)
-        csv_row.addWidget(self.btn_csv)
-        fl_output.addRow("Tracking CSV", csv_row)
-
-        # Config Management
-        config_layout = QHBoxLayout()
-        config_layout.setSpacing(6)
-        self.btn_load_config = QPushButton("Load Config...")
-        self.btn_load_config.clicked.connect(self.load_config)
-        self.btn_load_config.setToolTip("Manually load configuration from a JSON file")
-        self.btn_load_config.setObjectName("SecondaryBtn")
-        self.btn_load_config.setFixedHeight(28)
-        config_layout.addWidget(self.btn_load_config)
-
-        self.btn_save_config = QPushButton("Save Config...")
-        self.btn_save_config.clicked.connect(self.save_config)
-        self.btn_save_config.setToolTip("Save current settings to a JSON file")
-        self.btn_save_config.setObjectName("SecondaryBtn")
-        self.btn_save_config.setFixedHeight(28)
-        config_layout.addWidget(self.btn_save_config)
-
-        self.btn_show_gpu_info = QPushButton("GPU Info")
-        self.btn_show_gpu_info.clicked.connect(self.show_gpu_info)
-        self.btn_show_gpu_info.setToolTip(
-            "Show available GPU and acceleration information"
-        )
-        self.btn_show_gpu_info.setObjectName("SecondaryBtn")
-        self.btn_show_gpu_info.setFixedHeight(28)
-        config_layout.addWidget(self.btn_show_gpu_info)
-        config_layout.addStretch(1)
-
-        fl_output.addRow("Config tools", config_layout)
-
-        # Config status label
-        self.config_status_label = QLabel("No config loaded (using defaults)")
-        self.config_status_label.setStyleSheet(
-            "color: #6a6a6a; font-style: italic; font-size: 10px;"
-        )
-        fl_output.addRow("", self.config_status_label)
-        vl_output.addLayout(fl_output)
-
-        form.addWidget(g_output)
-
-        # ============================================================
-        # System Performance
-        # ============================================================
-        g_sys = QGroupBox("Performance")
-        self._set_compact_section_widget(g_sys)
-        vl_sys = QVBoxLayout(g_sys)
-        vl_sys.setSpacing(6)
-        vl_sys.addWidget(
-            self._create_help_label(
-                "Resize factor reduces computational cost by downscaling frames. "
-                "Lower values speed up processing but reduce spatial accuracy."
-            )
-        )
-        fl_sys = QFormLayout(None)
-        fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        self.spin_resize = QDoubleSpinBox()
-        self.spin_resize.setRange(0.1, 1.0)
-        self.spin_resize.setSingleStep(0.1)
-        self.spin_resize.setValue(1.0)
-        self.spin_resize.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.spin_resize.setFixedHeight(30)
-        self.spin_resize.setToolTip(
-            "Downscale video frames for faster processing.\n"
-            "1.0 = full resolution, 0.5 = half resolution (4× faster).\n"
-            "All body-size-based parameters auto-scale with this value."
-        )
-        self.combo_compute_runtime = QComboBox()
-        self.combo_compute_runtime.setFixedHeight(30)
-        self.combo_compute_runtime.setToolTip(
-            "Global compute runtime for detection and pose.\n"
-            "Only runtimes compatible with all enabled pipelines are shown."
-        )
-        self.combo_compute_runtime.currentIndexChanged.connect(
-            self._on_runtime_context_changed
-        )
-        _perf_row = QHBoxLayout()
-        _perf_row.setSpacing(6)
-        _perf_scale_label = QLabel("Scale")
-        _perf_scale_label.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
-        )
-        _perf_row.addWidget(_perf_scale_label)
-        _perf_row.addWidget(self.spin_resize, 1)
-        _perf_row.addSpacing(4)
-        _perf_runtime_label = QLabel("Runtime")
-        _perf_runtime_label.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
-        )
-        _perf_row.addWidget(_perf_runtime_label)
-        _perf_row.addWidget(self.combo_compute_runtime, 2)
-        fl_sys.addRow(_perf_row)
-
-        self.check_save_confidence = QCheckBox("Save metrics")
-        self.check_save_confidence.setChecked(True)
-        self.check_save_confidence.setToolTip(
-            "Save detection, assignment, and position uncertainty metrics to CSV.\n"
-            "Useful for post-hoc quality control but adds ~10-20% processing time.\n"
-            "Disable for maximum tracking speed."
-        )
-
-        # Use Cached Detections
-        self.chk_use_cached_detections = QCheckBox("Reuse cache")
-        self.chk_use_cached_detections.setChecked(True)
-        self.chk_use_cached_detections.setToolTip(
-            "Automatically reuse detections from previous runs if available.\n"
-            "Cache is model-specific: only reused if detection method/model hasn't changed.\n"
-            "Massive speedup for re-processing with different tracking parameters.\n"
-            "Disable to force fresh detection on every run."
-        )
-
-        # Visualization-Free Mode
-        self.chk_visualization_free = QCheckBox("Headless preview")
-        self.chk_visualization_free.setChecked(False)
-        self.chk_visualization_free.setToolTip(
-            "Skip all frame visualization and rendering.\n"
-            "Significantly faster processing (2-4× speedup).\n"
-            "Real-time FPS/ETA stats still shown in UI.\n"
-            "Recommended for large batch processing."
-        )
-        self.chk_visualization_free.stateChanged.connect(
-            self._on_visualization_mode_changed
-        )
-
-        for perf_checkbox in (
-            self.check_save_confidence,
-            self.chk_use_cached_detections,
-            self.chk_visualization_free,
-        ):
-            perf_checkbox.setStyleSheet("font-size: 10px; spacing: 6px;")
-            perf_checkbox.setMinimumHeight(26)
-            perf_checkbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-        perf_toggle_grid = QGridLayout()
-        perf_toggle_grid.setHorizontalSpacing(12)
-        perf_toggle_grid.setVerticalSpacing(6)
-        perf_toggle_grid.setContentsMargins(0, 0, 0, 0)
-        perf_toggle_grid.addWidget(self.check_save_confidence, 0, 0)
-        perf_toggle_grid.addWidget(self.chk_use_cached_detections, 0, 1)
-        perf_toggle_grid.addWidget(self.chk_visualization_free, 0, 2)
-        perf_toggle_grid.setColumnStretch(0, 1)
-        perf_toggle_grid.setColumnStretch(1, 1)
-        perf_toggle_grid.setColumnStretch(2, 1)
-        fl_sys.addRow("", perf_toggle_grid)
-
-        vl_sys.addLayout(fl_sys)
-        form.addWidget(g_sys)
-
-        # ============================================================
-        # Display Settings (moved from Visuals tab)
-        # ============================================================
-        self.g_display = QGroupBox("Preview Overlays")
-        self._set_compact_section_widget(self.g_display)
-        vl_display = QVBoxLayout(self.g_display)
-        vl_display.addWidget(
-            self._create_help_label(
-                "Configure visual overlays shown during tracking. These settings affect "
-                "both the live preview and exported video output."
-            )
-        )
-
-        # Common overlays (2 per row)
-        self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
-        self.chk_show_circles.setChecked(True)
-        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
-
-        self.chk_show_orientation = QCheckBox("Show Orientation Lines")
-        self.chk_show_orientation.setChecked(True)
-        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
-
-        self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
-        self.chk_show_trajectories.setChecked(True)
-        self.chk_show_trajectories.setToolTip(
-            "Draw recent path history for each track."
-        )
-
-        self.chk_show_labels = QCheckBox("Show ID Labels")
-        self.chk_show_labels.setChecked(True)
-        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
-
-        self.chk_show_state = QCheckBox("Show State Text")
-        self.chk_show_state.setChecked(True)
-        self.chk_show_state.setToolTip(
-            "Display tracking state (ACTIVE, PREDICTED, etc.)."
-        )
-
-        self.chk_show_kalman_uncertainty = QCheckBox("Show prediction uncertainty")
-        self.chk_show_kalman_uncertainty.setChecked(False)
-        self.chk_show_kalman_uncertainty.setToolTip(
-            "Draw ellipses showing Kalman filter position uncertainty.\n"
-            "Larger ellipse = more uncertainty in predicted position.\n"
-            "Useful for debugging tracking quality and filter convergence."
-        )
-
-        _disp_r1 = QHBoxLayout()
-        _disp_r1.addWidget(self.chk_show_circles)
-        _disp_r1.addWidget(self.chk_show_orientation)
-        _disp_r2 = QHBoxLayout()
-        _disp_r2.addWidget(self.chk_show_trajectories)
-        _disp_r2.addWidget(self.chk_show_labels)
-        _disp_r3 = QHBoxLayout()
-        _disp_r3.addWidget(self.chk_show_state)
-        _disp_r3.addWidget(self.chk_show_kalman_uncertainty)
-        vl_display.addLayout(_disp_r1)
-        vl_display.addLayout(_disp_r2)
-        vl_display.addLayout(_disp_r3)
-
-        # Trail length
-        f_trail = QFormLayout(None)
-        self.spin_traj_hist = QSpinBox()
-        self.spin_traj_hist.setRange(1, 60)
-        self.spin_traj_hist.setValue(5)
-        self.spin_traj_hist.setToolTip(
-            "Length of trajectory trails to display (1-60 seconds).\n"
-            "Longer = more visible path history but more cluttered.\n"
-            "Recommended: 3-10 seconds."
-        )
-        f_trail.addRow("Trail history (seconds)", self.spin_traj_hist)
-        vl_display.addLayout(f_trail)
-
-        form.addWidget(self.g_display)
-
-        # ============================================================
-        # Advanced / Debug (moved from Visuals tab)
-        # ============================================================
-        g_debug = QGroupBox("Debug")
-        self._set_compact_section_widget(g_debug)
-        v_dbg = QVBoxLayout(g_debug)
-        v_dbg.setSpacing(6)
-        v_dbg.addWidget(
-            self._create_help_label(
-                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
-                "but generates large log files. Disable for production runs."
-            )
-        )
-        self.chk_debug_logging = QCheckBox("Enable detailed debug logging")
-        self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
-        v_dbg.addWidget(self.chk_debug_logging)
-        self.chk_enable_profiling = QCheckBox("Enable performance profiling")
-        self.chk_enable_profiling.setToolTip(
-            "Collect detailed timing for every tracking pipeline step "
-            "(init, detection, precompute, tracking loop, post-processing). "
-            "Exports a JSON profile next to outputs. Disabled by default for zero overhead."
-        )
-        v_dbg.addWidget(self.chk_enable_profiling)
-        form.addWidget(g_debug)
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-        self._populate_compute_runtime_options(preferred="cpu")
-        self._on_runtime_context_changed()
 
     def setup_detection_ui(self: object) -> object:
         """Tab 2: Detection - Method, Image Proc, Algo specific."""
@@ -8015,7 +7325,11 @@ class MainWindow(QMainWindow):
         ):
             return self.current_detection_cache_path, True
 
-        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        csv_dir = (
+            os.path.dirname(self._setup_panel.csv_line.text())
+            if self._setup_panel.csv_line.text()
+            else ""
+        )
         artifact_base_dirs = candidate_artifact_base_dirs(
             video_path,
             preferred_base_dirs=[csv_dir],
@@ -8061,8 +7375,8 @@ class MainWindow(QMainWindow):
             video_path,
             cache_path,
             params,
-            self.spin_start_frame.value(),
-            self.spin_end_frame.value(),
+            self._setup_panel.spin_start_frame.value(),
+            self._setup_panel.spin_end_frame.value(),
         )
         self._cache_builder_worker.progress_signal.connect(self.on_progress_update)
         self._cache_builder_worker.finished_signal.connect(
@@ -8113,19 +7427,21 @@ class MainWindow(QMainWindow):
             return
         self.current_detection_cache_path = cache_path
         video_path = getattr(
-            self, "_pending_preview_video_path", self.file_line.text().strip()
+            self,
+            "_pending_preview_video_path",
+            self._setup_panel.file_line.text().strip(),
         )
         self.start_preview_on_video(video_path)
 
     def _open_parameter_helper(self):
         """Open the tracking parameter selection helper dialog."""
-        video_path = self.file_line.text().strip()
+        video_path = self._setup_panel.file_line.text().strip()
         if not video_path or not os.path.exists(video_path):
             QMessageBox.warning(self, "No Video", "Please load a video first.")
             return
 
-        start_frame = self.spin_start_frame.value()
-        end_frame = self.spin_end_frame.value()
+        start_frame = self._setup_panel.spin_start_frame.value()
+        end_frame = self._setup_panel.spin_end_frame.value()
 
         if (end_frame - start_frame) > 1000:
             QMessageBox.warning(
@@ -8199,7 +7515,7 @@ class MainWindow(QMainWindow):
                     self.spin_kalman_damping.setValue(new_params["KALMAN_DAMPING"])
                 if "KALMAN_MATURITY_AGE" in new_params:
                     # Optimizer returns frame count; convert to seconds for UI
-                    _opt_fps = self.spin_fps.value()
+                    _opt_fps = self._setup_panel.spin_fps.value()
                     self.spin_kalman_maturity_age.setValue(
                         new_params["KALMAN_MATURITY_AGE"] / _opt_fps
                     )
@@ -8213,7 +7529,7 @@ class MainWindow(QMainWindow):
                     )
                 if "LOST_THRESHOLD_FRAMES" in new_params:
                     # Optimizer returns frame count; convert to seconds for UI
-                    _opt_fps = self.spin_fps.value()
+                    _opt_fps = self._setup_panel.spin_fps.value()
                     self.spin_lost_thresh.setValue(
                         new_params["LOST_THRESHOLD_FRAMES"] / _opt_fps
                     )
@@ -8231,7 +7547,7 @@ class MainWindow(QMainWindow):
 
     def _open_bg_parameter_helper(self):
         """Open the BG-subtraction parameter auto-tuner dialog."""
-        video_path = self.file_line.text().strip()
+        video_path = self._setup_panel.file_line.text().strip()
         if not video_path or not os.path.exists(video_path):
             QMessageBox.warning(self, "No Video", "Please load a video first.")
             return
@@ -8377,7 +7693,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        video_path = self.file_line.text().strip()
+        video_path = self._setup_panel.file_line.text().strip()
         start_dir = os.path.dirname(video_path) if video_path else ""
 
         # Browse for dataset directory
@@ -8509,7 +7825,7 @@ class MainWindow(QMainWindow):
 
     def _open_pose_label_ui(self):
         """Open a dataset folder in PoseKit Labeler."""
-        video_path = self.file_line.text().strip()
+        video_path = self._setup_panel.file_line.text().strip()
         if video_path:
             start_dir = os.path.dirname(video_path)
         else:
@@ -9682,9 +8998,9 @@ class MainWindow(QMainWindow):
         return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
 
     def _populate_compute_runtime_options(self, preferred: str | None = None):
-        if not hasattr(self, "combo_compute_runtime"):
+        if not hasattr(self, "_setup_panel"):
             return
-        combo = self.combo_compute_runtime
+        combo = self._setup_panel.combo_compute_runtime
         selected = (
             str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
         )
@@ -9701,12 +9017,12 @@ class MainWindow(QMainWindow):
         combo.blockSignals(False)
 
     def _selected_compute_runtime(self) -> str:
-        if not hasattr(self, "combo_compute_runtime"):
+        if not hasattr(self, "_setup_panel"):
             return "cpu"
-        data = self.combo_compute_runtime.currentData()
+        data = self._setup_panel.combo_compute_runtime.currentData()
         if data:
             return str(data).strip().lower()
-        txt = self.combo_compute_runtime.currentText().strip().lower()
+        txt = self._setup_panel.combo_compute_runtime.currentText().strip().lower()
         if txt in CANONICAL_RUNTIMES:
             return txt
         return "cpu"
@@ -10045,7 +9361,7 @@ class MainWindow(QMainWindow):
             if tab_index >= 0:
                 if not is_yolo and self.tabs.currentWidget() is self.tab_individual:
                     fallback_index = self.tabs.indexOf(
-                        getattr(self, "tab_detection", self.tab_setup)
+                        getattr(self, "tab_detection", self._setup_panel)
                     )
                     if fallback_index >= 0:
                         self.tabs.setCurrentIndex(fallback_index)
@@ -10385,14 +9701,18 @@ class MainWindow(QMainWindow):
         """Select video file via file dialog."""
         from hydra_suite.paths import get_projects_dir
 
-        start_fp = self.file_line.text().strip() if hasattr(self, "file_line") else ""
+        start_fp = (
+            self._setup_panel.file_line.text().strip()
+            if hasattr(self, "_setup_panel")
+            else ""
+        )
         start_dir = os.path.dirname(start_fp) if start_fp else str(get_projects_dir())
         fp, _ = QFileDialog.getOpenFileName(
             self, "Select Video", start_dir, "Video Files (*.mp4 *.avi *.mov)"
         )
         if fp:
             # If batch mode is checked, update the keystone
-            if self.g_batch.isChecked():
+            if self._setup_panel.g_batch.isChecked():
                 if not self.batch_videos:
                     self.batch_videos = [fp]
                 else:
@@ -10411,7 +9731,7 @@ class MainWindow(QMainWindow):
             fp: Path to the video file
             skip_config_load: If True, skip auto-loading config (used when loading config itself)
         """
-        self.file_line.setText(fp)
+        self._setup_panel.file_line.setText(fp)
         self.current_video_path = fp
 
         # Reset caches for the new video
@@ -10427,7 +9747,7 @@ class MainWindow(QMainWindow):
 
         # Auto-populate CSV output
         csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
-        self.csv_line.setText(csv_path)
+        self._setup_panel.csv_line.setText(csv_path)
 
         # Auto-populate video output and enable it
         video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
@@ -10436,7 +9756,7 @@ class MainWindow(QMainWindow):
 
         # Enable preview detection button
         self.btn_test_detection.setEnabled(True)
-        self.btn_detect_fps.setEnabled(True)
+        self._setup_panel.btn_detect_fps.setEnabled(True)
 
         # Initialize video player
         self._init_video_player(fp)
@@ -10445,22 +9765,22 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"HYDRA - {os.path.basename(fp)}")
 
         # Update Start/End frame spins
-        self.spin_start_frame.setValue(0)
-        self.spin_end_frame.setValue(self.video_total_frames - 1)
+        self._setup_panel.spin_start_frame.setValue(0)
+        self._setup_panel.spin_end_frame.setValue(self.video_total_frames - 1)
 
         # Auto-load config if it exists for this video (unless explicitly skipped)
         if not skip_config_load:
             config_path = get_video_config_path(fp)
             if config_path and os.path.isfile(config_path):
                 self._load_config_from_file(config_path)
-                self.config_status_label.setText(
+                self._setup_panel.config_status_label.setText(
                     f"✓ Loaded: {os.path.basename(config_path)}"
                 )
         else:
-            self.config_status_label.setText(
+            self._setup_panel.config_status_label.setText(
                 "ℹ️ Using current UI parameters (Keystone)"
             )
-            self.config_status_label.setStyleSheet(
+            self._setup_panel.config_status_label.setStyleSheet(
                 "color: #f39c12; font-style: italic; font-size: 10px;"
             )
 
@@ -10472,8 +9792,8 @@ class MainWindow(QMainWindow):
 
     def _on_batch_mode_toggled(self, checked):
         """Handle showing/hiding batch controls and syncing keystone video."""
-        self.lbl_batch_warning.setVisible(checked)
-        self.container_batch.setVisible(checked)
+        self._setup_panel.lbl_batch_warning.setVisible(checked)
+        self._setup_panel.container_batch.setVisible(checked)
         if checked:
             self._sync_keystone_to_batch()
         else:
@@ -10482,7 +9802,7 @@ class MainWindow(QMainWindow):
 
     def _sync_keystone_to_batch(self):
         """Ensure the currently loaded video is the FIRST item in the batch list."""
-        video_path = self.file_line.text().strip()
+        video_path = self._setup_panel.file_line.text().strip()
         if not video_path:
             return
 
@@ -10498,10 +9818,10 @@ class MainWindow(QMainWindow):
 
     def _sync_batch_list_ui(self):
         """Refresh the batch list widget with markers for the keystone."""
-        self.list_batch_videos.clear()
+        self._setup_panel.list_batch_videos.clear()
         current_fp = (
-            os.path.normpath(self.file_line.text().strip())
-            if self.file_line.text().strip()
+            os.path.normpath(self._setup_panel.file_line.text().strip())
+            if self._setup_panel.file_line.text().strip()
             else ""
         )
 
@@ -10523,10 +9843,10 @@ class MainWindow(QMainWindow):
                 font.setBold(True)
                 item.setFont(font)
 
-            self.list_batch_videos.addItem(item)
+            self._setup_panel.list_batch_videos.addItem(item)
 
             if norm_fp == current_fp:
-                self.list_batch_videos.setCurrentItem(item)
+                self._setup_panel.list_batch_videos.setCurrentItem(item)
 
     def _add_videos_to_batch(self):
         """Add additional videos to the batch list."""
@@ -10551,7 +9871,7 @@ class MainWindow(QMainWindow):
 
     def _on_batch_video_selected(self, *args):
         """Load a video from the batch list for preview/tuning."""
-        row = self.list_batch_videos.currentRow()
+        row = self._setup_panel.list_batch_videos.currentRow()
         if 0 <= row < len(self.batch_videos):
             fp = self.batch_videos[row]
             # If it's already the current video, do nothing
@@ -10564,7 +9884,7 @@ class MainWindow(QMainWindow):
 
     def _remove_from_batch(self):
         """Remove selected additional video from the batch list."""
-        row = self.list_batch_videos.currentRow()
+        row = self._setup_panel.list_batch_videos.currentRow()
         if row == 0:
             QMessageBox.information(
                 self,
@@ -10683,7 +10003,7 @@ class MainWindow(QMainWindow):
         keystone = valid[0]
 
         # Activate batch mode if not already on, then load the keystone
-        self.g_batch.setChecked(True)
+        self._setup_panel.g_batch.setChecked(True)
 
         # Replace the batch list with the imported paths (keystone first)
         self.batch_videos = valid
@@ -10704,7 +10024,7 @@ class MainWindow(QMainWindow):
         """select_csv method documentation."""
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
         if fp:
-            self.csv_line.setText(fp)
+            self._setup_panel.csv_line.setText(fp)
 
     def select_video_output(self: object) -> object:
         """select_video_output method documentation."""
@@ -10743,33 +10063,33 @@ class MainWindow(QMainWindow):
         height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         # Update UI
-        self.lbl_video_info.setText(
+        self._setup_panel.lbl_video_info.setText(
             f"Video: {self.video_total_frames} frames, {width}x{height}, {fps:.2f} FPS"
         )
 
         # Enable controls
-        self.slider_timeline.setMaximum(self.video_total_frames - 1)
-        self.slider_timeline.setEnabled(True)
-        self.btn_first_frame.setEnabled(True)
-        self.btn_prev_frame.setEnabled(True)
-        self.btn_play_pause.setEnabled(True)
-        self.btn_next_frame.setEnabled(True)
-        self.btn_last_frame.setEnabled(True)
-        self.btn_random_seek.setEnabled(True)
-        self.combo_playback_speed.setEnabled(True)
+        self._setup_panel.slider_timeline.setMaximum(self.video_total_frames - 1)
+        self._setup_panel.slider_timeline.setEnabled(True)
+        self._setup_panel.btn_first_frame.setEnabled(True)
+        self._setup_panel.btn_prev_frame.setEnabled(True)
+        self._setup_panel.btn_play_pause.setEnabled(True)
+        self._setup_panel.btn_next_frame.setEnabled(True)
+        self._setup_panel.btn_last_frame.setEnabled(True)
+        self._setup_panel.btn_random_seek.setEnabled(True)
+        self._setup_panel.combo_playback_speed.setEnabled(True)
 
         # Enable frame range controls
-        self.spin_start_frame.setMaximum(self.video_total_frames - 1)
-        self.spin_start_frame.setEnabled(True)
-        self.spin_end_frame.setMaximum(self.video_total_frames - 1)
-        self.spin_end_frame.setValue(self.video_total_frames - 1)
-        self.spin_end_frame.setEnabled(True)
-        self.btn_set_start_current.setEnabled(True)
-        self.btn_set_end_current.setEnabled(True)
-        self.btn_reset_range.setEnabled(True)
+        self._setup_panel.spin_start_frame.setMaximum(self.video_total_frames - 1)
+        self._setup_panel.spin_start_frame.setEnabled(True)
+        self._setup_panel.spin_end_frame.setMaximum(self.video_total_frames - 1)
+        self._setup_panel.spin_end_frame.setValue(self.video_total_frames - 1)
+        self._setup_panel.spin_end_frame.setEnabled(True)
+        self._setup_panel.btn_set_start_current.setEnabled(True)
+        self._setup_panel.btn_set_end_current.setEnabled(True)
+        self._setup_panel.btn_reset_range.setEnabled(True)
 
         # Show video player group
-        self.g_video_player.setVisible(True)
+        self._setup_panel.g_video_player.setVisible(True)
 
         # Go to first frame
         self.video_current_frame_idx = 0
@@ -10800,17 +10120,17 @@ class MainWindow(QMainWindow):
         self._update_preview_display()
 
         # Update UI
-        self.lbl_current_frame.setText(
+        self._setup_panel.lbl_current_frame.setText(
             f"Frame: {self.video_current_frame_idx}/{self.video_total_frames - 1}"
         )
-        self.slider_timeline.blockSignals(True)
-        self.slider_timeline.setValue(self.video_current_frame_idx)
-        self.slider_timeline.blockSignals(False)
+        self._setup_panel.slider_timeline.blockSignals(True)
+        self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
+        self._setup_panel.slider_timeline.blockSignals(False)
 
     def _on_timeline_changed(self, value):
         """Handle timeline slider change."""
         # Only stop playback if this is a manual user change (not from playback itself)
-        if self.is_playing and not self.slider_timeline.signalsBlocked():
+        if self.is_playing and not self._setup_panel.slider_timeline.signalsBlocked():
             self._stop_playback()
 
         self.video_current_frame_idx = value
@@ -10821,7 +10141,7 @@ class MainWindow(QMainWindow):
         if self.is_playing:
             self._stop_playback()
         self.video_current_frame_idx = 0
-        self.slider_timeline.setValue(0)
+        self._setup_panel.slider_timeline.setValue(0)
         self._display_current_frame()
 
     def _goto_prev_frame(self):
@@ -10830,7 +10150,7 @@ class MainWindow(QMainWindow):
             self._stop_playback()
         if self.video_current_frame_idx > 0:
             self.video_current_frame_idx -= 1
-            self.slider_timeline.setValue(self.video_current_frame_idx)
+            self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
             self._display_current_frame()
 
     def _goto_next_frame(self):
@@ -10839,7 +10159,7 @@ class MainWindow(QMainWindow):
             self._stop_playback()
         if self.video_current_frame_idx < self.video_total_frames - 1:
             self.video_current_frame_idx += 1
-            self.slider_timeline.setValue(self.video_current_frame_idx)
+            self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
             self._display_current_frame()
 
     def _goto_last_frame(self):
@@ -10847,7 +10167,7 @@ class MainWindow(QMainWindow):
         if self.is_playing:
             self._stop_playback()
         self.video_current_frame_idx = self.video_total_frames - 1
-        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
         self._display_current_frame()
 
     def _goto_random_frame(self):
@@ -10857,7 +10177,7 @@ class MainWindow(QMainWindow):
         if self.video_total_frames <= 0:
             return
         self.video_current_frame_idx = np.random.randint(0, self.video_total_frames)
-        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
         self._display_current_frame()
 
     def _toggle_playback(self):
@@ -10873,10 +10193,10 @@ class MainWindow(QMainWindow):
             return
 
         self.is_playing = True
-        self.btn_play_pause.setText("⏸ Pause")
+        self._setup_panel.btn_play_pause.setText("⏸ Pause")
 
         # Get playback speed
-        speed_text = self.combo_playback_speed.currentText()
+        speed_text = self._setup_panel.combo_playback_speed.currentText()
         speed = float(speed_text.replace("x", ""))
 
         # Calculate interval based on FPS and speed
@@ -10900,7 +10220,7 @@ class MainWindow(QMainWindow):
             return
 
         self.is_playing = False
-        self.btn_play_pause.setText("▶ Play")
+        self._setup_panel.btn_play_pause.setText("▶ Play")
 
         if self.playback_timer and self.playback_timer.isActive():
             self.playback_timer.stop()
@@ -10929,7 +10249,7 @@ class MainWindow(QMainWindow):
             # Re-check if still playing after processing events
             if self.is_playing and self.playback_timer:
                 # Calculate next interval
-                speed_text = self.combo_playback_speed.currentText()
+                speed_text = self._setup_panel.combo_playback_speed.currentText()
                 speed = float(speed_text.replace("x", ""))
                 fps = self.video_cap.get(cv2.CAP_PROP_FPS)
                 if fps <= 0:
@@ -10945,36 +10265,41 @@ class MainWindow(QMainWindow):
     def _on_frame_range_changed(self):
         """Handle frame range spinbox changes."""
         # Ensure start <= end
-        if self.spin_start_frame.value() > self.spin_end_frame.value():
-            self.spin_end_frame.setValue(self.spin_start_frame.value())
+        if (
+            self._setup_panel.spin_start_frame.value()
+            > self._setup_panel.spin_end_frame.value()
+        ):
+            self._setup_panel.spin_end_frame.setValue(
+                self._setup_panel.spin_start_frame.value()
+            )
 
         self._update_range_info()
 
     def _update_range_info(self):
         """Update the frame range info label."""
-        start = self.spin_start_frame.value()
-        end = self.spin_end_frame.value()
+        start = self._setup_panel.spin_start_frame.value()
+        end = self._setup_panel.spin_end_frame.value()
         num_frames = end - start + 1
 
-        fps = self.spin_fps.value()
+        fps = self._setup_panel.spin_fps.value()
         duration_sec = num_frames / fps if fps > 0 else 0
 
-        self.lbl_range_info.setText(
+        self._setup_panel.lbl_range_info.setText(
             f"Tracking {num_frames} frames ({duration_sec:.2f} seconds)"
         )
 
     def _set_start_to_current(self):
         """Set start frame to current frame."""
-        self.spin_start_frame.setValue(self.video_current_frame_idx)
+        self._setup_panel.spin_start_frame.setValue(self.video_current_frame_idx)
 
     def _set_end_to_current(self):
         """Set end frame to current frame."""
-        self.spin_end_frame.setValue(self.video_current_frame_idx)
+        self._setup_panel.spin_end_frame.setValue(self.video_current_frame_idx)
 
     def _reset_frame_range(self):
         """Reset frame range to full video."""
-        self.spin_start_frame.setValue(0)
-        self.spin_end_frame.setValue(self.video_total_frames - 1)
+        self._setup_panel.spin_start_frame.setValue(0)
+        self._setup_panel.spin_end_frame.setValue(self.video_total_frames - 1)
 
     def _on_brightness_changed(self, value):
         """Handle brightness slider change."""
@@ -11021,9 +10346,9 @@ class MainWindow(QMainWindow):
 
     def _update_fps_info(self):
         """Update the FPS info label with time per frame."""
-        fps = self.spin_fps.value()
+        fps = self._setup_panel.spin_fps.value()
         time_per_frame = 1000.0 / fps  # milliseconds
-        self.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
+        self._setup_panel.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
 
     def _detect_fps_from_current_video(self):
         """Detect and set FPS from the currently loaded video."""
@@ -11035,7 +10360,7 @@ class MainWindow(QMainWindow):
 
         detected_fps = self._auto_detect_fps(self.current_video_path)
         if detected_fps is not None:
-            self.spin_fps.setValue(detected_fps)
+            self._setup_panel.spin_fps.setValue(detected_fps)
             QMessageBox.information(
                 self,
                 "FPS Detected",
@@ -11418,14 +10743,14 @@ class MainWindow(QMainWindow):
 
         return {
             "detection_method": self.combo_detection_method.currentIndex(),
-            "video_path": self.file_line.text(),
+            "video_path": self._setup_panel.file_line.text(),
             "bg_prime_seconds": self.spin_bg_prime.value(),
-            "fps": self.spin_fps.value(),
+            "fps": self._setup_panel.spin_fps.value(),
             "brightness": self.slider_brightness.value(),
             "contrast": self.slider_contrast.value() / 100.0,
             "gamma": self.slider_gamma.value() / 100.0,
             "roi_mask": self.roi_mask.copy() if self.roi_mask is not None else None,
-            "resize_factor": self.spin_resize.value(),
+            "resize_factor": self._setup_panel.spin_resize.value(),
             "dark_on_light": self.chk_dark_on_light.isChecked(),
             "threshold_value": self.spin_threshold.value(),
             "morph_kernel_size": self.spin_morph_size.value(),
@@ -11467,7 +10792,7 @@ class MainWindow(QMainWindow):
             "enable_tensorrt": runtime_detection["enable_tensorrt"],
             "enable_onnx_runtime": runtime_detection["enable_onnx_runtime"],
             "tensorrt_max_batch_size": trt_batch_size,
-            "max_targets": self.spin_max_targets.value(),
+            "max_targets": self._setup_panel.spin_max_targets.value(),
             "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
             "enable_conservative_split": self.chk_conservative_split.isChecked(),
             "conservative_kernel_size": self.spin_conservative_kernel.value(),
@@ -11795,7 +11120,7 @@ class MainWindow(QMainWindow):
             # Detection test shows resized content
             if self.preview_frame_original is not None:
                 h, w = self.preview_frame_original.shape[:2]
-                resize_factor = self.spin_resize.value()
+                resize_factor = self._setup_panel.spin_resize.value()
                 effective_width = int(w * resize_factor)
                 effective_height = int(h * resize_factor)
             else:
@@ -11962,13 +11287,13 @@ class MainWindow(QMainWindow):
 
     def start_roi_selection(self: object) -> object:
         """start_roi_selection method documentation."""
-        if not self.file_line.text():
+        if not self._setup_panel.file_line.text():
             QMessageBox.warning(self, "No Video", "Please select a video file first.")
             return
 
         # Load base frame if not already loaded
         if self.roi_base_frame is None:
-            cap = cv2.VideoCapture(self.file_line.text())
+            cap = cv2.VideoCapture(self._setup_panel.file_line.text())
             if not cap.isOpened():
                 QMessageBox.warning(self, "Error", "Cannot open video file.")
                 return
@@ -12736,9 +12061,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "lbl_obb_mode_warning"):
             return
         runtime = (
-            self._selected_compute_runtime()
-            if hasattr(self, "combo_compute_runtime")
-            else ""
+            self._selected_compute_runtime() if hasattr(self, "_setup_panel") else ""
         )
         sequential = (
             hasattr(self, "combo_yolo_obb_mode")
@@ -12995,20 +12318,20 @@ class MainWindow(QMainWindow):
 
     def _on_visualization_mode_changed(self, state):
         """Handle visualization-free mode toggle."""
-        is_viz_free = self.chk_visualization_free.isChecked()
+        is_viz_free = self._setup_panel.chk_visualization_free.isChecked()
         is_preview_active = self.btn_preview.isChecked()
         is_tracking_active = self.tracking_worker and self.tracking_worker.isRunning()
 
         # Keep display settings visible; only gate their effect at runtime
-        self.g_display.setVisible(True)
+        self._setup_panel.g_display.setVisible(True)
 
         # Keep individual checkboxes enabled for pre-configuration
-        self.chk_show_circles.setEnabled(True)
-        self.chk_show_orientation.setEnabled(True)
-        self.chk_show_trajectories.setEnabled(True)
-        self.chk_show_labels.setEnabled(True)
-        self.chk_show_state.setEnabled(True)
-        self.chk_show_kalman_uncertainty.setEnabled(True)
+        self._setup_panel.chk_show_circles.setEnabled(True)
+        self._setup_panel.chk_show_orientation.setEnabled(True)
+        self._setup_panel.chk_show_trajectories.setEnabled(True)
+        self._setup_panel.chk_show_labels.setEnabled(True)
+        self._setup_panel.chk_show_state.setEnabled(True)
+        self._setup_panel.chk_show_kalman_uncertainty.setEnabled(True)
         self.chk_show_fg.setEnabled(True)
         self.chk_show_bg.setEnabled(True)
         self.chk_show_yolo_obb.setEnabled(True)
@@ -13043,7 +12366,7 @@ class MainWindow(QMainWindow):
             self.stop_tracking()
 
         # Set up comprehensive session logging once for entire tracking session
-        video_path = self.file_line.text()
+        video_path = self._setup_panel.file_line.text()
         if video_path:
             self._setup_session_logging(video_path, backward_mode=False)
             from datetime import datetime
@@ -13250,19 +12573,19 @@ class MainWindow(QMainWindow):
     def _collect_preview_controls(self):
         return [
             self.btn_test_detection,
-            self.slider_timeline,
-            self.btn_first_frame,
-            self.btn_prev_frame,
-            self.btn_play_pause,
-            self.btn_next_frame,
-            self.btn_last_frame,
-            self.btn_random_seek,
-            self.combo_playback_speed,
-            self.spin_start_frame,
-            self.spin_end_frame,
-            self.btn_set_start_current,
-            self.btn_set_end_current,
-            self.btn_reset_range,
+            self._setup_panel.slider_timeline,
+            self._setup_panel.btn_first_frame,
+            self._setup_panel.btn_prev_frame,
+            self._setup_panel.btn_play_pause,
+            self._setup_panel.btn_next_frame,
+            self._setup_panel.btn_last_frame,
+            self._setup_panel.btn_random_seek,
+            self._setup_panel.combo_playback_speed,
+            self._setup_panel.spin_start_frame,
+            self._setup_panel.spin_end_frame,
+            self._setup_panel.btn_set_start_current,
+            self._setup_panel.btn_set_end_current,
+            self._setup_panel.btn_reset_range,
         ]
 
     def _set_interactive_widgets_enabled(
@@ -13391,7 +12714,8 @@ class MainWindow(QMainWindow):
     def _is_visualization_enabled(self) -> bool:
         # Preview should always render frames regardless of visualization-free toggle
         return (
-            not self.chk_visualization_free.isChecked() or self.btn_preview.isChecked()
+            not self._setup_panel.chk_visualization_free.isChecked()
+            or self.btn_preview.isChecked()
         )
 
     def _sync_contextual_controls(self):
@@ -13418,7 +12742,11 @@ class MainWindow(QMainWindow):
             ]
             self._set_interactive_widgets_enabled(
                 False,
-                allowlist=[self.btn_file, self.btn_load_config] + extra_allowed,
+                allowlist=[
+                    self._setup_panel.btn_file,
+                    self._setup_panel.btn_load_config,
+                ]
+                + extra_allowed,
                 remember_state=False,
             )
             self.btn_start.setEnabled(False)
@@ -13426,7 +12754,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "btn_param_helper"):
                 self.btn_param_helper.setEnabled(False)
             self._set_video_interaction_enabled(False)
-            self.g_video_player.setVisible(False)
+            self._setup_panel.g_video_player.setVisible(False)
             self._show_video_logo_placeholder()
             return
 
@@ -13820,7 +13148,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        video_fp = self.file_line.text()
+        video_fp = self._setup_panel.file_line.text()
         if not video_fp:
             return
         cap = cv2.VideoCapture(video_fp)
@@ -13830,10 +13158,14 @@ class MainWindow(QMainWindow):
         cap.release()
 
         current_params = self.get_parameters_dict()
-        resize_factor = self.spin_resize.value()
+        resize_factor = self._setup_panel.spin_resize.value()
         interp_method = self.combo_interpolation_method.currentText().lower()
         max_gap = max(
-            1, round(self.spin_interpolation_max_gap.value() * self.spin_fps.value())
+            1,
+            round(
+                self.spin_interpolation_max_gap.value()
+                * self._setup_panel.spin_fps.value()
+            ),
         )
         heading_flip_max_burst = self.spin_heading_flip_max_burst.value()
 
@@ -14033,7 +13365,11 @@ class MainWindow(QMainWindow):
     def _resolve_source_video_fps(self) -> float:
         """Return the source video FPS, falling back to the UI value."""
         fps = 0.0
-        video_path = self.file_line.text().strip() if hasattr(self, "file_line") else ""
+        video_path = (
+            self._setup_panel.file_line.text().strip()
+            if hasattr(self, "_setup_panel")
+            else ""
+        )
         if video_path and os.path.exists(video_path):
             cap = cv2.VideoCapture(video_path)
             try:
@@ -14041,8 +13377,8 @@ class MainWindow(QMainWindow):
                     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
             finally:
                 cap.release()
-        if fps <= 0.0 and hasattr(self, "spin_fps"):
-            fps = float(self.spin_fps.value() or 0.0)
+        if fps <= 0.0 and hasattr(self, "_setup_panel"):
+            fps = float(self._setup_panel.spin_fps.value() or 0.0)
         return max(1.0, fps or 1.0)
 
     def _resolve_current_individual_dataset_dir(self):
@@ -14109,7 +13445,7 @@ class MainWindow(QMainWindow):
             self.oriented_video_worker = OrientedTrackVideoWorker(
                 final_csv_path,
                 str(dataset_dir),
-                self.file_line.text().strip(),
+                self._setup_panel.file_line.text().strip(),
                 self.current_detection_cache_path,
                 self.current_interpolated_roi_npz_path,
                 self._resolve_source_video_fps(),
@@ -14275,7 +13611,7 @@ class MainWindow(QMainWindow):
             return
         self.progress_label.setText("Saving merged trajectories...")
 
-        raw_csv_path = self.csv_line.text()
+        raw_csv_path = self._setup_panel.csv_line.text()
         merged_csv_path = None
         if raw_csv_path:
             base, ext = os.path.splitext(raw_csv_path)
@@ -14315,7 +13651,7 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("Generating video...")
         QApplication.processEvents()
 
-        video_path = self.file_line.text()
+        video_path = self._setup_panel.file_line.text()
         output_path = self.video_out_line.text()
 
         def _complete_after_video():
@@ -14883,7 +14219,7 @@ class MainWindow(QMainWindow):
             processed_trajectories = full_traj
             if self.enable_postprocessing.isChecked():
                 params = self.get_parameters_dict()
-                raw_csv_path = self.csv_line.text()
+                raw_csv_path = self._setup_panel.csv_line.text()
 
                 if is_backward_mode and raw_csv_path:
                     # Use backward CSV for processing
@@ -14925,7 +14261,7 @@ class MainWindow(QMainWindow):
                     logger.info(f"Post-processing stats (fallback): {stats}")
 
             if not is_backward_mode:
-                raw_csv_path = self.csv_line.text()
+                raw_csv_path = self._setup_panel.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
                     # Track intermediate forward CSV as temporary (only if cleanup enabled)
@@ -14974,7 +14310,7 @@ class MainWindow(QMainWindow):
                             1,
                             round(
                                 self.spin_interpolation_max_gap.value()
-                                * self.spin_fps.value()
+                                * self._setup_panel.spin_fps.value()
                             ),
                         )
                         heading_flip_max_burst = (
@@ -14988,7 +14324,7 @@ class MainWindow(QMainWindow):
                         )
 
                     # Scale coordinates to original video space (forward-only mode)
-                    resize_factor = self.spin_resize.value()
+                    resize_factor = self._setup_panel.spin_resize.value()
                     processed_trajectories = self._scale_trajectories_to_original_space(
                         processed_trajectories, resize_factor
                     )
@@ -15014,7 +14350,7 @@ class MainWindow(QMainWindow):
                     self._finish_tracking_session(final_csv_path=final_csv_path)
                     return
             else:
-                raw_csv_path = self.csv_line.text()
+                raw_csv_path = self._setup_panel.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
                     # Track intermediate backward CSV as temporary (only if cleanup enabled)
@@ -15075,7 +14411,7 @@ class MainWindow(QMainWindow):
                 "Tracking Failed",
                 "An error occurred during tracking. Check logs for details.",
             )
-            if self.g_batch.isChecked():
+            if self._setup_panel.g_batch.isChecked():
                 self.current_batch_index = -1
                 logger.info("Batch mode aborted due to error.")
             self._finish_tracking_session(final_csv_path=None)
@@ -15634,7 +14970,7 @@ class MainWindow(QMainWindow):
 
         # Determine if we are continuing a batch
         is_batch_continuing = (
-            self.g_batch.isChecked()
+            self._setup_panel.g_batch.isChecked()
             and self.current_batch_index >= 0
             and (self.current_batch_index + 1) < len(self.batch_videos)
         )
@@ -15662,12 +14998,14 @@ class MainWindow(QMainWindow):
             self._show_summary_on_dataset_done = False
 
         # --- Batch Mode Continuation ---
-        if self.g_batch.isChecked() and self.current_batch_index >= 0:
+        if self._setup_panel.g_batch.isChecked() and self.current_batch_index >= 0:
             self.current_batch_index += 1
             if self.current_batch_index < len(self.batch_videos):
                 # Load next video
                 fp = self.batch_videos[self.current_batch_index]
-                self.list_batch_videos.setCurrentRow(self.current_batch_index)
+                self._setup_panel.list_batch_videos.setCurrentRow(
+                    self.current_batch_index
+                )
 
                 # We MUST skip_config_load here to preserve the keystone parameters
                 # currently in the UI so they are applied to this video.
@@ -15701,12 +15039,14 @@ class MainWindow(QMainWindow):
             target_csv = None
             if csv_path and os.path.exists(csv_path):
                 target_csv = csv_path
-            elif self.csv_line.text() and os.path.exists(self.csv_line.text()):
-                target_csv = self.csv_line.text()
+            elif self._setup_panel.csv_line.text() and os.path.exists(
+                self._setup_panel.csv_line.text()
+            ):
+                target_csv = self._setup_panel.csv_line.text()
             if not target_csv or not os.path.exists(target_csv):
                 return False
 
-            video_path = self.file_line.text()
+            video_path = self._setup_panel.file_line.text()
             if not video_path or not os.path.exists(video_path):
                 return False
 
@@ -15846,7 +15186,7 @@ class MainWindow(QMainWindow):
         logger.info("Starting backward tracking pass (using cached detections)...")
         logger.info("=" * 80)
 
-        video_fp = self.file_line.text()
+        video_fp = self._setup_panel.file_line.text()
         if not video_fp:
             return
 
@@ -15868,7 +15208,7 @@ class MainWindow(QMainWindow):
         """start_tracking method documentation."""
         if not preview_mode:
             # If batch mode group is checked, initialize batch processing
-            if self.g_batch.isChecked():
+            if self._setup_panel.g_batch.isChecked():
                 if self.current_batch_index < 0:
                     res = QMessageBox.question(
                         self,
@@ -15885,7 +15225,7 @@ class MainWindow(QMainWindow):
                     self.current_batch_index = 0
                     self._sync_keystone_to_batch()
                     fp = self.batch_videos[0]
-                    self.list_batch_videos.setCurrentRow(0)
+                    self._setup_panel.list_batch_videos.setCurrentRow(0)
 
                     # Ensure the keystone video is loaded WITHOUT overwriting current UI params
                     if self.current_video_path != fp:
@@ -15893,12 +15233,14 @@ class MainWindow(QMainWindow):
 
             # Save config for the CURRENTLY LOADED video (this persists the keystone's params to the current video)
             # In batch mode, we automatically overwrite to avoid halting the automated process.
-            if not self.save_config(prompt_if_exists=not self.g_batch.isChecked()):
+            if not self.save_config(
+                prompt_if_exists=not self._setup_panel.g_batch.isChecked()
+            ):
                 # User cancelled config save, abort tracking
                 self.current_batch_index = -1  # Reset batch if cancelled
                 return
 
-        video_fp = self.file_line.text()
+        video_fp = self._setup_panel.file_line.text()
         if not video_fp:
             QMessageBox.warning(self, "No video", "Please select a video file first.")
             return
@@ -16041,9 +15383,9 @@ class MainWindow(QMainWindow):
         # For backward mode, we reuse the same session log
 
         self.csv_writer_thread = None
-        if self.csv_line.text():
+        if self._setup_panel.csv_line.text():
             # Determine header based on confidence tracking setting
-            save_confidence = self.check_save_confidence.isChecked()
+            save_confidence = self._setup_panel.check_save_confidence.isChecked()
             if save_confidence:
                 hdr = [
                     "TrackID",
@@ -16074,7 +15416,7 @@ class MainWindow(QMainWindow):
             # Append TagID column when AprilTag identity is active
             if self._selected_identity_method() == "apriltags":
                 hdr.append("TagID")
-            csv_path = self.csv_line.text()
+            csv_path = self._setup_panel.csv_line.text()
             base, ext = os.path.splitext(csv_path)
             if backward_mode:
                 csv_path = f"{base}_backward{ext}"
@@ -16098,7 +15440,7 @@ class MainWindow(QMainWindow):
             f"{params.get('START_FRAME')}..{params.get('END_FRAME')}"
         )
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
-        use_cached_detections = self.chk_use_cached_detections.isChecked()
+        use_cached_detections = self._setup_panel.chk_use_cached_detections.isChecked()
         if not self._validate_yolo_model_requirements(params, mode_label="tracking"):
             return
 
@@ -16340,7 +15682,11 @@ class MainWindow(QMainWindow):
         params["INFERENCE_MODEL_ID"] = model_id
         if cache_ids.get("engine"):
             params["ENGINE_MODEL_ID"] = cache_ids["engine"]
-        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        csv_dir = (
+            os.path.dirname(self._setup_panel.csv_line.text())
+            if self._setup_panel.csv_line.text()
+            else ""
+        )
         artifact_base_dirs = candidate_artifact_base_dirs(
             video_path,
             preferred_base_dirs=[csv_dir],
@@ -16407,7 +15753,7 @@ class MainWindow(QMainWindow):
 
     def get_parameters_dict(self: object) -> object:
         """get_parameters_dict method documentation."""
-        N = self.spin_max_targets.value()
+        N = self._setup_panel.spin_max_targets.value()
         np.random.seed(42)
         colors = [tuple(c.tolist()) for c in np.random.randint(0, 255, (N, 3))]
 
@@ -16445,7 +15791,7 @@ class MainWindow(QMainWindow):
 
         # Calculate actual pixel values from body-size multipliers
         reference_body_size = self.spin_reference_body_size.value()
-        resize_factor = self.spin_resize.value()
+        resize_factor = self._setup_panel.spin_resize.value()
         scaled_body_size = reference_body_size * resize_factor
 
         # Area is π * (diameter/2)^2
@@ -16470,7 +15816,7 @@ class MainWindow(QMainWindow):
         )
 
         # Convert time-based velocities to frame-based for tracking
-        fps = self.spin_fps.value()
+        fps = self._setup_panel.spin_fps.value()
         velocity_threshold_pixels_per_frame = (
             self.spin_velocity.value() * scaled_body_size / fps
         )
@@ -16574,8 +15920,8 @@ class MainWindow(QMainWindow):
             "FPS": fps,  # Acquisition frame rate
             # Keep selected frame range stable even when controls are disabled
             # during tracking/backward pass.
-            "START_FRAME": self.spin_start_frame.value(),
-            "END_FRAME": self.spin_end_frame.value(),
+            "START_FRAME": self._setup_panel.spin_start_frame.value(),
+            "END_FRAME": self._setup_panel.spin_end_frame.value(),
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_OBB_MODE": yolo_mode,
             "YOLO_OBB_DIRECT_MODEL_PATH": yolo_direct_path,
@@ -16635,7 +15981,7 @@ class MainWindow(QMainWindow):
             "MIN_DETECTION_COUNTS": min_detection_counts,
             "MIN_DETECTIONS_TO_START": min_detections_to_start,
             "MIN_TRACKING_COUNTS": min_tracking_counts,
-            "TRAJECTORY_HISTORY_SECONDS": self.spin_traj_hist.value(),
+            "TRAJECTORY_HISTORY_SECONDS": self._setup_panel.spin_traj_hist.value(),
             "BACKGROUND_PRIME_FRAMES": bg_prime_frames,
             "ENABLE_LIGHTING_STABILIZATION": self.chk_lighting_stab.isChecked(),
             "ENABLE_ADAPTIVE_BACKGROUND": self.chk_adaptive_bg.isChecked(),
@@ -16657,7 +16003,7 @@ class MainWindow(QMainWindow):
                 self.spin_kalman_longitudinal_noise.value()
                 / max(self.spin_kalman_lateral_noise.value(), 1e-6),
             ),
-            "RESIZE_FACTOR": self.spin_resize.value(),
+            "RESIZE_FACTOR": self._setup_panel.spin_resize.value(),
             "ENABLE_CONSERVATIVE_SPLIT": self.chk_conservative_split.isChecked(),
             "CONSERVATIVE_KERNEL_SIZE": self.spin_conservative_kernel.value(),
             "CONSERVATIVE_ERODE_ITER": self.spin_conservative_erode.value(),
@@ -16697,14 +16043,14 @@ class MainWindow(QMainWindow):
             "TRAJECTORY_COLORS": colors,
             "SHOW_FG": self.chk_show_fg.isChecked(),
             "SHOW_BG": self.chk_show_bg.isChecked(),
-            "SHOW_CIRCLES": self.chk_show_circles.isChecked(),
-            "SHOW_ORIENTATION": self.chk_show_orientation.isChecked(),
+            "SHOW_CIRCLES": self._setup_panel.chk_show_circles.isChecked(),
+            "SHOW_ORIENTATION": self._setup_panel.chk_show_orientation.isChecked(),
             "SHOW_YOLO_OBB": self.chk_show_yolo_obb.isChecked(),
-            "SHOW_TRAJECTORIES": self.chk_show_trajectories.isChecked(),
-            "SHOW_LABELS": self.chk_show_labels.isChecked(),
-            "SHOW_STATE": self.chk_show_state.isChecked(),
-            "SHOW_KALMAN_UNCERTAINTY": self.chk_show_kalman_uncertainty.isChecked(),
-            "VISUALIZATION_FREE_MODE": self.chk_visualization_free.isChecked(),
+            "SHOW_TRAJECTORIES": self._setup_panel.chk_show_trajectories.isChecked(),
+            "SHOW_LABELS": self._setup_panel.chk_show_labels.isChecked(),
+            "SHOW_STATE": self._setup_panel.chk_show_state.isChecked(),
+            "SHOW_KALMAN_UNCERTAINTY": self._setup_panel.chk_show_kalman_uncertainty.isChecked(),
+            "VISUALIZATION_FREE_MODE": self._setup_panel.chk_visualization_free.isChecked(),
             "zoom_factor": self.slider_zoom.value() / 100.0,
             "ROI_MASK": self.roi_mask,
             "REFERENCE_BODY_SIZE": reference_body_size,
@@ -16827,7 +16173,7 @@ class MainWindow(QMainWindow):
             "DENSITY_MIN_FRAME_DURATION": self.spin_density_min_duration.value(),
             "DENSITY_MIN_AREA_BODIES": self.spin_density_min_area_bodies.value(),
             "DENSITY_DOWNSAMPLE_FACTOR": self.spin_density_downsample_factor.value(),
-            "ENABLE_PROFILING": self.chk_enable_profiling.isChecked(),
+            "ENABLE_PROFILING": self._setup_panel.chk_enable_profiling.isChecked(),
         }
 
         # Backward compat: map old color_tag keys to new cnn_classifier keys
@@ -16844,10 +16190,10 @@ class MainWindow(QMainWindow):
         if config_path:
             self._load_config_from_file(config_path)
             self._show_workspace()
-            self.config_status_label.setText(
+            self._setup_panel.config_status_label.setText(
                 f"✓ Loaded: {os.path.basename(config_path)}"
             )
-            self.config_status_label.setStyleSheet(
+            self._setup_panel.config_status_label.setStyleSheet(
                 "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
             logger.info(f"Configuration loaded from {config_path}")
@@ -16905,13 +16251,13 @@ class MainWindow(QMainWindow):
             # Skip file paths when loading presets (only load for full configs)
             if not preset_mode:
                 # Only set paths if they're currently empty (preserve existing paths)
-                if not self.file_line.text().strip():
+                if not self._setup_panel.file_line.text().strip():
                     video_path = get_cfg("file_path", default="")
                     if video_path:
                         # Use the same setup logic as browsing for a file
                         self._setup_video_file(video_path, skip_config_load=True)
-                if not self.csv_line.text().strip():
-                    self.csv_line.setText(get_cfg("csv_path", default=""))
+                if not self._setup_panel.csv_line.text().strip():
+                    self._setup_panel.csv_line.setText(get_cfg("csv_path", default=""))
                 self.check_video_output.setChecked(
                     get_cfg("video_output_enabled", default=False)
                 )
@@ -16925,7 +16271,7 @@ class MainWindow(QMainWindow):
                 # Load FPS if saved in config
                 saved_fps = get_cfg("fps", default=None)
                 if saved_fps is not None:
-                    self.spin_fps.setValue(saved_fps)
+                    self._setup_panel.spin_fps.setValue(saved_fps)
 
                 # Load reference body size if saved in config
                 saved_body_size = get_cfg("reference_body_size", default=None)
@@ -16934,22 +16280,30 @@ class MainWindow(QMainWindow):
 
                 # Load frame range if saved in config
                 saved_start_frame = get_cfg("start_frame", default=None)
-                if saved_start_frame is not None and self.spin_start_frame.isEnabled():
-                    self.spin_start_frame.setValue(saved_start_frame)
+                if (
+                    saved_start_frame is not None
+                    and self._setup_panel.spin_start_frame.isEnabled()
+                ):
+                    self._setup_panel.spin_start_frame.setValue(saved_start_frame)
 
                 saved_end_frame = get_cfg("end_frame", default=None)
-                if saved_end_frame is not None and self.spin_end_frame.isEnabled():
-                    self.spin_end_frame.setValue(saved_end_frame)
+                if (
+                    saved_end_frame is not None
+                    and self._setup_panel.spin_end_frame.isEnabled()
+                ):
+                    self._setup_panel.spin_end_frame.setValue(saved_end_frame)
 
             # === SYSTEM PERFORMANCE ===
-            self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
-            self.check_save_confidence.setChecked(
+            self._setup_panel.spin_resize.setValue(
+                get_cfg("resize_factor", default=1.0)
+            )
+            self._setup_panel.check_save_confidence.setChecked(
                 get_cfg("save_confidence_metrics", default=True)
             )
-            self.chk_use_cached_detections.setChecked(
+            self._setup_panel.chk_use_cached_detections.setChecked(
                 get_cfg("use_cached_detections", default=True)
             )
-            self.chk_visualization_free.setChecked(
+            self._setup_panel.chk_visualization_free.setChecked(
                 get_cfg("visualization_free_mode", default=False)
             )
 
@@ -17225,7 +16579,9 @@ class MainWindow(QMainWindow):
             self._on_runtime_context_changed()
 
             # === CORE TRACKING ===
-            self.spin_max_targets.setValue(get_cfg("max_targets", default=4))
+            self._setup_panel.spin_max_targets.setValue(
+                get_cfg("max_targets", default=4)
+            )
             self.spin_max_dist.setValue(
                 get_cfg(
                     "max_assignment_distance_multiplier",
@@ -17591,22 +16947,22 @@ class MainWindow(QMainWindow):
             self._sync_video_pose_overlay_controls()
 
             # === VISUALIZATION OVERLAYS ===
-            self.chk_show_circles.setChecked(
+            self._setup_panel.chk_show_circles.setChecked(
                 get_cfg("show_track_markers", "show_circles", default=True)
             )
-            self.chk_show_orientation.setChecked(
+            self._setup_panel.chk_show_orientation.setChecked(
                 get_cfg("show_orientation_lines", "show_orientation", default=True)
             )
-            self.chk_show_trajectories.setChecked(
+            self._setup_panel.chk_show_trajectories.setChecked(
                 get_cfg("show_trajectory_trails", "show_trajectories", default=True)
             )
-            self.chk_show_labels.setChecked(
+            self._setup_panel.chk_show_labels.setChecked(
                 get_cfg("show_id_labels", "show_labels", default=True)
             )
-            self.chk_show_state.setChecked(
+            self._setup_panel.chk_show_state.setChecked(
                 get_cfg("show_state_text", "show_state", default=True)
             )
-            self.chk_show_kalman_uncertainty.setChecked(
+            self._setup_panel.chk_show_kalman_uncertainty.setChecked(
                 get_cfg("show_kalman_uncertainty", default=False)
             )
             self.chk_show_fg.setChecked(
@@ -17616,11 +16972,13 @@ class MainWindow(QMainWindow):
                 get_cfg("show_background_model", "show_bg", default=True)
             )
             self.chk_show_yolo_obb.setChecked(get_cfg("show_yolo_obb", default=False))
-            self.spin_traj_hist.setValue(
+            self._setup_panel.spin_traj_hist.setValue(
                 get_cfg("trajectory_history_seconds", "traj_history", default=5)
             )
-            self.chk_debug_logging.setChecked(get_cfg("debug_logging", default=False))
-            self.chk_enable_profiling.setChecked(
+            self._setup_panel.chk_debug_logging.setChecked(
+                get_cfg("debug_logging", default=False)
+            )
+            self._setup_panel.chk_enable_profiling.setChecked(
                 get_cfg("enable_profiling", default=False)
             )
             self.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
@@ -17948,22 +17306,22 @@ class MainWindow(QMainWindow):
         if not preset_mode:
             cfg.update(
                 {
-                    "file_path": self.file_line.text(),
-                    "csv_path": self.csv_line.text(),
+                    "file_path": self._setup_panel.file_line.text(),
+                    "csv_path": self._setup_panel.csv_line.text(),
                     "video_output_enabled": self.check_video_output.isChecked(),
                     "video_output_path": self.video_out_line.text(),
                     # Video-specific reference parameters
-                    "fps": self.spin_fps.value(),
+                    "fps": self._setup_panel.spin_fps.value(),
                     "reference_body_size": self.spin_reference_body_size.value(),
                     # Frame range
                     "start_frame": (
-                        self.spin_start_frame.value()
-                        if self.spin_start_frame.isEnabled()
+                        self._setup_panel.spin_start_frame.value()
+                        if self._setup_panel.spin_start_frame.isEnabled()
                         else 0
                     ),
                     "end_frame": (
-                        self.spin_end_frame.value()
-                        if self.spin_end_frame.isEnabled()
+                        self._setup_panel.spin_end_frame.value()
+                        if self._setup_panel.spin_end_frame.isEnabled()
                         else None
                     ),
                 }
@@ -17978,10 +17336,10 @@ class MainWindow(QMainWindow):
         cfg.update(
             {
                 # === SYSTEM PERFORMANCE ===
-                "resize_factor": self.spin_resize.value(),
-                "save_confidence_metrics": self.check_save_confidence.isChecked(),
-                "use_cached_detections": self.chk_use_cached_detections.isChecked(),
-                "visualization_free_mode": self.chk_visualization_free.isChecked(),
+                "resize_factor": self._setup_panel.spin_resize.value(),
+                "save_confidence_metrics": self._setup_panel.check_save_confidence.isChecked(),
+                "use_cached_detections": self._setup_panel.chk_use_cached_detections.isChecked(),
+                "visualization_free_mode": self._setup_panel.chk_visualization_free.isChecked(),
                 # === DETECTION STRATEGY ===
                 "detection_method": (
                     "background_subtraction"
@@ -18101,7 +17459,7 @@ class MainWindow(QMainWindow):
                 ),
                 "yolo_manual_batch_size": self.spin_yolo_batch_size.value(),
                 # === CORE TRACKING ===
-                "max_targets": self.spin_max_targets.value(),
+                "max_targets": self._setup_panel.spin_max_targets.value(),
                 "max_assignment_distance_multiplier": self.spin_max_dist.value(),
                 "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
                 "enable_backward_tracking": self.chk_enable_backward.isChecked(),
@@ -18202,18 +17560,18 @@ class MainWindow(QMainWindow):
                 "video_pose_point_thickness": self.spin_video_pose_point_thickness.value(),
                 "video_pose_line_thickness": self.spin_video_pose_line_thickness.value(),
                 # === VISUALIZATION OVERLAYS ===
-                "show_track_markers": self.chk_show_circles.isChecked(),
-                "show_orientation_lines": self.chk_show_orientation.isChecked(),
-                "show_trajectory_trails": self.chk_show_trajectories.isChecked(),
-                "show_id_labels": self.chk_show_labels.isChecked(),
-                "show_state_text": self.chk_show_state.isChecked(),
-                "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
+                "show_track_markers": self._setup_panel.chk_show_circles.isChecked(),
+                "show_orientation_lines": self._setup_panel.chk_show_orientation.isChecked(),
+                "show_trajectory_trails": self._setup_panel.chk_show_trajectories.isChecked(),
+                "show_id_labels": self._setup_panel.chk_show_labels.isChecked(),
+                "show_state_text": self._setup_panel.chk_show_state.isChecked(),
+                "show_kalman_uncertainty": self._setup_panel.chk_show_kalman_uncertainty.isChecked(),
                 "show_foreground_mask": self.chk_show_fg.isChecked(),
                 "show_background_model": self.chk_show_bg.isChecked(),
                 "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
-                "trajectory_history_seconds": self.spin_traj_hist.value(),
-                "debug_logging": self.chk_debug_logging.isChecked(),
-                "enable_profiling": self.chk_enable_profiling.isChecked(),
+                "trajectory_history_seconds": self._setup_panel.spin_traj_hist.value(),
+                "debug_logging": self._setup_panel.chk_debug_logging.isChecked(),
+                "enable_profiling": self._setup_panel.chk_enable_profiling.isChecked(),
                 "zoom_factor": self.slider_zoom.value() / 100.0,
             }
         )
@@ -18342,7 +17700,7 @@ class MainWindow(QMainWindow):
                 return False
 
         # Determine save path: video-based if video selected, otherwise ask user
-        video_path = self.file_line.text()
+        video_path = self._setup_panel.file_line.text()
         if video_path:
             default_path = get_video_config_path(video_path)
         else:
@@ -18438,7 +17796,11 @@ class MainWindow(QMainWindow):
         # Create a session log in the video's dedicated log directory.
         video_path = Path(video_path)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        csv_dir = (
+            os.path.dirname(self._setup_panel.csv_line.text())
+            if self._setup_panel.csv_line.text()
+            else ""
+        )
         artifact_base_dir = choose_writable_artifact_base_dir(
             video_path,
             preferred_base_dirs=[csv_dir],
@@ -18498,7 +17860,7 @@ class MainWindow(QMainWindow):
                 self.dataset_worker.deleteLater()
                 self.dataset_worker = None
 
-            video_path = self.file_line.text()
+            video_path = self._setup_panel.file_line.text()
             if not video_path or not os.path.exists(video_path):
                 QMessageBox.warning(
                     self, "Dataset Generation Error", "Source video file not found."
@@ -18525,7 +17887,11 @@ class MainWindow(QMainWindow):
                     return
 
             # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
-            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
+            csv_path = (
+                override_csv_path
+                if override_csv_path
+                else self._setup_panel.csv_line.text()
+            )
 
             if not csv_path or not os.path.exists(csv_path):
                 QMessageBox.warning(
@@ -18691,10 +18057,10 @@ class MainWindow(QMainWindow):
             lines.append(f"Average FPS: {avg_fps:.1f}")
 
         # --- Video / CSV ---
-        video_path = self.file_line.text()
+        video_path = self._setup_panel.file_line.text()
         if video_path:
             lines.append(f"Video: {os.path.basename(video_path)}")
-        csv_path = self._session_final_csv_path or self.csv_line.text()
+        csv_path = self._session_final_csv_path or self._setup_panel.csv_line.text()
         if csv_path:
             lines.append(f"Output CSV: {os.path.basename(csv_path)}")
 
@@ -18914,9 +18280,9 @@ class MainWindow(QMainWindow):
 
     def _on_preset_selection_changed(self, index):
         """Update description label when preset selection changes."""
-        filepath = self.combo_presets.currentData()
+        filepath = self._setup_panel.combo_presets.currentData()
         if not filepath or not os.path.exists(filepath):
-            self.preset_description_label.setVisible(False)
+            self._setup_panel.preset_description_label.setVisible(False)
             return
 
         try:
@@ -18925,12 +18291,12 @@ class MainWindow(QMainWindow):
 
             description = cfg.get("description", "")
             if description:
-                self.preset_description_label.setText(f"📋 {description}")
-                self.preset_description_label.setVisible(True)
+                self._setup_panel.preset_description_label.setText(f"📋 {description}")
+                self._setup_panel.preset_description_label.setVisible(True)
             else:
-                self.preset_description_label.setVisible(False)
+                self._setup_panel.preset_description_label.setVisible(False)
         except (OSError, json.JSONDecodeError):
-            self.preset_description_label.setVisible(False)
+            self._setup_panel.preset_description_label.setVisible(False)
 
     def _populate_preset_combo(self):
         """Populate the preset combo box by auto-scanning configs folder."""
@@ -18969,15 +18335,15 @@ class MainWindow(QMainWindow):
                 continue
 
         # Populate combo box (custom first, then others alphabetically)
-        self.combo_presets.clear()
+        self._setup_panel.combo_presets.clear()
         if custom_preset:
-            self.combo_presets.addItem(custom_preset[0], custom_preset[1])
+            self._setup_panel.combo_presets.addItem(custom_preset[0], custom_preset[1])
         for name, filepath in presets:
-            self.combo_presets.addItem(name, filepath)
+            self._setup_panel.combo_presets.addItem(name, filepath)
 
     def _load_selected_preset(self):
         """Load the currently selected preset."""
-        filepath = self.combo_presets.currentData()
+        filepath = self._setup_panel.combo_presets.currentData()
         if not filepath or not os.path.exists(filepath):
             QMessageBox.warning(
                 self, "Preset Not Found", f"Preset file not found: {filepath}"
@@ -18988,7 +18354,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Load Preset",
-            f"Load preset: {self.combo_presets.currentText()}?\n\n"
+            f"Load preset: {self._setup_panel.combo_presets.currentText()}?\n\n"
             "This will replace your current parameter values.\n"
             "(Video-specific configs will still override presets when loading videos)",
             QMessageBox.Yes | QMessageBox.No,
@@ -19000,12 +18366,12 @@ class MainWindow(QMainWindow):
             self._load_config_from_file(filepath, preset_mode=True)
 
             # Update status
-            preset_name = self.combo_presets.currentText()
-            self.preset_status_label.setText(f"✓ Loaded: {preset_name}")
-            self.preset_status_label.setStyleSheet(
+            preset_name = self._setup_panel.combo_presets.currentText()
+            self._setup_panel.preset_status_label.setText(f"✓ Loaded: {preset_name}")
+            self._setup_panel.preset_status_label.setStyleSheet(
                 "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
-            self.preset_status_label.setVisible(True)
+            self._setup_panel.preset_status_label.setVisible(True)
             logger.info(f"Loaded preset: {preset_name} from {filepath}")
 
     def _save_custom_preset(self):
@@ -19088,17 +18454,17 @@ class MainWindow(QMainWindow):
             # Refresh combo box to show new preset
             self._populate_preset_combo()
             # Select the newly saved preset
-            for i in range(self.combo_presets.count()):
-                item_path = self.combo_presets.itemData(i)
+            for i in range(self._setup_panel.combo_presets.count()):
+                item_path = self._setup_panel.combo_presets.itemData(i)
                 if item_path == custom_path:
-                    self.combo_presets.setCurrentIndex(i)
+                    self._setup_panel.combo_presets.setCurrentIndex(i)
                     break
 
-            self.preset_status_label.setText(f"✓ Saved: {preset_name}")
-            self.preset_status_label.setStyleSheet(
+            self._setup_panel.preset_status_label.setText(f"✓ Saved: {preset_name}")
+            self._setup_panel.preset_status_label.setStyleSheet(
                 "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
-            self.preset_status_label.setVisible(True)
+            self._setup_panel.preset_status_label.setVisible(True)
 
             filename = os.path.basename(custom_path)
             is_custom = filename == "custom.json"
@@ -19299,7 +18665,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No ROI", "Please define an ROI before cropping.")
             return
 
-        video_path = self.file_line.text()
+        video_path = self._setup_panel.file_line.text()
         if not video_path or not os.path.exists(video_path):
             QMessageBox.warning(self, "No Video", "Please load a video first.")
             return
@@ -19541,7 +18907,7 @@ class MainWindow(QMainWindow):
 
                 if reply == QMessageBox.Yes:
                     # Load the cropped video with full initialization (same as select_file)
-                    self.file_line.setText(output_path)
+                    self._setup_panel.file_line.setText(output_path)
                     self.current_video_path = output_path
                     self.clear_roi()  # Clear ROI since we're loading the cropped version
 
@@ -19551,7 +18917,7 @@ class MainWindow(QMainWindow):
 
                     # Auto-populate CSV output
                     csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
-                    self.csv_line.setText(csv_path)
+                    self._setup_panel.csv_line.setText(csv_path)
 
                     # Auto-populate video output and enable it
                     video_out_path = os.path.join(
@@ -19562,7 +18928,7 @@ class MainWindow(QMainWindow):
 
                     # Enable preview detection button
                     self.btn_test_detection.setEnabled(True)
-                    self.btn_detect_fps.setEnabled(True)
+                    self._setup_panel.btn_detect_fps.setEnabled(True)
 
                     # Disable crop button and clear optimization info (no ROI anymore)
                     self.btn_crop_video.setEnabled(False)
@@ -19573,20 +18939,20 @@ class MainWindow(QMainWindow):
                     config_path = get_video_config_path(output_path)
                     if config_path and os.path.isfile(config_path):
                         self._load_config_from_file(config_path)
-                        self.config_status_label.setText(
+                        self._setup_panel.config_status_label.setText(
                             f"✓ Loaded: {os.path.basename(config_path)}"
                         )
-                        self.config_status_label.setStyleSheet(
+                        self._setup_panel.config_status_label.setStyleSheet(
                             "color: #4fc1ff; font-style: italic; font-size: 10px;"
                         )
                         logger.info(
                             f"Cropped video loaded: {output_path} (auto-loaded config)"
                         )
                     else:
-                        self.config_status_label.setText(
+                        self._setup_panel.config_status_label.setText(
                             "No config found (using current settings)"
                         )
-                        self.config_status_label.setStyleSheet(
+                        self._setup_panel.config_status_label.setStyleSheet(
                             "color: #f39c12; font-style: italic; font-size: 10px;"
                         )
                         logger.info(

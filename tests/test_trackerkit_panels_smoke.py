@@ -24,7 +24,9 @@ _PANEL_MAP = {
 
 # Panels whose _build_ui is still a stub (safe to instantiate with MagicMock).
 # Remove a panel from this dict once its _build_ui is populated.
-_STUB_PANEL_MAP = {k: v for k, v in _PANEL_MAP.items() if k != "DatasetPanel"}
+_STUB_PANEL_MAP = {
+    k: v for k, v in _PANEL_MAP.items() if k not in {"DatasetPanel", "SetupPanel"}
+}
 
 
 @pytest.fixture(scope="module")
@@ -72,3 +74,13 @@ def test_dataset_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._dataset_panel, DatasetPanel)
     assert hasattr(main_window._dataset_panel, "combo_xanylabeling_env")
     assert hasattr(main_window._dataset_panel, "chk_enable_dataset_gen")
+
+
+def test_setup_panel_wired_in_main_window(main_window):
+    """SetupPanel is accessible on MainWindow and exposes key widgets."""
+    from hydra_suite.trackerkit.gui.panels.setup_panel import SetupPanel
+
+    assert hasattr(main_window, "_setup_panel")
+    assert isinstance(main_window._setup_panel, SetupPanel)
+    assert hasattr(main_window._setup_panel, "combo_presets")
+    assert hasattr(main_window._setup_panel, "btn_file")

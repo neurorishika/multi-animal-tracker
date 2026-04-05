@@ -4,8 +4,27 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
 
@@ -28,10 +47,720 @@ class SetupPanel(QWidget):
         self._main_window = main_window
         self._config = config
         self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
         self._build_ui()
 
     def _build_ui(self) -> None:
-        """Populate the panel layout. Filled in during extraction."""
+        """Tab 1: Setup - Files, Video, Display & Debug."""
+        layout = self._layout
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget()
+        form = QVBoxLayout(content)
+        form.setContentsMargins(6, 6, 6, 6)
+        form.setSpacing(8)
+        self._main_window._set_compact_scroll_layout(form)
+
+        # ============================================================
+        # Preset Selector
+        # ============================================================
+        g_presets = QGroupBox("Presets")
+        self._main_window._set_compact_section_widget(g_presets)
+        vl_presets = QVBoxLayout(g_presets)
+        vl_presets.setSpacing(6)
+        vl_presets.addWidget(
+            self._main_window._create_help_label(
+                "Load optimized default values for different model organisms. Video-specific configs override presets."
+            )
+        )
+
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("Organism preset")
+        preset_label.setStyleSheet("font-weight: bold;")
+
+        self.combo_presets = QComboBox()
+        self.combo_presets.setToolTip(
+            "Select preset optimized for your organism.\n"
+            "Custom: Your personal saved defaults (if exists)"
+        )
+        # NOTE: _populate_preset_combo() is called after panel construction in main_window.py
+
+        self.btn_load_preset = QPushButton("Load Preset")
+        self.btn_load_preset.clicked.connect(self._main_window._load_selected_preset)
+        self.btn_load_preset.setToolTip("Apply selected preset to all parameters")
+
+        self.btn_save_custom = QPushButton("Save as Custom")
+        self.btn_save_custom.clicked.connect(self._main_window._save_custom_preset)
+        self.btn_save_custom.setToolTip("Save current settings as your custom defaults")
+
+        self.preset_status_label = QLabel("")
+        self.preset_status_label.setStyleSheet(
+            "color: #6a6a6a; font-style: italic; font-size: 10px;"
+        )
+        self.preset_status_label.setVisible(False)
+
+        preset_layout.addWidget(preset_label)
+        preset_layout.addWidget(self.combo_presets, stretch=1)
+        preset_layout.addWidget(self.btn_load_preset)
+        preset_layout.addWidget(self.btn_save_custom)
+
+        vl_presets.addLayout(preset_layout)
+        vl_presets.addWidget(self.preset_status_label)
+
+        # Description display
+        self.preset_description_label = QLabel("")
+        self.preset_description_label.setWordWrap(True)
+        self.preset_description_label.setStyleSheet(
+            "color: #9a9a9a; font-style: italic; font-size: 10px; padding: 5px; "
+            "background-color: #252526; border-radius: 3px;"
+        )
+        self.preset_description_label.setVisible(False)
+        vl_presets.addWidget(self.preset_description_label)
+
+        # Connect combo box to show description
+        self.combo_presets.currentIndexChanged.connect(
+            self._main_window._on_preset_selection_changed
+        )
+
+        form.addWidget(g_presets)
+
+        # ============================================================
+        # Video Setup (File Management + Frame Rate)
+        # ============================================================
+        g_files = QGroupBox("Video")
+        self._main_window._set_compact_section_widget(g_files)
+        vl_files = QVBoxLayout(g_files)
+        vl_files.setSpacing(6)
+        vl_files.addWidget(
+            self._main_window._create_help_label(
+                "Select your input video and output locations. Configuration is auto-saved per video - "
+                "next time you load the same video, your settings will be restored automatically."
+            )
+        )
+        fl = QFormLayout(None)
+        fl.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl.setHorizontalSpacing(10)
+        fl.setVerticalSpacing(8)
+
+        self.btn_file = QPushButton("Browse...")
+        self.btn_file.clicked.connect(self._main_window.select_file)
+        self.btn_file.setObjectName("SecondaryBtn")
+        self.btn_file.setFixedHeight(30)
+        self.file_line = QLineEdit()
+        self.file_line.setPlaceholderText("path/to/video.mp4")
+        self.file_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.file_line.setFixedHeight(30)
+        file_row = QHBoxLayout()
+        file_row.setSpacing(8)
+        file_row.addWidget(self.file_line, 1)
+        file_row.addWidget(self.btn_file)
+        fl.addRow("Input video", file_row)
+
+        # Acquisition controls on one compact row
+        acquisition_row = QHBoxLayout()
+        acquisition_row.setSpacing(8)
+        fps_caption = QLabel("FPS")
+        fps_caption.setStyleSheet("font-size: 10px; font-weight: 600; color: #bdbdbd;")
+        acquisition_row.addWidget(fps_caption)
+
+        self.spin_fps = QDoubleSpinBox()
+        self.spin_fps.setRange(1.0, 240.0)
+        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(30.0)
+        self.spin_fps.setDecimals(2)
+        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_fps.setFixedHeight(30)
+        self.spin_fps.setMinimumWidth(92)
+        self.spin_fps.setToolTip(
+            "Acquisition frame rate (frames per second) at which the video was recorded.\n"
+            "NOTE: This may differ from the video file's playback framerate.\n"
+            "Use 'Detect from Video' to read from file metadata as a starting point.\n"
+            "Time-dependent parameters (velocity, durations) scale with this.\n"
+            "Affects: motion prediction, track lifecycle, velocity thresholds."
+        )
+        self.spin_fps.valueChanged.connect(self._main_window._update_fps_info)
+        acquisition_row.addWidget(self.spin_fps)
+
+        self.btn_detect_fps = QPushButton("Detect")
+        self.btn_detect_fps.clicked.connect(
+            self._main_window._detect_fps_from_current_video
+        )
+        self.btn_detect_fps.setEnabled(False)
+        self.btn_detect_fps.setObjectName("SecondaryBtn")
+        self.btn_detect_fps.setFixedHeight(30)
+        self.btn_detect_fps.setToolTip(
+            "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
+        )
+        acquisition_row.addWidget(self.btn_detect_fps)
+
+        animal_caption = QLabel("Animals")
+        animal_caption.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd; margin-left: 6px;"
+        )
+        acquisition_row.addWidget(animal_caption)
+
+        self.spin_max_targets = QSpinBox()
+        self.spin_max_targets.setRange(1, 200)
+        self.spin_max_targets.setValue(4)
+        self.spin_max_targets.setFixedHeight(30)
+        self.spin_max_targets.setMinimumWidth(84)
+        self.spin_max_targets.setToolTip(
+            "Maximum number of animals to track simultaneously (1-200).\n"
+            "Set this to the expected number of animals in your video.\n"
+            "Higher values use more memory and may slow down processing."
+        )
+        acquisition_row.addWidget(self.spin_max_targets)
+        acquisition_row.addStretch(1)
+        fl.addRow("Acquisition", acquisition_row)
+
+        # FPS info label
+        self.label_fps_info = QLabel()
+        self.label_fps_info.setStyleSheet(
+            "color: #6a6a6a; font-size: 10px; font-style: italic;"
+        )
+        fl.addRow("", self.label_fps_info)
+
+        vl_files.addLayout(fl)
+
+        # Batch Mode Section
+        self.g_batch = QGroupBox("Batch")
+        self.g_batch.setCheckable(True)
+        self.g_batch.setChecked(False)
+        self.g_batch.toggled.connect(self._main_window._on_batch_mode_toggled)
+        self._main_window._set_compact_section_widget(self.g_batch)
+        vl_batch = QVBoxLayout(self.g_batch)
+        vl_batch.setSpacing(6)
+
+        # Warning label (visible only while batch mode is active)
+        self.lbl_batch_warning = QLabel(
+            "⚠️ All videos in this batch will use the parameters currently selected for the Keystone video."
+        )
+        self.lbl_batch_warning.setWordWrap(True)
+        self.lbl_batch_warning.setStyleSheet(
+            "color: #f39c12; font-weight: bold; font-size: 11px; margin-bottom: 5px;"
+        )
+        self.lbl_batch_warning.setVisible(False)
+        vl_batch.addWidget(self.lbl_batch_warning)
+
+        # Container for the rest of the batch UI
+        self.container_batch = QWidget()
+        v_container = QVBoxLayout(self.container_batch)
+        v_container.setContentsMargins(0, 0, 0, 0)
+
+        batch_help = self._main_window._create_help_label(
+            "The 'Keystone' video (top of list) defines the tracking parameters. "
+            "Additional videos will save their own results using these shared settings."
+        )
+        v_container.addWidget(batch_help)
+
+        self.list_batch_videos = QListWidget()
+        self.list_batch_videos.setMaximumHeight(120)
+        self.list_batch_videos.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list_batch_videos.itemClicked.connect(
+            self._main_window._on_batch_video_selected
+        )
+        self.list_batch_videos.itemDoubleClicked.connect(
+            self._main_window._on_batch_video_selected
+        )
+        v_container.addWidget(self.list_batch_videos)
+
+        batch_btns = QHBoxLayout()
+        self.btn_add_batch = QPushButton("Add Videos...")
+        self.btn_add_batch.clicked.connect(self._main_window._add_videos_to_batch)
+        self.btn_add_batch.setObjectName("SecondaryBtn")
+        batch_btns.addWidget(self.btn_add_batch)
+
+        self.btn_remove_batch = QPushButton("Remove Selected")
+        self.btn_remove_batch.clicked.connect(self._main_window._remove_from_batch)
+        self.btn_remove_batch.setObjectName("SecondaryBtn")
+        batch_btns.addWidget(self.btn_remove_batch)
+
+        self.btn_clear_batch = QPushButton("Clear Additional")
+        self.btn_clear_batch.clicked.connect(self._main_window._clear_batch)
+        self.btn_clear_batch.setObjectName("SecondaryBtn")
+        batch_btns.addWidget(self.btn_clear_batch)
+        v_container.addLayout(batch_btns)
+
+        batch_io_btns = QHBoxLayout()
+        self.btn_export_batch = QPushButton("Export List...")
+        self.btn_export_batch.setToolTip(
+            "Save the current batch video list to a text file.\n"
+            "The first line will be the Keystone video path."
+        )
+        self.btn_export_batch.clicked.connect(self._main_window._export_batch_list)
+        self.btn_export_batch.setObjectName("SecondaryBtn")
+        batch_io_btns.addWidget(self.btn_export_batch)
+
+        self.btn_import_batch = QPushButton("Import List...")
+        self.btn_import_batch.setToolTip(
+            "Load a batch video list from a text file.\n"
+            "The first line must be the Keystone video.\n"
+            "Missing files will be reported before proceeding."
+        )
+        self.btn_import_batch.clicked.connect(self._main_window._import_batch_list)
+        self.btn_import_batch.setObjectName("SecondaryBtn")
+        batch_io_btns.addWidget(self.btn_import_batch)
+        v_container.addLayout(batch_io_btns)
+
+        vl_batch.addWidget(self.container_batch)
+        self.container_batch.setVisible(False)  # Default hidden
+
+        vl_files.addWidget(self.g_batch)
+        form.addWidget(g_files)
+
+        # ============================================================
+        # Video Player & Frame Range
+        # ============================================================
+        self.g_video_player = QGroupBox("Preview")
+        self._main_window._set_compact_section_widget(self.g_video_player)
+        vl_player = QVBoxLayout(self.g_video_player)
+        vl_player.setSpacing(6)
+        vl_player.addWidget(
+            self._main_window._create_help_label(
+                "Preview video and select frame range for tracking. Use the slider to seek through the video."
+            )
+        )
+
+        # Video info label
+        self.lbl_video_info = QLabel("No video loaded")
+        self.lbl_video_info.setStyleSheet(
+            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
+        )
+        vl_player.addWidget(self.lbl_video_info)
+
+        # Timeline slider
+        timeline_layout = QVBoxLayout()
+        self.lbl_current_frame = QLabel("Frame: -")
+        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #9a9a9a;")
+        timeline_layout.addWidget(self.lbl_current_frame)
+
+        self.slider_timeline = QSlider(Qt.Horizontal)
+        self.slider_timeline.setMinimum(0)
+        self.slider_timeline.setMaximum(0)
+        self.slider_timeline.setValue(0)
+        self.slider_timeline.setEnabled(False)
+        self.slider_timeline.setToolTip("Seek through video frames")
+        self.slider_timeline.valueChanged.connect(
+            self._main_window._on_timeline_changed
+        )
+        timeline_layout.addWidget(self.slider_timeline)
+        vl_player.addLayout(timeline_layout)
+
+        # Playback controls
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(6)
+
+        self.btn_first_frame = QPushButton("⏮")
+        self.btn_first_frame.setEnabled(False)
+        self.btn_first_frame.clicked.connect(self._main_window._goto_first_frame)
+        self.btn_first_frame.setToolTip("Go to first frame")
+        self.btn_first_frame.setObjectName("SecondaryBtn")
+        self.btn_first_frame.setFixedWidth(44)
+        controls_layout.addWidget(self.btn_first_frame)
+
+        self.btn_prev_frame = QPushButton("◀")
+        self.btn_prev_frame.setEnabled(False)
+        self.btn_prev_frame.clicked.connect(self._main_window._goto_prev_frame)
+        self.btn_prev_frame.setToolTip("Previous frame")
+        self.btn_prev_frame.setObjectName("SecondaryBtn")
+        self.btn_prev_frame.setFixedWidth(44)
+        controls_layout.addWidget(self.btn_prev_frame)
+
+        self.btn_play_pause = QPushButton("▶ Play")
+        self.btn_play_pause.setEnabled(False)
+        self.btn_play_pause.clicked.connect(self._main_window._toggle_playback)
+        self.btn_play_pause.setToolTip("Play/pause video")
+        controls_layout.addWidget(self.btn_play_pause)
+
+        self.btn_next_frame = QPushButton("▶")
+        self.btn_next_frame.setEnabled(False)
+        self.btn_next_frame.clicked.connect(self._main_window._goto_next_frame)
+        self.btn_next_frame.setToolTip("Next frame")
+        self.btn_next_frame.setObjectName("SecondaryBtn")
+        self.btn_next_frame.setFixedWidth(44)
+        controls_layout.addWidget(self.btn_next_frame)
+
+        self.btn_last_frame = QPushButton("⏭")
+        self.btn_last_frame.setEnabled(False)
+        self.btn_last_frame.clicked.connect(self._main_window._goto_last_frame)
+        self.btn_last_frame.setToolTip("Go to last frame")
+        self.btn_last_frame.setObjectName("SecondaryBtn")
+        self.btn_last_frame.setFixedWidth(44)
+        controls_layout.addWidget(self.btn_last_frame)
+
+        controls_layout.addSpacing(4)
+
+        self.btn_random_seek = QPushButton("🎲 Random")
+        self.btn_random_seek.setEnabled(False)
+        self.btn_random_seek.clicked.connect(self._main_window._goto_random_frame)
+        self.btn_random_seek.setToolTip("Jump to a random frame")
+        self.btn_random_seek.setObjectName("SecondaryBtn")
+        controls_layout.addWidget(self.btn_random_seek)
+
+        controls_layout.addSpacing(8)
+
+        # Playback speed control
+        speed_label = QLabel("Speed")
+        speed_label.setStyleSheet("color: #8a8a8a;")
+        controls_layout.addWidget(speed_label)
+        self.combo_playback_speed = QComboBox()
+        self.combo_playback_speed.addItems(["0.25x", "0.5x", "1x", "2x", "4x"])
+        self.combo_playback_speed.setCurrentText("1x")
+        self.combo_playback_speed.setEnabled(False)
+        self.combo_playback_speed.setToolTip("Playback speed")
+        self.combo_playback_speed.setMaximumWidth(84)
+        controls_layout.addWidget(self.combo_playback_speed)
+        controls_layout.addStretch(1)
+
+        vl_player.addLayout(controls_layout)
+
+        vl_player.addWidget(self._main_window._make_setup_divider())
+
+        # Frame range selection
+        range_label = QLabel("Frame range")
+        range_label.setStyleSheet("font-weight: 600; color: #d0d0d0;")
+        vl_player.addWidget(range_label)
+
+        # Compact single row: Start [spinbox] [↕] · End [spinbox] [↕] [Reset]
+        _range_row = QHBoxLayout()
+        _range_row.setSpacing(6)
+        _range_row.addWidget(QLabel("Start:"))
+        self.spin_start_frame = QSpinBox()
+        self.spin_start_frame.setMinimum(0)
+        self.spin_start_frame.setMaximum(0)
+        self.spin_start_frame.setValue(0)
+        self.spin_start_frame.setEnabled(False)
+        self.spin_start_frame.setToolTip("First frame to track (0-based index)")
+        self.spin_start_frame.valueChanged.connect(
+            self._main_window._on_frame_range_changed
+        )
+        _range_row.addWidget(self.spin_start_frame, 1)
+        self.btn_set_start_current = QPushButton("↕")
+        self.btn_set_start_current.setEnabled(False)
+        self.btn_set_start_current.setMaximumWidth(30)
+        self.btn_set_start_current.clicked.connect(
+            self._main_window._set_start_to_current
+        )
+        self.btn_set_start_current.setToolTip("Set start frame to current frame")
+        _range_row.addWidget(self.btn_set_start_current)
+        _range_row.addSpacing(10)
+        _range_row.addWidget(QLabel("End:"))
+        self.spin_end_frame = QSpinBox()
+        self.spin_end_frame.setMinimum(0)
+        self.spin_end_frame.setMaximum(0)
+        self.spin_end_frame.setValue(0)
+        self.spin_end_frame.setEnabled(False)
+        self.spin_end_frame.setToolTip("Last frame to track (0-based index, inclusive)")
+        self.spin_end_frame.valueChanged.connect(
+            self._main_window._on_frame_range_changed
+        )
+        _range_row.addWidget(self.spin_end_frame, 1)
+        self.btn_set_end_current = QPushButton("↕")
+        self.btn_set_end_current.setEnabled(False)
+        self.btn_set_end_current.setMaximumWidth(30)
+        self.btn_set_end_current.clicked.connect(self._main_window._set_end_to_current)
+        self.btn_set_end_current.setToolTip("Set end frame to current frame")
+        _range_row.addWidget(self.btn_set_end_current)
+        _range_row.addSpacing(10)
+        self.btn_reset_range = QPushButton("Reset")
+        self.btn_reset_range.setEnabled(False)
+        self.btn_reset_range.clicked.connect(self._main_window._reset_frame_range)
+        self.btn_reset_range.setToolTip("Reset to track entire video")
+        self.btn_reset_range.setObjectName("SecondaryBtn")
+        _range_row.addWidget(self.btn_reset_range)
+        vl_player.addLayout(_range_row)
+
+        # Range info
+        self.lbl_range_info = QLabel()
+        self.lbl_range_info.setStyleSheet(
+            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
+        )
+        vl_player.addWidget(self.lbl_range_info)
+        form.addWidget(self.g_video_player)
+
+        # Initially hide video player (shown when video is loaded)
+        self.g_video_player.setVisible(False)
+
+        # ============================================================
+        # Output Files
+        # ============================================================
+        g_output = QGroupBox("Outputs")
+        self._main_window._set_compact_section_widget(g_output)
+        vl_output = QVBoxLayout(g_output)
+        vl_output.setSpacing(6)
+        fl_output = QFormLayout(None)
+        fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_output.setHorizontalSpacing(10)
+        fl_output.setVerticalSpacing(8)
+
+        self.btn_csv = QPushButton("Browse...")
+        self.btn_csv.clicked.connect(self._main_window.select_csv)
+        self.btn_csv.setObjectName("SecondaryBtn")
+        self.btn_csv.setFixedHeight(30)
+        self.csv_line = QLineEdit()
+        self.csv_line.setPlaceholderText("path/to/output.csv")
+        self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.csv_line.setFixedHeight(30)
+        csv_row = QHBoxLayout()
+        csv_row.setSpacing(8)
+        csv_row.addWidget(self.csv_line, 1)
+        csv_row.addWidget(self.btn_csv)
+        fl_output.addRow("Tracking CSV", csv_row)
+
+        # Config Management
+        config_layout = QHBoxLayout()
+        config_layout.setSpacing(6)
+        self.btn_load_config = QPushButton("Load Config...")
+        self.btn_load_config.clicked.connect(self._main_window.load_config)
+        self.btn_load_config.setToolTip("Manually load configuration from a JSON file")
+        self.btn_load_config.setObjectName("SecondaryBtn")
+        self.btn_load_config.setFixedHeight(28)
+        config_layout.addWidget(self.btn_load_config)
+
+        self.btn_save_config = QPushButton("Save Config...")
+        self.btn_save_config.clicked.connect(self._main_window.save_config)
+        self.btn_save_config.setToolTip("Save current settings to a JSON file")
+        self.btn_save_config.setObjectName("SecondaryBtn")
+        self.btn_save_config.setFixedHeight(28)
+        config_layout.addWidget(self.btn_save_config)
+
+        self.btn_show_gpu_info = QPushButton("GPU Info")
+        self.btn_show_gpu_info.clicked.connect(self._main_window.show_gpu_info)
+        self.btn_show_gpu_info.setToolTip(
+            "Show available GPU and acceleration information"
+        )
+        self.btn_show_gpu_info.setObjectName("SecondaryBtn")
+        self.btn_show_gpu_info.setFixedHeight(28)
+        config_layout.addWidget(self.btn_show_gpu_info)
+        config_layout.addStretch(1)
+
+        fl_output.addRow("Config tools", config_layout)
+
+        # Config status label
+        self.config_status_label = QLabel("No config loaded (using defaults)")
+        self.config_status_label.setStyleSheet(
+            "color: #6a6a6a; font-style: italic; font-size: 10px;"
+        )
+        fl_output.addRow("", self.config_status_label)
+        vl_output.addLayout(fl_output)
+
+        form.addWidget(g_output)
+
+        # ============================================================
+        # System Performance
+        # ============================================================
+        g_sys = QGroupBox("Performance")
+        self._main_window._set_compact_section_widget(g_sys)
+        vl_sys = QVBoxLayout(g_sys)
+        vl_sys.setSpacing(6)
+        vl_sys.addWidget(
+            self._main_window._create_help_label(
+                "Resize factor reduces computational cost by downscaling frames. "
+                "Lower values speed up processing but reduce spatial accuracy."
+            )
+        )
+        fl_sys = QFormLayout(None)
+        fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.spin_resize = QDoubleSpinBox()
+        self.spin_resize.setRange(0.1, 1.0)
+        self.spin_resize.setSingleStep(0.1)
+        self.spin_resize.setValue(1.0)
+        self.spin_resize.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_resize.setFixedHeight(30)
+        self.spin_resize.setToolTip(
+            "Downscale video frames for faster processing.\n"
+            "1.0 = full resolution, 0.5 = half resolution (4× faster).\n"
+            "All body-size-based parameters auto-scale with this value."
+        )
+        self.combo_compute_runtime = QComboBox()
+        self.combo_compute_runtime.setFixedHeight(30)
+        self.combo_compute_runtime.setToolTip(
+            "Global compute runtime for detection and pose.\n"
+            "Only runtimes compatible with all enabled pipelines are shown."
+        )
+        self.combo_compute_runtime.currentIndexChanged.connect(
+            self._main_window._on_runtime_context_changed
+        )
+        _perf_row = QHBoxLayout()
+        _perf_row.setSpacing(6)
+        _perf_scale_label = QLabel("Scale")
+        _perf_scale_label.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        )
+        _perf_row.addWidget(_perf_scale_label)
+        _perf_row.addWidget(self.spin_resize, 1)
+        _perf_row.addSpacing(4)
+        _perf_runtime_label = QLabel("Runtime")
+        _perf_runtime_label.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        )
+        _perf_row.addWidget(_perf_runtime_label)
+        _perf_row.addWidget(self.combo_compute_runtime, 2)
+        fl_sys.addRow(_perf_row)
+
+        self.check_save_confidence = QCheckBox("Save metrics")
+        self.check_save_confidence.setChecked(True)
+        self.check_save_confidence.setToolTip(
+            "Save detection, assignment, and position uncertainty metrics to CSV.\n"
+            "Useful for post-hoc quality control but adds ~10-20% processing time.\n"
+            "Disable for maximum tracking speed."
+        )
+
+        # Use Cached Detections
+        self.chk_use_cached_detections = QCheckBox("Reuse cache")
+        self.chk_use_cached_detections.setChecked(True)
+        self.chk_use_cached_detections.setToolTip(
+            "Automatically reuse detections from previous runs if available.\n"
+            "Cache is model-specific: only reused if detection method/model hasn't changed.\n"
+            "Massive speedup for re-processing with different tracking parameters.\n"
+            "Disable to force fresh detection on every run."
+        )
+
+        # Visualization-Free Mode
+        self.chk_visualization_free = QCheckBox("Headless preview")
+        self.chk_visualization_free.setChecked(False)
+        self.chk_visualization_free.setToolTip(
+            "Skip all frame visualization and rendering.\n"
+            "Significantly faster processing (2-4× speedup).\n"
+            "Real-time FPS/ETA stats still shown in UI.\n"
+            "Recommended for large batch processing."
+        )
+        self.chk_visualization_free.stateChanged.connect(
+            self._main_window._on_visualization_mode_changed
+        )
+
+        for perf_checkbox in (
+            self.check_save_confidence,
+            self.chk_use_cached_detections,
+            self.chk_visualization_free,
+        ):
+            perf_checkbox.setStyleSheet("font-size: 10px; spacing: 6px;")
+            perf_checkbox.setMinimumHeight(26)
+            perf_checkbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        perf_toggle_grid = QGridLayout()
+        perf_toggle_grid.setHorizontalSpacing(12)
+        perf_toggle_grid.setVerticalSpacing(6)
+        perf_toggle_grid.setContentsMargins(0, 0, 0, 0)
+        perf_toggle_grid.addWidget(self.check_save_confidence, 0, 0)
+        perf_toggle_grid.addWidget(self.chk_use_cached_detections, 0, 1)
+        perf_toggle_grid.addWidget(self.chk_visualization_free, 0, 2)
+        perf_toggle_grid.setColumnStretch(0, 1)
+        perf_toggle_grid.setColumnStretch(1, 1)
+        perf_toggle_grid.setColumnStretch(2, 1)
+        fl_sys.addRow("", perf_toggle_grid)
+
+        vl_sys.addLayout(fl_sys)
+        form.addWidget(g_sys)
+
+        # ============================================================
+        # Display Settings (moved from Visuals tab)
+        # ============================================================
+        self.g_display = QGroupBox("Preview Overlays")
+        self._main_window._set_compact_section_widget(self.g_display)
+        vl_display = QVBoxLayout(self.g_display)
+        vl_display.addWidget(
+            self._main_window._create_help_label(
+                "Configure visual overlays shown during tracking. These settings affect "
+                "both the live preview and exported video output."
+            )
+        )
+
+        # Common overlays (2 per row)
+        self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
+        self.chk_show_circles.setChecked(True)
+        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
+
+        self.chk_show_orientation = QCheckBox("Show Orientation Lines")
+        self.chk_show_orientation.setChecked(True)
+        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
+
+        self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
+        self.chk_show_trajectories.setChecked(True)
+        self.chk_show_trajectories.setToolTip(
+            "Draw recent path history for each track."
+        )
+
+        self.chk_show_labels = QCheckBox("Show ID Labels")
+        self.chk_show_labels.setChecked(True)
+        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
+
+        self.chk_show_state = QCheckBox("Show State Text")
+        self.chk_show_state.setChecked(True)
+        self.chk_show_state.setToolTip(
+            "Display tracking state (ACTIVE, PREDICTED, etc.)."
+        )
+
+        self.chk_show_kalman_uncertainty = QCheckBox("Show prediction uncertainty")
+        self.chk_show_kalman_uncertainty.setChecked(False)
+        self.chk_show_kalman_uncertainty.setToolTip(
+            "Draw ellipses showing Kalman filter position uncertainty.\n"
+            "Larger ellipse = more uncertainty in predicted position.\n"
+            "Useful for debugging tracking quality and filter convergence."
+        )
+
+        _disp_r1 = QHBoxLayout()
+        _disp_r1.addWidget(self.chk_show_circles)
+        _disp_r1.addWidget(self.chk_show_orientation)
+        _disp_r2 = QHBoxLayout()
+        _disp_r2.addWidget(self.chk_show_trajectories)
+        _disp_r2.addWidget(self.chk_show_labels)
+        _disp_r3 = QHBoxLayout()
+        _disp_r3.addWidget(self.chk_show_state)
+        _disp_r3.addWidget(self.chk_show_kalman_uncertainty)
+        vl_display.addLayout(_disp_r1)
+        vl_display.addLayout(_disp_r2)
+        vl_display.addLayout(_disp_r3)
+
+        # Trail length
+        f_trail = QFormLayout(None)
+        self.spin_traj_hist = QSpinBox()
+        self.spin_traj_hist.setRange(1, 60)
+        self.spin_traj_hist.setValue(5)
+        self.spin_traj_hist.setToolTip(
+            "Length of trajectory trails to display (1-60 seconds).\n"
+            "Longer = more visible path history but more cluttered.\n"
+            "Recommended: 3-10 seconds."
+        )
+        f_trail.addRow("Trail history (seconds)", self.spin_traj_hist)
+        vl_display.addLayout(f_trail)
+
+        form.addWidget(self.g_display)
+
+        # ============================================================
+        # Advanced / Debug (moved from Visuals tab)
+        # ============================================================
+        g_debug = QGroupBox("Debug")
+        self._main_window._set_compact_section_widget(g_debug)
+        v_dbg = QVBoxLayout(g_debug)
+        v_dbg.setSpacing(6)
+        v_dbg.addWidget(
+            self._main_window._create_help_label(
+                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
+                "but generates large log files. Disable for production runs."
+            )
+        )
+        self.chk_debug_logging = QCheckBox("Enable detailed debug logging")
+        self.chk_debug_logging.stateChanged.connect(
+            self._main_window.toggle_debug_logging
+        )
+        v_dbg.addWidget(self.chk_debug_logging)
+        self.chk_enable_profiling = QCheckBox("Enable performance profiling")
+        self.chk_enable_profiling.setToolTip(
+            "Collect detailed timing for every tracking pipeline step "
+            "(init, detection, precompute, tracking loop, post-processing). "
+            "Exports a JSON profile next to outputs. Disabled by default for zero overhead."
+        )
+        v_dbg.addWidget(self.chk_enable_profiling)
+        form.addWidget(g_debug)
+
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        # NOTE: _populate_compute_runtime_options and _on_runtime_context_changed
+        # are called after panel construction in main_window.py
 
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
