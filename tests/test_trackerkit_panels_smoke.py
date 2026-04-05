@@ -25,7 +25,9 @@ _PANEL_MAP = {
 # Panels whose _build_ui is still a stub (safe to instantiate with MagicMock).
 # Remove a panel from this dict once its _build_ui is populated.
 _STUB_PANEL_MAP = {
-    k: v for k, v in _PANEL_MAP.items() if k not in {"DatasetPanel", "SetupPanel"}
+    k: v
+    for k, v in _PANEL_MAP.items()
+    if k not in {"DatasetPanel", "SetupPanel", "TrackingPanel"}
 }
 
 
@@ -84,3 +86,13 @@ def test_setup_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._setup_panel, SetupPanel)
     assert hasattr(main_window._setup_panel, "combo_presets")
     assert hasattr(main_window._setup_panel, "btn_file")
+
+
+def test_tracking_panel_wired_in_main_window(main_window):
+    """TrackingPanel is accessible on MainWindow and exposes key widgets."""
+    from hydra_suite.trackerkit.gui.panels.tracking_panel import TrackingPanel
+
+    assert hasattr(main_window, "_tracking_panel")
+    assert isinstance(main_window._tracking_panel, TrackingPanel)
+    assert hasattr(main_window._tracking_panel, "g_density")
+    assert hasattr(main_window._tracking_panel, "chk_enable_confidence_density_map")

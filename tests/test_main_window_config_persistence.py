@@ -130,11 +130,11 @@ def test_confidence_density_toggle_roundtrip_updates_visibility(
 ) -> None:
     window = _make_main_window(monkeypatch)
 
-    assert not window.g_density.isHidden()
+    assert not window._tracking_panel.g_density.isHidden()
 
-    window.chk_enable_confidence_density_map.setChecked(False)
+    window._tracking_panel.chk_enable_confidence_density_map.setChecked(False)
 
-    assert window.g_density.isHidden()
+    assert window._tracking_panel.g_density.isHidden()
     assert window.get_parameters_dict()["ENABLE_CONFIDENCE_DENSITY_MAP"] is False
 
     config_path = tmp_path / "confidence_density_toggle.json"
@@ -146,10 +146,13 @@ def test_confidence_density_toggle_roundtrip_updates_visibility(
     reloaded_window = _make_main_window(monkeypatch)
     reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
 
-    assert reloaded_window.chk_enable_confidence_density_map.isChecked() is False
-    assert reloaded_window.g_density.isHidden()
+    assert (
+        reloaded_window._tracking_panel.chk_enable_confidence_density_map.isChecked()
+        is False
+    )
+    assert reloaded_window._tracking_panel.g_density.isHidden()
 
-    reloaded_window.chk_enable_confidence_density_map.setChecked(True)
+    reloaded_window._tracking_panel.chk_enable_confidence_density_map.setChecked(True)
 
-    assert not reloaded_window.g_density.isHidden()
+    assert not reloaded_window._tracking_panel.g_density.isHidden()
     reloaded_window.close()
