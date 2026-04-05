@@ -351,8 +351,8 @@ class MergeWorker(BaseWorker):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
-    def execute(self: object) -> object:
-        """execute method documentation."""
+    def execute(self):
+        """Merge forward and backward trajectories."""
         from hydra_suite.core.tracking.profiler import TrackingProfiler
 
         profiler = TrackingProfiler(enabled=self.enable_profiling)
@@ -1258,7 +1258,7 @@ class InterpolatedCropsWorker(BaseWorker):
             except Exception:
                 pass
 
-    def execute(self: object) -> object:
+    def execute(self):
         """Generate interpolated crops for occluded trajectory gaps."""
         from hydra_suite.core.canonicalization.crop import (
             compute_native_scale_affine as _compute_native_scale,
@@ -1790,8 +1790,8 @@ class OrientedTrackVideoWorker(BaseWorker):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
-    def execute(self: object) -> object:
-        """execute method documentation."""
+    def execute(self):
+        """Track and orient detected animals in video frames."""
         try:
             exporter = OrientedTrackVideoExporter(
                 self.dataset_dir,
@@ -1857,8 +1857,8 @@ class DatasetGenerationWorker(BaseWorker):
     def _should_stop(self) -> bool:
         return bool(self._stop_requested or self.isInterruptionRequested())
 
-    def execute(self: object) -> object:
-        """execute method documentation."""
+    def execute(self):
+        """Generate training datasets from detections and annotations."""
         detection_cache = None
         try:
             from hydra_suite.data.dataset_generation import (
