@@ -9998,7 +9998,7 @@ class MainWindow(QMainWindow):
 
     def _is_individual_image_save_enabled(self) -> bool:
         """Return effective runtime state for saving individual crops."""
-        if not hasattr(self, "chk_enable_individual_dataset"):
+        if not hasattr(self, "_dataset_panel"):
             return False
         return bool(
             self._dataset_panel.chk_enable_individual_dataset.isChecked()
@@ -10007,7 +10007,7 @@ class MainWindow(QMainWindow):
 
     def _should_generate_oriented_track_videos(self) -> bool:
         """Return True when final per-track oriented videos should be exported."""
-        if not hasattr(self, "chk_generate_individual_track_videos"):
+        if not hasattr(self, "_dataset_panel"):
             return False
         return bool(
             self._dataset_panel.chk_generate_individual_track_videos.isChecked()
@@ -10037,7 +10037,7 @@ class MainWindow(QMainWindow):
 
     def _sync_individual_analysis_mode_ui(self):
         """Enforce YOLO-only pipeline and run/save dependency in UI."""
-        has_save_toggle = hasattr(self, "chk_enable_individual_dataset")
+        has_save_toggle = hasattr(self, "_dataset_panel")
         is_yolo = self._is_yolo_detection_mode()
 
         if hasattr(self, "tabs") and hasattr(self, "tab_individual"):
@@ -10071,7 +10071,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "g_individual_pipeline_common"):
             self.g_individual_pipeline_common.setVisible(pipeline_enabled)
             self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
-        if hasattr(self, "g_individual_dataset"):
+        if hasattr(self, "_dataset_panel"):
             self._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
             self._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
         self._sync_identity_method_ui()
@@ -10084,12 +10084,12 @@ class MainWindow(QMainWindow):
             )
 
         save_enabled = self._is_individual_image_save_enabled()
-        if hasattr(self, "ind_output_group"):
+        if hasattr(self, "_dataset_panel"):
             self._dataset_panel.ind_output_group.setVisible(save_enabled)
             self._dataset_panel.ind_output_group.setEnabled(save_enabled)
-        if hasattr(self, "lbl_individual_info"):
+        if hasattr(self, "_dataset_panel"):
             self._dataset_panel.lbl_individual_info.setVisible(save_enabled)
-        if hasattr(self, "chk_generate_individual_track_videos"):
+        if hasattr(self, "_dataset_panel"):
             self._dataset_panel.chk_generate_individual_track_videos.setVisible(
                 pipeline_enabled
             )
