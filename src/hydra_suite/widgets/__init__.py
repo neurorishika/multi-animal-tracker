@@ -2,8 +2,10 @@
 
 from hydra_suite.widgets.recents import RecentItemsStore
 from hydra_suite.widgets.welcome_page import ButtonDef, WelcomeConfig, WelcomePage
+from hydra_suite.widgets.workers import BaseWorker
 
 __all__ = [
+    "BaseWorker",
     "ButtonDef",
     "RecentItemsStore",
     "WelcomeConfig",
