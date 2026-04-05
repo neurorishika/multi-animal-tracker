@@ -1,11 +1,7 @@
 # src/hydra_suite/widgets/dialogs.py
 """BaseDialog — standard QDialog base class for all kit dialogs."""
-from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QVBoxLayout,
-    QWidget,
-)
+
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QWidget
 
 _DARK_STYLE = """
 QDialog {
