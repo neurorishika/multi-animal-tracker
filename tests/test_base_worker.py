@@ -73,7 +73,7 @@ def test_base_worker_error_emitted_on_exception(qapp):
 
 
 def test_base_worker_no_error_on_success(qapp):
-    """error signal is not emitted when execute succeeds."""
+    """error signal is not emitted when execute succeeds, but finished is."""
     from hydra_suite.widgets.workers import BaseWorker
 
     class _OkWorker(BaseWorker):
@@ -81,13 +81,16 @@ def test_base_worker_no_error_on_success(qapp):
             pass
 
     errors = []
+    finished_calls = []
     worker = _OkWorker()
     worker.error.connect(errors.append)
+    worker.finished.connect(lambda: finished_calls.append(1))
     worker.start()
     worker.wait(3000)
     QCoreApplication.processEvents()
 
     assert errors == []
+    assert len(finished_calls) == 1
 
 
 def test_base_worker_subclass_extra_signals(qapp):
