@@ -1,3 +1,1 @@
-"""GUI widget components."""
-
-__all__ = []
+"""trackerkit-local widget utilities."""
