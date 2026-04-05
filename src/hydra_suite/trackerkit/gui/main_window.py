@@ -101,6 +101,7 @@ from hydra_suite.runtime.compute_runtime import (
     infer_compute_runtime_from_legacy,
     runtime_label,
 )
+from hydra_suite.trackerkit.config.schemas import TrackerConfig
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.geometry import fit_circle_to_points, wrap_angle_degs
 from hydra_suite.utils.gpu_utils import (
@@ -3511,6 +3512,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initialize the main application window and UI components."""
         super().__init__()
+        self.config = TrackerConfig()
         self.setWindowTitle("HYDRA")
         self.resize(1360, 850)
 
