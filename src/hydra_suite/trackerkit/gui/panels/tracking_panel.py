@@ -46,7 +46,7 @@ class TrackingPanel(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        from hydra_suite.trackerkit.gui.main_window import (
+        from hydra_suite.trackerkit.gui.widgets.collapsible import (
             AccordionContainer,
             CollapsibleGroupBox,
         )

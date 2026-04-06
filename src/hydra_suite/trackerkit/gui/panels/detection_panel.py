@@ -57,7 +57,7 @@ class DetectionPanel(QWidget):
 
     def _build_ui(self) -> None:
         """Populate the panel layout."""
-        from hydra_suite.trackerkit.gui.main_window import (
+        from hydra_suite.trackerkit.gui.widgets.collapsible import (
             AccordionContainer,
             CollapsibleGroupBox,
         )
