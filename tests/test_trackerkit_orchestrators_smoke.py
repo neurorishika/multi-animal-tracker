@@ -29,7 +29,7 @@ def test_tracking_orchestrator_constructed(main_window):
 
 
 def test_config_orchestrator_constructed(main_window):
-    assert main_window._config_orch is None  # placeholder until Task 18
+    assert main_window._config_orch is not None
 
 
 def test_session_orchestrator_constructed(main_window):
