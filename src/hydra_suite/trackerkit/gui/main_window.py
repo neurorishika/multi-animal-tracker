@@ -2295,6 +2295,10 @@ class MainWindow(QMainWindow):
 
     def _sync_pose_backend_ui(self):
         """Show/hide backend-specific pose controls."""
+        if hasattr(self, "_session_orch"):
+            self._session_orch._sync_pose_backend_ui()
+            return
+        # Fallback during early init before orchestrators exist
         if not hasattr(self, "_identity_panel"):
             return
         backend = (
@@ -2318,7 +2322,6 @@ class MainWindow(QMainWindow):
                 self._identity_panel.pose_sleap_experimental_row_widget,
                 is_sleap,
             )
-        # Refresh pose model combo to show models for the selected backend.
         self._refresh_pose_model_combo(
             preferred_model_path=self._pose_model_path_for_backend(backend)
         )
@@ -2326,65 +2329,11 @@ class MainWindow(QMainWindow):
 
     def _is_pose_inference_enabled(self) -> bool:
         """Return whether pose inference is actively enabled for the run."""
-        return bool(
-            self._is_individual_pipeline_enabled()
-            and hasattr(self, "_identity_panel")
-            and self._identity_panel.chk_enable_pose_extractor.isChecked()
-        )
+        return self._session_orch._is_pose_inference_enabled()
 
     def _sync_video_pose_overlay_controls(self, *_args):
         """Gate pose video overlay controls based on pose inference enable state."""
-        has_controls = hasattr(self, "check_video_show_pose") and hasattr(
-            self, "combo_video_pose_color_mode"
-        )
-        if not has_controls:
-            return
-
-        video_visible = bool(
-            hasattr(self, "_postprocess_panel")
-            and self._postprocess_panel.check_video_output.isChecked()
-        )
-        pose_enabled = self._is_pose_inference_enabled()
-        enabled = bool(video_visible and pose_enabled)
-
-        self._postprocess_panel.check_video_show_pose.setEnabled(enabled)
-        show_pose = bool(
-            enabled and self._postprocess_panel.check_video_show_pose.isChecked()
-        )
-        fixed_color_mode = (
-            self._postprocess_panel.combo_video_pose_color_mode.currentIndex() == 1
-        )
-
-        # Show detailed controls only when pose overlay is on.
-        self._postprocess_panel.lbl_video_pose_color_mode.setVisible(show_pose)
-        self._postprocess_panel.combo_video_pose_color_mode.setVisible(show_pose)
-        self._postprocess_panel.lbl_video_pose_point_radius.setVisible(show_pose)
-        self._postprocess_panel.spin_video_pose_point_radius.setVisible(show_pose)
-        self._postprocess_panel.lbl_video_pose_point_thickness.setVisible(show_pose)
-        self._postprocess_panel.spin_video_pose_point_thickness.setVisible(show_pose)
-        self._postprocess_panel.lbl_video_pose_line_thickness.setVisible(show_pose)
-        self._postprocess_panel.spin_video_pose_line_thickness.setVisible(show_pose)
-
-        show_fixed_color = bool(show_pose and fixed_color_mode)
-        self._postprocess_panel.lbl_video_pose_color_label.setVisible(show_fixed_color)
-        self._postprocess_panel.btn_video_pose_color.setVisible(show_fixed_color)
-        self._postprocess_panel.lbl_video_pose_color.setVisible(show_fixed_color)
-
-        self._postprocess_panel.combo_video_pose_color_mode.setEnabled(show_pose)
-        self._postprocess_panel.spin_video_pose_point_radius.setEnabled(show_pose)
-        self._postprocess_panel.spin_video_pose_point_thickness.setEnabled(show_pose)
-        self._postprocess_panel.spin_video_pose_line_thickness.setEnabled(show_pose)
-        self._postprocess_panel.btn_video_pose_color.setEnabled(show_fixed_color)
-
-        self._postprocess_panel.lbl_video_pose_disabled_hint.setVisible(video_visible)
-        if enabled:
-            self._postprocess_panel.lbl_video_pose_disabled_hint.setText(
-                "Pose overlay will use keypoints from pose-augmented tracking output."
-            )
-        else:
-            self._postprocess_panel.lbl_video_pose_disabled_hint.setText(
-                "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
-            )
+        self._session_orch._sync_video_pose_overlay_controls(*_args)
 
     def _is_yolo_detection_mode(self) -> bool:
         """Return True when current detection mode is YOLO OBB."""
@@ -2394,7 +2343,7 @@ class MainWindow(QMainWindow):
 
     def _is_individual_pipeline_enabled(self) -> bool:
         """Return effective runtime state for individual analysis pipeline."""
-        return self._is_yolo_detection_mode()
+        return self._session_orch._is_individual_pipeline_enabled()
 
     def _is_identity_analysis_enabled(self) -> bool:
         """Return effective runtime state for identity classification."""
@@ -2416,21 +2365,11 @@ class MainWindow(QMainWindow):
 
     def _is_individual_image_save_enabled(self) -> bool:
         """Return effective runtime state for saving individual crops."""
-        if not hasattr(self, "_dataset_panel"):
-            return False
-        return bool(
-            self._dataset_panel.chk_enable_individual_dataset.isChecked()
-            and self._is_individual_pipeline_enabled()
-        )
+        return self._session_orch._is_individual_image_save_enabled()
 
     def _should_generate_oriented_track_videos(self) -> bool:
         """Return True when final per-track oriented videos should be exported."""
-        if not hasattr(self, "_dataset_panel"):
-            return False
-        return bool(
-            self._dataset_panel.chk_generate_individual_track_videos.isChecked()
-            and self._is_individual_pipeline_enabled()
-        )
+        return self._session_orch._should_generate_oriented_track_videos()
 
     def _should_run_interpolated_postpass(self) -> bool:
         """
@@ -2441,17 +2380,7 @@ class MainWindow(QMainWindow):
         - pose export is enabled (to fill occluded-frame pose rows in final CSV), or
         - oriented track video export is enabled (to cache interpolated ROI geometry).
         """
-        if not hasattr(self, "_identity_panel"):
-            return False
-        if not self._identity_panel.chk_individual_interpolate.isChecked():
-            return False
-        if not self._is_individual_pipeline_enabled():
-            return False
-        return bool(
-            self._is_individual_image_save_enabled()
-            or self._is_pose_export_enabled()
-            or self._should_generate_oriented_track_videos()
-        )
+        return self._session_orch._should_run_interpolated_postpass()
 
     def _sync_individual_analysis_mode_ui(self):
         """Enforce YOLO-only pipeline and run/save dependency in UI."""
@@ -2744,35 +2673,7 @@ class MainWindow(QMainWindow):
 
     def _sync_batch_list_ui(self):
         """Refresh the batch list widget with markers for the keystone."""
-        self._setup_panel.list_batch_videos.clear()
-        current_fp = (
-            os.path.normpath(self._setup_panel.file_line.text().strip())
-            if self._setup_panel.file_line.text().strip()
-            else ""
-        )
-
-        for i, fp in enumerate(self.batch_videos):
-            norm_fp = os.path.normpath(fp)
-            if i == 0:
-                item_text = f"⭐ KEYSTONE: {fp}"
-            else:
-                item_text = fp
-
-            if norm_fp == current_fp:
-                item_text = f"▶ CURRENT: {item_text}"
-
-            item = QListWidgetItem(item_text)
-            item.setToolTip(fp)
-
-            if norm_fp == current_fp:
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-
-            self._setup_panel.list_batch_videos.addItem(item)
-
-            if norm_fp == current_fp:
-                self._setup_panel.list_batch_videos.setCurrentItem(item)
+        self._session_orch._sync_batch_list_ui()
 
     def _on_batch_video_selected(self, *args):
         """Load a video from the batch list for preview/tuning."""
@@ -3169,16 +3070,7 @@ class MainWindow(QMainWindow):
 
     def _update_range_info(self):
         """Update the frame range info label."""
-        start = self._setup_panel.spin_start_frame.value()
-        end = self._setup_panel.spin_end_frame.value()
-        num_frames = end - start + 1
-
-        fps = self._setup_panel.spin_fps.value()
-        duration_sec = num_frames / fps if fps > 0 else 0
-
-        self._setup_panel.lbl_range_info.setText(
-            f"Tracking {num_frames} frames ({duration_sec:.2f} seconds)"
-        )
+        self._session_orch._update_range_info()
 
     def _set_start_to_current(self):
         """Set start frame to current frame."""
@@ -4319,31 +4211,7 @@ class MainWindow(QMainWindow):
 
     def _update_obb_mode_warning(self) -> None:
         """Show a performance hint when device/mode is a suboptimal combination."""
-        if not hasattr(self, "_detection_panel"):
-            return
-        runtime = (
-            self._selected_compute_runtime() if hasattr(self, "_setup_panel") else ""
-        )
-        sequential = (
-            hasattr(self, "_detection_panel")
-            and self._detection_panel.combo_yolo_obb_mode.currentIndex() == 1
-        )
-        is_mps = "mps" in runtime.lower()
-        is_cuda = "cuda" in runtime.lower()
-        if is_mps and sequential:
-            msg = (
-                "⚠ Sequential mode is significantly slower on Apple Silicon (MPS). "
-                "Direct mode is recommended for MPS — it runs ~4× faster."
-            )
-        elif is_cuda and not sequential:
-            msg = (
-                "⚠ Sequential mode is typically faster on CUDA GPUs. "
-                "Consider switching to Sequential for better throughput."
-            )
-        else:
-            msg = ""
-        self._detection_panel.lbl_obb_mode_warning.setText(msg)
-        self._detection_panel.lbl_obb_mode_warning.setVisible(bool(msg))
+        self._session_orch._update_obb_mode_warning()
 
     def _apply_crop_obb_training_params(self):
         """Auto-configure sequential inference params from model training metadata."""
