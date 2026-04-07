@@ -823,9 +823,87 @@ class TrackingOrchestrator:
 
 
 
+    def _generate_oriented_track_videos(self, final_csv_path):
+        """Export orientation-fixed videos for final trajectories."""
+        from hydra_suite.trackerkit.gui.workers.video_worker import OrientedTrackVideoWorker
+
+        try:
+            if self._mw._stop_all_requested:
+                return False
+            if not self._should_generate_oriented_track_videos():
+                return False
+            if not final_csv_path or not os.path.exists(final_csv_path):
+                return False
+
+            dataset_dir = self._mw._resolve_current_individual_dataset_dir()
+            if dataset_dir is None:
+                logger.warning(
+                    "Skipping oriented track video export: no individual dataset directory found."
+                )
+                return False
+            if not self._mw.current_detection_cache_path or not os.path.exists(
+                self._mw.current_detection_cache_path
+            ):
+                logger.warning(
+                    "Skipping oriented track video export: no compatible detection cache is available."
+                )
+                return False
+
+            self._mw.progress_bar.setVisible(True)
+            self._mw.progress_label.setVisible(True)
+            self._mw.progress_bar.setValue(0)
+            self._mw.progress_label.setText("Generating oriented track videos...")
+
+            if (
+                self._mw.oriented_video_worker is not None
+                and self._mw.oriented_video_worker.isRunning()
+            ):
+                logger.warning(
+                    "Oriented track video export already running; skipping duplicate request."
+                )
+                return True
+            if (
+                self._mw.oriented_video_worker is not None
+                and not self._mw.oriented_video_worker.isRunning()
+            ):
+                self._mw.oriented_video_worker.deleteLater()
+                self._mw.oriented_video_worker = None
+
+            padding_fraction = (
+                float(self._panels.identity.spin_individual_padding.value())
+                if hasattr(self._mw, "_identity_panel")
+                else 0.1
+            )
+            self._mw.oriented_video_worker = OrientedTrackVideoWorker(
+                final_csv_path,
+                str(dataset_dir),
+                self._panels.setup.file_line.text().strip(),
+                self._mw.current_detection_cache_path,
+                self._mw.current_interpolated_roi_npz_path,
+                self._mw._resolve_source_video_fps(),
+                max(0.0, padding_fraction),
+                tuple(int(c) for c in self._panels.identity._background_color),
+                bool(self._panels.dataset.chk_suppress_foreign_obb_dataset.isChecked()),
+            )
+            self._mw.oriented_video_worker.progress_signal.connect(self._mw.on_progress_update)
+            self._mw.oriented_video_worker.finished_signal.connect(
+                self._mw._on_oriented_track_videos_finished
+            )
+            self._mw.oriented_video_worker.error_signal.connect(
+                self._mw._on_oriented_track_videos_error
+            )
+            self._mw.oriented_video_worker.finished.connect(
+                self._mw._on_oriented_track_video_worker_thread_finished
+            )
+            self._mw.oriented_video_worker.start()
+            return True
+        except Exception as e:
+            logger.warning(f"Oriented track video export failed to start: {e}")
+            return False
+
     def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
         """Start optional oriented track video export and hold the finish pipeline."""
-        started = self._mw._generate_oriented_track_videos(final_csv_path)
+        started = self._generate_oriented_track_videos(final_csv_path)
         if started:
             self._mw._pending_finish_after_track_videos = True
         return started
@@ -2611,7 +2689,7 @@ class TrackingOrchestrator:
         self._mw.csv_writer_thread = None
 
         params = self._mw.get_parameters_dict()
-        if not self._mw._validate_yolo_model_requirements(
+        if not self._validate_yolo_model_requirements(
             params, mode_label="tracking preview"
         ):
             return
@@ -2790,7 +2868,7 @@ class TrackingOrchestrator:
         )
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
         use_cached_detections = self._panels.setup.chk_use_cached_detections.isChecked()
-        if not self._mw._validate_yolo_model_requirements(params, mode_label="tracking"):
+        if not self._validate_yolo_model_requirements(params, mode_label="tracking"):
             return
 
         # Generate model-specific cache name
@@ -3420,3 +3498,70 @@ class TrackingOrchestrator:
 
 
 
+
+
+    def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
+        """Validate YOLO mode-specific model requirements before starting runs."""
+        if str(params.get("DETECTION_METHOD", "")) != "yolo_obb":
+            return True
+        yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        if yolo_mode != "sequential":
+            return True
+        detect_model = str(params.get("YOLO_DETECT_MODEL_PATH", "")).strip()
+        crop_obb_model = str(params.get("YOLO_CROP_OBB_MODEL_PATH", "")).strip()
+        if detect_model and crop_obb_model:
+            return True
+        QMessageBox.warning(
+            self._mw,
+            "Missing Sequential Models",
+            (
+                f"Sequential YOLO OBB mode in {mode_label} requires both a detect model "
+                "and a crop OBB model."
+            ),
+        )
+        return False
+
+    def _get_detection_size(self, detection_cache, frame_id, detection_id, params):
+        """Get physical size (w, h) of a detection from cache."""
+        import numpy as _np
+        import math as _math
+        import pandas as _pd
+
+        if detection_cache is None or detection_id is None or _pd.isna(detection_id):
+            return None, None
+        try:
+            _, _, shapes, _, obb_corners, detection_ids, *_ = detection_cache.get_frame(
+                int(frame_id)
+            )
+        except Exception:
+            return None, None
+
+        idx = None
+        try:
+            for i, did in enumerate(detection_ids):
+                if int(did) == int(detection_id):
+                    idx = i
+                    break
+        except Exception:
+            idx = None
+
+        if idx is None:
+            return None, None
+
+        if obb_corners and idx < len(obb_corners):
+            c = _np.asarray(obb_corners[idx], dtype=_np.float32)
+            if c.shape[0] >= 4:
+                w = float(_np.linalg.norm(c[1] - c[0]))
+                h = float(_np.linalg.norm(c[2] - c[1]))
+                if w < h:
+                    w, h = h, w
+                return w, h
+
+        if shapes and idx < len(shapes):
+            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
+            if aspect_ratio > 0 and area > 0:
+                ax2 = _math.sqrt(4 * area / (_math.pi * aspect_ratio))
+                ax1 = aspect_ratio * ax2
+                return ax1, ax2
+
+        return None, None

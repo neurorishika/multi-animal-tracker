@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from hydra_suite.classkit.cluster.clustering_backend import probe_clustering_backend
+from hydra_suite.classkit.core.cluster.clustering_backend import probe_clustering_backend
 
 
 class ClusterDialog(QDialog):

@@ -3,11 +3,11 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from ..data.ingest import compute_image_hash, scan_images
-from ..embed.embedder import TimmEmbedder
-from ..index.faiss_index import KnnIndex
-from ..store.db import ClassKitDB
-from ..viz.umap_reduce import compute_umap_viz
+from ..core.data.ingest import compute_image_hash, scan_images
+from ..core.embed.embedder import TimmEmbedder
+from ..core.index.faiss_index import KnnIndex
+from ..core.store.db import ClassKitDB
+from ..core.viz.umap_reduce import compute_umap_viz
 
 
 class IngestWorker(QRunnable):
@@ -69,7 +69,7 @@ class IngestWorker(QRunnable):
             # 3. Embeddings
             self.signals.progress.emit("Loading Embedder...", 20)
             try:
-                from ..embed.embedder import ModelLoadError
+                from ..core.embed.embedder import ModelLoadError
 
                 embedder = TimmEmbedder(model_name=self.model_name, device=self.device)
                 embedder.load_model()

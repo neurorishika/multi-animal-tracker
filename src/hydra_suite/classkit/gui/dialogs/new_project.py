@@ -227,7 +227,7 @@ class NewProjectDialog(QDialog):
                 "scheme": _SchemeWrapper(scheme_dict),
             }
 
-        from hydra_suite.classkit.presets import (
+        from hydra_suite.classkit.config.presets import (
             age_preset,
             color_tag_preset,
             head_tail_preset,

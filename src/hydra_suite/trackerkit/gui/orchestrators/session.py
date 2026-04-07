@@ -6,6 +6,22 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+import cv2
+import numpy as np
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QMessageBox
+
+from hydra_suite.utils.geometry import fit_circle_to_points
+
+from hydra_suite.runtime.compute_runtime import (
+    CANONICAL_RUNTIMES,
+    allowed_runtimes_for_pipelines,
+    derive_detection_runtime_settings,
+    derive_pose_runtime_settings,
+    runtime_label,
+)
+
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.config.schemas import TrackerConfig
     from hydra_suite.trackerkit.gui.main_window import MainWindow
@@ -767,3 +783,1150 @@ class SessionOrchestrator:
             or self._mw._is_pose_export_enabled()
             or self._should_generate_oriented_track_videos()
         )
+
+    # =========================================================================
+    # RUNTIME / COMPUTE OPTIONS
+    # =========================================================================
+
+    def _runtime_pipelines_for_current_ui(self):
+        """Return the list of active pipeline keys for runtime intersection."""
+        pipelines = []
+        if self._mw._is_yolo_detection_mode():
+            pipelines.append("yolo_obb_detection")
+        if self._is_pose_inference_enabled():
+            backend = (
+                self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
+            )
+            if backend == "sleap":
+                pipelines.append("sleap_pose")
+            else:
+                pipelines.append("yolo_pose")
+        return pipelines
+
+    def _compute_runtime_options_for_current_ui(self):
+        """Return (label, value) pairs for the compute runtime combo."""
+        allowed = allowed_runtimes_for_pipelines(
+            self._runtime_pipelines_for_current_ui()
+        )
+        if not allowed:
+            allowed = ["cpu"]
+        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+
+    def _selected_compute_runtime(self) -> str:
+        """Return the currently selected compute runtime key."""
+        if not hasattr(self._mw, "_setup_panel"):
+            return "cpu"
+        data = self._mw._setup_panel.combo_compute_runtime.currentData()
+        if data:
+            return str(data).strip().lower()
+        txt = self._mw._setup_panel.combo_compute_runtime.currentText().strip().lower()
+        if txt in CANONICAL_RUNTIMES:
+            return txt
+        return "cpu"
+
+    def _runtime_requires_fixed_yolo_batch(self, runtime=None) -> bool:
+        """Return True when runtime mandates a fixed YOLO batch size."""
+        rt = str(runtime or self._selected_compute_runtime() or "").strip().lower()
+        return rt == "tensorrt" or rt.startswith("onnx")
+
+    @staticmethod
+    def _preview_safe_runtime(runtime: str) -> str:
+        """Downgrade ONNX/TensorRT runtimes to their native equivalents for preview."""
+        rt = str(runtime or "cpu").strip().lower()
+        if rt == "onnx_cpu":
+            return "cpu"
+        if rt in ("onnx_cuda", "tensorrt"):
+            return "cuda"
+        if rt == "onnx_rocm":
+            return "rocm"
+        return rt
+
+    def _on_runtime_context_changed(self, *_args):
+        """Update runtime combo and sync dependent controls when context changes."""
+        previous = self._selected_compute_runtime()
+        self._mw._populate_compute_runtime_options(preferred=previous)
+        selected_runtime = self._selected_compute_runtime()
+        self._mw._update_obb_mode_warning()
+        derived = derive_detection_runtime_settings(selected_runtime)
+        if hasattr(self._mw, "_detection_panel"):
+            idx = self._mw._detection_panel.combo_device.findText(
+                str(derived.get("yolo_device", "cpu")), Qt.MatchStartsWith
+            )
+            if idx >= 0:
+                self._mw._detection_panel.combo_device.setCurrentIndex(idx)
+        if hasattr(self._mw, "_detection_panel"):
+            self._mw._detection_panel.chk_enable_tensorrt.setChecked(
+                bool(derived.get("enable_tensorrt", False))
+            )
+        if (
+            self._runtime_requires_fixed_yolo_batch(selected_runtime)
+            and hasattr(self._mw, "combo_yolo_batch_mode")
+            and hasattr(self._mw, "spin_yolo_batch_size")
+            and hasattr(self._mw, "chk_enable_yolo_batching")
+        ):
+            self._mw._detection_panel.chk_enable_yolo_batching.setChecked(True)
+            self._mw._detection_panel.chk_enable_yolo_batching.setEnabled(False)
+            self._mw._detection_panel.combo_yolo_batch_mode.setCurrentIndex(1)
+            self._mw._detection_panel.combo_yolo_batch_mode.setEnabled(False)
+            self._mw._detection_panel.spin_yolo_batch_size.setEnabled(True)
+            if hasattr(self._mw, "spin_tensorrt_batch"):
+                self._mw._detection_panel.spin_tensorrt_batch.setValue(
+                    self._mw._detection_panel.spin_yolo_batch_size.value()
+                )
+        elif hasattr(self._mw, "combo_yolo_batch_mode") and hasattr(
+            self._mw, "chk_enable_yolo_batching"
+        ):
+            self._mw._detection_panel.chk_enable_yolo_batching.setEnabled(True)
+            self._mw._detection_panel.combo_yolo_batch_mode.setEnabled(
+                self._mw._detection_panel.chk_enable_yolo_batching.isChecked()
+            )
+            self._mw._detection_panel._on_yolo_batch_mode_changed(
+                self._mw._detection_panel.combo_yolo_batch_mode.currentIndex()
+            )
+        if hasattr(self._mw, "_identity_panel"):
+            self._mw._populate_pose_runtime_flavor_options(
+                backend=self._mw._identity_panel.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
+                preferred=self._mw._selected_pose_runtime_flavor(),
+            )
+
+    def _pose_runtime_options_for_backend(self, backend: str):
+        """Return (label, flavor) pairs for the pose runtime flavor combo."""
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        flavor = str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+        return [(runtime_label(self._selected_compute_runtime()), flavor)]
+
+    def _populate_pose_runtime_flavor_options(self, backend: str, preferred=None):
+        """Populate the pose runtime flavor combo based on the current backend."""
+        if not hasattr(self._mw, "_identity_panel"):
+            return
+        combo = self._mw._identity_panel.combo_pose_runtime_flavor
+        selected = (
+            str(preferred or self._mw._selected_pose_runtime_flavor() or "auto")
+            .strip()
+            .lower()
+        )
+        options = self._pose_runtime_options_for_backend(backend)
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_pose_runtime_flavor(self) -> str:
+        """Return the currently selected pose runtime flavor key."""
+        backend = (
+            self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self._mw, "_identity_panel")
+            else "yolo"
+        )
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+
+    def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
+        """Show/hide a QFormLayout row by field widget."""
+        if form_layout is None or field_widget is None:
+            return
+        label = form_layout.labelForField(field_widget)
+        if label is not None:
+            label.setVisible(bool(visible))
+        field_widget.setVisible(bool(visible))
+
+    # =========================================================================
+    # INDIVIDUAL ANALYSIS UI
+    # =========================================================================
+
+    def _sync_individual_analysis_mode_ui(self):
+        """Enforce YOLO-only pipeline and run/save dependency in UI."""
+        has_save_toggle = hasattr(self._mw, "_dataset_panel")
+        is_yolo = self._mw._is_yolo_detection_mode()
+
+        if hasattr(self._mw, "tabs") and hasattr(self._mw, "_identity_panel"):
+            tab_index = self._mw.tabs.indexOf(self._mw._identity_panel)
+            if tab_index >= 0:
+                if not is_yolo and self._mw.tabs.currentWidget() is self._mw._identity_panel:
+                    fallback_index = self._mw.tabs.indexOf(
+                        getattr(self._mw, "_detection_panel", self._mw._setup_panel)
+                    )
+                    if fallback_index >= 0:
+                        self._mw.tabs.setCurrentIndex(fallback_index)
+                if hasattr(self._mw.tabs, "setTabVisible"):
+                    self._mw.tabs.setTabVisible(tab_index, is_yolo)
+                elif hasattr(self._mw.tabs, "tabBar") and hasattr(
+                    self._mw.tabs.tabBar(), "setTabVisible"
+                ):
+                    self._mw.tabs.tabBar().setTabVisible(tab_index, is_yolo)
+                self._mw.tabs.setTabEnabled(tab_index, is_yolo)
+
+        pipeline_enabled = self._is_individual_pipeline_enabled()
+
+        if hasattr(self._mw, "_identity_panel"):
+            self._mw._identity_panel.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
+            self._mw._identity_panel.g_identity.setVisible(pipeline_enabled)
+            self._mw._identity_panel.g_identity.setEnabled(pipeline_enabled)
+            self._mw._identity_panel.g_pose_runtime.setVisible(pipeline_enabled)
+            self._mw._identity_panel.g_pose_runtime.setEnabled(pipeline_enabled)
+            self._mw._identity_panel.g_individual_pipeline_common.setVisible(pipeline_enabled)
+            self._mw._identity_panel.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+            self._mw._identity_panel._sync_identity_method_ui()
+            self._mw._identity_panel._sync_pose_analysis_ui()
+        if hasattr(self._mw, "_dataset_panel"):
+            self._mw._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
+            self._mw._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
+        self._sync_pose_backend_ui()
+
+        if has_save_toggle:
+            self._mw._dataset_panel.chk_enable_individual_dataset.setEnabled(pipeline_enabled)
+
+        save_enabled = self._is_individual_image_save_enabled()
+        if hasattr(self._mw, "_dataset_panel"):
+            self._mw._dataset_panel.ind_output_group.setVisible(save_enabled)
+            self._mw._dataset_panel.ind_output_group.setEnabled(save_enabled)
+            self._mw._dataset_panel.lbl_individual_info.setVisible(save_enabled)
+            self._mw._dataset_panel.chk_generate_individual_track_videos.setVisible(pipeline_enabled)
+            has_headtail = bool(
+                str(self._mw._identity_panel._get_selected_yolo_headtail_model_path() or "").strip()
+            )
+            oriented_enabled = pipeline_enabled and has_headtail
+            self._mw._dataset_panel.chk_generate_individual_track_videos.setEnabled(oriented_enabled)
+            if not oriented_enabled:
+                self._mw._dataset_panel.chk_generate_individual_track_videos.setChecked(False)
+                self._mw._dataset_panel.chk_generate_individual_track_videos.setToolTip(
+                    "Requires a head-tail model to be configured."
+                )
+            else:
+                self._mw._dataset_panel.chk_generate_individual_track_videos.setToolTip(
+                    "After final cleaning completes, export one orientation-fixed video per\n"
+                    "final TrajectoryID by streaming the source video and using the detection\n"
+                    "cache plus interpolated ROI cache. Independent from saved crop files."
+                )
+        self._sync_video_pose_overlay_controls()
+        self._mw._on_runtime_context_changed()
+
+    def _select_individual_background_color(self):
+        """Open color picker for individual dataset background color."""
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
+
+        b, g, r = self._mw._identity_panel._background_color
+        initial_color = QColor(r, g, b)
+        color = QColorDialog.getColor(initial_color, self._mw, "Choose Background Color")
+        if color.isValid():
+            self._mw._identity_panel._background_color = (
+                color.blue(),
+                color.green(),
+                color.red(),
+            )
+            self._mw._update_background_color_button()
+
+    def _update_background_color_button(self):
+        """Update the color button display and label."""
+        b, g, r = self._mw._identity_panel._background_color
+        self._mw._identity_panel.btn_background_color.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); "
+            f"border: 1px solid #333; border-radius: 2px;"
+        )
+        self._mw._identity_panel.lbl_background_color.setText(
+            f"{self._mw._identity_panel._background_color}"
+        )
+
+    def _compute_median_background_color(self):
+        """Compute median color from current preview frame or load from video."""
+        frame = None
+        if (
+            hasattr(self._mw, "preview_frame_original")
+            and self._mw.preview_frame_original is not None
+        ):
+            frame = cv2.cvtColor(self._mw.preview_frame_original, cv2.COLOR_RGB2BGR)
+        elif self._mw.current_video_path:
+            cap = cv2.VideoCapture(self._mw.current_video_path)
+            if cap.isOpened():
+                ret, frame_bgr = cap.read()
+                cap.release()
+                if ret:
+                    frame = frame_bgr
+
+        if frame is None:
+            QMessageBox.warning(
+                self._mw, "No Frame", "Please load a video first to compute median color."
+            )
+            return
+
+        try:
+            from hydra_suite.utils.image_processing import compute_median_color_from_frame
+
+            median_color = compute_median_color_from_frame(frame)
+            self._mw._identity_panel._background_color = tuple(int(c) for c in median_color)
+            self._mw._update_background_color_button()
+            QMessageBox.information(
+                self._mw,
+                "Median Color Computed",
+                f"Background color set to median:\nBGR: {median_color}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to compute median color: {e}")
+            QMessageBox.warning(self._mw, "Error", f"Failed to compute median color:\n{e}")
+
+    # =========================================================================
+    # VIDEO PLAYER
+    # =========================================================================
+
+    def _init_video_player(self, video_path):
+        """Initialize video player with the loaded video."""
+        from PySide6.QtCore import QTimer
+
+        if self._mw.video_cap is not None:
+            self._mw.video_cap.release()
+        if self._mw.playback_timer:
+            self._mw.playback_timer.stop()
+            self._mw.playback_timer = None
+        self._mw.is_playing = False
+
+        self._mw.video_cap = cv2.VideoCapture(video_path)
+        if not self._mw.video_cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            return
+
+        self._mw.video_total_frames = int(self._mw.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = self._mw.video_cap.get(cv2.CAP_PROP_FPS)
+        width = int(self._mw.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self._mw.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        self._panels.setup.lbl_video_info.setText(
+            f"Video: {self._mw.video_total_frames} frames, {width}x{height}, {fps:.2f} FPS"
+        )
+        self._panels.setup.slider_timeline.setMaximum(self._mw.video_total_frames - 1)
+        self._panels.setup.slider_timeline.setEnabled(True)
+        self._panels.setup.btn_first_frame.setEnabled(True)
+        self._panels.setup.btn_prev_frame.setEnabled(True)
+        self._panels.setup.btn_play_pause.setEnabled(True)
+        self._panels.setup.btn_next_frame.setEnabled(True)
+        self._panels.setup.btn_last_frame.setEnabled(True)
+        self._panels.setup.btn_random_seek.setEnabled(True)
+        self._panels.setup.combo_playback_speed.setEnabled(True)
+        self._panels.setup.spin_start_frame.setMaximum(self._mw.video_total_frames - 1)
+        self._panels.setup.spin_start_frame.setEnabled(True)
+        self._panels.setup.spin_end_frame.setMaximum(self._mw.video_total_frames - 1)
+        self._panels.setup.spin_end_frame.setValue(self._mw.video_total_frames - 1)
+        self._panels.setup.spin_end_frame.setEnabled(True)
+        self._panels.setup.btn_set_start_current.setEnabled(True)
+        self._panels.setup.btn_set_end_current.setEnabled(True)
+        self._panels.setup.btn_reset_range.setEnabled(True)
+        self._panels.setup.g_video_player.setVisible(True)
+
+        self._mw.video_current_frame_idx = 0
+        self._mw._display_current_frame()
+        self._update_range_info()
+        logger.info(f"Video player initialized: {self._mw.video_total_frames} frames")
+
+    def _display_current_frame(self):
+        """Display the current frame in the video label."""
+        if self._mw.video_cap is None:
+            return
+        if self._mw.last_read_frame_idx != self._mw.video_current_frame_idx - 1:
+            self._mw.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self._mw.video_current_frame_idx)
+        ret, frame = self._mw.video_cap.read()
+        if not ret:
+            return
+        self._mw.last_read_frame_idx = self._mw.video_current_frame_idx
+        self._mw.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self._mw.detection_test_result = None
+        if hasattr(self._mw, "_detection_panel"):
+            self._mw._detection_panel._update_preview_display()
+        self._panels.setup.lbl_current_frame.setText(
+            f"Frame: {self._mw.video_current_frame_idx}/{self._mw.video_total_frames - 1}"
+        )
+        self._panels.setup.slider_timeline.blockSignals(True)
+        self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+        self._panels.setup.slider_timeline.blockSignals(False)
+
+    def _on_timeline_changed(self, value):
+        """Handle timeline slider change."""
+        if self._mw.is_playing and not self._panels.setup.slider_timeline.signalsBlocked():
+            self._mw._stop_playback()
+        self._mw.video_current_frame_idx = value
+        self._mw._display_current_frame()
+
+    def _goto_first_frame(self):
+        """Go to the first frame."""
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+        self._mw.video_current_frame_idx = 0
+        self._panels.setup.slider_timeline.setValue(0)
+        self._mw._display_current_frame()
+
+    def _goto_prev_frame(self):
+        """Go to the previous frame."""
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+        if self._mw.video_current_frame_idx > 0:
+            self._mw.video_current_frame_idx -= 1
+            self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+            self._mw._display_current_frame()
+
+    def _goto_next_frame(self):
+        """Go to the next frame."""
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+        if self._mw.video_current_frame_idx < self._mw.video_total_frames - 1:
+            self._mw.video_current_frame_idx += 1
+            self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+            self._mw._display_current_frame()
+
+    def _goto_last_frame(self):
+        """Go to the last frame."""
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+        self._mw.video_current_frame_idx = self._mw.video_total_frames - 1
+        self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+        self._mw._display_current_frame()
+
+    def _goto_random_frame(self):
+        """Jump to a random frame."""
+        import numpy as np
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+        if self._mw.video_total_frames <= 0:
+            return
+        self._mw.video_current_frame_idx = np.random.randint(0, self._mw.video_total_frames)
+        self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+        self._mw._display_current_frame()
+
+    def _toggle_playback(self):
+        """Toggle play/pause."""
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+        else:
+            self._mw._start_playback()
+
+    def _start_playback(self):
+        """Start video playback."""
+        from PySide6.QtCore import QTimer
+
+        if self._mw.video_cap is None or self._mw.is_playing:
+            return
+        self._mw.is_playing = True
+        self._panels.setup.btn_play_pause.setText("\u23f8 Pause")
+        speed_text = self._panels.setup.combo_playback_speed.currentText()
+        speed = float(speed_text.replace("x", ""))
+        fps = self._mw.video_cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 30
+        interval_ms = max(1, int((1000.0 / fps) / speed))
+        if self._mw.playback_timer is None:
+            self._mw.playback_timer = QTimer(self._mw)
+        self._mw.playback_timer.singleShot(interval_ms, self._mw._playback_step)
+
+    def _stop_playback(self):
+        """Stop video playback."""
+        if not self._mw.is_playing:
+            return
+        self._mw.is_playing = False
+        self._panels.setup.btn_play_pause.setText("\u25b6 Play")
+        if self._mw.playback_timer and self._mw.playback_timer.isActive():
+            self._mw.playback_timer.stop()
+
+    def _playback_step(self):
+        """Advance one frame during playback."""
+        if self._mw.playback_timer and self._mw.playback_timer.isActive():
+            self._mw.playback_timer.stop()
+        if not self._mw.is_playing:
+            return
+        if self._mw.video_current_frame_idx < self._mw.video_total_frames - 1:
+            self._mw.video_current_frame_idx += 1
+            self._mw._display_current_frame()
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            if self._mw.is_playing and self._mw.playback_timer:
+                speed_text = self._panels.setup.combo_playback_speed.currentText()
+                speed = float(speed_text.replace("x", ""))
+                fps = self._mw.video_cap.get(cv2.CAP_PROP_FPS)
+                if fps <= 0:
+                    fps = 30
+                interval_ms = max(1, int((1000.0 / fps) / speed))
+                self._mw.playback_timer.singleShot(interval_ms, self._mw._playback_step)
+        else:
+            self._mw._stop_playback()
+
+    def _on_frame_range_changed(self):
+        """Handle frame range spinbox changes."""
+        if (
+            self._panels.setup.spin_start_frame.value()
+            > self._panels.setup.spin_end_frame.value()
+        ):
+            self._panels.setup.spin_end_frame.setValue(
+                self._panels.setup.spin_start_frame.value()
+            )
+        self._update_range_info()
+
+    def _set_start_to_current(self):
+        """Set start frame to current frame."""
+        self._panels.setup.spin_start_frame.setValue(self._mw.video_current_frame_idx)
+
+    def _set_end_to_current(self):
+        """Set end frame to current frame."""
+        self._panels.setup.spin_end_frame.setValue(self._mw.video_current_frame_idx)
+
+    def _reset_frame_range(self):
+        """Reset frame range to full video."""
+        self._panels.setup.spin_start_frame.setValue(0)
+        self._panels.setup.spin_end_frame.setValue(self._mw.video_total_frames - 1)
+
+    def _update_fps_info(self):
+        """Update the FPS info label with time per frame."""
+        fps = self._panels.setup.spin_fps.value()
+        time_per_frame = 1000.0 / fps
+        self._panels.setup.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
+
+    # =========================================================================
+    # ROI SELECTION AND VIDEO INTERACTION
+    # =========================================================================
+
+    def _set_preview_test_running(self, running: bool):
+        """Lock/unlock UI while async preview detection is running."""
+        if running:
+            self._mw._set_interactive_widgets_enabled(False, remember_state=True)
+            self._mw._set_video_interaction_enabled(False)
+            self._mw.btn_test_detection.setText("Testing Detection...")
+            self._mw.btn_test_detection.setEnabled(False)
+            self._mw.progress_label.setText("Testing detection on preview...")
+            self._mw.progress_label.setVisible(True)
+            self._mw.progress_bar.setRange(0, 0)
+            self._mw.progress_bar.setVisible(True)
+            return
+
+        self._mw._set_interactive_widgets_enabled(True, remember_state=True)
+        self._mw._set_video_interaction_enabled(True)
+        self._mw.btn_test_detection.setText("Test Detection on Preview")
+        self._mw.btn_test_detection.setEnabled(self._mw.preview_frame_original is not None)
+        self._mw.progress_bar.setRange(0, 100)
+        self._mw._refresh_progress_visibility()
+
+    def _on_roi_mode_changed(self, index):
+        """Handle ROI mode selection change."""
+        self._mw.roi_current_mode = "circle" if index == 0 else "polygon"
+        if self._mw.roi_selection_active:
+            if self._mw.roi_current_mode == "circle":
+                self._mw.roi_instructions.setText(
+                    "Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
+                )
+            else:
+                self._mw.roi_instructions.setText(
+                    "Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
+                )
+
+    def _on_roi_zone_changed(self, index):
+        """Handle ROI zone type selection change."""
+        self._mw.roi_current_zone_type = "include" if index == 0 else "exclude"
+
+    def _handle_video_mouse_press(self, evt):
+        """Handle mouse press on video - either ROI selection or pan/zoom."""
+        if not self._mw._video_interactions_enabled:
+            evt.ignore()
+            return
+        if self._mw.roi_selection_active:
+            self._mw.record_roi_click(evt)
+            return
+
+        if evt.button() == Qt.LeftButton or evt.button() == Qt.MiddleButton:
+            self._mw._is_panning = True
+            self._mw._pan_start_pos = evt.globalPosition().toPoint()
+            self._mw._scroll_start_h = self._mw.scroll.horizontalScrollBar().value()
+            self._mw._scroll_start_v = self._mw.scroll.verticalScrollBar().value()
+            self._mw.video_label.setCursor(Qt.ClosedHandCursor)
+            evt.accept()
+
+    def _handle_video_mouse_move(self, evt):
+        """Handle mouse move - update pan if active."""
+        if not self._mw._video_interactions_enabled:
+            evt.ignore()
+            return
+        if self._mw._is_panning and self._mw._pan_start_pos:
+            delta = evt.globalPosition().toPoint() - self._mw._pan_start_pos
+            self._mw.scroll.horizontalScrollBar().setValue(
+                self._mw._scroll_start_h - delta.x()
+            )
+            self._mw.scroll.verticalScrollBar().setValue(
+                self._mw._scroll_start_v - delta.y()
+            )
+            evt.accept()
+        elif not self._mw.roi_selection_active:
+            self._mw.video_label.setCursor(Qt.OpenHandCursor)
+
+    def _handle_video_mouse_release(self, evt):
+        """Handle mouse release - end pan."""
+        if not self._mw._video_interactions_enabled:
+            evt.ignore()
+            return
+        if self._mw._is_panning:
+            self._mw._is_panning = False
+            self._mw._pan_start_pos = None
+            if not self._mw.roi_selection_active:
+                self._mw.video_label.setCursor(Qt.OpenHandCursor)
+            else:
+                self._mw.video_label.setCursor(Qt.ArrowCursor)
+            evt.accept()
+
+    def _handle_video_double_click(self, evt):
+        """Handle double-click on video to fit to screen."""
+        if not self._mw._video_interactions_enabled:
+            evt.ignore()
+            return
+        if evt.button() == Qt.LeftButton:
+            self._mw._fit_image_to_screen()
+
+    def _handle_video_wheel(self, evt):
+        """Handle mouse wheel - zoom in/out."""
+        if not self._mw._video_interactions_enabled:
+            evt.ignore()
+            return
+        if self._mw.roi_selection_active:
+            evt.ignore()
+            return
+        if evt.modifiers() == Qt.ControlModifier:
+            delta = evt.angleDelta().y()
+            current_zoom = self._mw.slider_zoom.value()
+            zoom_change = 10 if delta > 0 else -10
+            new_zoom = max(10, min(400, current_zoom + zoom_change))
+            self._mw.slider_zoom.setValue(new_zoom)
+            evt.accept()
+        else:
+            evt.ignore()
+
+    def _handle_video_event(self, evt):
+        """Handle video events including pinch gestures."""
+        from PySide6.QtWidgets import QLabel
+
+        if evt.type() == QEvent.Gesture:
+            if not self._mw._video_interactions_enabled:
+                evt.ignore()
+                return False
+            return self._mw._handle_gesture_event(evt)
+        return QLabel.event(self._mw.video_label, evt)
+
+    def _handle_gesture_event(self, evt):
+        """Handle pinch-to-zoom gesture."""
+        if not self._mw._video_interactions_enabled:
+            return False
+        if self._mw.roi_selection_active:
+            return False
+        gesture = evt.gesture(Qt.PinchGesture)
+        if gesture:
+            if gesture.state() == Qt.GestureUpdated:
+                scale_factor = gesture.scaleFactor()
+                current_zoom = self._mw.slider_zoom.value()
+                zoom_delta = int((scale_factor - 1.0) * 50)
+                new_zoom = max(10, min(400, current_zoom + zoom_delta))
+                self._mw.slider_zoom.setValue(new_zoom)
+            return True
+        return False
+
+    def _display_roi_with_zoom(self):
+        """Display the ROI base frame with mask and current zoom applied."""
+        if self._mw.roi_base_frame is None or not self._mw.roi_shapes:
+            return
+        qimg_masked = self._mw._apply_roi_mask_to_image(self._mw.roi_base_frame)
+        zoom_val = max(self._mw.slider_zoom.value() / 100.0, 0.1)
+        if zoom_val != 1.0:
+            w = qimg_masked.width()
+            h = qimg_masked.height()
+            scaled_w = int(w * zoom_val)
+            scaled_h = int(h * zoom_val)
+            qimg_masked = qimg_masked.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        pixmap = QPixmap.fromImage(qimg_masked)
+        self._mw.video_label.setPixmap(pixmap)
+
+    def _fit_image_to_screen(self):
+        """Fit the image to the available screen space."""
+        tracking_active = (
+            self._mw.tracking_worker is not None and self._mw.tracking_worker.isRunning()
+        )
+        if tracking_active and self._mw._tracking_frame_size is not None:
+            effective_width, effective_height = self._mw._tracking_frame_size
+        elif self._mw.detection_test_result is not None:
+            if self._mw.preview_frame_original is not None:
+                h, w = self._mw.preview_frame_original.shape[:2]
+                resize_factor = self._panels.setup.spin_resize.value()
+                effective_width = int(w * resize_factor)
+                effective_height = int(h * resize_factor)
+            else:
+                return
+        elif self._mw.preview_frame_original is not None:
+            h, w = self._mw.preview_frame_original.shape[:2]
+            effective_width = w
+            effective_height = h
+        elif self._mw.roi_base_frame is not None:
+            effective_width = self._mw.roi_base_frame.width()
+            effective_height = self._mw.roi_base_frame.height()
+        else:
+            return
+
+        viewport_width = self._mw.scroll.viewport().width()
+        viewport_height = self._mw.scroll.viewport().height()
+        zoom_w = viewport_width / effective_width
+        zoom_h = viewport_height / effective_height
+        zoom_fit = min(zoom_w, zoom_h) * 0.95
+        zoom_fit = max(0.1, min(5.0, zoom_fit))
+        self._mw.slider_zoom.setValue(int(zoom_fit * 100))
+        self._mw.scroll.horizontalScrollBar().setValue(0)
+        self._mw.scroll.verticalScrollBar().setValue(0)
+
+    def record_roi_click(self, evt):
+        """Record an ROI click from the video label."""
+        if not self._mw.roi_selection_active or self._mw.roi_base_frame is None:
+            return
+        if evt.button() == Qt.RightButton:
+            if len(self._mw.roi_points) > 0:
+                removed = self._mw.roi_points.pop()
+                logger.info(f"Undid last ROI point: ({removed[0]}, {removed[1]})")
+                self._mw.update_roi_preview()
+            return
+        if evt.button() != Qt.LeftButton:
+            return
+        pos = evt.position().toPoint()
+        x, y = pos.x(), pos.y()
+        if self._mw.roi_current_mode == "polygon" and len(self._mw.roi_points) >= 3:
+            if hasattr(self._mw, "_last_click_pos") and hasattr(self._mw, "_last_click_time"):
+                import time
+
+                current_time = time.time()
+                last_x, last_y = self._mw._last_click_pos
+                if (
+                    current_time - self._mw._last_click_time < 0.5
+                    and abs(x - last_x) < 10
+                    and abs(y - last_y) < 10
+                ):
+                    self._mw.finish_roi_selection()
+                    return
+            import time
+
+            self._mw._last_click_pos = (x, y)
+            self._mw._last_click_time = time.time()
+        self._mw.roi_points.append((x, y))
+        self._mw.update_roi_preview()
+
+    def update_roi_preview(self):
+        """Render current ROI shapes + in-progress points onto the video label."""
+        if self._mw.roi_base_frame is None:
+            return
+        pix = QPixmap.fromImage(self._mw.roi_base_frame).toImage().copy()
+        painter = QPainter(pix)
+
+        for shape in self._mw.roi_shapes:
+            is_include = shape.get("mode", "include") == "include"
+            color = Qt.cyan if is_include else Qt.red
+            if shape["type"] == "circle":
+                cx, cy, radius = shape["params"]
+                painter.setPen(QPen(color, 2))
+                painter.drawEllipse(
+                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
+                )
+            elif shape["type"] == "polygon":
+                from PySide6.QtCore import QPoint
+
+                points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
+                painter.setPen(QPen(color, 2))
+                painter.drawPolygon(points)
+
+        painter.setPen(QPen(Qt.red, 6))
+        for i, (px, py) in enumerate(self._mw.roi_points):
+            painter.drawPoint(px, py)
+            painter.setPen(QPen(Qt.black, 3))
+            painter.drawText(px + 12, py - 12, str(i + 1))
+            painter.setPen(QPen(Qt.white, 2))
+            painter.drawText(px + 10, py - 10, str(i + 1))
+            painter.setPen(QPen(Qt.red, 6))
+
+        can_finish = False
+        preview_color = (
+            Qt.green if self._mw.roi_current_zone_type == "include" else QColor(255, 165, 0)
+        )
+
+        if self._mw.roi_current_mode == "circle" and len(self._mw.roi_points) >= 3:
+            circle_fit = fit_circle_to_points(self._mw.roi_points)
+            if circle_fit:
+                cx, cy, radius = circle_fit
+                self._mw.roi_fitted_circle = circle_fit
+                painter.setPen(QPen(preview_color, 3))
+                painter.drawEllipse(
+                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
+                )
+                painter.setPen(QPen(Qt.blue, 8))
+                painter.drawPoint(int(cx), int(cy))
+                zone_type = (
+                    "Include" if self._mw.roi_current_zone_type == "include" else "Exclude"
+                )
+                self._mw.roi_status_label.setText(
+                    f"Preview {zone_type} Circle: R={radius:.1f}px"
+                )
+                can_finish = True
+            else:
+                self._mw.roi_status_label.setText("Invalid circle fit")
+        elif self._mw.roi_current_mode == "polygon" and len(self._mw.roi_points) >= 3:
+            from PySide6.QtCore import QPoint
+
+            points = [QPoint(int(x), int(y)) for x, y in self._mw.roi_points]
+            painter.setPen(QPen(preview_color, 3))
+            painter.drawPolygon(points)
+            zone_type = (
+                "Include" if self._mw.roi_current_zone_type == "include" else "Exclude"
+            )
+            self._mw.roi_status_label.setText(
+                f"Preview {zone_type} Polygon: {len(self._mw.roi_points)} vertices"
+            )
+            can_finish = True
+        else:
+            min_pts = 3
+            self._mw.roi_status_label.setText(
+                f"Points: {len(self._mw.roi_points)} (Need {min_pts}+)"
+            )
+
+        self._mw.btn_finish_roi.setEnabled(can_finish)
+        painter.end()
+        self._mw.video_label.setPixmap(QPixmap.fromImage(pix))
+
+    def start_roi_selection(self):
+        """Start an ROI shape selection session."""
+        if not self._panels.setup.file_line.text():
+            QMessageBox.warning(self._mw, "No Video", "Please select a video file first.")
+            return
+        if self._mw.roi_base_frame is None:
+            cap = cv2.VideoCapture(self._panels.setup.file_line.text())
+            if not cap.isOpened():
+                QMessageBox.warning(self._mw, "Error", "Cannot open video file.")
+                return
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                QMessageBox.warning(self._mw, "Error", "Cannot read video frame.")
+                return
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            self._mw.roi_base_frame = qt_image
+
+        self._mw.roi_points = []
+        self._mw.roi_fitted_circle = None
+        self._mw.roi_selection_active = True
+        self._mw.btn_start_roi.setEnabled(False)
+        self._mw.btn_finish_roi.setEnabled(False)
+        self._mw.combo_roi_mode.setEnabled(False)
+        self._mw.combo_roi_zone.setEnabled(False)
+        self._mw.slider_zoom.setEnabled(False)
+        self._mw.video_label.setCursor(Qt.CrossCursor)
+
+        zone_type = (
+            "INCLUSION" if self._mw.roi_current_zone_type == "include" else "EXCLUSION"
+        )
+        if self._mw.roi_current_mode == "circle":
+            self._mw.roi_status_label.setText(
+                f"Click points on {zone_type.lower()} circle boundary"
+            )
+            self._mw.roi_instructions.setText(
+                f"{zone_type} Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
+            )
+        else:
+            self._mw.roi_status_label.setText(f"Click {zone_type.lower()} polygon vertices")
+            self._mw.roi_instructions.setText(
+                f"{zone_type} Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
+            )
+        self._mw.update_roi_preview()
+
+    def finish_roi_selection(self):
+        """Finalize the current ROI shape and add it to the shape list."""
+        if not self._mw.roi_base_frame:
+            return
+        fh, fw = self._mw.roi_base_frame.height(), self._mw.roi_base_frame.width()
+
+        if self._mw.roi_current_mode == "circle":
+            if not self._mw.roi_fitted_circle:
+                QMessageBox.warning(self._mw, "No ROI", "No valid circle fit available.")
+                return
+            cx, cy, radius = self._mw.roi_fitted_circle
+            self._mw.roi_shapes.append(
+                {
+                    "type": "circle",
+                    "params": (cx, cy, radius),
+                    "mode": self._mw.roi_current_zone_type,
+                }
+            )
+            zone_type = (
+                "inclusion" if self._mw.roi_current_zone_type == "include" else "exclusion"
+            )
+            logger.info(
+                f"Added circle {zone_type} zone: center=({cx:.1f}, {cy:.1f}), radius={radius:.1f}"
+            )
+        elif self._mw.roi_current_mode == "polygon":
+            if len(self._mw.roi_points) < 3:
+                QMessageBox.warning(
+                    self._mw, "No ROI", "Need at least 3 points for polygon."
+                )
+                return
+            self._mw.roi_shapes.append(
+                {
+                    "type": "polygon",
+                    "params": list(self._mw.roi_points),
+                    "mode": self._mw.roi_current_zone_type,
+                }
+            )
+            zone_type = (
+                "inclusion" if self._mw.roi_current_zone_type == "include" else "exclusion"
+            )
+            logger.info(
+                f"Added polygon {zone_type} zone with {len(self._mw.roi_points)} vertices"
+            )
+
+        self._mw._generate_combined_roi_mask(fh, fw)
+        self._mw.roi_points = []
+        self._mw.roi_fitted_circle = None
+        self._mw.roi_selection_active = False
+        self._mw.btn_start_roi.setEnabled(True)
+        self._mw.btn_finish_roi.setEnabled(False)
+        self._mw.btn_undo_roi.setEnabled(len(self._mw.roi_shapes) > 0)
+        self._mw.combo_roi_mode.setEnabled(True)
+        self._mw.combo_roi_zone.setEnabled(True)
+        self._mw.roi_instructions.setText("")
+        self._mw.slider_zoom.setEnabled(True)
+
+        if hasattr(Qt, "OpenHandCursor"):
+            self._mw.video_label.setCursor(Qt.OpenHandCursor)
+        else:
+            self._mw.video_label.unsetCursor()
+
+        include_count = sum(
+            1 for s in self._mw.roi_shapes if s.get("mode", "include") == "include"
+        )
+        exclude_count = sum(
+            1 for s in self._mw.roi_shapes if s.get("mode", "include") == "exclude"
+        )
+        self._mw.roi_status_label.setText(
+            f"Active ROI: {include_count} inclusion, {exclude_count} exclusion zone(s)"
+        )
+        self._mw.btn_crop_video.setEnabled(True)
+        self._mw._update_roi_optimization_info()
+
+        if self._mw.roi_base_frame:
+            QTimer.singleShot(10, self._mw._fit_image_to_screen)
+            QTimer.singleShot(50, self._mw._display_roi_with_zoom)
+
+    def _generate_combined_roi_mask(self, height, width):
+        """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
+        if not self._mw.roi_shapes:
+            self._mw.roi_mask = None
+            return
+        combined_mask = np.zeros((height, width), np.uint8)
+        for shape in self._mw.roi_shapes:
+            if shape.get("mode", "include") == "include":
+                if shape["type"] == "circle":
+                    cx, cy, radius = shape["params"]
+                    cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 255, -1)
+                elif shape["type"] == "polygon":
+                    pts = np.array(shape["params"], dtype=np.int32)
+                    cv2.fillPoly(combined_mask, [pts], 255)
+        for shape in self._mw.roi_shapes:
+            if shape.get("mode", "include") == "exclude":
+                if shape["type"] == "circle":
+                    cx, cy, radius = shape["params"]
+                    cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 0, -1)
+                elif shape["type"] == "polygon":
+                    pts = np.array(shape["params"], dtype=np.int32)
+                    cv2.fillPoly(combined_mask, [pts], 0)
+        self._mw.roi_mask = combined_mask
+        logger.info(f"Generated combined ROI mask from {len(self._mw.roi_shapes)} shape(s)")
+        self._mw._invalidate_roi_cache()
+
+    def undo_last_roi_shape(self):
+        """Remove the last added ROI shape."""
+        if not self._mw.roi_shapes:
+            return
+        removed = self._mw.roi_shapes.pop()
+        logger.info(f"Removed last ROI shape: {removed['type']}")
+        if self._mw.roi_base_frame:
+            fh, fw = self._mw.roi_base_frame.height(), self._mw.roi_base_frame.width()
+            self._mw._generate_combined_roi_mask(fh, fw)
+        else:
+            self._mw.roi_mask = None
+        self._mw.btn_undo_roi.setEnabled(len(self._mw.roi_shapes) > 0)
+        if self._mw.roi_shapes:
+            num_shapes = len(self._mw.roi_shapes)
+            shape_summary = ", ".join([s["type"] for s in self._mw.roi_shapes])
+            self._mw.roi_status_label.setText(
+                f"Active ROI: {num_shapes} shape(s) ({shape_summary})"
+            )
+            if self._mw.roi_base_frame:
+                qimg_masked = self._mw._apply_roi_mask_to_image(self._mw.roi_base_frame)
+                self._mw.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
+        else:
+            self._mw.roi_status_label.setText("No ROI")
+            if self._mw.roi_base_frame:
+                self._mw.video_label.setPixmap(QPixmap.fromImage(self._mw.roi_base_frame))
+        self._mw.update_roi_preview()
+
+    def clear_roi(self):
+        """Clear all ROI shapes and reset state."""
+        self._mw.roi_mask = None
+        self._mw.roi_points = []
+        self._mw.roi_fitted_circle = None
+        self._mw.roi_shapes = []
+        self._mw.roi_selection_active = False
+        self._mw.roi_base_frame = None
+        self._mw.btn_start_roi.setEnabled(True)
+        self._mw.btn_finish_roi.setEnabled(False)
+        self._mw.btn_undo_roi.setEnabled(False)
+        self._mw.combo_roi_mode.setEnabled(True)
+        self._mw.roi_status_label.setText("No ROI")
+        self._mw.roi_instructions.setText("")
+        self._mw.video_label.setText("ROI Cleared.")
+        self._mw.slider_zoom.setEnabled(True)
+        if hasattr(Qt, "OpenHandCursor"):
+            self._mw.video_label.setCursor(Qt.OpenHandCursor)
+        else:
+            self._mw.video_label.unsetCursor()
+        logger.info("All ROI shapes cleared")
+
+    def keyPressEvent(self, event):
+        """Handle key press events - cancel ROI on Escape."""
+        if event.key() == Qt.Key_Escape and self._mw.roi_selection_active:
+            self._mw.clear_roi()
+        else:
+            from PySide6.QtWidgets import QMainWindow
+
+            QMainWindow.keyPressEvent(self._mw, event)
+
+    # =========================================================================
+    # TOGGLE / VISUALIZATION MODE
+    # =========================================================================
+
+    def toggle_preview(self, checked):
+        """Toggle preview mode on/off."""
+        if checked:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Preview Mode")
+            msg.setText(
+                "Preview mode will run forward tracking only without saving configuration."
+            )
+            msg.setInformativeText(
+                "Preview features:\n"
+                "\u2022 Forward pass only (no backward tracking)\n"
+                "\u2022 Configuration is NOT saved\n"
+                "\u2022 No CSV output\n\n"
+                "Use 'Run Full Tracking' to save results and config."
+            )
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Ok)
+            if msg.exec() == QMessageBox.Ok:
+                self._mw.start_tracking(preview_mode=True)
+                self._mw.btn_preview.setText("Stop Preview")
+                self._mw.btn_start.setEnabled(False)
+            else:
+                self._mw.btn_preview.setChecked(False)
+        else:
+            self._mw.stop_tracking()
+            self._mw.btn_preview.setText("Preview Mode")
+            self._mw.btn_start.setEnabled(True)
+
+    def toggle_tracking(self, checked):
+        """Toggle full tracking on/off."""
+        if checked:
+            if self._mw.btn_preview.isChecked():
+                self._mw.btn_preview.setChecked(False)
+                self._mw.btn_preview.setText("Preview Mode")
+                self._mw.stop_tracking()
+            self._mw.btn_start.setText("Stop Tracking")
+            self._mw.btn_preview.setEnabled(False)
+            self._mw.start_full()
+            if not (self._mw.tracking_worker and self._mw.tracking_worker.isRunning()):
+                self._mw.btn_start.blockSignals(True)
+                self._mw.btn_start.setChecked(False)
+                self._mw.btn_start.blockSignals(False)
+                self._mw.btn_start.setText("Start Full Tracking")
+                self._mw.btn_preview.setEnabled(True)
+        else:
+            self._mw.stop_tracking()
+
+    def _on_visualization_mode_changed(self, state):
+        """Handle visualization-free mode toggle."""
+        is_viz_free = self._panels.setup.chk_visualization_free.isChecked()
+        is_preview_active = self._mw.btn_preview.isChecked()
+        is_tracking_active = (
+            self._mw.tracking_worker and self._mw.tracking_worker.isRunning()
+        )
+
+        self._panels.setup.g_display.setVisible(True)
+        self._panels.setup.chk_show_circles.setEnabled(True)
+        self._panels.setup.chk_show_orientation.setEnabled(True)
+        self._panels.setup.chk_show_trajectories.setEnabled(True)
+        self._panels.setup.chk_show_labels.setEnabled(True)
+        self._panels.setup.chk_show_state.setEnabled(True)
+        self._panels.setup.chk_show_kalman_uncertainty.setEnabled(True)
+        self._panels.detection.chk_show_fg.setEnabled(True)
+        self._panels.detection.chk_show_bg.setEnabled(True)
+        self._panels.detection.chk_show_yolo_obb.setEnabled(True)
+
+        if is_tracking_active and is_viz_free and not is_preview_active:
+            self._mw._stored_preview_text = (
+                self._mw.video_label.text()
+                if not self._mw.video_label.pixmap()
+                else None
+            )
+            self._mw.video_label.clear()
+            self._mw.video_label.setText(
+                "Visualization Disabled\n\n"
+                "Maximum speed processing mode active.\n"
+                "Real-time stats displayed below."
+            )
+            self._mw.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
+            logger.info("Visualization-Free Mode enabled - Maximum speed processing")
+        elif is_tracking_active and not is_viz_free:
+            if (
+                hasattr(self._mw, "_stored_preview_text")
+                and self._mw._stored_preview_text
+            ):
+                self._mw.video_label.setText(self._mw._stored_preview_text)
+            elif not self._mw.video_label.pixmap():
+                self._mw._show_video_logo_placeholder()
+            self._mw.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
+
+    def _draw_roi_overlay(self, qimage):
+        """Draw ROI shapes overlay on a QImage."""
+        from PySide6.QtCore import QPoint
+
+        if not self._mw.roi_shapes:
+            return qimage
+        pix = QPixmap.fromImage(qimage).copy()
+        painter = QPainter(pix)
+        for shape in self._mw.roi_shapes:
+            if shape["type"] == "circle":
+                cx, cy, radius = shape["params"]
+                painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
+                painter.drawEllipse(
+                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
+                )
+                painter.setPen(QPen(Qt.cyan, 6))
+                painter.drawPoint(int(cx), int(cy))
+            elif shape["type"] == "polygon":
+                points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
+                painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
+                painter.drawPolygon(points)
+        painter.end()
+        return pix.toImage()
+
+    def _apply_roi_mask_to_image(self, qimage):
+        """Apply ROI visualization boundary overlay."""
+        if self._mw.roi_mask is None or not self._mw.roi_shapes:
+            return qimage
+        return self._draw_roi_overlay(qimage)

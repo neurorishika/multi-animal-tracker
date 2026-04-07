@@ -6,19 +6,34 @@ import json
 import logging
 import math
 import os
+import shutil
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QVBoxLayout,
+)
+
+from hydra_suite.trackerkit.gui.model_utils import (
+    _sanitize_model_token,
+    get_pose_models_directory,
+    get_yolo_model_metadata,
+    get_yolo_model_repository_directory,
+    make_model_path_relative,
+    make_pose_model_path_relative,
+    register_yolo_model,
 )
 
 from hydra_suite.runtime.compute_runtime import (
@@ -2809,6 +2824,146 @@ class ConfigOrchestrator:
 
             traceback.print_exc()
 
+    def _poll_crop_stderr_progress(self, process):
+        """Read ffmpeg stderr in non-blocking mode and log progress."""
+        if not process.stderr:
+            return
+        try:
+            import fcntl
+            import os as os_module
+
+            fd = process.stderr.fileno()
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
+            try:
+                while True:
+                    line = process.stderr.readline()
+                    if not line:
+                        break
+                    if "frame=" in line:
+                        try:
+                            frame_str = line.split("frame=")[1].split()[0]
+                            current_frame = int(frame_str)
+                            total_frames = self._mw._crop_process.get("total_frames", 0)
+                            if total_frames > 0:
+                                progress_pct = int((current_frame / total_frames) * 100)
+                                last_logged = self._mw._crop_process.get(
+                                    "last_logged_progress", 0
+                                )
+                                if progress_pct >= last_logged + 10:
+                                    logger.info(
+                                        f"Video crop progress: {progress_pct}% ({current_frame}/{total_frames} frames)"
+                                    )
+                                    self._mw._crop_process["last_logged_progress"] = (
+                                        progress_pct
+                                    )
+                        except (ValueError, IndexError):
+                            pass
+            except (IOError, OSError):
+                pass
+        except Exception:
+            pass
+
+    def _load_cropped_video(self, output_path):
+        """Set up the UI to use the newly cropped video."""
+        self._panels.setup.file_line.setText(output_path)
+        self._mw.current_video_path = output_path
+        self._mw.clear_roi()
+
+        video_dir = os.path.dirname(output_path)
+        video_name = os.path.splitext(os.path.basename(output_path))[0]
+
+        csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+        self._panels.setup.csv_line.setText(csv_path)
+
+        video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
+        self._panels.postprocess.video_out_line.setText(video_out_path)
+        self._panels.postprocess.check_video_output.setChecked(True)
+
+        self._mw.btn_test_detection.setEnabled(True)
+        self._panels.setup.btn_detect_fps.setEnabled(True)
+        self._mw.btn_crop_video.setEnabled(False)
+        if hasattr(self._mw, "roi_optimization_label"):
+            self._mw.roi_optimization_label.setText("")
+
+        config_path = _get_video_config_path(output_path)
+        if config_path and os.path.isfile(config_path):
+            self._load_config_from_file(config_path)
+            self._panels.setup.config_status_label.setText(
+                f"\u2713 Loaded: {os.path.basename(config_path)}"
+            )
+            self._panels.setup.config_status_label.setStyleSheet(
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Cropped video loaded: {output_path} (auto-loaded config)")
+        else:
+            self._panels.setup.config_status_label.setText(
+                "No config found (using current settings)"
+            )
+            self._panels.setup.config_status_label.setStyleSheet(
+                "color: #f39c12; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Cropped video loaded: {output_path} (no config found)")
+
+    def _handle_crop_success(self, output_path, orig_w, orig_h, crop_w, crop_h):
+        """Handle a successful crop completion."""
+        reply = QMessageBox.question(
+            self._mw,
+            "Crop Complete",
+            f"Video successfully cropped to ROI!\n\n"
+            f"Original: {orig_w}x{orig_h}\n"
+            f"Cropped: {crop_w}x{crop_h}\n"
+            f"Saved to: {os.path.basename(output_path)}\n\n"
+            f"Would you like to load the cropped video now?\n"
+            f"(Note: ROI will be cleared since the video is already cropped)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._load_cropped_video(output_path)
+
+        self._mw._set_ui_controls_enabled(True)
+        if hasattr(self._mw, "btn_crop_video"):
+            self._mw.btn_crop_video.setText("Crop Video to ROI")
+        logger.info(f"Successfully cropped video to {output_path}")
+
+    def _handle_crop_failure(self, return_code):
+        """Handle a failed crop completion."""
+        self._mw._set_ui_controls_enabled(True)
+        if hasattr(self._mw, "btn_crop_video"):
+            self._mw.btn_crop_video.setText("Crop Video to ROI")
+            self._mw.btn_crop_video.setEnabled(True)
+        logger.error(f"Video crop failed with return code {return_code}")
+        QMessageBox.critical(
+            self._mw,
+            "Crop Failed",
+            f"Video cropping failed (return code: {return_code})\n\n"
+            f"Check that ffmpeg is installed and the video is valid.",
+        )
+
+    def _check_crop_completion(self):
+        """Check if background crop process has completed."""
+        if not hasattr(self._mw, "_crop_process"):
+            if hasattr(self._mw, "_crop_check_timer"):
+                self._mw._crop_check_timer.stop()
+            return
+
+        process = self._mw._crop_process["process"]
+        self._poll_crop_stderr_progress(process)
+
+        return_code = process.poll()
+        if return_code is not None:
+            self._mw._crop_check_timer.stop()
+            output_path = self._mw._crop_process["output_path"]
+            orig_w, orig_h = self._mw._crop_process["original_size"]
+            crop_w, crop_h = self._mw._crop_process["cropped_size"]
+
+            if return_code == 0 and os.path.exists(output_path):
+                self._handle_crop_success(output_path, orig_w, orig_h, crop_w, crop_h)
+            else:
+                self._handle_crop_failure(return_code)
+
+            del self._mw._crop_process
 
     # =========================================================================
     # OPTIMIZER / PARAMETER HELPER
@@ -3130,3 +3285,650 @@ class ConfigOrchestrator:
         idx = combo.findData(selected)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
+
+    # =========================================================================
+    # MODEL MANAGEMENT
+    # =========================================================================
+
+    def _format_yolo_model_label(self, model_path):
+        """Build combo-box label for a model path, including metadata if available."""
+        rel_path = make_model_path_relative(model_path)
+        filename = os.path.basename(rel_path)
+        metadata = get_yolo_model_metadata(rel_path) or {}
+
+        size = metadata.get("size") or metadata.get("model_size")
+        species = metadata.get("species")
+        model_info = metadata.get("model_info")
+        task_family = str(metadata.get("task_family", "")).strip().lower()
+        usage_role = str(metadata.get("usage_role", "")).strip().lower()
+        model_id = None
+        if species and model_info:
+            model_id = f"{species}_{model_info}"
+        elif species:
+            model_id = species
+        suffix_parts = []
+        if size:
+            suffix_parts.append(str(size))
+        if model_id:
+            suffix_parts.append(str(model_id))
+        if usage_role:
+            suffix_parts.append(usage_role)
+        elif task_family:
+            suffix_parts.append(task_family)
+        if suffix_parts:
+            return f"{filename} ({', '.join(suffix_parts)})"
+        return filename
+
+    @staticmethod
+    def _yolo_model_matches_filter(
+        metadata, task_family=None, usage_role=None
+    ):
+        if not isinstance(metadata, dict):
+            return True
+        meta_task = str(metadata.get("task_family", "")).strip().lower()
+        meta_role = str(metadata.get("usage_role", "")).strip().lower()
+        if not meta_task and not meta_role:
+            return True
+        if task_family and meta_task and meta_task != task_family:
+            return False
+        if usage_role and meta_role and meta_role != usage_role:
+            return False
+        return True
+
+    def _populate_yolo_model_combo(
+        self,
+        combo,
+        preferred_model_path=None,
+        default_path="",
+        include_none=False,
+        task_family=None,
+        usage_role=None,
+        repository_dir=None,
+        recursive=False,
+    ):
+        """Populate a YOLO-model combo with optional metadata role filtering."""
+        selected_path = preferred_model_path
+        if selected_path is None:
+            selected_data = combo.currentData(Qt.UserRole)
+            if selected_data and selected_data not in ("__add_new__", "__none__"):
+                selected_path = str(selected_data)
+
+        entries = {}
+        models_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
+        try:
+            if recursive:
+                local_model_paths = []
+                for dirpath, _dirnames, filenames in os.walk(models_dir):
+                    for fn in sorted(filenames):
+                        if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
+                            local_model_paths.append(os.path.join(dirpath, fn))
+            else:
+                local_model_paths = sorted(
+                    os.path.join(models_dir, f)
+                    for f in os.listdir(models_dir)
+                    if os.path.splitext(f)[1].lower() in (".pt", ".pth")
+                )
+        except Exception as e:
+            logger.warning(f"Failed to list YOLO model directory '{models_dir}': {e}")
+            local_model_paths = []
+
+        for model_abs in local_model_paths:
+            rel_path = make_model_path_relative(model_abs)
+            metadata = get_yolo_model_metadata(rel_path) or {}
+            if not self._yolo_model_matches_filter(
+                metadata, task_family=task_family, usage_role=usage_role
+            ):
+                continue
+            entries[rel_path] = self._format_yolo_model_label(rel_path)
+
+        combo.blockSignals(True)
+        combo.clear()
+        for model_path, label in entries.items():
+            combo.addItem(label, model_path)
+        if include_none:
+            combo.insertItem(0, "— None —", "__none__")
+        combo.addItem("＋ Add New Model…", "__add_new__")
+        combo.blockSignals(False)
+
+        self._set_model_selection_for_selector(
+            combo, selected_path, default_path=default_path
+        )
+
+    def _set_model_selection_for_selector(self, combo, model_path, default_path=""):
+        target_path = make_model_path_relative(model_path or "")
+        if not target_path:
+            target_path = str(default_path or "")
+        for i in range(combo.count()):
+            item_data = combo.itemData(i, Qt.UserRole)
+            if item_data == target_path:
+                combo.setCurrentIndex(i)
+                return
+        none_idx = combo.findData("__none__", Qt.UserRole)
+        if none_idx >= 0:
+            combo.setCurrentIndex(none_idx)
+        else:
+            combo.setCurrentIndex(0)
+
+    def _get_selected_model_path_from_selector(self, combo, default_path=""):
+        selected_data = combo.currentData(Qt.UserRole)
+        if selected_data and selected_data not in ("__add_new__", "__none__"):
+            return str(selected_data)
+        return str(default_path or "")
+
+    def _import_yolo_model_to_repository(
+        self,
+        source_path,
+        task_family=None,
+        usage_role=None,
+        repository_dir=None,
+    ):
+        """Import a YOLO model file into the repository with metadata."""
+        src = str(source_path or "")
+        if not src or not os.path.exists(src):
+            return None
+
+        src_abs = os.path.abspath(src)
+        models_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
+        try:
+            rel_existing = os.path.relpath(src_abs, models_dir)
+            if not rel_existing.startswith(".."):
+                return make_model_path_relative(src_abs)
+        except Exception:
+            pass
+
+        now_preview = datetime.now()
+        dlg = QDialog(self._mw)
+        dlg.setWindowTitle("Model Metadata")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_form = QFormLayout()
+
+        size_combo = QComboBox(dlg)
+        size_combo.addItems(["26n", "26s", "26m", "26l", "26x", "custom", "unknown"])
+        size_combo.setCurrentText("26s")
+        dlg_form.addRow("YOLO model size:", size_combo)
+
+        stem_tokens = [t for t in Path(src).stem.replace("-", "_").split("_") if t]
+        default_species = (
+            _sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
+        )
+        default_info = (
+            _sanitize_model_token("_".join(stem_tokens[1:]))
+            if len(stem_tokens) > 1
+            else "model"
+        )
+
+        species_line = QLineEdit(default_species, dlg)
+        species_line.setPlaceholderText("species")
+        dlg_form.addRow("Model species:", species_line)
+
+        info_line = QLineEdit(default_info, dlg)
+        info_line.setPlaceholderText("model-info")
+        dlg_form.addRow("Model info:", info_line)
+
+        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
+        ts_label.setToolTip("Timestamp applied when model is added to repository")
+        dlg_form.addRow("Added timestamp:", ts_label)
+
+        dlg_layout.addLayout(dlg_form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        model_size = size_combo.currentText().strip() or "unknown"
+        model_species = _sanitize_model_token(species_line.text())
+        model_info = _sanitize_model_token(info_line.text())
+        if not model_species or not model_info:
+            QMessageBox.warning(
+                self._mw,
+                "Invalid Metadata",
+                "Species and model info must both be provided.",
+            )
+            return None
+
+        now = datetime.now()
+        timestamp_token = now.strftime("%Y%m%d-%H%M%S")
+        added_at = now.isoformat(timespec="seconds")
+        ext = os.path.splitext(src)[1].lower() or ".pt"
+
+        model_slug = f"{model_species}_{model_info}"
+        base_name = f"{timestamp_token}_{model_size}_{model_slug}"
+        dest_path = os.path.join(models_dir, f"{base_name}{ext}")
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(models_dir, f"{base_name}_{counter}{ext}")
+            counter += 1
+
+        try:
+            shutil.copy2(src, dest_path)
+        except Exception as e:
+            logger.error(f"Failed to copy model to repository: {e}")
+            QMessageBox.warning(
+                self._mw,
+                "Import Failed",
+                f"Could not import model into repository:\n{e}",
+            )
+            return None
+
+        rel_path = make_model_path_relative(dest_path)
+        metadata = {
+            "size": model_size,
+            "species": model_species,
+            "model_info": model_info,
+            "added_at": added_at,
+            "source_path": src,
+            "stored_filename": os.path.basename(dest_path),
+        }
+        if task_family:
+            metadata["task_family"] = str(task_family).strip().lower()
+        if usage_role:
+            metadata["usage_role"] = str(usage_role).strip().lower()
+        register_yolo_model(rel_path, metadata)
+        logger.info(f"Imported model to repository: {dest_path}")
+        return rel_path
+
+    @staticmethod
+    def _infer_yolo_headtail_model_type(model_path):
+        """Infer the head-tail model family from its stored path."""
+        normalized = str(make_model_path_relative(model_path or "")).replace("\\", "/")
+        normalized_lower = f"/{normalized.lower().strip('/')}" if normalized else ""
+        if "/tiny/" in normalized_lower:
+            return "tiny"
+        return "YOLO"
+
+    def _populate_pose_model_combo(self, combo, backend, preferred_model_path=None):
+        """Populate the pose model combo for the given backend."""
+        selected_path = preferred_model_path
+        if selected_path is None:
+            selected_data = combo.currentData(Qt.UserRole)
+            if selected_data and selected_data not in ("__add_new__", "__none__"):
+                selected_path = str(selected_data)
+
+        backend_key = (
+            "sleap"
+            if backend == "sleap"
+            else ("vitpose" if backend == "vitpose" else "yolo")
+        )
+        repo_dir = get_pose_models_directory(backend_key)
+        os.makedirs(repo_dir, exist_ok=True)
+
+        entries = {}
+        try:
+            if backend_key == "sleap":
+                for name in sorted(os.listdir(repo_dir)):
+                    full = os.path.join(repo_dir, name)
+                    if os.path.isdir(full):
+                        rel = make_pose_model_path_relative(full)
+                        entries[rel] = name
+            else:
+                for fn in sorted(os.listdir(repo_dir)):
+                    if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
+                        full = os.path.join(repo_dir, fn)
+                        rel = make_pose_model_path_relative(full)
+                        entries[rel] = self._format_yolo_model_label(rel)
+        except Exception as e:
+            logger.warning(f"Failed to list pose model directory '{repo_dir}': {e}")
+
+        combo.blockSignals(True)
+        combo.clear()
+        for path, label in entries.items():
+            combo.addItem(label, path)
+        combo.insertItem(0, "— None —", "__none__")
+        combo.addItem("＋ Add New Model…", "__add_new__")
+        combo.blockSignals(False)
+
+        self._set_model_selection_for_selector(combo, selected_path, default_path="")
+
+    def _refresh_pose_model_combo(self, preferred_model_path=None):
+        """Refresh the pose model combo for the current backend."""
+        if not hasattr(self._mw, "_identity_panel"):
+            return
+        backend = self._mw._current_pose_backend_key()
+        self._populate_pose_model_combo(
+            self._mw._identity_panel.combo_pose_model,
+            backend=backend,
+            preferred_model_path=preferred_model_path,
+        )
+
+    def _handle_add_new_yolo_model(
+        self,
+        combo,
+        refresh_callback,
+        selection_callback,
+        task_family,
+        usage_role,
+        dialog_title,
+        repository_dir=None,
+    ):
+        """Browse for a model, import it, refresh the combo, and select it."""
+        prev_data = None
+        for i in range(combo.count()):
+            d = combo.itemData(i, Qt.UserRole)
+            if d not in ("__add_new__", "__none__", None):
+                prev_data = d
+                break
+
+        start_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
+        from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog
+
+        fp, _ = QFileDialog.getOpenFileName(
+            self._mw,
+            dialog_title,
+            start_dir,
+            "PyTorch Model Files (*.pt *.pth);;All Files (*)",
+        )
+        if not fp:
+            combo.blockSignals(True)
+            self._set_model_selection_for_selector(combo, prev_data)
+            combo.blockSignals(False)
+            return
+
+        selected_abs = os.path.abspath(fp)
+        try:
+            rel_existing = os.path.relpath(selected_abs, start_dir)
+            is_in_repo = not rel_existing.startswith("..")
+        except (ValueError, TypeError):
+            is_in_repo = False
+
+        if is_in_repo:
+            final_path = make_model_path_relative(selected_abs)
+        else:
+            final_path = self._import_yolo_model_to_repository(
+                selected_abs,
+                task_family=task_family,
+                usage_role=usage_role,
+                repository_dir=start_dir,
+            )
+            if not final_path:
+                combo.blockSignals(True)
+                self._set_model_selection_for_selector(combo, prev_data)
+                combo.blockSignals(False)
+                return
+            QMessageBox.information(
+                self._mw,
+                "Model Added",
+                f"Model added to repository:\n{os.path.basename(final_path)}",
+            )
+
+        refresh_callback(preferred_model_path=final_path)
+        selection_callback(final_path)
+
+    def _handle_add_new_pose_model(self):
+        """Browse for a pose model, import it if outside repo, refresh combo, and select it."""
+        from hydra_suite.trackerkit.gui.model_utils import (
+            get_pose_models_directory,
+            make_pose_model_path_relative,
+        )
+        from hydra_suite.utils.file_dialogs import HydraFileDialog as _QFileDialog
+
+        combo = getattr(self._mw, "combo_pose_model", None)
+        prev_data = None
+        if combo is not None:
+            for i in range(combo.count()):
+                d = combo.itemData(i, Qt.UserRole)
+                if d and d not in ("__add_new__", "__none__"):
+                    prev_data = d
+                    break
+
+        def _restore():
+            if combo is not None:
+                combo.blockSignals(True)
+                self._set_model_selection_for_selector(combo, prev_data)
+                combo.blockSignals(False)
+
+        from hydra_suite.trackerkit.gui.model_utils import resolve_pose_model_path
+
+        backend = (
+            self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
+        backend_key = (
+            "sleap"
+            if backend == "sleap"
+            else ("vitpose" if backend == "vitpose" else "yolo")
+        )
+        current = self._mw._pose_model_path_for_backend(backend)
+        if current:
+            resolved_current = str(resolve_pose_model_path(current, backend=backend))
+            from pathlib import Path as _Path
+
+            start = (
+                resolved_current
+                if os.path.isdir(resolved_current)
+                else (os.path.dirname(resolved_current) or str(_Path.home()))
+            )
+        else:
+            start = get_pose_models_directory(backend_key)
+
+        if backend == "sleap":
+            selected = _QFileDialog.getExistingDirectory(
+                self._mw, "Select SLEAP Model Directory", start
+            )
+            if not selected:
+                _restore()
+                return
+            selected_abs = os.path.abspath(selected)
+            pose_root = get_pose_models_directory(backend_key)
+            try:
+                rel_path = os.path.relpath(selected_abs, pose_root)
+                is_in_repo = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_repo = False
+            if is_in_repo:
+                final_path = make_pose_model_path_relative(selected_abs)
+            else:
+                final_path = self._import_pose_model_to_repository(
+                    selected_abs, backend=backend_key
+                )
+                if not final_path:
+                    _restore()
+                    return
+                QMessageBox.information(
+                    self._mw,
+                    "Model Added",
+                    f"SLEAP model added to repository:\n{final_path}",
+                )
+            self._mw._set_pose_model_path_for_backend(
+                final_path, backend=backend, update_combo=True
+            )
+            return
+
+        selected, _ = _QFileDialog.getOpenFileName(
+            self._mw,
+            "Select Pose Weights",
+            start,
+            "PyTorch Weights (*.pt *.pth);;All Files (*)",
+        )
+        if not selected:
+            _restore()
+            return
+        selected_abs = os.path.abspath(selected)
+        pose_root = get_pose_models_directory(backend_key)
+        try:
+            rel_path = os.path.relpath(selected_abs, pose_root)
+            is_in_repo = not rel_path.startswith("..")
+        except (ValueError, TypeError):
+            is_in_repo = False
+        if is_in_repo:
+            final_path = make_pose_model_path_relative(selected_abs)
+        else:
+            final_path = self._import_pose_model_to_repository(
+                selected_abs, backend=backend_key
+            )
+            if not final_path:
+                _restore()
+                return
+            QMessageBox.information(
+                self._mw,
+                "Model Added",
+                f"Pose model added to repository:\n{final_path}",
+            )
+        self._mw._set_pose_model_path_for_backend(
+            final_path, backend=backend, update_combo=True
+        )
+
+    def _import_pose_model_to_repository(self, source_path, backend="yolo"):
+        """Copy a selected pose model into models/pose/{YOLO|SLEAP|ViTPose} and return relative path."""
+        from pathlib import Path as _Path
+        import shutil as _shutil
+
+        from hydra_suite.trackerkit.gui.model_utils import (
+            get_pose_models_directory,
+            make_pose_model_path_relative,
+        )
+
+        src = str(source_path or "").strip()
+        if not src or not os.path.exists(src):
+            return None
+
+        bk = str(backend).strip().lower()
+        backend_key = (
+            "sleap" if bk == "sleap" else ("vitpose" if bk == "vitpose" else "yolo")
+        )
+        dest_dir = get_pose_models_directory(backend_key)
+
+        try:
+            src_path = _Path(src).expanduser().resolve()
+        except Exception:
+            src_path = _Path(src)
+
+        try:
+            rel_existing = os.path.relpath(str(src_path), str(_Path(dest_dir).resolve()))
+            if not rel_existing.startswith(".."):
+                return make_pose_model_path_relative(str(src_path))
+        except Exception:
+            pass
+
+        now_preview = datetime.now()
+        dlg = QDialog(self._mw)
+        dlg.setWindowTitle("Pose Model Metadata")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_form = QFormLayout()
+
+        stem_tokens = [t for t in src_path.stem.replace("-", "_").split("_") if t]
+        default_species = (
+            _sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
+        )
+        default_info = (
+            _sanitize_model_token("_".join(stem_tokens[1:]))
+            if len(stem_tokens) > 1
+            else "model"
+        )
+
+        size_combo = None
+        type_line = None
+        if backend_key == "yolo":
+            size_combo = QComboBox(dlg)
+            size_combo.addItems(
+                ["26n", "26s", "26m", "26l", "26x", "custom", "unknown"]
+            )
+            size_combo.setCurrentText("26s")
+            dlg_form.addRow("YOLO model size:", size_combo)
+        else:
+            default_type = _sanitize_model_token(src_path.name) or "sleap_model"
+            type_line = QLineEdit(default_type, dlg)
+            type_line.setPlaceholderText("model-type")
+            dlg_form.addRow("Model type:", type_line)
+
+        species_line = QLineEdit(default_species, dlg)
+        species_line.setPlaceholderText("species")
+        dlg_form.addRow("Model species:", species_line)
+
+        info_line = QLineEdit(default_info, dlg)
+        info_line.setPlaceholderText("model-info")
+        dlg_form.addRow("Model info:", info_line)
+
+        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
+        ts_label.setToolTip("Timestamp applied when model is added to repository")
+        dlg_form.addRow("Added timestamp:", ts_label)
+
+        dlg_layout.addLayout(dlg_form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        model_species = _sanitize_model_token(species_line.text())
+        model_info = _sanitize_model_token(info_line.text())
+        if not model_species or not model_info:
+            QMessageBox.warning(
+                self._mw,
+                "Invalid Metadata",
+                "Species and model info must both be provided.",
+            )
+            return None
+
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
+        if backend_key == "sleap":
+            model_type = (
+                _sanitize_model_token(type_line.text()) if type_line else ""
+            )
+            if not model_type:
+                QMessageBox.warning(
+                    self._mw,
+                    "Invalid Metadata",
+                    "SLEAP model type must be provided.",
+                )
+                return None
+            target_name = f"{timestamp}_{model_type}_{model_species}_{model_info}"
+            dest_path = _Path(dest_dir) / target_name
+            counter = 1
+            while dest_path.exists():
+                dest_path = _Path(dest_dir) / f"{target_name}_{counter}"
+                counter += 1
+            try:
+                _shutil.copytree(src_path, dest_path)
+            except Exception as exc:
+                logger.error("Failed to copy SLEAP model directory: %s", exc)
+                QMessageBox.warning(
+                    self._mw,
+                    "Import Failed",
+                    f"Could not import SLEAP model directory:\n{exc}",
+                )
+                return None
+            return make_pose_model_path_relative(str(dest_path))
+
+        model_size = size_combo.currentText().strip() if size_combo else "unknown"
+        model_size = _sanitize_model_token(model_size) or "unknown"
+        ext = src_path.suffix or ".pt"
+        target_name = f"{timestamp}_{model_size}_{model_species}_{model_info}{ext}"
+        dest_path = _Path(dest_dir) / target_name
+        counter = 1
+        while dest_path.exists():
+            dest_path = (
+                _Path(dest_dir)
+                / f"{timestamp}_{model_size}_{model_species}_{model_info}_{counter}{ext}"
+            )
+            counter += 1
+        try:
+            _shutil.copy2(src_path, dest_path)
+        except Exception as exc:
+            logger.error("Failed to copy pose model: %s", exc)
+            QMessageBox.warning(
+                self._mw,
+                "Import Failed",
+                f"Could not import pose model:\n{exc}",
+            )
+            return None
+        return make_pose_model_path_relative(str(dest_path))

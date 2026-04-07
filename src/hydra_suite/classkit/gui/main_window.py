@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
-from .color_utils import best_text_color, build_category_color_map, to_hex
+from .widgets.color_utils import best_text_color, build_category_color_map, to_hex
 
 
 class MainWindow(QMainWindow):
@@ -1006,7 +1006,7 @@ class MainWindow(QMainWindow):
                 self.project_path.mkdir(parents=True, exist_ok=True)
 
                 # Initialize database
-                from ..store.db import ClassKitDB
+                from ..core.store.db import ClassKitDB
 
                 ClassKitDB(self.db_path)
 
@@ -1161,7 +1161,7 @@ class MainWindow(QMainWindow):
         try:
             from pathlib import Path
 
-            from ..store.db import ClassKitDB
+            from ..core.store.db import ClassKitDB
 
             db = ClassKitDB(self.db_path)
 
@@ -1366,7 +1366,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            from ..store.db import ClassKitDB
+            from ..core.store.db import ClassKitDB
 
             db = ClassKitDB(self.db_path)
             # Create a local copy to avoid mutation during iteration
@@ -1514,7 +1514,7 @@ class MainWindow(QMainWindow):
         if not self.db_path or self._model_probs is not None:
             return
         try:
-            from ..store.db import ClassKitDB as _CKDb
+            from ..core.store.db import ClassKitDB as _CKDb
 
             _db2 = _CKDb(self.db_path)
             cached_preds = _db2.get_most_recent_prediction_cache()
@@ -1550,7 +1550,7 @@ class MainWindow(QMainWindow):
             return
 
         if db is None:
-            from ..store.db import ClassKitDB
+            from ..core.store.db import ClassKitDB
 
             db = ClassKitDB(self.db_path)
 
@@ -2226,7 +2226,7 @@ class MainWindow(QMainWindow):
 
         if self.db_path:
             try:
-                from ..store.db import ClassKitDB
+                from ..core.store.db import ClassKitDB
 
                 db = ClassKitDB(self.db_path)
                 db.save_candidate_cache([])  # Save empty list to effectively clear
@@ -2276,7 +2276,7 @@ class MainWindow(QMainWindow):
         if not self.db_path:
             return
         try:
-            from ..store.db import ClassKitDB
+            from ..core.store.db import ClassKitDB
 
             db = ClassKitDB(self.db_path)
             db.save_candidate_cache(self.candidate_indices)
@@ -2714,7 +2714,7 @@ class MainWindow(QMainWindow):
 
         # ── removals ────────────────────────────────────────────────
         if folders_to_remove:
-            from ..store.db import ClassKitDB
+            from ..core.store.db import ClassKitDB
 
             db = ClassKitDB(self.db_path)
             total_removed = 0
@@ -2805,7 +2805,7 @@ class MainWindow(QMainWindow):
 
         # Retrieve the most recent embedding settings from the DB so we can
         # re-run without prompting for configuration.
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
 
@@ -3123,7 +3123,7 @@ class MainWindow(QMainWindow):
         if not self.image_paths:
             return
 
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
         cached = db.get_most_recent_embeddings()
@@ -3184,7 +3184,7 @@ class MainWindow(QMainWindow):
         if self.embeddings is None:
             return
 
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
         cached_cluster = db.get_most_recent_cluster_cache()
@@ -3449,7 +3449,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
         cached = db.get_most_recent_embeddings()
@@ -3506,7 +3506,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
         cached_cluster = db.get_most_recent_cluster_cache()
@@ -3553,7 +3553,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
         cached_umap = db.get_most_recent_umap_cache()
@@ -3683,7 +3683,7 @@ class MainWindow(QMainWindow):
         if not self.db_path or not results:
             return
         try:
-            from ..store.db import ClassKitDB as _CKDb
+            from ..core.store.db import ClassKitDB as _CKDb
 
             _db = _CKDb(self.db_path)
             artifact_paths = [
@@ -4250,7 +4250,7 @@ class MainWindow(QMainWindow):
 
     def _load_embedding_head_checkpoint(self, path: Path, ckpt) -> None:
         """Load a classic embedding-head checkpoint and recompute predictions."""
-        from ..train.trainer import EmbeddingHeadTrainer
+        from ..core.train.trainer import EmbeddingHeadTrainer
 
         input_dim = (
             int(self.embeddings.shape[1]) if self.embeddings is not None else 768
@@ -4293,7 +4293,7 @@ class MainWindow(QMainWindow):
         if not self.db_path:
             return None
         try:
-            from ..store.db import ClassKitDB as _CKDb
+            from ..core.store.db import ClassKitDB as _CKDb
 
             for entry in _CKDb(self.db_path).list_model_caches():
                 if str(path) in entry.get("artifact_paths", []):
@@ -4675,7 +4675,7 @@ class MainWindow(QMainWindow):
 
         if self.db_path:
             try:
-                from ..store.db import ClassKitDB
+                from ..core.store.db import ClassKitDB
 
                 db = ClassKitDB(self.db_path)
                 db.save_cluster_cache(
@@ -4710,7 +4710,7 @@ class MainWindow(QMainWindow):
 
         if self.db_path:
             try:
-                from ..store.db import ClassKitDB
+                from ..core.store.db import ClassKitDB
 
                 db = ClassKitDB(self.db_path)
                 db.save_umap_cache(
@@ -4755,7 +4755,7 @@ class MainWindow(QMainWindow):
         if not self.db_path or probs is None:
             return
         try:
-            from ..store.db import ClassKitDB
+            from ..core.store.db import ClassKitDB
 
             ClassKitDB(self.db_path).save_prediction_cache(
                 probs=probs,
@@ -4981,7 +4981,7 @@ class MainWindow(QMainWindow):
         if not self.db_path:
             QMessageBox.warning(self, "No Project", "Open a project first.")
             return
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
         from .dialogs import ModelHistoryDialog
 
         entries = ClassKitDB(self.db_path).list_model_caches()
@@ -5081,7 +5081,7 @@ class MainWindow(QMainWindow):
         try:
             import numpy as np
 
-            from ..train.metrics import compute_metrics
+            from ..core.train.metrics import compute_metrics
 
             idx_arr, y_true = self._labeled_eval_arrays()
             if idx_arr is None or y_true is None:
@@ -5097,7 +5097,7 @@ class MainWindow(QMainWindow):
 
     def _update_metrics_display(self, metrics):
         """Update Metrics tab: text report + matplotlib confusion matrix / per-class bars."""
-        from ..train.metrics import format_metrics_report
+        from ..core.train.metrics import format_metrics_report
 
         self.metrics_view.setPlainText(format_metrics_report(metrics))
         self.tabs.setCurrentWidget(self.metrics_page)
@@ -5300,7 +5300,7 @@ class MainWindow(QMainWindow):
             # Persist so it's skipped on next project open
             if self.db_path:
                 try:
-                    from ..store.db import ClassKitDB
+                    from ..core.store.db import ClassKitDB
 
                     ClassKitDB(self.db_path).save_umap_cache(
                         result["coords"],
@@ -5353,7 +5353,7 @@ class MainWindow(QMainWindow):
 
             if self.db_path:
                 try:
-                    from ..store.db import ClassKitDB
+                    from ..core.store.db import ClassKitDB
 
                     ClassKitDB(self.db_path).save_umap_cache(
                         result["coords"],
@@ -5562,7 +5562,7 @@ class MainWindow(QMainWindow):
         from ..gui.dialogs import AprilTagAutoLabelDialog
         from ..jobs.task_workers import AprilTagAutoLabelWorker
         from ..presets import apriltag_preset
-        from ..store.db import ClassKitDB
+        from ..core.store.db import ClassKitDB
 
         if self.project_path is None:
             return

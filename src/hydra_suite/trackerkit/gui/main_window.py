@@ -131,6 +131,22 @@ from .widgets.collapsible import AccordionContainer, CollapsibleGroupBox
 from .widgets.help_label import CompactHelpLabel
 from .widgets.stacked_page import CurrentPageStackedWidget
 from .widgets.tooltip_button import ImmediateTooltipButton
+from .model_utils import (
+    _sanitize_model_token,
+    get_models_directory,
+    get_models_root_directory,
+    get_pose_models_directory,
+    get_yolo_model_metadata,
+    get_yolo_model_registry_path,
+    get_yolo_model_repository_directory,
+    load_yolo_model_registry,
+    make_model_path_relative,
+    make_pose_model_path_relative,
+    register_yolo_model,
+    resolve_model_path,
+    resolve_pose_model_path,
+    save_yolo_model_registry,
+)
 
 try:
     from hydra_suite.posekit.gui.dialogs.utils import get_available_devices
@@ -153,254 +169,6 @@ def get_video_config_path(video_path: object) -> object:
     return os.path.join(video_dir, f"{video_name}_config.json")
 
 
-def get_models_directory() -> object:
-    """
-    Get the path to the default YOLO OBB model repository.
-
-    Returns models/obb (direct OBB models).
-    Creates the directory if it doesn't exist.
-    """
-    return get_yolo_model_repository_directory(
-        task_family="obb", usage_role="obb_direct"
-    )
-
-
-def get_models_root_directory() -> str:
-    """Return user-local models/ root and create it when missing."""
-    from hydra_suite.paths import get_models_dir
-
-    return str(get_models_dir())
-
-
-def get_yolo_model_repository_directory(
-    task_family: str | None = None, usage_role: str | None = None
-) -> object:
-    """Return repository directory for a YOLO model role."""
-    tf = str(task_family or "").strip().lower()
-    ur = str(usage_role or "").strip().lower()
-    models_root = get_models_root_directory()
-
-    if ur == "seq_detect" or tf == "detect":
-        repo_dir = os.path.join(models_root, "detection")
-    elif ur == "seq_crop_obb":
-        repo_dir = os.path.join(models_root, "obb", "cropped")
-    elif ur == "headtail":
-        # Parent dir; YOLO/ and tiny/ subdirs are resolved at import time.
-        repo_dir = os.path.join(models_root, "classification", "orientation")
-    elif ur == "colortag" or (tf == "classify" and ur not in ("headtail",)):
-        # Parent dir; YOLO/ and tiny/ subdirs are resolved at import time.
-        repo_dir = os.path.join(models_root, "classification", "colortag")
-    else:
-        repo_dir = os.path.join(models_root, "obb")
-
-    os.makedirs(repo_dir, exist_ok=True)
-    return repo_dir
-
-
-def get_pose_models_directory(backend: str | None = None) -> object:
-    """
-    Get the local pose-model repository directory.
-
-    Layout:
-      models/pose/YOLO/
-      models/pose/SLEAP/
-      models/pose/ViTPose/
-    """
-    models_root = get_models_root_directory()
-    pose_root = os.path.join(models_root, "pose")
-    os.makedirs(pose_root, exist_ok=True)
-    if not backend:
-        return pose_root
-    key = str(backend or "").strip().lower()
-    if key == "sleap":
-        backend_dirname = "SLEAP"
-    elif key == "vitpose":
-        backend_dirname = "ViTPose"
-    else:
-        backend_dirname = "YOLO"
-    backend_dir = os.path.join(pose_root, backend_dirname)
-    os.makedirs(backend_dir, exist_ok=True)
-    return backend_dir
-
-
-def resolve_pose_model_path(model_path: object, backend: str | None = None) -> object:
-    """Resolve a pose model path (relative or absolute) to an absolute path when possible."""
-    if not model_path:
-        return model_path
-
-    path_str = str(model_path).strip()
-    if os.path.isabs(path_str) and os.path.exists(path_str):
-        return path_str
-
-    models_root = get_models_root_directory()
-    candidates = [os.path.join(models_root, path_str)]
-    if backend:
-        candidates.append(os.path.join(get_pose_models_directory(backend), path_str))
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
-
-    if os.path.exists(path_str):
-        return os.path.abspath(path_str)
-    return path_str
-
-
-def make_pose_model_path_relative(model_path: object) -> object:
-    """Convert absolute pose-model paths under models/ into relative paths."""
-    if not model_path or not os.path.isabs(str(model_path)):
-        return model_path
-    models_root = get_models_root_directory()
-    try:
-        rel_path = os.path.relpath(str(model_path), models_root)
-        if not rel_path.startswith(".."):
-            return rel_path
-    except (ValueError, TypeError):
-        pass
-    return model_path
-
-
-def resolve_model_path(model_path: object) -> object:
-    """
-    Resolve a model path to an absolute path.
-
-    If the path is relative, look for it in the models directory.
-    If absolute and exists, return as-is.
-
-    Args:
-        model_path: Relative or absolute model path
-
-    Returns:
-        Absolute path to the model file, or original path if not found
-    """
-    if not model_path:
-        return model_path
-
-    path_str = str(model_path).strip()
-
-    # If already absolute and exists, return it
-    if os.path.isabs(path_str) and os.path.exists(path_str):
-        return path_str
-
-    models_root = get_models_root_directory()
-    candidate = os.path.join(models_root, path_str)
-    if os.path.exists(candidate):
-        return candidate
-
-    # If relative path doesn't exist in models dir, try as-is
-    if os.path.exists(path_str):
-        return os.path.abspath(path_str)
-
-    # Return original if nothing works (will fail later with clear error)
-    return model_path
-
-
-def make_model_path_relative(model_path: object) -> object:
-    """
-    Convert an absolute model path to relative if it's in the models directory.
-
-    This allows presets to be portable across devices.
-
-    Args:
-        model_path: Absolute or relative model path
-
-    Returns:
-        Relative path if model is in archive, otherwise absolute path
-    """
-    if not model_path or not os.path.isabs(model_path):
-        return model_path
-
-    models_root = get_models_root_directory()
-
-    # Store path relative to models/ root (e.g. obb/model.pt, detection/model.pt).
-    try:
-        rel_path = os.path.relpath(model_path, models_root)
-        if not rel_path.startswith(".."):
-            return rel_path
-    except (ValueError, TypeError):
-        pass
-
-    # Return absolute path if not in models directory
-    return model_path
-
-
-def get_yolo_model_registry_path() -> object:
-    """Return path to the local YOLO model metadata registry JSON."""
-    return os.path.join(get_models_root_directory(), "model_registry.json")
-
-
-def _sanitize_model_token(text: object) -> object:
-    """Sanitize a species/info token for filenames and metadata."""
-    raw = str(text or "").strip()
-    cleaned = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in raw)
-    return cleaned.strip("_")
-
-
-def _normalize_yolo_model_metadata(metadata: object) -> object:
-    """Normalize legacy model metadata to species + model_info schema."""
-    if not isinstance(metadata, dict):
-        return {}
-
-    normalized = dict(metadata)
-    species = _sanitize_model_token(normalized.get("species", ""))
-    model_info = _sanitize_model_token(normalized.get("model_info", ""))
-
-    if species:
-        normalized["species"] = species
-    if model_info:
-        normalized["model_info"] = model_info
-
-    task_family = _sanitize_model_token(normalized.get("task_family", "")).lower()
-    usage_role = _sanitize_model_token(normalized.get("usage_role", "")).lower()
-    if task_family:
-        normalized["task_family"] = task_family
-    else:
-        normalized.pop("task_family", None)
-    if usage_role:
-        normalized["usage_role"] = usage_role
-    else:
-        normalized.pop("usage_role", None)
-    return normalized
-
-
-def load_yolo_model_registry() -> object:
-    """Load YOLO model metadata registry (path -> metadata)."""
-    registry_path = get_yolo_model_registry_path()
-    if not os.path.exists(registry_path):
-        return {}
-    try:
-        with open(registry_path, "r") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return {}
-        return {str(k): _normalize_yolo_model_metadata(v) for k, v in data.items()}
-    except Exception as e:
-        logger.warning(f"Failed to load YOLO model registry: {e}")
-        return {}
-
-
-def save_yolo_model_registry(registry: object) -> object:
-    """Persist YOLO model metadata registry JSON."""
-    registry_path = get_yolo_model_registry_path()
-    try:
-        with open(registry_path, "w") as f:
-            json.dump(registry, f, indent=2)
-    except Exception as e:
-        logger.warning(f"Failed to save YOLO model registry: {e}")
-
-
-def get_yolo_model_metadata(model_path: object) -> object:
-    """Get metadata for a model path if registered."""
-    rel_path = make_model_path_relative(model_path)
-    registry = load_yolo_model_registry()
-    return _normalize_yolo_model_metadata(registry.get(rel_path, {}))
-
-
-def register_yolo_model(model_path: object, metadata: object) -> object:
-    """Register/overwrite metadata entry for a model path."""
-    rel_path = make_model_path_relative(model_path)
-    registry = load_yolo_model_registry()
-    registry[rel_path] = _normalize_yolo_model_metadata(metadata)
-    save_yolo_model_registry(registry)
 
 
 logger = logging.getLogger(__name__)
@@ -1040,10 +808,6 @@ class MainWindow(QMainWindow):
             main_window=self, config=self.config, parent=self
         )
         self.tabs.addTab(self._setup_panel, "Get Started")
-        # Bootstrap calls that require _setup_panel to be assigned first
-        self._populate_preset_combo()
-        self._populate_compute_runtime_options(preferred="cpu")
-        self._on_runtime_context_changed()
 
         # Tab 2: Detection (Image, Method, Params)
         from hydra_suite.trackerkit.gui.panels.detection_panel import DetectionPanel
@@ -1052,10 +816,6 @@ class MainWindow(QMainWindow):
             main_window=self, config=self.config, parent=self
         )
         self.tabs.addTab(self._detection_panel, "Find Animals")
-        # Post-construction bootstrap: populate YOLO model combos now that _detection_panel is assigned
-        self._detection_panel._refresh_yolo_model_combo()
-        self._detection_panel._refresh_yolo_detect_model_combo()
-        self._detection_panel._refresh_yolo_crop_obb_model_combo()
 
         # Tab 3: Individual Analysis (Identity)
         from hydra_suite.trackerkit.gui.panels.identity_panel import IdentityPanel
@@ -1064,21 +824,6 @@ class MainWindow(QMainWindow):
             main_window=self, config=self.config, parent=self
         )
         self.tabs.addTab(self._identity_panel, "Analyze Individuals")
-        # Post-construction bootstrap calls now that _identity_panel is assigned
-        self._identity_panel._refresh_cnn_identity_model_combo()
-        self._identity_panel._refresh_yolo_headtail_model_combo()
-        self._update_background_color_button()
-        self._populate_pose_runtime_flavor_options(backend="yolo")
-        self._set_form_row_visible(
-            self._identity_panel.form_pose_runtime,
-            self._identity_panel.combo_pose_runtime_flavor,
-            False,
-        )
-        self._refresh_pose_model_combo()
-        self._identity_panel._refresh_pose_sleap_envs()
-        self._identity_panel._refresh_pose_direction_keypoint_lists()
-        self._sync_pose_backend_ui()
-        self._sync_individual_analysis_mode_ui()
 
         # Tab 4: Tracking (Kalman, Logic, Lifecycle)
         from hydra_suite.trackerkit.gui.panels.tracking_panel import TrackingPanel
@@ -1107,8 +852,6 @@ class MainWindow(QMainWindow):
             main_window=self, config=self.config, parent=self
         )
         self.tabs.addTab(self._dataset_panel, "Build Dataset")
-        # Populate conda environments now that the panel (and its combo widget) exists
-        self._dataset_panel._refresh_xanylabeling_envs()
 
         right_layout.addWidget(self.tabs, stretch=1)
 
@@ -1218,10 +961,36 @@ class MainWindow(QMainWindow):
         )
 
         # =====================================================================
-        # INITIALIZE PRESETS
+        # POST-ORCHESTRATOR BOOTSTRAP
         # =====================================================================
-        # Populate preset combo box with available presets
+        # Setup panel bootstrap
         self._populate_preset_combo()
+        self._populate_compute_runtime_options(preferred="cpu")
+        self._on_runtime_context_changed()
+
+        # Detection panel bootstrap
+        self._detection_panel._refresh_yolo_model_combo()
+        self._detection_panel._refresh_yolo_detect_model_combo()
+        self._detection_panel._refresh_yolo_crop_obb_model_combo()
+
+        # Identity panel bootstrap
+        self._identity_panel._refresh_cnn_identity_model_combo()
+        self._identity_panel._refresh_yolo_headtail_model_combo()
+        self._update_background_color_button()
+        self._populate_pose_runtime_flavor_options(backend="yolo")
+        self._set_form_row_visible(
+            self._identity_panel.form_pose_runtime,
+            self._identity_panel.combo_pose_runtime_flavor,
+            False,
+        )
+        self._refresh_pose_model_combo()
+        self._identity_panel._refresh_pose_sleap_envs()
+        self._identity_panel._refresh_pose_direction_keypoint_lists()
+        self._sync_pose_backend_ui()
+        self._sync_individual_analysis_mode_ui()
+
+        # Dataset panel bootstrap
+        self._dataset_panel._refresh_xanylabeling_envs()
 
         # Load default preset (custom if available, otherwise default.json)
         self._load_default_preset_on_startup()
@@ -1421,252 +1190,12 @@ class MainWindow(QMainWindow):
             self._refresh_pose_model_combo(preferred_model_path=value)
 
     def _handle_add_new_pose_model(self):
-        """Browse for a pose model, import it if outside repo, refresh combo, and select it.
-
-        Restores the previous selection if the user cancels.
-        """
-        combo = getattr(self, "combo_pose_model", None)
-        prev_data = None
-        if combo is not None:
-            for i in range(combo.count()):
-                d = combo.itemData(i, Qt.UserRole)
-                if d and d not in ("__add_new__", "__none__"):
-                    prev_data = d
-                    break
-
-        def _restore():
-            if combo is not None:
-                combo.blockSignals(True)
-                self._set_model_selection_for_selector(combo, prev_data)
-                combo.blockSignals(False)
-
-        backend = (
-            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
-        )
-        backend_key = (
-            "sleap"
-            if backend == "sleap"
-            else ("vitpose" if backend == "vitpose" else "yolo")
-        )
-        current = self._pose_model_path_for_backend(backend)
-        if current:
-            resolved_current = str(resolve_pose_model_path(current, backend=backend))
-            start = (
-                resolved_current
-                if os.path.isdir(resolved_current)
-                else (os.path.dirname(resolved_current) or str(Path.home()))
-            )
-        else:
-            start = get_pose_models_directory(backend_key)
-
-        if backend == "sleap":
-            selected = QFileDialog.getExistingDirectory(
-                self, "Select SLEAP Model Directory", start
-            )
-            if not selected:
-                _restore()
-                return
-            selected_abs = os.path.abspath(selected)
-            pose_root = get_pose_models_directory(backend_key)
-            try:
-                rel_path = os.path.relpath(selected_abs, pose_root)
-                is_in_repo = not rel_path.startswith("..")
-            except (ValueError, TypeError):
-                is_in_repo = False
-            if is_in_repo:
-                final_path = make_pose_model_path_relative(selected_abs)
-            else:
-                final_path = self._import_pose_model_to_repository(
-                    selected_abs, backend=backend_key
-                )
-                if not final_path:
-                    _restore()
-                    return
-                QMessageBox.information(
-                    self,
-                    "Model Added",
-                    f"SLEAP model added to repository:\n{final_path}",
-                )
-            self._set_pose_model_path_for_backend(
-                final_path, backend=backend, update_combo=True
-            )
-            return
-
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Pose Weights",
-            start,
-            "PyTorch Weights (*.pt *.pth);;All Files (*)",
-        )
-        if not selected:
-            _restore()
-            return
-        selected_abs = os.path.abspath(selected)
-        pose_root = get_pose_models_directory(backend_key)
-        try:
-            rel_path = os.path.relpath(selected_abs, pose_root)
-            is_in_repo = not rel_path.startswith("..")
-        except (ValueError, TypeError):
-            is_in_repo = False
-        if is_in_repo:
-            final_path = make_pose_model_path_relative(selected_abs)
-        else:
-            final_path = self._import_pose_model_to_repository(
-                selected_abs, backend=backend_key
-            )
-            if not final_path:
-                _restore()
-                return
-            QMessageBox.information(
-                self,
-                "Model Added",
-                f"Pose model added to repository:\n{final_path}",
-            )
-        self._set_pose_model_path_for_backend(
-            final_path, backend=backend, update_combo=True
-        )
+        """Browse for a pose model, import it if outside repo, refresh combo, and select it."""
+        self._config_orch._handle_add_new_pose_model()
 
     def _import_pose_model_to_repository(self, source_path, backend="yolo"):
         """Copy a selected pose model into models/pose/{YOLO|SLEAP|ViTPose} and return relative path."""
-        src = str(source_path or "").strip()
-        if not src or not os.path.exists(src):
-            return None
-
-        bk = str(backend).strip().lower()
-        backend_key = (
-            "sleap" if bk == "sleap" else ("vitpose" if bk == "vitpose" else "yolo")
-        )
-        dest_dir = get_pose_models_directory(backend_key)
-
-        try:
-            src_path = Path(src).expanduser().resolve()
-        except Exception:
-            src_path = Path(src)
-
-        try:
-            rel_existing = os.path.relpath(str(src_path), str(Path(dest_dir).resolve()))
-            if not rel_existing.startswith(".."):
-                return make_pose_model_path_relative(str(src_path))
-        except Exception:
-            pass
-
-        # Metadata collection (same style as YOLO OBB import dialog).
-        now_preview = datetime.now()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Pose Model Metadata")
-        dlg_layout = QVBoxLayout(dlg)
-        dlg_form = QFormLayout()
-
-        stem_tokens = [t for t in src_path.stem.replace("-", "_").split("_") if t]
-        default_species = (
-            self._sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
-        )
-        default_info = (
-            self._sanitize_model_token("_".join(stem_tokens[1:]))
-            if len(stem_tokens) > 1
-            else "model"
-        )
-
-        size_combo = None
-        type_line = None
-        if backend_key == "yolo":
-            size_combo = QComboBox(dlg)
-            size_combo.addItems(
-                ["26n", "26s", "26m", "26l", "26x", "custom", "unknown"]
-            )
-            size_combo.setCurrentText("26s")
-            dlg_form.addRow("YOLO model size:", size_combo)
-        else:
-            default_type = self._sanitize_model_token(src_path.name) or "sleap_model"
-            type_line = QLineEdit(default_type, dlg)
-            type_line.setPlaceholderText("model-type")
-            dlg_form.addRow("Model type:", type_line)
-
-        species_line = QLineEdit(default_species, dlg)
-        species_line.setPlaceholderText("species")
-        dlg_form.addRow("Model species:", species_line)
-
-        info_line = QLineEdit(default_info, dlg)
-        info_line.setPlaceholderText("model-info")
-        dlg_form.addRow("Model info:", info_line)
-
-        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
-        ts_label.setToolTip("Timestamp applied when model is added to repository")
-        dlg_form.addRow("Added timestamp:", ts_label)
-
-        dlg_layout.addLayout(dlg_form)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        dlg_layout.addWidget(buttons)
-
-        if dlg.exec() != QDialog.Accepted:
-            return None
-
-        model_species = self._sanitize_model_token(species_line.text())
-        model_info = self._sanitize_model_token(info_line.text())
-        if not model_species or not model_info:
-            QMessageBox.warning(
-                self,
-                "Invalid Metadata",
-                "Species and model info must both be provided.",
-            )
-            return None
-
-        now = datetime.now()
-        timestamp = now.strftime("%Y%m%d-%H%M%S")
-        if backend_key == "sleap":
-            model_type = (
-                self._sanitize_model_token(type_line.text()) if type_line else ""
-            )
-            if not model_type:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Metadata",
-                    "SLEAP model type must be provided.",
-                )
-                return None
-            target_name = f"{timestamp}_{model_type}_{model_species}_{model_info}"
-            dest_path = Path(dest_dir) / target_name
-            counter = 1
-            while dest_path.exists():
-                dest_path = Path(dest_dir) / f"{target_name}_{counter}"
-                counter += 1
-            try:
-                shutil.copytree(src_path, dest_path)
-            except Exception as exc:
-                logger.error("Failed to copy SLEAP model directory: %s", exc)
-                QMessageBox.warning(
-                    self,
-                    "Import Failed",
-                    f"Could not import SLEAP model directory:\n{exc}",
-                )
-                return None
-            return make_pose_model_path_relative(str(dest_path))
-
-        model_size = size_combo.currentText().strip() if size_combo else "unknown"
-        model_size = self._sanitize_model_token(model_size) or "unknown"
-        ext = src_path.suffix or ".pt"
-        target_name = f"{timestamp}_{model_size}_{model_species}_{model_info}{ext}"
-        dest_path = Path(dest_dir) / target_name
-        counter = 1
-        while dest_path.exists():
-            dest_path = (
-                Path(dest_dir)
-                / f"{timestamp}_{model_size}_{model_species}_{model_info}_{counter}{ext}"
-            )
-            counter += 1
-        try:
-            shutil.copy2(src_path, dest_path)
-        except Exception as exc:
-            logger.error("Failed to copy pose model: %s", exc)
-            QMessageBox.warning(
-                self,
-                "Import Failed",
-                f"Could not import pose model:\n{exc}",
-            )
-            return None
-        return make_pose_model_path_relative(str(dest_path))
+        return self._config_orch._import_pose_model_to_repository(source_path, backend=backend)
 
     def _select_pose_skeleton_file(self):
         """Select pose skeleton JSON file."""
@@ -1889,28 +1418,26 @@ class MainWindow(QMainWindow):
                 )
 
     def _runtime_pipelines_for_current_ui(self):
+        """Return active pipeline keys for runtime intersection."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._runtime_pipelines_for_current_ui()
+        # Fallback during early init
         pipelines = []
         if self._is_yolo_detection_mode():
             pipelines.append("yolo_obb_detection")
-        if self._is_pose_inference_enabled():
-            backend = (
-                self._identity_panel.combo_pose_model_type.currentText().strip().lower()
-            )
-            if backend == "sleap":
-                pipelines.append("sleap_pose")
-            else:
-                pipelines.append("yolo_pose")
         return pipelines
 
     def _compute_runtime_options_for_current_ui(self):
-        allowed = allowed_runtimes_for_pipelines(
-            self._runtime_pipelines_for_current_ui()
-        )
+        """Return (label, value) pairs for the compute runtime combo."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._compute_runtime_options_for_current_ui()
+        # Fallback during early init
+        allowed = allowed_runtimes_for_pipelines(self._runtime_pipelines_for_current_ui())
         if not allowed:
             allowed = ["cpu"]
         return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
 
-    def _populate_compute_runtime_options(self, preferred: str | None = None):
+    def _populate_compute_runtime_options(self, preferred=None):
         if hasattr(self, "_config_orch"):
             self._config_orch._populate_compute_runtime_options(preferred=preferred)
             return
@@ -1918,9 +1445,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_setup_panel"):
             return
         combo = self._setup_panel.combo_compute_runtime
-        selected = (
-            str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
-        )
+        selected = str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
         options = self._compute_runtime_options_for_current_ui()
         values = [value for _label, value in options]
         if selected not in values:
@@ -1934,6 +1459,9 @@ class MainWindow(QMainWindow):
         combo.blockSignals(False)
 
     def _selected_compute_runtime(self) -> str:
+        """Return the currently selected compute runtime key."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._selected_compute_runtime()
         if not hasattr(self, "_setup_panel"):
             return "cpu"
         data = self._setup_panel.combo_compute_runtime.currentData()
@@ -1944,18 +1472,16 @@ class MainWindow(QMainWindow):
             return txt
         return "cpu"
 
-    def _runtime_requires_fixed_yolo_batch(self, runtime: str | None = None) -> bool:
+    def _runtime_requires_fixed_yolo_batch(self, runtime=None) -> bool:
+        """Return True when runtime mandates a fixed YOLO batch size."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._runtime_requires_fixed_yolo_batch(runtime)
         rt = str(runtime or self._selected_compute_runtime() or "").strip().lower()
         return rt == "tensorrt" or rt.startswith("onnx")
 
     @staticmethod
     def _preview_safe_runtime(runtime: str) -> str:
-        """Downgrade ONNX/TensorRT runtimes to their native equivalents.
-
-        Preview mode and test-detection-on-preview do not benefit from
-        ONNX/TensorRT (single-frame, no warm-up) and those runtimes add
-        unnecessary latency.  Map them back to the underlying device runtime.
-        """
+        """Downgrade ONNX/TensorRT runtimes to their native equivalents."""
         rt = str(runtime or "cpu").strip().lower()
         if rt == "onnx_cpu":
             return "cpu"
@@ -1966,98 +1492,32 @@ class MainWindow(QMainWindow):
         return rt
 
     def _on_runtime_context_changed(self, *_args):
-        previous = self._selected_compute_runtime()
-        self._populate_compute_runtime_options(preferred=previous)
-        selected_runtime = self._selected_compute_runtime()
-        self._update_obb_mode_warning()
-        # Keep hidden legacy controls synchronized for compatibility paths.
-        derived = derive_detection_runtime_settings(selected_runtime)
-        if hasattr(self, "_detection_panel"):
-            idx = self._detection_panel.combo_device.findText(
-                str(derived.get("yolo_device", "cpu")), Qt.MatchStartsWith
-            )
-            if idx >= 0:
-                self._detection_panel.combo_device.setCurrentIndex(idx)
-        if hasattr(self, "_detection_panel"):
-            self._detection_panel.chk_enable_tensorrt.setChecked(
-                bool(derived.get("enable_tensorrt", False))
-            )
-        if (
-            self._runtime_requires_fixed_yolo_batch(selected_runtime)
-            and hasattr(self, "combo_yolo_batch_mode")
-            and hasattr(self, "spin_yolo_batch_size")
-            and hasattr(self, "chk_enable_yolo_batching")
-        ):
-            self._detection_panel.chk_enable_yolo_batching.setChecked(True)
-            self._detection_panel.chk_enable_yolo_batching.setEnabled(False)
-            self._detection_panel.combo_yolo_batch_mode.setCurrentIndex(1)  # Manual
-            self._detection_panel.combo_yolo_batch_mode.setEnabled(False)
-            self._detection_panel.spin_yolo_batch_size.setEnabled(True)
-            if hasattr(self, "spin_tensorrt_batch"):
-                self._detection_panel.spin_tensorrt_batch.setValue(
-                    self._detection_panel.spin_yolo_batch_size.value()
-                )
-        elif hasattr(self, "combo_yolo_batch_mode") and hasattr(
-            self, "chk_enable_yolo_batching"
-        ):
-            self._detection_panel.chk_enable_yolo_batching.setEnabled(True)
-            self._detection_panel.combo_yolo_batch_mode.setEnabled(
-                self._detection_panel.chk_enable_yolo_batching.isChecked()
-            )
-            self._detection_panel._on_yolo_batch_mode_changed(
-                self._detection_panel.combo_yolo_batch_mode.currentIndex()
-            )
-        if hasattr(self, "_identity_panel"):
-            self._populate_pose_runtime_flavor_options(
-                backend=self._identity_panel.combo_pose_model_type.currentText()
-                .strip()
-                .lower(),
-                preferred=self._selected_pose_runtime_flavor(),
-            )
+        """Update runtime combo and sync dependent controls."""
+        if hasattr(self, "_session_orch"):
+            self._session_orch._on_runtime_context_changed(*_args)
 
     def _pose_runtime_options_for_backend(self, backend: str):
-        derived = derive_pose_runtime_settings(
-            self._selected_compute_runtime(), backend_family=backend
-        )
-        flavor = str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
-        return [(runtime_label(self._selected_compute_runtime()), flavor)]
+        """Return (label, flavor) pairs for the pose runtime flavor combo."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._pose_runtime_options_for_backend(backend)
+        return []
 
-    def _populate_pose_runtime_flavor_options(
-        self, backend: str, preferred: str | None = None
-    ):
-        if not hasattr(self, "_identity_panel"):
-            return
-        combo = self._identity_panel.combo_pose_runtime_flavor
-        selected = (
-            str(preferred or self._selected_pose_runtime_flavor() or "auto")
-            .strip()
-            .lower()
-        )
-        options = self._pose_runtime_options_for_backend(backend)
-        values = [value for _label, value in options]
-        if selected not in values:
-            selected = values[0] if values else "cpu"
-        combo.blockSignals(True)
-        combo.clear()
-        for label, value in options:
-            combo.addItem(label, value)
-        idx = combo.findData(selected)
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.blockSignals(False)
+    def _populate_pose_runtime_flavor_options(self, backend: str, preferred=None):
+        """Populate the pose runtime flavor combo."""
+        if hasattr(self, "_session_orch"):
+            self._session_orch._populate_pose_runtime_flavor_options(backend, preferred=preferred)
 
     def _selected_pose_runtime_flavor(self) -> str:
-        backend = (
-            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
-            if hasattr(self, "_identity_panel")
-            else "yolo"
-        )
-        derived = derive_pose_runtime_settings(
-            self._selected_compute_runtime(), backend_family=backend
-        )
-        return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+        """Return the currently selected pose runtime flavor key."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._selected_pose_runtime_flavor()
+        return "cpu"
 
     def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
         """Show/hide a QFormLayout row by field widget."""
+        if hasattr(self, "_session_orch"):
+            self._session_orch._set_form_row_visible(form_layout, field_widget, visible)
+            return
         if form_layout is None or field_widget is None:
             return
         label = form_layout.labelForField(field_widget)
@@ -2160,168 +1620,21 @@ class MainWindow(QMainWindow):
 
     def _sync_individual_analysis_mode_ui(self):
         """Enforce YOLO-only pipeline and run/save dependency in UI."""
-        has_save_toggle = hasattr(self, "_dataset_panel")
-        is_yolo = self._is_yolo_detection_mode()
-
-        if hasattr(self, "tabs") and hasattr(self, "_identity_panel"):
-            tab_index = self.tabs.indexOf(self._identity_panel)
-            if tab_index >= 0:
-                if not is_yolo and self.tabs.currentWidget() is self._identity_panel:
-                    fallback_index = self.tabs.indexOf(
-                        getattr(self, "_detection_panel", self._setup_panel)
-                    )
-                    if fallback_index >= 0:
-                        self.tabs.setCurrentIndex(fallback_index)
-                if hasattr(self.tabs, "setTabVisible"):
-                    self.tabs.setTabVisible(tab_index, is_yolo)
-                elif hasattr(self.tabs, "tabBar") and hasattr(
-                    self.tabs.tabBar(), "setTabVisible"
-                ):
-                    self.tabs.tabBar().setTabVisible(tab_index, is_yolo)
-                self.tabs.setTabEnabled(tab_index, is_yolo)
-
-        pipeline_enabled = self._is_individual_pipeline_enabled()
-
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
-
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel.g_identity.setVisible(pipeline_enabled)
-            self._identity_panel.g_identity.setEnabled(pipeline_enabled)
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel.g_pose_runtime.setVisible(pipeline_enabled)
-            self._identity_panel.g_pose_runtime.setEnabled(pipeline_enabled)
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel.g_individual_pipeline_common.setVisible(
-                pipeline_enabled
-            )
-            self._identity_panel.g_individual_pipeline_common.setEnabled(
-                pipeline_enabled
-            )
-        if hasattr(self, "_dataset_panel"):
-            self._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
-            self._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel._sync_identity_method_ui()
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel._sync_pose_analysis_ui()
-        self._sync_pose_backend_ui()
-
-        if has_save_toggle:
-            self._dataset_panel.chk_enable_individual_dataset.setEnabled(
-                pipeline_enabled
-            )
-
-        save_enabled = self._is_individual_image_save_enabled()
-        if hasattr(self, "_dataset_panel"):
-            self._dataset_panel.ind_output_group.setVisible(save_enabled)
-            self._dataset_panel.ind_output_group.setEnabled(save_enabled)
-        if hasattr(self, "_dataset_panel"):
-            self._dataset_panel.lbl_individual_info.setVisible(save_enabled)
-        if hasattr(self, "_dataset_panel"):
-            self._dataset_panel.chk_generate_individual_track_videos.setVisible(
-                pipeline_enabled
-            )
-            has_headtail = bool(
-                str(self._identity_panel._get_selected_yolo_headtail_model_path() or "").strip()
-            )
-            oriented_enabled = pipeline_enabled and has_headtail
-            self._dataset_panel.chk_generate_individual_track_videos.setEnabled(
-                oriented_enabled
-            )
-            if not oriented_enabled:
-                self._dataset_panel.chk_generate_individual_track_videos.setChecked(
-                    False
-                )
-                self._dataset_panel.chk_generate_individual_track_videos.setToolTip(
-                    "Requires a head-tail model to be configured."
-                )
-            else:
-                self._dataset_panel.chk_generate_individual_track_videos.setToolTip(
-                    "After final cleaning completes, export one orientation-fixed video per\n"
-                    "final TrajectoryID by streaming the source video and using the detection\n"
-                    "cache plus interpolated ROI cache. Independent from saved crop files."
-                )
-        self._sync_video_pose_overlay_controls()
-        self._on_runtime_context_changed()
+        if hasattr(self, "_session_orch"):
+            self._session_orch._sync_individual_analysis_mode_ui()
 
     def _select_individual_background_color(self):
         """Open color picker for individual dataset background color."""
-        from PySide6.QtGui import QColor
-        from PySide6.QtWidgets import QColorDialog
-
-        # Convert current BGR to RGB for QColorDialog
-        b, g, r = self._identity_panel._background_color
-        initial_color = QColor(r, g, b)
-
-        color = QColorDialog.getColor(initial_color, self, "Choose Background Color")
-        if color.isValid():
-            # Convert RGB back to BGR for OpenCV
-            self._identity_panel._background_color = (
-                color.blue(),
-                color.green(),
-                color.red(),
-            )
-            self._update_background_color_button()
+        self._session_orch._select_individual_background_color()
 
     def _update_background_color_button(self):
         """Update the color button display and label."""
-        b, g, r = self._identity_panel._background_color
-        # Set button color
-        self._identity_panel.btn_background_color.setStyleSheet(
-            f"background-color: rgb({r}, {g}, {b}); "
-            f"border: 1px solid #333; border-radius: 2px;"
-        )
-        # Update label with BGR values
-        self._identity_panel.lbl_background_color.setText(
-            f"{self._identity_panel._background_color}"
-        )
+        if hasattr(self, "_session_orch"):
+            self._session_orch._update_background_color_button()
 
     def _compute_median_background_color(self):
         """Compute median color from current preview frame or load from video."""
-        frame = None
-
-        # Try to use preview frame first
-        if (
-            hasattr(self, "preview_frame_original")
-            and self.preview_frame_original is not None
-        ):
-            # preview_frame_original is in RGB, convert to BGR for processing
-            frame = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
-        # Otherwise, try to load from video if available
-        elif self.current_video_path:
-            cap = cv2.VideoCapture(self.current_video_path)
-            if cap.isOpened():
-                ret, frame_bgr = cap.read()
-                cap.release()
-                if ret:
-                    frame = frame_bgr
-
-        if frame is None:
-            QMessageBox.warning(
-                self, "No Frame", "Please load a video first to compute median color."
-            )
-            return
-
-        try:
-            from hydra_suite.utils.image_processing import (
-                compute_median_color_from_frame,
-            )
-
-            # Compute median color
-            median_color = compute_median_color_from_frame(frame)
-            # Convert numpy.uint8 to regular int for JSON serialization
-            self._identity_panel._background_color = tuple(int(c) for c in median_color)
-            self._update_background_color_button()
-
-            QMessageBox.information(
-                self,
-                "Median Color Computed",
-                f"Background color set to median:\nBGR: {median_color}",
-            )
-        except Exception as e:
-            logger.error(f"Failed to compute median color: {e}")
-            QMessageBox.warning(self, "Error", f"Failed to compute median color:\n{e}")
+        self._session_orch._compute_median_background_color()
 
     def closeEvent(self, event):
         """Persist MAT-specific UI layout state on close."""
@@ -2552,241 +1865,55 @@ class MainWindow(QMainWindow):
 
     def _init_video_player(self, video_path):
         """Initialize video player with the loaded video."""
-        # Release any existing video capture
-        if self.video_cap is not None:
-            self.video_cap.release()
-
-        # Stop any active playback
-        if self.playback_timer:
-            self.playback_timer.stop()
-            self.playback_timer = None
-        self.is_playing = False
-
-        # Open video
-        self.video_cap = cv2.VideoCapture(video_path)
-        if not self.video_cap.isOpened():
-            logger.error(f"Failed to open video: {video_path}")
-            return
-
-        # Get video properties
-        self.video_total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
-        width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        # Update UI
-        self._setup_panel.lbl_video_info.setText(
-            f"Video: {self.video_total_frames} frames, {width}x{height}, {fps:.2f} FPS"
-        )
-
-        # Enable controls
-        self._setup_panel.slider_timeline.setMaximum(self.video_total_frames - 1)
-        self._setup_panel.slider_timeline.setEnabled(True)
-        self._setup_panel.btn_first_frame.setEnabled(True)
-        self._setup_panel.btn_prev_frame.setEnabled(True)
-        self._setup_panel.btn_play_pause.setEnabled(True)
-        self._setup_panel.btn_next_frame.setEnabled(True)
-        self._setup_panel.btn_last_frame.setEnabled(True)
-        self._setup_panel.btn_random_seek.setEnabled(True)
-        self._setup_panel.combo_playback_speed.setEnabled(True)
-
-        # Enable frame range controls
-        self._setup_panel.spin_start_frame.setMaximum(self.video_total_frames - 1)
-        self._setup_panel.spin_start_frame.setEnabled(True)
-        self._setup_panel.spin_end_frame.setMaximum(self.video_total_frames - 1)
-        self._setup_panel.spin_end_frame.setValue(self.video_total_frames - 1)
-        self._setup_panel.spin_end_frame.setEnabled(True)
-        self._setup_panel.btn_set_start_current.setEnabled(True)
-        self._setup_panel.btn_set_end_current.setEnabled(True)
-        self._setup_panel.btn_reset_range.setEnabled(True)
-
-        # Show video player group
-        self._setup_panel.g_video_player.setVisible(True)
-
-        # Go to first frame
-        self.video_current_frame_idx = 0
-        self._display_current_frame()
-        self._update_range_info()
-
-        logger.info(f"Video player initialized: {self.video_total_frames} frames")
+        self._session_orch._init_video_player(video_path)
 
     def _display_current_frame(self):
         """Display the current frame in the video label."""
-        if self.video_cap is None:
-            return
-
-        # Only seek if not reading sequentially (seeking is slow)
-        if self.last_read_frame_idx != self.video_current_frame_idx - 1:
-            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self.video_current_frame_idx)
-
-        ret, frame = self.video_cap.read()
-
-        if not ret:
-            return
-
-        self.last_read_frame_idx = self.video_current_frame_idx
-
-        # Convert to RGB and update preview
-        self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        self.detection_test_result = None  # Clear any detection overlay
-        if hasattr(self, "_detection_panel"):
-            self._detection_panel._update_preview_display()
-
-        # Update UI
-        self._setup_panel.lbl_current_frame.setText(
-            f"Frame: {self.video_current_frame_idx}/{self.video_total_frames - 1}"
-        )
-        self._setup_panel.slider_timeline.blockSignals(True)
-        self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
-        self._setup_panel.slider_timeline.blockSignals(False)
+        self._session_orch._display_current_frame()
 
     def _on_timeline_changed(self, value):
         """Handle timeline slider change."""
-        # Only stop playback if this is a manual user change (not from playback itself)
-        if self.is_playing and not self._setup_panel.slider_timeline.signalsBlocked():
-            self._stop_playback()
-
-        self.video_current_frame_idx = value
-        self._display_current_frame()
+        self._session_orch._on_timeline_changed(value)
 
     def _goto_first_frame(self):
         """Go to the first frame."""
-        if self.is_playing:
-            self._stop_playback()
-        self.video_current_frame_idx = 0
-        self._setup_panel.slider_timeline.setValue(0)
-        self._display_current_frame()
+        self._session_orch._goto_first_frame()
 
     def _goto_prev_frame(self):
         """Go to the previous frame."""
-        if self.is_playing:
-            self._stop_playback()
-        if self.video_current_frame_idx > 0:
-            self.video_current_frame_idx -= 1
-            self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
-            self._display_current_frame()
+        self._session_orch._goto_prev_frame()
 
     def _goto_next_frame(self):
         """Go to the next frame."""
-        if self.is_playing:
-            self._stop_playback()
-        if self.video_current_frame_idx < self.video_total_frames - 1:
-            self.video_current_frame_idx += 1
-            self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
-            self._display_current_frame()
+        self._session_orch._goto_next_frame()
 
     def _goto_last_frame(self):
         """Go to the last frame."""
-        if self.is_playing:
-            self._stop_playback()
-        self.video_current_frame_idx = self.video_total_frames - 1
-        self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
-        self._display_current_frame()
+        self._session_orch._goto_last_frame()
 
     def _goto_random_frame(self):
         """Jump to a random frame."""
-        if self.is_playing:
-            self._stop_playback()
-        if self.video_total_frames <= 0:
-            return
-        self.video_current_frame_idx = np.random.randint(0, self.video_total_frames)
-        self._setup_panel.slider_timeline.setValue(self.video_current_frame_idx)
-        self._display_current_frame()
+        self._session_orch._goto_random_frame()
 
     def _toggle_playback(self):
         """Toggle play/pause."""
-        if self.is_playing:
-            self._stop_playback()
-        else:
-            self._start_playback()
+        self._session_orch._toggle_playback()
 
     def _start_playback(self):
         """Start video playback."""
-        if self.video_cap is None or self.is_playing:
-            return
-
-        self.is_playing = True
-        self._setup_panel.btn_play_pause.setText("⏸ Pause")
-
-        # Get playback speed
-        speed_text = self._setup_panel.combo_playback_speed.currentText()
-        speed = float(speed_text.replace("x", ""))
-
-        # Calculate interval based on FPS and speed
-        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30  # Default
-
-        interval_ms = max(1, int((1000.0 / fps) / speed))
-
-        # Create timer if needed (use as single-shot timer)
-        if self.playback_timer is None:
-            self.playback_timer = QTimer(self)
-
-        # Start first frame with single-shot
-        self.playback_timer.singleShot(interval_ms, self._playback_step)
-        logger.debug(f"Started playback at {speed}x speed ({interval_ms}ms interval)")
+        self._session_orch._start_playback()
 
     def _stop_playback(self):
         """Stop video playback."""
-        if not self.is_playing:
-            return
-
-        self.is_playing = False
-        self._setup_panel.btn_play_pause.setText("▶ Play")
-
-        if self.playback_timer and self.playback_timer.isActive():
-            self.playback_timer.stop()
-
-        logger.debug("Stopped playback")
+        self._session_orch._stop_playback()
 
     def _playback_step(self):
         """Advance one frame during playback."""
-        # Stop timer first to prevent event queueing
-        if self.playback_timer and self.playback_timer.isActive():
-            self.playback_timer.stop()
-
-        # Check if still playing (user might have stopped it)
-        if not self.is_playing:
-            return
-
-        if self.video_current_frame_idx < self.video_total_frames - 1:
-            self.video_current_frame_idx += 1
-            self._display_current_frame()
-
-            # Process events to keep UI responsive
-            from PySide6.QtWidgets import QApplication
-
-            QApplication.processEvents()
-
-            # Re-check if still playing after processing events
-            if self.is_playing and self.playback_timer:
-                # Calculate next interval
-                speed_text = self._setup_panel.combo_playback_speed.currentText()
-                speed = float(speed_text.replace("x", ""))
-                fps = self.video_cap.get(cv2.CAP_PROP_FPS)
-                if fps <= 0:
-                    fps = 30
-                interval_ms = max(1, int((1000.0 / fps) / speed))
-
-                # Schedule next frame
-                self.playback_timer.singleShot(interval_ms, self._playback_step)
-        else:
-            # Reached end of video
-            self._stop_playback()
+        self._session_orch._playback_step()
 
     def _on_frame_range_changed(self):
         """Handle frame range spinbox changes."""
-        # Ensure start <= end
-        if (
-            self._setup_panel.spin_start_frame.value()
-            > self._setup_panel.spin_end_frame.value()
-        ):
-            self._setup_panel.spin_end_frame.setValue(
-                self._setup_panel.spin_start_frame.value()
-            )
-
-        self._update_range_info()
+        self._session_orch._on_frame_range_changed()
 
     def _update_range_info(self):
         """Update the frame range info label."""
@@ -2795,22 +1922,19 @@ class MainWindow(QMainWindow):
 
     def _set_start_to_current(self):
         """Set start frame to current frame."""
-        self._setup_panel.spin_start_frame.setValue(self.video_current_frame_idx)
+        self._session_orch._set_start_to_current()
 
     def _set_end_to_current(self):
         """Set end frame to current frame."""
-        self._setup_panel.spin_end_frame.setValue(self.video_current_frame_idx)
+        self._session_orch._set_end_to_current()
 
     def _reset_frame_range(self):
         """Reset frame range to full video."""
-        self._setup_panel.spin_start_frame.setValue(0)
-        self._setup_panel.spin_end_frame.setValue(self.video_total_frames - 1)
+        self._session_orch._reset_frame_range()
 
     def _update_fps_info(self):
         """Update the FPS info label with time per frame."""
-        fps = self._setup_panel.spin_fps.value()
-        time_per_frame = 1000.0 / fps  # milliseconds
-        self._setup_panel.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
+        self._session_orch._update_fps_info()
 
     def _auto_detect_fps(self, video_path):
         """Auto-detect FPS from video metadata and return the value."""
@@ -2870,999 +1994,166 @@ class MainWindow(QMainWindow):
 
     def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
         """Validate YOLO mode-specific model requirements before starting runs."""
-        if str(params.get("DETECTION_METHOD", "")) != "yolo_obb":
-            return True
-
-        yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
-        if yolo_mode != "sequential":
-            return True
-
-        detect_model = str(params.get("YOLO_DETECT_MODEL_PATH", "")).strip()
-        crop_obb_model = str(params.get("YOLO_CROP_OBB_MODEL_PATH", "")).strip()
-        if detect_model and crop_obb_model:
-            return True
-
-        QMessageBox.warning(
-            self,
-            "Missing Sequential Models",
-            (
-                f"Sequential YOLO OBB mode in {mode_label} requires both a detect model "
-                "and a crop OBB model."
-            ),
-        )
-        return False
+        return self._tracking_orch._validate_yolo_model_requirements(params, mode_label)
 
     def _set_preview_test_running(self, running: bool):
         """Lock/unlock UI while async preview detection is running."""
-        if running:
-            self._set_interactive_widgets_enabled(False, remember_state=True)
-            self._set_video_interaction_enabled(False)
-            self.btn_test_detection.setText("Testing Detection...")
-            self.btn_test_detection.setEnabled(False)
-            self.progress_label.setText("Testing detection on preview...")
-            self.progress_label.setVisible(True)
-            self.progress_bar.setRange(0, 0)
-            self.progress_bar.setVisible(True)
-            return
-
-        self._set_interactive_widgets_enabled(True, remember_state=True)
-        self._set_video_interaction_enabled(True)
-        self.btn_test_detection.setText("Test Detection on Preview")
-        self.btn_test_detection.setEnabled(self.preview_frame_original is not None)
-        self.progress_bar.setRange(0, 100)
-        self._refresh_progress_visibility()
+        self._session_orch._set_preview_test_running(running)
 
     def _on_roi_mode_changed(self, index):
         """Handle ROI mode selection change."""
-        self.roi_current_mode = "circle" if index == 0 else "polygon"
-        if self.roi_selection_active:
-            # If actively selecting, update instructions
-            if self.roi_current_mode == "circle":
-                self.roi_instructions.setText(
-                    "Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
-                )
-            else:
-                self.roi_instructions.setText(
-                    "Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
-                )
+        self._session_orch._on_roi_mode_changed(index)
 
     def _on_roi_zone_changed(self, index):
         """Handle ROI zone type selection change."""
-        self.roi_current_zone_type = "include" if index == 0 else "exclude"
+        self._session_orch._on_roi_zone_changed(index)
 
     def _handle_video_mouse_press(self, evt):
         """Handle mouse press on video - either ROI selection or pan/zoom."""
-        if not self._video_interactions_enabled:
-            evt.ignore()
-            return
-        # ROI selection takes priority
-        if self.roi_selection_active:
-            self.record_roi_click(evt)
-            return
-
-        # Pan mode: Left button or Middle button
-        from PySide6.QtCore import Qt
-
-        if evt.button() == Qt.LeftButton or evt.button() == Qt.MiddleButton:
-            self._is_panning = True
-            self._pan_start_pos = evt.globalPosition().toPoint()
-            self._scroll_start_h = self.scroll.horizontalScrollBar().value()
-            self._scroll_start_v = self.scroll.verticalScrollBar().value()
-            self.video_label.setCursor(Qt.ClosedHandCursor)
-            evt.accept()
+        self._session_orch._handle_video_mouse_press(evt)
 
     def _handle_video_mouse_move(self, evt):
         """Handle mouse move - update pan if active."""
-        if not self._video_interactions_enabled:
-            evt.ignore()
-            return
-        if self._is_panning and self._pan_start_pos:
-            from PySide6.QtCore import Qt
-
-            delta = evt.globalPosition().toPoint() - self._pan_start_pos
-            self.scroll.horizontalScrollBar().setValue(self._scroll_start_h - delta.x())
-            self.scroll.verticalScrollBar().setValue(self._scroll_start_v - delta.y())
-            evt.accept()
-        elif not self.roi_selection_active:
-            # Show open hand cursor to indicate draggable
-            from PySide6.QtCore import Qt
-
-            self.video_label.setCursor(Qt.OpenHandCursor)
+        self._session_orch._handle_video_mouse_move(evt)
 
     def _handle_video_mouse_release(self, evt):
         """Handle mouse release - end pan."""
-        if not self._video_interactions_enabled:
-            evt.ignore()
-            return
-        from PySide6.QtCore import Qt
-
-        if self._is_panning:
-            self._is_panning = False
-            self._pan_start_pos = None
-            # Return to open hand (still draggable) if not in ROI mode
-            if not self.roi_selection_active:
-                self.video_label.setCursor(Qt.OpenHandCursor)
-            else:
-                self.video_label.setCursor(Qt.ArrowCursor)
-            evt.accept()
+        self._session_orch._handle_video_mouse_release(evt)
 
     def _handle_video_double_click(self, evt):
         """Handle double-click on video to fit to screen."""
-        if not self._video_interactions_enabled:
-            evt.ignore()
-            return
-        if evt.button() == Qt.LeftButton:
-            self._fit_image_to_screen()
+        self._session_orch._handle_video_double_click(evt)
 
     def _handle_video_wheel(self, evt):
         """Handle mouse wheel - zoom in/out."""
-        if not self._video_interactions_enabled:
-            evt.ignore()
-            return
-        from PySide6.QtCore import Qt
-
-        # Block zoom during ROI selection
-        if self.roi_selection_active:
-            evt.ignore()
-            return
-
-        # Ctrl+Wheel for zoom
-        if evt.modifiers() == Qt.ControlModifier:
-            delta = evt.angleDelta().y()
-
-            # Get current zoom
-            current_zoom = self.slider_zoom.value()
-
-            # Calculate new zoom (10% per wheel step)
-            zoom_change = 10 if delta > 0 else -10
-            new_zoom = max(10, min(400, current_zoom + zoom_change))
-
-            # Update zoom slider (will trigger zoom change)
-            self.slider_zoom.setValue(new_zoom)
-            evt.accept()
-        else:
-            # Normal scroll - pass to scroll area
-            evt.ignore()
+        if hasattr(self, "_session_orch"):
+            self._session_orch._handle_video_wheel(evt)
 
     def _handle_video_event(self, evt):
         """Handle video events including pinch gestures."""
-        from PySide6.QtCore import QEvent
-
-        if evt.type() == QEvent.Gesture:
-            if not self._video_interactions_enabled:
-                evt.ignore()
-                return False
-            return self._handle_gesture_event(evt)
-
-        # Always pass non-gesture events through so paint/layout still work
-        # even when interactions are disabled (no-video placeholder state).
-        return QLabel.event(self.video_label, evt)
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._handle_video_event(evt)
+        return False
 
     def _handle_gesture_event(self, evt):
         """Handle pinch-to-zoom gesture."""
-        if not self._video_interactions_enabled:
-            return False
-        from PySide6.QtCore import Qt
-
-        # Block gestures during ROI selection
-        if self.roi_selection_active:
-            return False
-
-        gesture = evt.gesture(Qt.PinchGesture)
-        if gesture:
-
-            if gesture.state() == Qt.GestureUpdated:
-                # Get scale factor
-                scale_factor = gesture.scaleFactor()
-
-                # Get current zoom
-                current_zoom = self.slider_zoom.value()
-
-                # Calculate new zoom based on pinch scale
-                # Scale factor > 1 = zoom in, < 1 = zoom out
-                zoom_delta = int((scale_factor - 1.0) * 50)  # Sensitivity adjustment
-                new_zoom = max(10, min(400, current_zoom + zoom_delta))
-
-                # Update zoom slider
-                self.slider_zoom.setValue(new_zoom)
-
-            return True
-
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._handle_gesture_event(evt)
         return False
 
     def _display_roi_with_zoom(self):
         """Display the ROI base frame with mask and current zoom applied."""
-        if self.roi_base_frame is None or not self.roi_shapes:
-            return
-
-        # Apply ROI mask to base frame
-        qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
-
-        # Apply zoom
-        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
-        if zoom_val != 1.0:
-            w = qimg_masked.width()
-            h = qimg_masked.height()
-            scaled_w = int(w * zoom_val)
-            scaled_h = int(h * zoom_val)
-            qimg_masked = qimg_masked.scaled(
-                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-
-        pixmap = QPixmap.fromImage(qimg_masked)
-        self.video_label.setPixmap(pixmap)
+        self._session_orch._display_roi_with_zoom()
 
     def _fit_image_to_screen(self):
         """Fit the image to the available screen space."""
-        # Determine which frame to use for sizing and whether resize factor applies
-        # Resize factor applies differently depending on display mode:
-        # - ROI selection / preview display: full resolution, resize factor NOT yet applied
-        # - Detection test / tracking preview: resize factor already applied to displayed frame
+        self._session_orch._fit_image_to_screen()
 
-        # Check if tracking worker is running (frames are already resized)
-        tracking_active = (
-            self.tracking_worker is not None and self.tracking_worker.isRunning()
-        )
+    def record_roi_click(self, evt):
+        """Record an ROI click from the video label."""
+        self._session_orch.record_roi_click(evt)
 
-        if tracking_active and self._tracking_frame_size is not None:
-            # During tracking/preview, use the actual frame size from the worker
-            # These frames are already resized, so use dimensions directly
-            effective_width, effective_height = self._tracking_frame_size
-        elif self.detection_test_result is not None:
-            # Detection test shows resized content
-            if self.preview_frame_original is not None:
-                h, w = self.preview_frame_original.shape[:2]
-                resize_factor = self._setup_panel.spin_resize.value()
-                effective_width = int(w * resize_factor)
-                effective_height = int(h * resize_factor)
-            else:
-                return
-        elif self.preview_frame_original is not None:
-            # Preview frame at original resolution (pre-test detection)
-            h, w = self.preview_frame_original.shape[:2]
-            effective_width = w
-            effective_height = h
-        elif self.roi_base_frame is not None:
-            # ROI base frame is always full resolution
-            effective_width = self.roi_base_frame.width()
-            effective_height = self.roi_base_frame.height()
-        else:
-            return
+    def update_roi_preview(self):
+        """Render current ROI shapes + in-progress points onto the video label."""
+        self._session_orch.update_roi_preview()
 
-        # Get the scroll area viewport size
-        viewport_width = self.scroll.viewport().width()
-        viewport_height = self.scroll.viewport().height()
+    def start_roi_selection(self):
+        """Start an ROI shape selection session."""
+        self._session_orch.start_roi_selection()
 
-        # Calculate zoom to fit the effective dimensions
-        zoom_w = viewport_width / effective_width
-        zoom_h = viewport_height / effective_height
-        zoom_fit = min(zoom_w, zoom_h) * 0.95  # 95% to leave some margin
-
-        # Clamp to valid range
-        zoom_fit = max(0.1, min(5.0, zoom_fit))
-
-        # Set the zoom slider
-        self.slider_zoom.setValue(int(zoom_fit * 100))
-
-        # Reset scroll position to center
-        self.scroll.horizontalScrollBar().setValue(0)
-        self.scroll.verticalScrollBar().setValue(0)
-
-    def record_roi_click(self: object, evt: object) -> object:
-        """record_roi_click method documentation."""
-        if not self.roi_selection_active or self.roi_base_frame is None:
-            return
-
-        # Right-click to undo last point
-        if evt.button() == Qt.RightButton:
-            if len(self.roi_points) > 0:
-                removed = self.roi_points.pop()
-                logger.info(f"Undid last ROI point: ({removed[0]}, {removed[1]})")
-                self.update_roi_preview()
-            return
-
-        # Left-click to add point
-        if evt.button() != Qt.LeftButton:
-            return
-
-        pos = evt.position().toPoint()
-        x, y = pos.x(), pos.y()
-
-        # Double-click detection for polygon closing
-        if self.roi_current_mode == "polygon" and len(self.roi_points) >= 3:
-            if hasattr(self, "_last_click_pos") and hasattr(self, "_last_click_time"):
-                import time
-
-                current_time = time.time()
-                last_x, last_y = self._last_click_pos
-                # Check if double-click (within 0.5s and 10 pixels)
-                if (
-                    current_time - self._last_click_time < 0.5
-                    and abs(x - last_x) < 10
-                    and abs(y - last_y) < 10
-                ):
-                    self.finish_roi_selection()
-                    return
-            import time
-
-            self._last_click_pos = (x, y)
-            self._last_click_time = time.time()
-
-        self.roi_points.append((x, y))
-        self.update_roi_preview()
-
-    def update_roi_preview(self: object) -> object:
-        """update_roi_preview method documentation."""
-        if self.roi_base_frame is None:
-            return
-        pix = QPixmap.fromImage(self.roi_base_frame).toImage().copy()
-        painter = QPainter(pix)
-
-        # Draw existing shapes first (color-coded by mode)
-        for shape in self.roi_shapes:
-            # Choose color based on inclusion/exclusion
-            is_include = shape.get("mode", "include") == "include"
-            color = Qt.cyan if is_include else Qt.red
-
-            if shape["type"] == "circle":
-                cx, cy, radius = shape["params"]
-                painter.setPen(QPen(color, 2))
-                painter.drawEllipse(
-                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
-                )
-            elif shape["type"] == "polygon":
-                from PySide6.QtCore import QPoint
-
-                points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
-                painter.setPen(QPen(color, 2))
-                painter.drawPolygon(points)
-
-        # Draw current selection
-        painter.setPen(QPen(Qt.red, 6))
-        for i, (px, py) in enumerate(self.roi_points):
-            painter.drawPoint(px, py)
-            painter.setPen(QPen(Qt.black, 3))
-            painter.drawText(px + 12, py - 12, str(i + 1))
-            painter.setPen(QPen(Qt.white, 2))
-            painter.drawText(px + 10, py - 10, str(i + 1))
-            painter.setPen(QPen(Qt.red, 6))
-
-        can_finish = False
-        # Color for current shape preview (lighter version of final color)
-        preview_color = (
-            Qt.green if self.roi_current_zone_type == "include" else QColor(255, 165, 0)
-        )  # Orange for exclude
-
-        if self.roi_current_mode == "circle" and len(self.roi_points) >= 3:
-            circle_fit = fit_circle_to_points(self.roi_points)
-            if circle_fit:
-                cx, cy, radius = circle_fit
-                self.roi_fitted_circle = circle_fit
-                painter.setPen(QPen(preview_color, 3))
-                painter.drawEllipse(
-                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
-                )
-                painter.setPen(QPen(Qt.blue, 8))
-                painter.drawPoint(int(cx), int(cy))
-                zone_type = (
-                    "Include" if self.roi_current_zone_type == "include" else "Exclude"
-                )
-                self.roi_status_label.setText(
-                    f"Preview {zone_type} Circle: R={radius:.1f}px"
-                )
-                can_finish = True
-            else:
-                self.roi_status_label.setText("Invalid circle fit")
-        elif self.roi_current_mode == "polygon" and len(self.roi_points) >= 3:
-            # Draw preview polygon
-            from PySide6.QtCore import QPoint
-
-            points = [QPoint(int(x), int(y)) for x, y in self.roi_points]
-            painter.setPen(QPen(preview_color, 3))
-            painter.drawPolygon(points)
-            zone_type = (
-                "Include" if self.roi_current_zone_type == "include" else "Exclude"
-            )
-            self.roi_status_label.setText(
-                f"Preview {zone_type} Polygon: {len(self.roi_points)} vertices"
-            )
-            can_finish = True
-        else:
-            min_pts = 3
-            self.roi_status_label.setText(
-                f"Points: {len(self.roi_points)} (Need {min_pts}+)"
-            )
-
-        self.btn_finish_roi.setEnabled(can_finish)
-        painter.end()
-        self.video_label.setPixmap(QPixmap.fromImage(pix))
-
-    def start_roi_selection(self: object) -> object:
-        """start_roi_selection method documentation."""
-        if not self._setup_panel.file_line.text():
-            QMessageBox.warning(self, "No Video", "Please select a video file first.")
-            return
-
-        # Load base frame if not already loaded
-        if self.roi_base_frame is None:
-            cap = cv2.VideoCapture(self._setup_panel.file_line.text())
-            if not cap.isOpened():
-                QMessageBox.warning(self, "Error", "Cannot open video file.")
-                return
-            ret, frame = cap.read()
-            cap.release()
-            if not ret:
-                QMessageBox.warning(self, "Error", "Cannot read video frame.")
-                return
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            self.roi_base_frame = qt_image
-
-        self.roi_points = []
-        self.roi_fitted_circle = None
-        self.roi_selection_active = True
-        self.btn_start_roi.setEnabled(False)
-        self.btn_finish_roi.setEnabled(False)
-        self.combo_roi_mode.setEnabled(False)
-        self.combo_roi_zone.setEnabled(False)
-
-        # Disable zoom slider during ROI selection
-        self.slider_zoom.setEnabled(False)
-
-        # Set crosshair cursor for precise ROI selection
-        self.video_label.setCursor(Qt.CrossCursor)
-
-        zone_type = (
-            "INCLUSION" if self.roi_current_zone_type == "include" else "EXCLUSION"
-        )
-        if self.roi_current_mode == "circle":
-            self.roi_status_label.setText(
-                f"Click points on {zone_type.lower()} circle boundary"
-            )
-            self.roi_instructions.setText(
-                f"{zone_type} Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
-            )
-        else:
-            self.roi_status_label.setText(f"Click {zone_type.lower()} polygon vertices")
-            self.roi_instructions.setText(
-                f"{zone_type} Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
-            )
-
-        self.update_roi_preview()
-
-    def finish_roi_selection(self: object) -> object:
-        """finish_roi_selection method documentation."""
-        if not self.roi_base_frame:
-            return
-
-        fh, fw = self.roi_base_frame.height(), self.roi_base_frame.width()
-
-        if self.roi_current_mode == "circle":
-            if not self.roi_fitted_circle:
-                QMessageBox.warning(self, "No ROI", "No valid circle fit available.")
-                return
-            cx, cy, radius = self.roi_fitted_circle
-            self.roi_shapes.append(
-                {
-                    "type": "circle",
-                    "params": (cx, cy, radius),
-                    "mode": self.roi_current_zone_type,
-                }
-            )
-            zone_type = (
-                "inclusion" if self.roi_current_zone_type == "include" else "exclusion"
-            )
-            logger.info(
-                f"Added circle {zone_type} zone: center=({cx:.1f}, {cy:.1f}), radius={radius:.1f}"
-            )
-
-        elif self.roi_current_mode == "polygon":
-            if len(self.roi_points) < 3:
-                QMessageBox.warning(
-                    self, "No ROI", "Need at least 3 points for polygon."
-                )
-                return
-            self.roi_shapes.append(
-                {
-                    "type": "polygon",
-                    "params": list(self.roi_points),
-                    "mode": self.roi_current_zone_type,
-                }
-            )
-            zone_type = (
-                "inclusion" if self.roi_current_zone_type == "include" else "exclusion"
-            )
-            logger.info(
-                f"Added polygon {zone_type} zone with {len(self.roi_points)} vertices"
-            )
-
-        # Generate combined mask from all shapes
-        self._generate_combined_roi_mask(fh, fw)
-
-        # Reset for next shape
-        self.roi_points = []
-        self.roi_fitted_circle = None
-        self.roi_selection_active = False
-        self.btn_start_roi.setEnabled(True)
-        self.btn_finish_roi.setEnabled(False)
-        self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
-        self.combo_roi_mode.setEnabled(True)
-        self.combo_roi_zone.setEnabled(True)
-        self.roi_instructions.setText("")
-
-        # Re-enable zoom slider
-        self.slider_zoom.setEnabled(True)
-
-        # Restore open hand cursor (for pan/zoom)
-        if hasattr(Qt, "OpenHandCursor"):
-            self.video_label.setCursor(Qt.OpenHandCursor)
-        else:
-            self.video_label.unsetCursor()
-
-        # Update status to show inclusion/exclusion counts
-        include_count = sum(
-            1 for s in self.roi_shapes if s.get("mode", "include") == "include"
-        )
-        exclude_count = sum(
-            1 for s in self.roi_shapes if s.get("mode", "include") == "exclude"
-        )
-        self.roi_status_label.setText(
-            f"Active ROI: {include_count} inclusion, {exclude_count} exclusion zone(s)"
-        )
-
-        # Enable crop button and show optimization info
-        self.btn_crop_video.setEnabled(True)
-        self._update_roi_optimization_info()
-
-        # Auto-fit to screen after ROI change - use QTimer to ensure proper sequencing
-        if self.roi_base_frame:
-            from PySide6.QtCore import QTimer
-
-            # First fit the screen (sets zoom slider value)
-            QTimer.singleShot(10, self._fit_image_to_screen)
-            # Then display with the new zoom applied
-            QTimer.singleShot(50, self._display_roi_with_zoom)
+    def finish_roi_selection(self):
+        """Finalize the current ROI shape and add it to the shape list."""
+        self._session_orch.finish_roi_selection()
 
     def _generate_combined_roi_mask(self, height, width):
         """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
-        if not self.roi_shapes:
-            self.roi_mask = None
-            return
+        self._session_orch._generate_combined_roi_mask(height, width)
 
-        # Create blank mask
-        combined_mask = np.zeros((height, width), np.uint8)
-
-        # First pass: apply all inclusion zones (OR operation)
-        for shape in self.roi_shapes:
-            if shape.get("mode", "include") == "include":
-                if shape["type"] == "circle":
-                    cx, cy, radius = shape["params"]
-                    cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 255, -1)
-                elif shape["type"] == "polygon":
-                    pts = np.array(shape["params"], dtype=np.int32)
-                    cv2.fillPoly(combined_mask, [pts], 255)
-
-        # Second pass: subtract all exclusion zones (AND NOT operation)
-        for shape in self.roi_shapes:
-            if shape.get("mode", "include") == "exclude":
-                if shape["type"] == "circle":
-                    cx, cy, radius = shape["params"]
-                    cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 0, -1)
-                elif shape["type"] == "polygon":
-                    pts = np.array(shape["params"], dtype=np.int32)
-                    cv2.fillPoly(combined_mask, [pts], 0)
-
-        self.roi_mask = combined_mask
-        logger.info(f"Generated combined ROI mask from {len(self.roi_shapes)} shape(s)")
-
-        # Invalidate cache when ROI changes
-        self._invalidate_roi_cache()
-
-    def undo_last_roi_shape(self: object) -> object:
+    def undo_last_roi_shape(self):
         """Remove the last added ROI shape."""
-        if not self.roi_shapes:
-            return
+        self._session_orch.undo_last_roi_shape()
 
-        removed = self.roi_shapes.pop()
-        logger.info(f"Removed last ROI shape: {removed['type']}")
+    def clear_roi(self):
+        """Clear all ROI shapes and reset state."""
+        self._session_orch.clear_roi()
 
-        if self.roi_base_frame:
-            fh, fw = self.roi_base_frame.height(), self.roi_base_frame.width()
-            self._generate_combined_roi_mask(fh, fw)
-        else:
-            self.roi_mask = None
+    def keyPressEvent(self, event):
+        """Handle key press events."""
+        self._session_orch.keyPressEvent(event)
 
-        # Update UI
-        self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
-        if self.roi_shapes:
-            num_shapes = len(self.roi_shapes)
-            shape_summary = ", ".join([s["type"] for s in self.roi_shapes])
-            self.roi_status_label.setText(
-                f"Active ROI: {num_shapes} shape(s) ({shape_summary})"
-            )
-            # Show the updated masked result
-            if self.roi_base_frame:
-                qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
-                self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
-        else:
-            self.roi_status_label.setText("No ROI")
-            # Show original frame without masking
-            if self.roi_base_frame:
-                self.video_label.setPixmap(QPixmap.fromImage(self.roi_base_frame))
-
-        self.update_roi_preview()
-
-    def clear_roi(self: object) -> object:
-        """clear_roi method documentation."""
-        self.roi_mask = None
-        self.roi_points = []
-        self.roi_fitted_circle = None
-        self.roi_shapes = []
-        self.roi_selection_active = False
-        self.roi_base_frame = None
-        self.btn_start_roi.setEnabled(True)
-        self.btn_finish_roi.setEnabled(False)
-        self.btn_undo_roi.setEnabled(False)
-        self.combo_roi_mode.setEnabled(True)
-        self.roi_status_label.setText("No ROI")
-        self.roi_instructions.setText("")
-        self.video_label.setText("ROI Cleared.")
-
-        # Re-enable zoom slider
-        self.slider_zoom.setEnabled(True)
-
-        # Restore open hand cursor
-        if hasattr(Qt, "OpenHandCursor"):
-            self.video_label.setCursor(Qt.OpenHandCursor)
-        else:
-            self.video_label.unsetCursor()
-
-        logger.info("All ROI shapes cleared")
-
-    def keyPressEvent(self: object, event: object) -> object:
-        """keyPressEvent method documentation."""
-        if event.key() == Qt.Key_Escape and self.roi_selection_active:
-            self.clear_roi()
-        else:
-            super().keyPressEvent(event)
-
-    def _sanitize_model_token(self, text: object) -> object:
+    def _sanitize_model_token(self, text):
         """Sanitize model metadata token for safe filename use."""
         return _sanitize_model_token(text)
 
-    def _format_yolo_model_label(self, model_path: object) -> object:
+    def _format_yolo_model_label(self, model_path):
         """Build combo-box label for a model path, including metadata if available."""
-        rel_path = make_model_path_relative(model_path)
-        filename = os.path.basename(rel_path)
-        metadata = get_yolo_model_metadata(rel_path) or {}
-
-        size = metadata.get("size") or metadata.get("model_size")
-        species = metadata.get("species")
-        model_info = metadata.get("model_info")
-        task_family = str(metadata.get("task_family", "")).strip().lower()
-        usage_role = str(metadata.get("usage_role", "")).strip().lower()
-        model_id = None
-        if species and model_info:
-            model_id = f"{species}_{model_info}"
-        elif species:
-            model_id = species
-        suffix_parts = []
-        if size:
-            suffix_parts.append(str(size))
-        if model_id:
-            suffix_parts.append(str(model_id))
-        if usage_role:
-            suffix_parts.append(usage_role)
-        elif task_family:
-            suffix_parts.append(task_family)
-        if suffix_parts:
-            return f"{filename} ({', '.join(suffix_parts)})"
-        return filename
+        return self._config_orch._format_yolo_model_label(model_path)
 
     @staticmethod
-    def _yolo_model_matches_filter(
-        metadata: object, task_family: str | None = None, usage_role: str | None = None
-    ) -> bool:
-        if not isinstance(metadata, dict):
-            return True
-        meta_task = str(metadata.get("task_family", "")).strip().lower()
-        meta_role = str(metadata.get("usage_role", "")).strip().lower()
-        if not meta_task and not meta_role:
-            # Backward compatibility for legacy entries with no role/type metadata.
-            return True
-        if task_family and meta_task and meta_task != task_family:
-            return False
-        if usage_role and meta_role and meta_role != usage_role:
-            return False
-        return True
+    def _yolo_model_matches_filter(metadata, task_family=None, usage_role=None):
+        from hydra_suite.trackerkit.gui.orchestrators.config import ConfigOrchestrator
+
+        return ConfigOrchestrator._yolo_model_matches_filter(
+            metadata, task_family=task_family, usage_role=usage_role
+        )
 
     def _populate_yolo_model_combo(
         self,
-        combo: object,
-        preferred_model_path: object = None,
-        default_path: str = "",
-        include_none: bool = False,
-        task_family: str | None = None,
-        usage_role: str | None = None,
-        repository_dir: str | None = None,
-        recursive: bool = False,
-    ) -> object:
+        combo,
+        preferred_model_path=None,
+        default_path="",
+        include_none=False,
+        task_family=None,
+        usage_role=None,
+        repository_dir=None,
+        recursive=False,
+    ):
         """Populate a YOLO-model combo with optional metadata role filtering."""
-        selected_path = preferred_model_path
-        if selected_path is None:
-            selected_data = combo.currentData(Qt.UserRole)
-            if selected_data and selected_data not in ("__add_new__", "__none__"):
-                selected_path = str(selected_data)
-
-        entries = {}
-
-        models_dir = str(
-            repository_dir
-            or get_yolo_model_repository_directory(
-                task_family=task_family, usage_role=usage_role
-            )
-        )
-        try:
-            if recursive:
-                local_model_paths = []
-                for dirpath, _dirnames, filenames in os.walk(models_dir):
-                    for fn in sorted(filenames):
-                        if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
-                            local_model_paths.append(os.path.join(dirpath, fn))
-            else:
-                local_model_paths = sorted(
-                    os.path.join(models_dir, f)
-                    for f in os.listdir(models_dir)
-                    if os.path.splitext(f)[1].lower() in (".pt", ".pth")
-                )
-        except Exception as e:
-            logger.warning(f"Failed to list YOLO model directory '{models_dir}': {e}")
-            local_model_paths = []
-
-        for model_abs in local_model_paths:
-            rel_path = make_model_path_relative(model_abs)
-            metadata = get_yolo_model_metadata(rel_path) or {}
-            if not self._yolo_model_matches_filter(
-                metadata, task_family=task_family, usage_role=usage_role
-            ):
-                continue
-            entries[rel_path] = self._format_yolo_model_label(rel_path)
-
-        combo.blockSignals(True)
-        combo.clear()
-        for model_path, label in entries.items():
-            combo.addItem(label, model_path)
-        if include_none:
-            combo.insertItem(0, "— None —", "__none__")
-        combo.addItem("＋ Add New Model…", "__add_new__")
-        combo.blockSignals(False)
-
-        self._set_model_selection_for_selector(
+        self._config_orch._populate_yolo_model_combo(
             combo,
-            selected_path,
+            preferred_model_path=preferred_model_path,
             default_path=default_path,
+            include_none=include_none,
+            task_family=task_family,
+            usage_role=usage_role,
+            repository_dir=repository_dir,
+            recursive=recursive,
         )
 
-    def _set_model_selection_for_selector(
-        self,
-        combo: object,
-        model_path: object,
-        default_path: str = "",
-    ) -> object:
-        target_path = make_model_path_relative(model_path or "")
-        if not target_path:
-            target_path = str(default_path or "")
+    def _set_model_selection_for_selector(self, combo, model_path, default_path=""):
+        self._config_orch._set_model_selection_for_selector(combo, model_path, default_path)
 
-        for i in range(combo.count()):
-            item_data = combo.itemData(i, Qt.UserRole)
-            if item_data == target_path:
-                combo.setCurrentIndex(i)
-                return
-
-        # Target not found — fall back to "— None —" or first item.
-        none_idx = combo.findData("__none__", Qt.UserRole)
-        if none_idx >= 0:
-            combo.setCurrentIndex(none_idx)
-        else:
-            combo.setCurrentIndex(0)
-
-    def _get_selected_model_path_from_selector(
-        self, combo: object, default_path: str = ""
-    ) -> object:
-        selected_data = combo.currentData(Qt.UserRole)
-        if selected_data and selected_data not in ("__add_new__", "__none__"):
-            return str(selected_data)
-        return str(default_path or "")
+    def _get_selected_model_path_from_selector(self, combo, default_path=""):
+        return self._config_orch._get_selected_model_path_from_selector(combo, default_path)
 
     def _import_yolo_model_to_repository(
-        self,
-        source_path: object,
-        task_family: str | None = None,
-        usage_role: str | None = None,
-        repository_dir: str | None = None,
-    ) -> object:
-        """Import a YOLO model file into models/obb with metadata."""
-        src = str(source_path or "")
-        if not src or not os.path.exists(src):
-            return None
-
-        src_abs = os.path.abspath(src)
-        models_dir = str(
-            repository_dir
-            or get_yolo_model_repository_directory(
-                task_family=task_family, usage_role=usage_role
-            )
+        self, source_path, task_family=None, usage_role=None, repository_dir=None
+    ):
+        """Import a YOLO model file into the repository with metadata."""
+        return self._config_orch._import_yolo_model_to_repository(
+            source_path,
+            task_family=task_family,
+            usage_role=usage_role,
+            repository_dir=repository_dir,
         )
-        try:
-            rel_existing = os.path.relpath(src_abs, models_dir)
-            if not rel_existing.startswith(".."):
-                return make_model_path_relative(src_abs)
-        except Exception:
-            pass
-
-        # Single dialog for metadata collection (size + species + model info + timestamp preview)
-        now_preview = datetime.now()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Model Metadata")
-        dlg_layout = QVBoxLayout(dlg)
-        dlg_form = QFormLayout()
-
-        size_combo = QComboBox(dlg)
-        size_combo.addItems(["26n", "26s", "26m", "26l", "26x", "custom", "unknown"])
-        size_combo.setCurrentText("26s")
-        dlg_form.addRow("YOLO model size:", size_combo)
-
-        stem_tokens = [t for t in Path(src).stem.replace("-", "_").split("_") if t]
-        default_species = (
-            self._sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
-        )
-        default_info = (
-            self._sanitize_model_token("_".join(stem_tokens[1:]))
-            if len(stem_tokens) > 1
-            else "model"
-        )
-
-        species_line = QLineEdit(default_species, dlg)
-        species_line.setPlaceholderText("species")
-        dlg_form.addRow("Model species:", species_line)
-
-        info_line = QLineEdit(default_info, dlg)
-        info_line.setPlaceholderText("model-info")
-        dlg_form.addRow("Model info:", info_line)
-
-        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
-        ts_label.setToolTip("Timestamp applied when model is added to repository")
-        dlg_form.addRow("Added timestamp:", ts_label)
-
-        dlg_layout.addLayout(dlg_form)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        dlg_layout.addWidget(buttons)
-
-        if dlg.exec() != QDialog.Accepted:
-            return None
-
-        model_size = size_combo.currentText().strip() or "unknown"
-        model_species = self._sanitize_model_token(species_line.text())
-        model_info = self._sanitize_model_token(info_line.text())
-        if not model_species or not model_info:
-            QMessageBox.warning(
-                self,
-                "Invalid Metadata",
-                "Species and model info must both be provided.",
-            )
-            return None
-
-        now = datetime.now()
-        timestamp_token = now.strftime("%Y%m%d-%H%M%S")
-        added_at = now.isoformat(timespec="seconds")
-        ext = os.path.splitext(src)[1].lower() or ".pt"
-
-        model_slug = f"{model_species}_{model_info}"
-        base_name = f"{timestamp_token}_{model_size}_{model_slug}"
-        dest_path = os.path.join(models_dir, f"{base_name}{ext}")
-        counter = 1
-        while os.path.exists(dest_path):
-            dest_path = os.path.join(models_dir, f"{base_name}_{counter}{ext}")
-            counter += 1
-
-        try:
-            shutil.copy2(src, dest_path)
-        except Exception as e:
-            logger.error(f"Failed to copy model to repository: {e}")
-            QMessageBox.warning(
-                self,
-                "Import Failed",
-                f"Could not import model into repository:\n{e}",
-            )
-            return None
-
-        rel_path = make_model_path_relative(dest_path)
-        metadata = {
-            "size": model_size,
-            "species": model_species,
-            "model_info": model_info,
-            "added_at": added_at,
-            "source_path": src,
-            "stored_filename": os.path.basename(dest_path),
-        }
-        if task_family:
-            metadata["task_family"] = str(task_family).strip().lower()
-        if usage_role:
-            metadata["usage_role"] = str(usage_role).strip().lower()
-        register_yolo_model(rel_path, metadata)
-        logger.info(f"Imported model to repository: {dest_path}")
-        return rel_path
 
     @staticmethod
-    def _infer_yolo_headtail_model_type(model_path: object) -> str:
+    def _infer_yolo_headtail_model_type(model_path):
         """Infer the head-tail model family from its stored path."""
-        normalized = str(make_model_path_relative(model_path or "")).replace("\\", "/")
-        normalized_lower = f"/{normalized.lower().strip('/')}" if normalized else ""
-        if "/tiny/" in normalized_lower:
-            return "tiny"
-        return "YOLO"
+        from hydra_suite.trackerkit.gui.orchestrators.config import ConfigOrchestrator
 
-    def _populate_pose_model_combo(
-        self,
-        combo: object,
-        backend: str,
-        preferred_model_path: object = None,
-    ) -> None:
+        return ConfigOrchestrator._infer_yolo_headtail_model_type(model_path)
+
+    def _populate_pose_model_combo(self, combo, backend, preferred_model_path=None):
         """Populate the pose model combo for the given backend."""
-        selected_path = preferred_model_path
-        if selected_path is None:
-            selected_data = combo.currentData(Qt.UserRole)
-            if selected_data and selected_data not in ("__add_new__", "__none__"):
-                selected_path = str(selected_data)
-
-        backend_key = (
-            "sleap"
-            if backend == "sleap"
-            else ("vitpose" if backend == "vitpose" else "yolo")
+        self._config_orch._populate_pose_model_combo(
+            combo, backend, preferred_model_path=preferred_model_path
         )
-        repo_dir = get_pose_models_directory(backend_key)
-        os.makedirs(repo_dir, exist_ok=True)
 
-        entries = {}
-        try:
-            if backend_key == "sleap":
-                for name in sorted(os.listdir(repo_dir)):
-                    full = os.path.join(repo_dir, name)
-                    if os.path.isdir(full):
-                        rel = make_pose_model_path_relative(full)
-                        entries[rel] = name
-            else:
-                for fn in sorted(os.listdir(repo_dir)):
-                    if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
-                        full = os.path.join(repo_dir, fn)
-                        rel = make_pose_model_path_relative(full)
-                        entries[rel] = self._format_yolo_model_label(rel)
-        except Exception as e:
-            logger.warning(f"Failed to list pose model directory '{repo_dir}': {e}")
-
-        combo.blockSignals(True)
-        combo.clear()
-        for path, label in entries.items():
-            combo.addItem(label, path)
-        combo.insertItem(0, "— None —", "__none__")
-        combo.addItem("＋ Add New Model…", "__add_new__")
-        combo.blockSignals(False)
-
-        self._set_model_selection_for_selector(combo, selected_path, default_path="")
-
-    def _refresh_pose_model_combo(self, preferred_model_path: object = None) -> None:
+    def _refresh_pose_model_combo(self, preferred_model_path=None):
         """Refresh the pose model combo for the current backend."""
-        if not hasattr(self, "_identity_panel"):
-            return
-        backend = self._current_pose_backend_key()
-        self._populate_pose_model_combo(
-            self._identity_panel.combo_pose_model,
-            backend=backend,
-            preferred_model_path=preferred_model_path,
+        self._config_orch._refresh_pose_model_combo(
+            preferred_model_path=preferred_model_path
         )
 
     def on_pose_model_changed(self, index: int) -> None:
@@ -3998,131 +2289,35 @@ class MainWindow(QMainWindow):
 
     def _handle_add_new_yolo_model(
         self,
-        combo: object,
-        refresh_callback: object,
-        selection_callback: object,
-        task_family: str,
-        usage_role: str,
-        dialog_title: str,
-        repository_dir: str | None = None,
-    ) -> object:
-        """Browse for a model, import it, refresh the combo, and select it.
-
-        Restores the previous selection if the user cancels.
-        """
-        # Remember what was selected before this action item was triggered.
-        prev_data = None
-        for i in range(combo.count()):
-            d = combo.itemData(i, Qt.UserRole)
-            if d not in ("__add_new__", "__none__", None):
-                prev_data = d
-                break
-
-        start_dir = str(
-            repository_dir
-            or get_yolo_model_repository_directory(
-                task_family=task_family, usage_role=usage_role
-            )
-        )
-        fp, _ = QFileDialog.getOpenFileName(
-            self,
+        combo,
+        refresh_callback,
+        selection_callback,
+        task_family,
+        usage_role,
+        dialog_title,
+        repository_dir=None,
+    ):
+        """Browse for a model, import it, refresh the combo, and select it."""
+        self._config_orch._handle_add_new_yolo_model(
+            combo,
+            refresh_callback,
+            selection_callback,
+            task_family,
+            usage_role,
             dialog_title,
-            start_dir,
-            "PyTorch Model Files (*.pt *.pth);;All Files (*)",
+            repository_dir=repository_dir,
         )
-        if not fp:
-            # Cancelled — restore previous selection silently.
-            combo.blockSignals(True)
-            self._set_model_selection_for_selector(combo, prev_data)
-            combo.blockSignals(False)
-            return
 
-        selected_abs = os.path.abspath(fp)
-        try:
-            rel_existing = os.path.relpath(selected_abs, start_dir)
-            is_in_repo = not rel_existing.startswith("..")
-        except (ValueError, TypeError):
-            is_in_repo = False
+    def toggle_preview(self, checked):
+        """Toggle preview mode on/off."""
+        self._session_orch.toggle_preview(checked)
 
-        if is_in_repo:
-            final_path = make_model_path_relative(selected_abs)
-        else:
-            final_path = self._import_yolo_model_to_repository(
-                selected_abs,
-                task_family=task_family,
-                usage_role=usage_role,
-                repository_dir=start_dir,
-            )
-            if not final_path:
-                combo.blockSignals(True)
-                self._set_model_selection_for_selector(combo, prev_data)
-                combo.blockSignals(False)
-                return
-            QMessageBox.information(
-                self,
-                "Model Added",
-                f"Model added to repository:\n{os.path.basename(final_path)}",
-            )
+    def toggle_tracking(self, checked):
+        """Toggle full tracking on/off."""
+        self._session_orch.toggle_tracking(checked)
 
-        refresh_callback(preferred_model_path=final_path)
-        selection_callback(final_path)
-
-    def toggle_preview(self: object, checked: object) -> object:
-        """toggle_preview method documentation."""
-        if checked:
-            # Warn user that preview doesn't save config
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Information)
-            msg.setWindowTitle("Preview Mode")
-            msg.setText(
-                "Preview mode will run forward tracking only without saving configuration."
-            )
-            msg.setInformativeText(
-                "Preview features:\n"
-                "• Forward pass only (no backward tracking)\n"
-                "• Configuration is NOT saved\n"
-                "• No CSV output\n\n"
-                "Use 'Run Full Tracking' to save results and config."
-            )
-            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-            msg.setDefaultButton(QMessageBox.Ok)
-
-            if msg.exec() == QMessageBox.Ok:
-                self.start_tracking(preview_mode=True)
-                self.btn_preview.setText("Stop Preview")
-                self.btn_start.setEnabled(False)
-            else:
-                self.btn_preview.setChecked(False)
-        else:
-            self.stop_tracking()
-            self.btn_preview.setText("Preview Mode")
-            self.btn_start.setEnabled(True)
-
-    def toggle_tracking(self: object, checked: object) -> object:
-        """toggle_tracking method documentation."""
-        if checked:
-            # If preview is active, stop it first
-            if self.btn_preview.isChecked():
-                self.btn_preview.setChecked(False)
-                self.btn_preview.setText("Preview Mode")
-                self.stop_tracking()
-
-            self.btn_start.setText("Stop Tracking")
-            self.btn_preview.setEnabled(False)
-            self.start_full()
-
-            if not (self.tracking_worker and self.tracking_worker.isRunning()):
-                # Tracking did not start (e.g., no video or config save cancelled)
-                self.btn_start.blockSignals(True)
-                self.btn_start.setChecked(False)
-                self.btn_start.blockSignals(False)
-                self.btn_start.setText("Start Full Tracking")
-                self.btn_preview.setEnabled(True)
-        else:
-            self.stop_tracking()
-
-    def toggle_debug_logging(self: object, checked: object) -> object:
-        """toggle_debug_logging method documentation."""
+    def toggle_debug_logging(self, checked):
+        """Toggle debug logging level."""
         if checked:
             logger.setLevel(logging.DEBUG)
             logger.info("Debug logging enabled")
@@ -4132,45 +2327,7 @@ class MainWindow(QMainWindow):
 
     def _on_visualization_mode_changed(self, state):
         """Handle visualization-free mode toggle."""
-        is_viz_free = self._setup_panel.chk_visualization_free.isChecked()
-        is_preview_active = self.btn_preview.isChecked()
-        is_tracking_active = self.tracking_worker and self.tracking_worker.isRunning()
-
-        # Keep display settings visible; only gate their effect at runtime
-        self._setup_panel.g_display.setVisible(True)
-
-        # Keep individual checkboxes enabled for pre-configuration
-        self._setup_panel.chk_show_circles.setEnabled(True)
-        self._setup_panel.chk_show_orientation.setEnabled(True)
-        self._setup_panel.chk_show_trajectories.setEnabled(True)
-        self._setup_panel.chk_show_labels.setEnabled(True)
-        self._setup_panel.chk_show_state.setEnabled(True)
-        self._setup_panel.chk_show_kalman_uncertainty.setEnabled(True)
-        self._detection_panel.chk_show_fg.setEnabled(True)
-        self._detection_panel.chk_show_bg.setEnabled(True)
-        self._detection_panel.chk_show_yolo_obb.setEnabled(True)
-
-        # Only affect display during active tracking (not setup/preview)
-        if is_tracking_active and is_viz_free and not is_preview_active:
-            # Store current preview if any, then show placeholder
-            self._stored_preview_text = (
-                self.video_label.text() if not self.video_label.pixmap() else None
-            )
-            self.video_label.clear()
-            self.video_label.setText(
-                "Visualization Disabled\n\n"
-                "Maximum speed processing mode active.\n"
-                "Real-time stats displayed below."
-            )
-            self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
-            logger.info("Visualization-Free Mode enabled - Maximum speed processing")
-        elif is_tracking_active and not is_viz_free:
-            # Restore previous state or default message
-            if hasattr(self, "_stored_preview_text") and self._stored_preview_text:
-                self.video_label.setText(self._stored_preview_text)
-            elif not self.video_label.pixmap():
-                self._show_video_logo_placeholder()
-            self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
+        self._session_orch._on_visualization_mode_changed(state)
 
     def start_full(self: object) -> object:
         """start_full method documentation."""
@@ -4248,45 +2405,11 @@ class MainWindow(QMainWindow):
 
     def _draw_roi_overlay(self, qimage):
         """Draw ROI shapes overlay on a QImage."""
-        if not self.roi_shapes:
-            return qimage
-
-        # Create a copy to draw on
-        pix = QPixmap.fromImage(qimage).copy()
-        painter = QPainter(pix)
-
-        # Draw all ROI shapes
-        for shape in self.roi_shapes:
-            if shape["type"] == "circle":
-                cx, cy, radius = shape["params"]
-                painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
-                painter.drawEllipse(
-                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
-                )
-                # Draw center point
-                painter.setPen(QPen(Qt.cyan, 6))
-                painter.drawPoint(int(cx), int(cy))
-            elif shape["type"] == "polygon":
-                from PySide6.QtCore import QPoint
-
-                points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
-                painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
-                painter.drawPolygon(points)
-
-        painter.end()
-        return pix.toImage()
+        return self._session_orch._draw_roi_overlay(qimage)
 
     def _apply_roi_mask_to_image(self, qimage):
-        """Apply ROI visualization - draw boundary overlay for all detection methods.
-
-        Both YOLO and Background Subtraction now show the same cyan boundary overlay
-        for consistent UI experience. The actual masking happens in the tracking pipeline.
-        """
-        if self.roi_mask is None or not self.roi_shapes:
-            return qimage
-
-        # Use boundary overlay for all detection methods
-        return self._draw_roi_overlay(qimage)
+        """Apply ROI visualization - draw boundary overlay for all detection methods."""
+        return self._session_orch._apply_roi_mask_to_image(qimage)
 
     @Slot(int, str)
     def on_progress_update(
@@ -4390,79 +2513,7 @@ class MainWindow(QMainWindow):
 
     def _generate_oriented_track_videos(self, final_csv_path):
         """Export orientation-fixed videos for final trajectories."""
-        try:
-            if self._stop_all_requested:
-                return False
-            if not self._should_generate_oriented_track_videos():
-                return False
-            if not final_csv_path or not os.path.exists(final_csv_path):
-                return False
-
-            dataset_dir = self._resolve_current_individual_dataset_dir()
-            if dataset_dir is None:
-                logger.warning(
-                    "Skipping oriented track video export: no individual dataset directory found."
-                )
-                return False
-            if not self.current_detection_cache_path or not os.path.exists(
-                self.current_detection_cache_path
-            ):
-                logger.warning(
-                    "Skipping oriented track video export: no compatible detection cache is available."
-                )
-                return False
-
-            self.progress_bar.setVisible(True)
-            self.progress_label.setVisible(True)
-            self.progress_bar.setValue(0)
-            self.progress_label.setText("Generating oriented track videos...")
-
-            if (
-                self.oriented_video_worker is not None
-                and self.oriented_video_worker.isRunning()
-            ):
-                logger.warning(
-                    "Oriented track video export already running; skipping duplicate request."
-                )
-                return True
-            if (
-                self.oriented_video_worker is not None
-                and not self.oriented_video_worker.isRunning()
-            ):
-                self.oriented_video_worker.deleteLater()
-                self.oriented_video_worker = None
-
-            padding_fraction = (
-                float(self._identity_panel.spin_individual_padding.value())
-                if hasattr(self, "_identity_panel")
-                else 0.1
-            )
-            self.oriented_video_worker = OrientedTrackVideoWorker(
-                final_csv_path,
-                str(dataset_dir),
-                self._setup_panel.file_line.text().strip(),
-                self.current_detection_cache_path,
-                self.current_interpolated_roi_npz_path,
-                self._resolve_source_video_fps(),
-                max(0.0, padding_fraction),
-                tuple(int(c) for c in self._identity_panel._background_color),
-                bool(self._dataset_panel.chk_suppress_foreign_obb_dataset.isChecked()),
-            )
-            self.oriented_video_worker.progress_signal.connect(self.on_progress_update)
-            self.oriented_video_worker.finished_signal.connect(
-                self._on_oriented_track_videos_finished
-            )
-            self.oriented_video_worker.error_signal.connect(
-                self._on_oriented_track_videos_error
-            )
-            self.oriented_video_worker.finished.connect(
-                self._on_oriented_track_video_worker_thread_finished
-            )
-            self.oriented_video_worker.start()
-            return True
-        except Exception as e:
-            logger.warning(f"Oriented track video export failed to start: {e}")
-            return False
+        return self._tracking_orch._generate_oriented_track_videos(final_csv_path)
 
     def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
         """Start optional oriented track video export and hold the finish pipeline."""
@@ -4560,48 +2611,6 @@ class MainWindow(QMainWindow):
                 best_delta = delta
         return math.radians(deg0 + (best_delta or 0.0) * t)
 
-    def _get_detection_size(self, detection_cache, frame_id, detection_id, params):
-        if detection_cache is None or detection_id is None or pd.isna(detection_id):
-            return None, None
-        try:
-            _, _, shapes, _, obb_corners, detection_ids, *_ = detection_cache.get_frame(
-                int(frame_id)
-            )
-        except Exception:
-            return None, None
-
-        idx = None
-        try:
-            for i, did in enumerate(detection_ids):
-                if int(did) == int(detection_id):
-                    idx = i
-                    break
-        except Exception:
-            idx = None
-
-        if idx is None:
-            return None, None
-
-        # YOLO OBB corners
-        if obb_corners and idx < len(obb_corners):
-            c = np.asarray(obb_corners[idx], dtype=np.float32)
-            if c.shape[0] >= 4:
-                w = float(np.linalg.norm(c[1] - c[0]))
-                h = float(np.linalg.norm(c[2] - c[1]))
-                if w < h:
-                    w, h = h, w
-                return w, h
-
-        # Background subtraction shapes
-        if shapes and idx < len(shapes):
-            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
-            if aspect_ratio > 0 and area > 0:
-                ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
-                ax1 = aspect_ratio * ax2
-                return ax1, ax2
-
-        return None, None
-
     def start_backward_tracking(self: object) -> object:
         """start_backward_tracking method documentation."""
         self._tracking_orch.start_backward_tracking()
@@ -4642,9 +2651,9 @@ class MainWindow(QMainWindow):
         """
         self._config_orch._load_config_from_file(config_path, preset_mode=preset_mode)
 
-    def _atomic_json_write(cfg, path):
+    def _atomic_json_write(self, cfg, path):
         """Write a JSON config atomically. Returns (success, error_message)."""
-        self._config_orch._atomic_json_write(cfg, path)
+        return self._config_orch._atomic_json_write(cfg, path)
 
     def _resolve_config_save_path(self, prompt_if_exists):
         """Determine the config file save path, prompting the user if needed."""
@@ -4670,7 +2679,13 @@ class MainWindow(QMainWindow):
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
         """
-        self._config_orch.save_config(prompt_if_exists=prompt_if_exists)
+        return self._config_orch.save_config(
+            preset_mode=preset_mode,
+            preset_path=preset_path,
+            preset_name=preset_name,
+            preset_description=preset_description,
+            prompt_if_exists=prompt_if_exists,
+        )
 
     def _setup_session_logging(self, video_path, backward_mode=False):
         self._session_orch._setup_session_logging(video_path, backward_mode=backward_mode)
@@ -4901,142 +2916,21 @@ class MainWindow(QMainWindow):
         self._config_orch.crop_video_to_roi()
 
     def _poll_crop_stderr_progress(self, process):
-        """Read ffmpeg stderr in non-blocking mode and log progress."""
-        if not process.stderr:
-            return
-        try:
-            import fcntl
-            import os as os_module
-
-            fd = process.stderr.fileno()
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
-            try:
-                while True:
-                    line = process.stderr.readline()
-                    if not line:
-                        break
-                    if "frame=" in line:
-                        try:
-                            frame_str = line.split("frame=")[1].split()[0]
-                            current_frame = int(frame_str)
-                            total_frames = self._crop_process.get("total_frames", 0)
-                            if total_frames > 0:
-                                progress_pct = int((current_frame / total_frames) * 100)
-                                last_logged = self._crop_process.get(
-                                    "last_logged_progress", 0
-                                )
-                                if progress_pct >= last_logged + 10:
-                                    logger.info(
-                                        f"Video crop progress: {progress_pct}% ({current_frame}/{total_frames} frames)"
-                                    )
-                                    self._crop_process["last_logged_progress"] = (
-                                        progress_pct
-                                    )
-                        except (ValueError, IndexError):
-                            pass
-            except (IOError, OSError):
-                pass
-        except Exception:
-            pass
+        """Read ffmpeg stderr progress (delegated to config orchestrator)."""
+        self._config_orch._poll_crop_stderr_progress(process)
 
     def _load_cropped_video(self, output_path):
         """Set up the UI to use the newly cropped video."""
-        self._setup_panel.file_line.setText(output_path)
-        self.current_video_path = output_path
-        self.clear_roi()
-
-        video_dir = os.path.dirname(output_path)
-        video_name = os.path.splitext(os.path.basename(output_path))[0]
-
-        csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
-        self._setup_panel.csv_line.setText(csv_path)
-
-        video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
-        self._postprocess_panel.video_out_line.setText(video_out_path)
-        self._postprocess_panel.check_video_output.setChecked(True)
-
-        self.btn_test_detection.setEnabled(True)
-        self._setup_panel.btn_detect_fps.setEnabled(True)
-        self.btn_crop_video.setEnabled(False)
-        if hasattr(self, "roi_optimization_label"):
-            self.roi_optimization_label.setText("")
-
-        config_path = get_video_config_path(output_path)
-        if config_path and os.path.isfile(config_path):
-            self._load_config_from_file(config_path)
-            self._setup_panel.config_status_label.setText(
-                f"\u2713 Loaded: {os.path.basename(config_path)}"
-            )
-            self._setup_panel.config_status_label.setStyleSheet(
-                "color: #4fc1ff; font-style: italic; font-size: 10px;"
-            )
-            logger.info(f"Cropped video loaded: {output_path} (auto-loaded config)")
-        else:
-            self._setup_panel.config_status_label.setText(
-                "No config found (using current settings)"
-            )
-            self._setup_panel.config_status_label.setStyleSheet(
-                "color: #f39c12; font-style: italic; font-size: 10px;"
-            )
-            logger.info(f"Cropped video loaded: {output_path} (no config found)")
+        self._config_orch._load_cropped_video(output_path)
 
     def _handle_crop_success(self, output_path, orig_w, orig_h, crop_w, crop_h):
         """Handle a successful crop completion."""
-        reply = QMessageBox.question(
-            self,
-            "Crop Complete",
-            f"Video successfully cropped to ROI!\n\n"
-            f"Original: {orig_w}x{orig_h}\n"
-            f"Cropped: {crop_w}x{crop_h}\n"
-            f"Saved to: {os.path.basename(output_path)}\n\n"
-            f"Would you like to load the cropped video now?\n"
-            f"(Note: ROI will be cleared since the video is already cropped)",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if reply == QMessageBox.Yes:
-            self._load_cropped_video(output_path)
-
-        self._set_ui_controls_enabled(True)
-        if hasattr(self, "btn_crop_video"):
-            self.btn_crop_video.setText("Crop Video to ROI")
-        logger.info(f"Successfully cropped video to {output_path}")
+        self._config_orch._handle_crop_success(output_path, orig_w, orig_h, crop_w, crop_h)
 
     def _handle_crop_failure(self, return_code):
         """Handle a failed crop completion."""
-        self._set_ui_controls_enabled(True)
-        if hasattr(self, "btn_crop_video"):
-            self.btn_crop_video.setText("Crop Video to ROI")
-            self.btn_crop_video.setEnabled(True)
-        logger.error(f"Video crop failed with return code {return_code}")
-        QMessageBox.critical(
-            self,
-            "Crop Failed",
-            f"Video cropping failed (return code: {return_code})\n\n"
-            f"Check that ffmpeg is installed and the video is valid.",
-        )
+        self._config_orch._handle_crop_failure(return_code)
 
     def _check_crop_completion(self):
         """Check if background crop process has completed."""
-        if not hasattr(self, "_crop_process"):
-            if hasattr(self, "_crop_check_timer"):
-                self._crop_check_timer.stop()
-            return
-
-        process = self._crop_process["process"]
-        self._poll_crop_stderr_progress(process)
-
-        return_code = process.poll()
-        if return_code is not None:
-            self._crop_check_timer.stop()
-            output_path = self._crop_process["output_path"]
-            orig_w, orig_h = self._crop_process["original_size"]
-            crop_w, crop_h = self._crop_process["cropped_size"]
-
-            if return_code == 0 and os.path.exists(output_path):
-                self._handle_crop_success(output_path, orig_w, orig_h, crop_w, crop_h)
-            else:
-                self._handle_crop_failure(return_code)
-
-            del self._crop_process
+        self._config_orch._check_crop_completion()

@@ -417,7 +417,7 @@ def test_runner_flat_custom_dispatches_to_custom_classify():
 
 def test_all_presets_include_flat_custom():
     """Every single-factor preset function must include 'flat_custom' in training_modes."""
-    from hydra_suite.classkit.presets import (
+    from hydra_suite.classkit.config.presets import (
         age_preset,
         apriltag_preset,
         head_tail_preset,
@@ -430,7 +430,7 @@ def test_all_presets_include_flat_custom():
 
 def test_color_tag_preset_includes_multihead_custom():
     """Multi-factor preset must include both flat_custom and multihead_custom."""
-    from hydra_suite.classkit.presets import color_tag_preset
+    from hydra_suite.classkit.config.presets import color_tag_preset
 
     scheme = color_tag_preset(n_factors=2, colors=["red", "blue"])
     assert "flat_custom" in scheme.training_modes

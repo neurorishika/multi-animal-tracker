@@ -38,8 +38,8 @@ class IngestWorker(QRunnable):
             self.signals.started.emit()
             self.signals.progress.emit(0, "Initializing ingestion...")
 
-            from ..data.ingest import IngestWorker as Ingester
-            from ..store.db import ClassKitDB
+            from ..core.data.ingest import IngestWorker as Ingester
+            from ..core.store.db import ClassKitDB
 
             # Initialize
             self.signals.progress.emit(5, "Connecting to database...")
@@ -49,7 +49,7 @@ class IngestWorker(QRunnable):
             # Scan and ingest
             self.signals.progress.emit(10, f"Scanning folder: {self.source_path}...")
             # Prefer images/ subdirectory when present (PoseKit convention).
-            from ...classkit.data.ingest import scan_images as _scan
+            from ..core.data.ingest import scan_images as _scan
 
             image_paths = list(_scan(self.source_path))
             self.signals.progress.emit(40, f"Found {len(image_paths):,} images")
@@ -95,11 +95,11 @@ class EmbeddingWorker(QRunnable):
     def run(self):
         db_cls = None
         if self.db_path:
-            from ..store.db import ClassKitDB as _ClassKitDB
+            from ..core.store.db import ClassKitDB as _ClassKitDB
 
             db_cls = _ClassKitDB
 
-        from ..embed.embedder import (
+        from ..core.embed.embedder import (
             ModelLoadError,
             TimmEmbedder,
             resolve_embedder_device,
@@ -228,7 +228,7 @@ class ClusteringWorker(QRunnable):
 
             import numpy as np
 
-            from ..cluster.clusterer import SKLearnClusterer
+            from ..core.cluster.clusterer import SKLearnClusterer
 
             self.signals.progress.emit(8, f"Initializing {self.method} clusterer...")
             clusterer = SKLearnClusterer(
@@ -289,7 +289,7 @@ class UMAPWorker(QRunnable):
                 f"Input: {self.embeddings.shape[0]:,} points, {self.embeddings.shape[1]} dims",
             )
 
-            from ..viz.umap_reduce import UMAPReducer
+            from ..core.viz.umap_reduce import UMAPReducer
 
             self.signals.progress.emit(
                 10,
@@ -359,7 +359,7 @@ class TrainingWorker(QRunnable):
             self.signals.started.emit()
             self.signals.progress.emit(0, "Initializing trainer...")
 
-            from ..train.trainer import EmbeddingHeadTrainer
+            from ..core.train.trainer import EmbeddingHeadTrainer
 
             input_dim = self.train_embeddings.shape[1]
             trainer = EmbeddingHeadTrainer(
@@ -733,7 +733,7 @@ class ExportWorker(QRunnable):
         splits: List[str],
         class_names: Dict[int, str],
     ) -> None:
-        from ..export.imagefolder import export_to_imagefolder
+        from ..core.export.imagefolder import export_to_imagefolder
 
         records = [
             (path, class_names[label], split)
@@ -752,7 +752,7 @@ class ExportWorker(QRunnable):
         splits: List[str],
         class_names: Dict[int, str],
     ) -> None:
-        from ..export.parquet_csv import export_to_csv
+        from ..core.export.parquet_csv import export_to_csv
 
         csv_path = self.output_path
         if csv_path.suffix.lower() != ".csv":
@@ -774,7 +774,7 @@ class ExportWorker(QRunnable):
         splits: List[str],
         class_names: Dict[int, str],
     ) -> None:
-        from ..export.parquet_csv import export_to_parquet
+        from ..core.export.parquet_csv import export_to_parquet
 
         parquet_path = self.output_path
         if parquet_path.suffix.lower() != ".parquet":
@@ -795,7 +795,7 @@ class ExportWorker(QRunnable):
         splits: List[str],
         class_names: Dict[int, str],
     ) -> None:
-        from ..export.ultralytics_classify import export_ultralytics_classify
+        from ..core.export.ultralytics_classify import export_ultralytics_classify
 
         train_images, train_labels = [], []
         val_images, val_labels = [], []
@@ -1077,7 +1077,7 @@ class LogitsUMAPWorker(QRunnable):
             n, c = self.probs.shape
             self.signals.progress.emit(0, f"Input: {n:,} images × {c} classes")
 
-            from ..viz.umap_reduce import UMAPReducer
+            from ..core.viz.umap_reduce import UMAPReducer
 
             self.signals.progress.emit(
                 10,
@@ -1173,7 +1173,7 @@ class ALBatchWorker(QRunnable):
             self.signals.started.emit()
             import numpy as np
 
-            from ..al.acquisition import BatchAcquisition, BatchConfig
+            from ..core.al.acquisition import BatchAcquisition, BatchConfig
 
             self.signals.progress.emit(0, "Computing active learning batch...")
             unlabeled_mask = ~self.labeled_mask
@@ -1190,7 +1190,7 @@ class ALBatchWorker(QRunnable):
             if self.cluster_assignments is not None:
                 self.signals.progress.emit(20, "Computing cluster densities...")
                 try:
-                    from ..al.density import compute_cluster_densities
+                    from ..core.al.density import compute_cluster_densities
 
                     cluster_densities = compute_cluster_densities(
                         self.embeddings, self.cluster_assignments
@@ -1199,7 +1199,7 @@ class ALBatchWorker(QRunnable):
                     pass
 
                 try:
-                    from ..train.metrics import compute_label_coverage
+                    from ..core.train.metrics import compute_label_coverage
 
                     labeled_int = np.where(self.labeled_mask, 0, -1)
                     label_coverage = compute_label_coverage(
@@ -1603,7 +1603,7 @@ class AprilTagAutoLabelWorker(QRunnable):
 
     @Slot()
     def run(self) -> None:
-        from ..autolabel.apriltag import autolabel_images
+        from ..core.autolabel.apriltag import autolabel_images
 
         try:
             self.signals.started.emit()

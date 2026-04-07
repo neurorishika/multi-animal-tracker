@@ -126,7 +126,7 @@ class SourceManagerDialog(QDialog):
         self._load_existing_sources()
 
     def _load_existing_sources(self):
-        from hydra_suite.classkit.gui.store.db import ClassKitDB
+        from hydra_suite.classkit.core.store.db import ClassKitDB
 
         db = ClassKitDB(self._db_path)
         self._existing = db.get_source_folders()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from hydra_suite.classkit.embed import embedder as embedder_module
+from hydra_suite.classkit.core.embed import embedder as embedder_module
 
 
 def test_timm_embedder_retries_with_local_cache_after_network_error(

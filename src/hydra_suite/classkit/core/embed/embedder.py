@@ -15,7 +15,7 @@ except ImportError:
     timm = None
     Image = None
 
-from ...utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
+from ....utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
 from .embedder_base import EmbedderBase
 
 

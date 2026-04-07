@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from hydra_suite.classkit.store.db import ClassKitDB
+from hydra_suite.classkit.core.store.db import ClassKitDB
 
 
 def test_db():

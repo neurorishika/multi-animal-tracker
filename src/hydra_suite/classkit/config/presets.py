@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .config.schemas import Factor, LabelingScheme
+from .schemas import Factor, LabelingScheme
 
 
 def head_tail_preset() -> LabelingScheme:

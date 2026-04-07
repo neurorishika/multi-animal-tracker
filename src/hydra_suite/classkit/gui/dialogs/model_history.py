@@ -267,7 +267,7 @@ class ModelHistoryDialog(QDialog):
         if not ok:
             return
 
-        from hydra_suite.classkit.gui.store.db import ClassKitDB
+        from hydra_suite.classkit.core.store.db import ClassKitDB
 
         updated = ClassKitDB(self._db_path).set_model_cache_display_name(
             int(entry.get("id", -1)),
@@ -329,7 +329,7 @@ class ModelHistoryDialog(QDialog):
 
     def _remove_selected_entry_from_db(self, entry: dict) -> bool:
         """Delete the selected model-history row from the database."""
-        from hydra_suite.classkit.gui.store.db import ClassKitDB
+        from hydra_suite.classkit.core.store.db import ClassKitDB
 
         deleted_rows = ClassKitDB(self._db_path).delete_model_cache_entry(
             int(entry.get("id", -1))

@@ -190,7 +190,7 @@ class AprilTagAutoLabelDialog(QDialog):
         import random
 
         sample = random.sample(self._image_paths, min(10, len(self._image_paths)))
-        from hydra_suite.classkit.autolabel.apriltag import autolabel_images
+        from hydra_suite.classkit.core.autolabel.apriltag import autolabel_images
 
         results = autolabel_images(sample, self.get_config(), self.get_threshold())
         n_tagged = sum(1 for r in results if r.label and r.label != "no_tag")
