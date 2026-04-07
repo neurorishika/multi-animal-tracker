@@ -144,25 +144,6 @@ are written to:
 - `hydra_suite.svg` — visual dependency graph
 - `htmlcov/index.html` — coverage report
 
----
-
-## `legacy/` Directory Policy
-
-The [`legacy/`](../../legacy/) directory holds superseded code intentionally kept for
-reference. It is excluded from:
-
-- test coverage (`pyproject.toml` `[tool.coverage.run]`)
-- mypy (`pyproject.toml` `[tool.mypy]`)
-- black/isort formatting
-
-Before deleting any source module, move it to `legacy/` for one release cycle. This
-gives dependents time to adapt without losing the reference implementation.
-
-Confirm nothing in `src/` imports from `legacy/` before each release:
-
-```bash
-grep -r "from.*legacy\|import.*legacy" src/ tests/
-```
 
 ---
 

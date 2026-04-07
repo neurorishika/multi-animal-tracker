@@ -1,17 +1,17 @@
 # AMD ROCm GPU packages for hydra-suite
 # Install with: uv pip install -v -r requirements-rocm.txt
 #
-# CRITICAL: System-level ROCm 6.0+ must be installed first.
-# See ROCM_SETUP.md for prerequisites.
+# CRITICAL: System-level ROCm must be installed first.
+# See docs/getting-started/rocm.md for prerequisites and troubleshooting.
 #
 # Base dependencies are in pyproject.toml (installed via -e . below).
 # This file adds torch and ROCm-specific packages only.
 
 # PyTorch with ROCm support
-# Uncomment ONE index URL matching your ROCm version:
---extra-index-url https://download.pytorch.org/whl/rocm6.2
+# Uncomment ONE index URL matching your ROCm/PyTorch stack:
+--extra-index-url https://download.pytorch.org/whl/rocm7.2
+# --extra-index-url https://download.pytorch.org/whl/rocm6.2
 # --extra-index-url https://download.pytorch.org/whl/rocm6.1
-# --extra-index-url https://download.pytorch.org/whl/rocm6.0
 
 torch
 torchvision
@@ -21,7 +21,7 @@ torchaudio
 # Note: compilation can take 5-10 minutes on first install
 cupy-rocm-6-0
 
-# ONNX (CPU — no maintained ROCm provider)
+# ONNX Runtime (CPU by default; ROCm provider only if installed separately)
 onnx
 onnxslim
 onnxruntime

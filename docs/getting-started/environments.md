@@ -6,10 +6,10 @@ This page documents the conda environment files and Makefile targets used in the
 
 | File | Env name | Platform | What conda provides |
 |------|----------|----------|-------------------|
-| `environment.yml` | `hydra-suite` | All | Python, NumPy, SciPy, PySide6, Qt6, OpenCV, Numba |
-| `environment-mps.yml` | `hydra-suite-mps` | macOS M1-M4 | Same as CPU |
-| `environment-cuda.yml` | `hydra-suite-cuda` | Linux/Windows (NVIDIA) | Same + CUDA 12 runtime libs (cublas, cudnn, cufft) |
-| `environment-rocm.yml` | `hydra-suite-rocm` | Linux (AMD) | Same as CPU (ROCm is system-level) |
+| `environment.yml` | `hydra` | All | Python, NumPy, SciPy, PySide6, Qt6, OpenCV, Numba |
+| `environment-mps.yml` | `hydra-mps` | macOS M1-M4 | Same as CPU |
+| `environment-cuda.yml` | `hydra-cuda` | Linux/Windows (NVIDIA) | Same + CUDA 12 runtime libs (cublas, cudnn, cufft) |
+| `environment-rocm.yml` | `hydra-rocm` | Linux (AMD) | Same as CPU (ROCm is system-level) |
 
 The conda environments provide **system libraries only** (Qt, OpenGL, CUDA runtime). Python packages are installed separately via `make install-*`, which runs `uv pip install -r requirements-*.txt`.
 

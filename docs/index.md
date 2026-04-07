@@ -2,18 +2,34 @@
 
 ![HYDRA Suite Banner](assets/banner.png)
 
-Welcome to the central documentation for:
+Holistic YOLO-based Detection, Recognition, and Analysis Suite.
 
-- `hydra` (launcher / tool selector)
-- `trackerkit` (multi-animal tracking)
-- `posekit` (pose labeling)
-- `classkit` (classification / embedding)
-- `detectkit` (detection model training)
-- `filterkit` (dataset filtering)
-- `refinekit` (interactive proofreading)
+Multi-animal tracking, pose labeling, classification, detection training, dataset filtering, and interactive proofreading in one toolkit.
+
+[![Source](https://img.shields.io/badge/source-GitHub-111827?style=flat-square&logo=github)](https://github.com/neurorishika/hydra-suite)
+[![License](https://img.shields.io/badge/license-MIT-15803D?style=flat-square)](https://github.com/neurorishika/hydra-suite/blob/main/LICENSE)
+![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?style=flat-square&logo=python&logoColor=white)
+![Acceleration backends](https://img.shields.io/badge/acceleration-CPU%20%7C%20MPS%20%7C%20CUDA%20%7C%20ROCm-111827?style=flat-square)
+
+[Install](getting-started/installation.md) |
+[User Guide](user-guide/overview.md) |
+[Developer Guide](developer-guide/architecture.md) |
+[Reference](reference/api-index.md)
 
 !!! info "Use This Site as the Source of Truth"
     This docs site is the canonical guide for setup, workflows, feature behavior, and reference material.
+
+## Applications
+
+| Command | Purpose |
+| ------- | ------- |
+| `hydra` | Launcher and tool selector |
+| `trackerkit` | Multi-animal tracking |
+| `posekit` | Pose labeling and pose-project workflows |
+| `classkit` | Classification and embedding tools |
+| `detectkit` | Detection model training and dataset tooling |
+| `filterkit` | Dataset filtering and curation |
+| `refinekit` | Interactive proofreading and correction |
 
 ## Quick Navigation
 
@@ -61,13 +77,62 @@ Welcome to the central documentation for:
 
 </div>
 
+## Quick Start
+
+=== "pip"
+
+    ```bash
+    # CPU
+    pip install hydra-suite
+
+    # Apple Silicon / MPS
+    pip install torch torchvision
+    pip install "hydra-suite[mps]"
+
+    # NVIDIA CUDA
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+    pip install "hydra-suite[cuda]"
+
+    # AMD ROCm
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+    pip install "hydra-suite[rocm]"
+    ```
+
+=== "Developer"
+
+    ```bash
+    # CPU
+    make setup
+    conda activate hydra
+    make install
+
+    # Apple Silicon
+    make setup-mps
+    conda activate hydra-mps
+    make install-mps
+
+    # NVIDIA CUDA
+    make setup-cuda
+    conda activate hydra-cuda
+    make install-cuda CUDA_MAJOR=13
+
+    # AMD ROCm
+    make setup-rocm
+    conda activate hydra-rocm
+    make install-rocm
+    ```
+
+=== "ROCm Note"
+
+    Install system ROCm before the Python packages and use the dedicated setup page:
+
+    - [ROCm Setup](getting-started/rocm.md)
+
 ## Launch Commands
 
 ```bash
-# HYDRA launcher (tool selector)
 hydra
 
-# Individual tools
 trackerkit         # Multi-animal tracking
 posekit            # Pose labeling
 classkit           # Classification / embedding
@@ -92,7 +157,7 @@ refinekit          # Interactive proofreading
     make docs-check
     ```
 
-## Scope
+## Package Scope
 
 This documentation maps to the current package layout:
 

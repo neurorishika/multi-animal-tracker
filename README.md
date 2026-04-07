@@ -1,80 +1,163 @@
 # HYDRA Suite
 
-<div align="center">
-  <img src="docs/assets/banner.png" alt="HYDRA Suite Banner" width="100%" />
-</div>
+![HYDRA Suite Banner](docs/assets/banner.png)
 
-<p align="center"><strong>The primary documentation lives here:</strong><br><a href="https://neurorishika.github.io/hydra-suite/">https://neurorishika.github.io/hydra-suite/</a></p>
+Holistic YOLO-based Detection, Recognition, and Analysis Suite.
 
-## Start Here
+Multi-animal tracking, pose labeling, classification, detection training, dataset filtering, and interactive proofreading in one toolkit.
 
-- User docs: <https://neurorishika.github.io/hydra-suite/>
-- Getting Started: <https://neurorishika.github.io/hydra-suite/getting-started/installation/>
-- User Guide: <https://neurorishika.github.io/hydra-suite/user-guide/overview/>
-- Developer Guide: <https://neurorishika.github.io/hydra-suite/developer-guide/architecture/>
-- API + CLI Reference: <https://neurorishika.github.io/hydra-suite/reference/api-index/>
+[![Docs](https://img.shields.io/badge/docs-online-0A66C2?style=flat-square)](https://neurorishika.github.io/hydra-suite/)
+[![License](https://img.shields.io/badge/license-MIT-15803D?style=flat-square)](https://github.com/neurorishika/hydra-suite/blob/main/LICENSE)
+![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?style=flat-square&logo=python&logoColor=white)
+![Acceleration backends](https://img.shields.io/badge/acceleration-CPU%20%7C%20MPS%20%7C%20CUDA%20%7C%20ROCm-111827?style=flat-square)
+![Beta](https://img.shields.io/badge/status-beta-F59E0B?style=flat-square)
 
-## Install (Quick)
+[Install](https://neurorishika.github.io/hydra-suite/getting-started/installation/) |
+[User Guide](https://neurorishika.github.io/hydra-suite/user-guide/overview/) |
+[Developer Guide](https://neurorishika.github.io/hydra-suite/developer-guide/architecture/) |
+[API Reference](https://neurorishika.github.io/hydra-suite/reference/api-index/)
 
-### Option A: pip (CPU, simplest)
+## What It Includes
+
+HYDRA Suite is organized as one launcher plus a set of focused applications:
+
+| Command | Purpose |
+| ------- | ------- |
+| `hydra` | Launcher and entry point |
+| `trackerkit` | Multi-animal tracking |
+| `posekit` | Pose labeling and pose-project workflows |
+| `classkit` | Classification and embedding tools |
+| `detectkit` | Detection model training and dataset tooling |
+| `filterkit` | Dataset filtering and curation |
+| `refinekit` | Interactive proofreading and correction |
+
+The codebase shares one runtime model across apps, with support for CPU, Apple Silicon MPS, NVIDIA CUDA, and AMD ROCm depending on the selected workflow and installed providers.
+
+## Quick Install
+
+### pip (CPU)
 
 ```bash
 pip install hydra-suite
 ```
 
-For GPU (NVIDIA), install PyTorch first:
+### pip (GPU)
 
 ```bash
+# Apple Silicon / MPS
+pip install torch torchvision
+pip install "hydra-suite[mps]"
+
+# NVIDIA CUDA
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install hydra-suite[cuda]
+pip install "hydra-suite[cuda]"
+
+# AMD ROCm
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+pip install "hydra-suite[rocm]"
 ```
 
-### Option B: Full environment (GPU, recommended for development)
+For the ROCm path, install system ROCm first and use the dedicated setup page:
+<https://neurorishika.github.io/hydra-suite/getting-started/rocm/>
+
+### Developer Install
 
 ```bash
-mamba env create -f environment.yml          # or environment-mps.yml / environment-cuda.yml
-conda activate hydra-suite          # or -mps / -cuda
-uv pip install -r requirements.txt           # or requirements-mps.txt / requirements-cuda13.txt
+# CPU
+make setup
+conda activate hydra
+make install
+
+# Apple Silicon
+make setup-mps
+conda activate hydra-mps
+make install-mps
+
+# NVIDIA CUDA
+make setup-cuda
+conda activate hydra-cuda
+make install-cuda CUDA_MAJOR=13
+
+# AMD ROCm
+make setup-rocm
+conda activate hydra-rocm
+make install-rocm
 ```
 
-Platform-specific environments are documented in the [online docs](https://neurorishika.github.io/hydra-suite/getting-started/environments/).
+The full installation matrix, platform notes, and troubleshooting live in the docs site:
+
+- Getting Started: <https://neurorishika.github.io/hydra-suite/getting-started/installation/>
+- Environments and Makefile: <https://neurorishika.github.io/hydra-suite/getting-started/environments/>
+- ROCm Setup: <https://neurorishika.github.io/hydra-suite/getting-started/rocm/>
 
 ## Launch
 
 ```bash
-# HYDRA Suite launcher
 hydra
-
-# Individual tools
-trackerkit         # Multi-animal tracking
-posekit            # Pose labeling
-classkit           # Classification / embedding
-detectkit          # Detection model training
-filterkit          # Dataset filtering
-refinekit          # Interactive proofreading
+trackerkit
+posekit
+classkit
+detectkit
+filterkit
+refinekit
 ```
 
-## Common Commands
+## Common Workflows
+
+### Documentation
 
 ```bash
-# Docs
 make docs-install
 make docs-serve
 make docs-build
-make techref-build
-
-# Lint / format
-make lint-fix
-make lint
-make lint-strict
+make docs-check
 ```
 
-## Publication-Style Reference
+### Development
 
-The repository also includes a standalone LaTeX technical reference for the current tracking algorithm in `technical-reference/`.
+```bash
+make install-dev
+make pytest
+make format
+make lint
+make audit
+```
 
-## Project Links
+### Packaging and Reference Material
+
+```bash
+make build
+make techref-build
+```
+
+The repository also ships a publication-style technical reference source for the tracking algorithm under `docs/technical-reference/`.
+
+## Docs
+
+The docs site is the source of truth for setup, workflows, runtime behavior, and reference material.
+
+- Documentation home: <https://neurorishika.github.io/hydra-suite/>
+- User Guide: <https://neurorishika.github.io/hydra-suite/user-guide/overview/>
+- Developer Guide: <https://neurorishika.github.io/hydra-suite/developer-guide/architecture/>
+- API and CLI Reference: <https://neurorishika.github.io/hydra-suite/reference/api-index/>
+
+## Project Status
+
+The package metadata currently targets:
+
+- Python 3.11, 3.12, and 3.13
+- MIT licensing
+- beta-stage scientific and research workflows
+
+Primary package and console entry point names are current with the codebase:
+
+- package: `hydra-suite`
+- Python package: `hydra_suite`
+- launcher command: `hydra`
+
+## Links
 
 - Docs site: <https://neurorishika.github.io/hydra-suite/>
 - Source: <https://github.com/neurorishika/hydra-suite>
-- License: `LICENSE`
+- Issues: <https://github.com/neurorishika/hydra-suite/issues>
+- License: [LICENSE](LICENSE)

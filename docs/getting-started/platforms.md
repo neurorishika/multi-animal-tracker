@@ -13,6 +13,8 @@
 ## AMD ROCm
 
 - Requires system ROCm installation before Python packages are effective.
+- Use the dedicated [ROCm setup guide](rocm.md) for the current system install path and repo-specific notes.
+- `rocm` is supported out of the box via PyTorch ROCm; `onnx_rocm` only appears when the active environment exposes a ROCm ONNX Runtime provider.
 - Use `verify_rocm.py` to validate runtime support.
 
 ## CPU-Only

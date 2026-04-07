@@ -46,7 +46,7 @@ Examples:
 - `rocm`: PyTorch ROCm native paths.
 - `onnx_cpu`: ONNX Runtime with CPU provider.
 - `onnx_cuda`: ONNX Runtime with CUDA provider.
-- `onnx_rocm`: ONNX Runtime with ROCm provider.
+- `onnx_rocm`: ONNX Runtime with ROCm provider. This is optional and only appears when `ROCMExecutionProvider` is actually available in the active environment.
 - `tensorrt`: TensorRT engine/runtime on NVIDIA CUDA.
 
 ## Auto Export and Artifact Location
@@ -69,7 +69,8 @@ No manual exported-model-path entry is required.
 - NVIDIA CUDA:
   - `cuda`, `onnx_cuda`, and `tensorrt` when installed correctly.
 - ROCm:
-  - `rocm` and `onnx_rocm` when providers are available.
+  - `rocm` by default.
+  - `onnx_rocm` only when a ROCm-enabled ONNX Runtime provider is installed and detected.
 
 ## Behavior During Runs
 

@@ -21,7 +21,7 @@ All three methods support full GPU acceleration. See the [platform matrix](#plat
 | ONNX Runtime | CPU | CPU | GPU | CPU |
 | CuPy background subtraction | No | No (NVIDIA only) | GPU | GPU (experimental) |
 | Platforms | All | macOS M1-M4 | Linux, Windows | Linux only |
-| System requirements | Python 3.11+ | Python 3.11+ | Python 3.11+ | Python 3.11+, ROCm 6.0+ |
+| System requirements | Python 3.11+ | Python 3.11+ | Python 3.11+ | Python 3.11+, system ROCm install |
 
 ---
 
@@ -75,10 +75,10 @@ pip install "hydra-suite[cuda13]"
 
 ### AMD GPU / ROCm (Linux only)
 
-Requires [ROCm 6.0+](https://rocm.docs.amd.com/) installed system-wide first.
+Requires ROCm installed system-wide first. See the dedicated [ROCm setup guide](rocm.md).
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 pip install "hydra-suite[rocm]"
 ```
 
@@ -118,7 +118,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install "hydra-suite[cuda13] @ git+https://github.com/neurorishika/hydra-suite.git"
 
 # ROCm
-pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 pip install "hydra-suite[rocm] @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
@@ -159,22 +159,22 @@ Pick your platform:
 ```bash
 # CPU
 make setup
-conda activate hydra-suite
+conda activate hydra
 make install
 
 # Apple Silicon (MPS)
 make setup-mps
-conda activate hydra-suite-mps
+conda activate hydra-mps
 make install-mps
 
 # NVIDIA GPU (CUDA)
 make setup-cuda
-conda activate hydra-suite-cuda
+conda activate hydra-cuda
 make install-cuda CUDA_MAJOR=13     # or CUDA_MAJOR=12
 
-# AMD GPU (ROCm — requires system-wide ROCm 6.0+)
+# AMD GPU (ROCm — requires system ROCm; see getting-started/rocm.md)
 make setup-rocm
-conda activate hydra-suite-rocm
+conda activate hydra-rocm
 make install-rocm
 ```
 
@@ -198,7 +198,7 @@ Base dependencies (numpy, scipy, PySide6, ultralytics, etc.) are declared once i
 ### Development workflow
 
 ```bash
-conda activate hydra-suite-mps   # or your env
+conda activate hydra-mps   # or your env
 # Edit code — changes are live immediately (editable install)
 make pytest                               # run tests
 make format && make lint                  # format and lint before committing
@@ -312,7 +312,7 @@ pip install --upgrade --force-reinstall --no-deps \
 ### conda + pip (developer)
 
 ```bash
-conda activate hydra-suite-mps  # or your env
+conda activate hydra-mps  # or your env
 git pull
 mamba env update -f environment-mps.yml --prune   # if conda deps changed
 make install-mps                                  # reinstall pip packages
@@ -355,9 +355,9 @@ pip uninstall hydra-suite
 pip install "hydra-suite[cuda]"
 
 # conda
-conda env remove -n hydra-suite-cuda
+conda env remove -n hydra-cuda
 make setup-cuda
-conda activate hydra-suite-cuda
+conda activate hydra-cuda
 make install-cuda CUDA_MAJOR=13
 ```
 
@@ -367,5 +367,5 @@ make install-cuda CUDA_MAJOR=13
 
 - [Environments](environments.md) — conda environment matrix and Makefile reference
 - [Integrations](integrations.md) — SLEAP, X-AnyLabeling setup
-- `ROCM_SETUP.md` — ROCm system prerequisites
+- [ROCm Setup](rocm.md) — system ROCm install and HYDRA-specific notes
 - [Publishing to PyPI](../developer-guide/publishing.md) — releasing new versions

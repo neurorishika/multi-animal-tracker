@@ -4,12 +4,13 @@
 
 ```bash
 # install runtime deps
-mamba env create -f environment.yml
-conda activate hydra-suite-base
-uv pip install -r requirements.txt
+make setup
+conda activate hydra
+make install
 
 # docs + dev-tool deps (vulture, pydeps, pylint, mypy)
-uv pip install -r requirements-docs.txt
+make docs-install
+make install-dev
 ```
 
 ## Documentation Requirements

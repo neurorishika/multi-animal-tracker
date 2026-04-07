@@ -259,7 +259,7 @@ def main():
         print('  "YOLO_DEVICE": "cuda:0"')
     else:
         print("✗ Some checks failed. Please review the errors above.")
-        print("\nFor detailed troubleshooting, see: ROCM_SETUP.md")
+        print("\nFor detailed troubleshooting, see: docs/getting-started/rocm.md")
         print("Quick fixes:")
         print("  - System ROCm: sudo apt install rocm-hip-runtime rocm-hip-sdk")
         print("  - Development libs: sudo apt install rocm-dev rocrand rocblas")

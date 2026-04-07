@@ -1,4 +1,4 @@
-name: hydra-base
+name: hydra
 channels:
 - conda-forge
 - defaults
