@@ -19,7 +19,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -40,6 +40,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.widgets.dialogs import BaseDialog
 
 from hydra_suite.core.detectors.bg_optimizer import (
     BgDetectionPreviewWorker,
@@ -88,7 +90,7 @@ def _plain_item(text: str) -> QTableWidgetItem:
 # ── Dialog ────────────────────────────────────────────────────────────────────
 
 
-class BgParameterHelperDialog(QDialog):
+class BgParameterHelperDialog(BaseDialog):
     """Modal dialog for Optuna BG-subtraction parameter optimisation."""
 
     def __init__(
@@ -97,8 +99,12 @@ class BgParameterHelperDialog(QDialog):
         current_params: Dict[str, Any],
         parent: Any = None,
     ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Detection Auto-Tuner  (Background Subtraction)")
+        super().__init__(
+            title="Detection Auto-Tuner  (Background Subtraction)",
+            parent=parent,
+            buttons=QDialogButtonBox.NoButton,
+            apply_dark_style=True,
+        )
         self.setMinimumSize(1200, 640)
 
         self.video_path = video_path
@@ -122,7 +128,8 @@ class BgParameterHelperDialog(QDialog):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        container = QWidget()
+        root = QVBoxLayout(container)
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
 
@@ -196,6 +203,7 @@ class BgParameterHelperDialog(QDialog):
         outer.setSizes([720, 480])
 
         root.addWidget(outer)
+        self.add_content(container)
 
     # ── Domain constraints banner ─────────────────────────────────────────────
 

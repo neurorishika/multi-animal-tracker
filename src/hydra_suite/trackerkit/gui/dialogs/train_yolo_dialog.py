@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.widgets.dialogs import BaseDialog
 
 from hydra_suite.trackerkit.gui.widgets.loss_plot_widget import LossPlotWidget
 from hydra_suite.training import (
@@ -127,12 +129,16 @@ class RoleTrainingWorker(BaseWorker):
         self.done_signal.emit(results)
 
 
-class TrainYoloDialog(QDialog):
+class TrainYoloDialog(BaseDialog):
     """MAT role-aware training center replacing legacy OBB-only trainer."""
 
     def __init__(self, parent=None, class_name="object", conda_envs=None):
-        super().__init__(parent)
-        self.setWindowTitle("Training Center (YOLO Multi-Role)")
+        super().__init__(
+            title="Training Center (YOLO Multi-Role)",
+            parent=parent,
+            buttons=QDialogButtonBox.NoButton,
+            apply_dark_style=True,
+        )
         self.resize(1100, 820)
 
         self.class_name = str(class_name or "object")
@@ -150,7 +156,8 @@ class TrainYoloDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self):
-        outer = QVBoxLayout(self)
+        container = QWidget()
+        outer = QVBoxLayout(container)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
@@ -164,6 +171,7 @@ class TrainYoloDialog(QDialog):
 
         scroll.setWidget(content)
         outer.addWidget(scroll)
+        self.add_content(container)
 
     def _build_sources_group(self):
         gb = QGroupBox("Step 1: Sources + Validation")

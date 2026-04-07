@@ -15,7 +15,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -36,6 +36,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.widgets.dialogs import BaseDialog
 
 from hydra_suite.core.tracking.optimizer import (
     _PARAM_RANGES,
@@ -79,7 +81,7 @@ def _badge_item(cost: float, display: str) -> QTableWidgetItem:
 # ── Dialog ────────────────────────────────────────────────────────────────────
 
 
-class ParameterHelperDialog(QDialog):
+class ParameterHelperDialog(BaseDialog):
     def __init__(
         self,
         video_path: str,
@@ -89,8 +91,12 @@ class ParameterHelperDialog(QDialog):
         current_params: Dict[str, Any],
         parent=None,
     ):
-        super().__init__(parent)
-        self.setWindowTitle("Tracking Auto-Tuner")
+        super().__init__(
+            title="Tracking Auto-Tuner",
+            parent=parent,
+            buttons=QDialogButtonBox.NoButton,
+            apply_dark_style=True,
+        )
         self.video_path = video_path
         self.detection_cache_path = detection_cache_path
         self.start_frame = start_frame
@@ -108,13 +114,15 @@ class ParameterHelperDialog(QDialog):
         self._prev_scroll_v = 0
         self._prev_last_frame: np.ndarray | None = None
 
+        self.setMinimumSize(1200, 740)
         self.setup_ui()
         self._load_state()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def setup_ui(self):
-        root = QVBoxLayout(self)
+        container = QWidget()
+        root = QVBoxLayout(container)
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
 
@@ -243,7 +251,7 @@ class ParameterHelperDialog(QDialog):
         outer.setSizes([800, 560])
 
         root.addWidget(outer)
-        self.setMinimumSize(1200, 740)
+        self.add_content(container)
 
     # ── Tab builders ──────────────────────────────────────────────────────────
 

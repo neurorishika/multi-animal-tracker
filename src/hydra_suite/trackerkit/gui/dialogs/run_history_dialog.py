@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
+
+from hydra_suite.widgets.dialogs import BaseDialog
 
 
 def load_run_history(registry_path: str) -> list[dict]:
@@ -43,12 +46,16 @@ _STATUS_COLORS = {
 _COLUMNS = ["Run ID", "Role", "Status", "Started", "Base Model", "Epochs"]
 
 
-class RunHistoryDialog(QDialog):
+class RunHistoryDialog(BaseDialog):
     """Browse training runs recorded in the registry."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Training Run History")
+        super().__init__(
+            title="Training Run History",
+            parent=parent,
+            buttons=QDialogButtonBox.Close,
+            apply_dark_style=True,
+        )
         self.resize(900, 520)
 
         from hydra_suite.training.registry import get_registry_path
@@ -63,7 +70,8 @@ class RunHistoryDialog(QDialog):
     # ---- UI construction ----
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        container = QWidget()
+        layout = QVBoxLayout(container)
 
         # Table
         self.table = QTableWidget(len(self._runs), len(_COLUMNS))
@@ -117,6 +125,8 @@ class RunHistoryDialog(QDialog):
 
         # Connections
         self.table.currentCellChanged.connect(self._on_row_changed)
+
+        self.add_content(container)
 
     def _on_row_changed(self, current_row, _col, _prev_row, _prev_col):
         if 0 <= current_row < len(self._runs):

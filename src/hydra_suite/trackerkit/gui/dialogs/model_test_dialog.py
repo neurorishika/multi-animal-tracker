@@ -7,10 +7,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -19,6 +19,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.widgets.dialogs import BaseDialog
+from hydra_suite.widgets.workers import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -98,61 +101,54 @@ def build_test_params(
 # ---------------------------------------------------------------------------
 
 
-class _TestWorker(QThread):
+class _TestWorker(BaseWorker):
     """Runs YOLO inference on sample images in a background thread."""
 
     image_ready = Signal(np.ndarray)  # annotated BGR frame
-    status = Signal(str)
     finished_all = Signal()
-    error = Signal(str)
 
     def __init__(self, params: dict, image_paths: list[str]):
         super().__init__()
         self.params = params
         self.image_paths = image_paths
 
-    def run(self):
-        try:
-            from hydra_suite.core.detectors import YOLOOBBDetector
+    def execute(self):
+        from hydra_suite.core.detectors import YOLOOBBDetector
 
-            self.status.emit("Loading model...")
-            detector = YOLOOBBDetector(self.params)
+        self.status.emit("Loading model...")
+        detector = YOLOOBBDetector(self.params)
 
-            for idx, img_path in enumerate(self.image_paths):
-                self.status.emit(
-                    f"Running inference on image {idx + 1}/{len(self.image_paths)}..."
+        for idx, img_path in enumerate(self.image_paths):
+            self.status.emit(
+                f"Running inference on image {idx + 1}/{len(self.image_paths)}..."
+            )
+            frame = cv2.imread(img_path)
+            if frame is None:
+                logger.warning("Could not read image: %s", img_path)
+                continue
+
+            result = detector.detect_objects(
+                frame, frame_count=idx, return_raw=True
+            )
+            # result when return_raw=True:
+            #   (meas, sizes, shapes, yolo_results, confidences,
+            #    obb_corners, heading_hints, directed_mask, canonical_affines)
+            obb_corners = result[5] if len(result) > 5 else []
+
+            annotated = frame.copy()
+            for corners in obb_corners:
+                pts = np.array(corners, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(
+                    annotated,
+                    [pts],
+                    isClosed=True,
+                    color=_OBB_COLOR,
+                    thickness=_OBB_THICKNESS,
                 )
-                frame = cv2.imread(img_path)
-                if frame is None:
-                    logger.warning("Could not read image: %s", img_path)
-                    continue
 
-                result = detector.detect_objects(
-                    frame, frame_count=idx, return_raw=True
-                )
-                # result when return_raw=True:
-                #   (meas, sizes, shapes, yolo_results, confidences,
-                #    obb_corners, heading_hints, directed_mask, canonical_affines)
-                obb_corners = result[5] if len(result) > 5 else []
+            self.image_ready.emit(annotated)
 
-                annotated = frame.copy()
-                for corners in obb_corners:
-                    pts = np.array(corners, dtype=np.int32).reshape((-1, 1, 2))
-                    cv2.polylines(
-                        annotated,
-                        [pts],
-                        isClosed=True,
-                        color=_OBB_COLOR,
-                        thickness=_OBB_THICKNESS,
-                    )
-
-                self.image_ready.emit(annotated)
-
-        except Exception as exc:
-            logger.exception("Quick test inference failed")
-            self.error.emit(str(exc))
-        finally:
-            self.finished_all.emit()
+        self.finished_all.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +190,7 @@ def _collect_sample_images(
     return imgs
 
 
-class ModelTestDialog(QDialog):
+class ModelTestDialog(BaseDialog):
     """Dialog that runs a trained YOLO model on sample dataset images and displays
     annotated results so the user can visually verify detection quality."""
 
@@ -211,8 +207,12 @@ class ModelTestDialog(QDialog):
         detect_model_path: str = "",
         parent: QWidget | None = None,
     ):
-        super().__init__(parent)
-        self.setWindowTitle("Quick Test - Model Verification")
+        super().__init__(
+            title="Quick Model Test",
+            parent=parent,
+            buttons=QDialogButtonBox.Close,
+            apply_dark_style=False,
+        )
         self.setMinimumSize(800, 500)
         self.resize(1000, 600)
 
@@ -233,7 +233,8 @@ class ModelTestDialog(QDialog):
     # ---- UI ----
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        container = QWidget()
+        layout = QVBoxLayout(container)
 
         self.status_label = QLabel("Collecting sample images...")
         layout.addWidget(self.status_label)
@@ -256,12 +257,7 @@ class ModelTestDialog(QDialog):
         self.scroll_area.setWidget(self.image_container)
         layout.addWidget(self.scroll_area, stretch=1)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        self.btn_close = QPushButton("Close")
-        self.btn_close.clicked.connect(self.accept)
-        btn_row.addWidget(self.btn_close)
-        layout.addLayout(btn_row)
+        self.add_content(container)
 
     # ---- Run ----
 
