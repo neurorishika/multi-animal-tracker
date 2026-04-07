@@ -1,0 +1,49 @@
+\begin{tikzpicture}[
+  node distance=8mm and 12mm,
+  stage/.style={
+    rounded corners=3mm,
+    draw=#1!85!black,
+    very thick,
+    fill=#1!10,
+    text width=5.5cm,
+    minimum height=1.15cm,
+    align=left,
+    inner sep=7pt,
+    font=\small
+  },
+  support/.style={
+    rounded corners=3mm,
+    draw=#1!85!black,
+    thick,
+    fill=#1!8,
+    text width=3.7cm,
+    minimum height=1.0cm,
+    align=left,
+    inner sep=6pt,
+    font=\small
+  },
+  arrow/.style={-{Latex[length=3mm,width=2mm]}, very thick, draw=Slate},
+  dashedarrow/.style={arrow, dashed}
+]
+  \node[stage=MATBlue] (ingest) at (0,0) {\textbf{1. Ingest}\\Frame range, resize factor, ROI, and runtime selection.};
+  \node[stage=MATBlue, below=of ingest] (detect) {\textbf{2. Detect}\\Background subtraction or YOLO OBB yields filtered detections.};
+  \node[stage=PoseGreen, below=of detect] (pose) {\textbf{3. Pose evidence}\\Optional heading and normalized pose prototypes are attached when available.};
+  \node[stage=MATGreen, below=of pose] (predict) {\textbf{4. Predict}\\Vectorized Kalman state prediction builds uncertainty-aware priors for each live slot.};
+  \node[stage=MATBlue, below=of predict] (assign) {\textbf{5. Associate}\\Stage-1 gating, weighted cost construction, solver pass, and lifecycle update.};
+  \node[stage=MATBlue, below=of assign] (export) {\textbf{6. Export online}\\CSV rows, overlays, crops, stats, and cache metadata.};
+  \node[stage=MATGreen, below=of export] (offline) {\textbf{7. Offline resolve}\\Backward replay, conservative merge, relink, and interpolate.};
+
+  \node[support=SieveBlue, left=18mm of detect] (cache) {\textbf{Detection cache}\\Raw detections are written once and later reused for replay, retuning, and pose-property precompute.};
+  \node[support=ClassRed, right=18mm of offline] (downstream) {\textbf{Downstream use}\\PoseKit, ClassKit, and FilterKit consume trajectories, crops, and derived datasets.};
+
+  \draw[arrow] (ingest) -- (detect);
+  \draw[arrow] (detect) -- (pose);
+  \draw[arrow] (pose) -- (predict);
+  \draw[arrow] (predict) -- (assign);
+  \draw[arrow] (assign) -- (export);
+  \draw[arrow] (export) -- (offline);
+  \draw[arrow] (offline.east) -- (downstream.west);
+
+  \draw[dashedarrow] (detect.west) -- (cache.east);
+  \draw[dashedarrow] (cache.south) |- (offline.west);
+\end{tikzpicture}
