@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
@@ -9,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -121,7 +125,7 @@ class SetupPanel(QWidget):
 
         # Connect combo box to show description
         self.combo_presets.currentIndexChanged.connect(
-            self._main_window._on_preset_selection_changed
+            self._on_preset_selection_changed
         )
 
         form.addWidget(g_presets)
@@ -185,7 +189,7 @@ class SetupPanel(QWidget):
 
         self.btn_detect_fps = QPushButton("Detect")
         self.btn_detect_fps.clicked.connect(
-            self._main_window._detect_fps_from_current_video
+            self._detect_fps_from_current_video
         )
         self.btn_detect_fps.setEnabled(False)
         self.btn_detect_fps.setObjectName("SecondaryBtn")
@@ -268,7 +272,7 @@ class SetupPanel(QWidget):
 
         batch_btns = QHBoxLayout()
         self.btn_add_batch = QPushButton("Add Videos...")
-        self.btn_add_batch.clicked.connect(self._main_window._add_videos_to_batch)
+        self.btn_add_batch.clicked.connect(self._add_videos_to_batch)
         self.btn_add_batch.setObjectName("SecondaryBtn")
         batch_btns.addWidget(self.btn_add_batch)
 
@@ -278,7 +282,7 @@ class SetupPanel(QWidget):
         batch_btns.addWidget(self.btn_remove_batch)
 
         self.btn_clear_batch = QPushButton("Clear Additional")
-        self.btn_clear_batch.clicked.connect(self._main_window._clear_batch)
+        self.btn_clear_batch.clicked.connect(self._clear_batch)
         self.btn_clear_batch.setObjectName("SecondaryBtn")
         batch_btns.addWidget(self.btn_clear_batch)
         v_container.addLayout(batch_btns)
@@ -765,3 +769,74 @@ class SetupPanel(QWidget):
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
         self._config = config
+
+    # ------------------------------------------------------------------
+    # Handler methods
+    # ------------------------------------------------------------------
+
+    def _on_preset_selection_changed(self, index):
+        """Update description label when preset selection changes."""
+        filepath = self.combo_presets.currentData()
+        if not filepath or not os.path.exists(filepath):
+            self.preset_description_label.setVisible(False)
+            return
+
+        try:
+            with open(filepath, "r") as f:
+                cfg = json.load(f)
+
+            description = cfg.get("description", "")
+            if description:
+                self.preset_description_label.setText(f"📋 {description}")
+                self.preset_description_label.setVisible(True)
+            else:
+                self.preset_description_label.setVisible(False)
+        except (OSError, json.JSONDecodeError):
+            self.preset_description_label.setVisible(False)
+
+    def _add_videos_to_batch(self):
+        """Add additional videos to the batch list."""
+        from hydra_suite.paths import get_projects_dir
+
+        start_dir = (
+            os.path.dirname(self._main_window.batch_videos[0])
+            if self._main_window.batch_videos
+            else str(get_projects_dir())
+        )
+        fps, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Additional Videos",
+            start_dir,
+            "Video Files (*.mp4 *.avi *.mov *.mkv)",
+        )
+        if fps:
+            for fp in fps:
+                if fp not in self._main_window.batch_videos:
+                    self._main_window.batch_videos.append(fp)
+            self._main_window._sync_batch_list_ui()
+
+    def _clear_batch(self):
+        """Clear all additional videos, keeping only the keystone."""
+        if len(self._main_window.batch_videos) > 1:
+            self._main_window.batch_videos = [self._main_window.batch_videos[0]]
+            self._main_window._sync_batch_list_ui()
+
+    def _detect_fps_from_current_video(self):
+        """Detect and set FPS from the currently loaded video."""
+        if not self._main_window.current_video_path:
+            QMessageBox.warning(
+                self, "No Video Loaded", "Please load a video file first."
+            )
+            return
+
+        detected_fps = self._main_window._auto_detect_fps(
+            self._main_window.current_video_path
+        )
+        if detected_fps is not None:
+            self.spin_fps.setValue(detected_fps)
+            QMessageBox.information(
+                self,
+                "FPS Detected",
+                f"Frame rate detected: {detected_fps:.2f} FPS\n\n"
+                f"Time per frame: {1000.0 / detected_fps:.2f} ms",
+            )

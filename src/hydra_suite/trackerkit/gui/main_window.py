@@ -3614,27 +3614,6 @@ class MainWindow(QMainWindow):
             if norm_fp == current_fp:
                 self._setup_panel.list_batch_videos.setCurrentItem(item)
 
-    def _add_videos_to_batch(self):
-        """Add additional videos to the batch list."""
-        from hydra_suite.paths import get_projects_dir
-
-        start_dir = (
-            os.path.dirname(self.batch_videos[0])
-            if self.batch_videos
-            else str(get_projects_dir())
-        )
-        fps, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select Additional Videos",
-            start_dir,
-            "Video Files (*.mp4 *.avi *.mov *.mkv)",
-        )
-        if fps:
-            for fp in fps:
-                if fp not in self.batch_videos:
-                    self.batch_videos.append(fp)
-            self._sync_batch_list_ui()
-
     def _on_batch_video_selected(self, *args):
         """Load a video from the batch list for preview/tuning."""
         row = self._setup_panel.list_batch_videos.currentRow()
@@ -3660,12 +3639,6 @@ class MainWindow(QMainWindow):
             return
         if row > 0:
             self.batch_videos.pop(row)
-            self._sync_batch_list_ui()
-
-    def _clear_batch(self):
-        """Clear all additional videos, keeping only the keystone."""
-        if len(self.batch_videos) > 1:
-            self.batch_videos = [self.batch_videos[0]]
             self._sync_batch_list_ui()
 
     def _export_batch_list(self):
@@ -4115,24 +4088,6 @@ class MainWindow(QMainWindow):
         fps = self._setup_panel.spin_fps.value()
         time_per_frame = 1000.0 / fps  # milliseconds
         self._setup_panel.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
-
-    def _detect_fps_from_current_video(self):
-        """Detect and set FPS from the currently loaded video."""
-        if not self.current_video_path:
-            QMessageBox.warning(
-                self, "No Video Loaded", "Please load a video file first."
-            )
-            return
-
-        detected_fps = self._auto_detect_fps(self.current_video_path)
-        if detected_fps is not None:
-            self._setup_panel.spin_fps.setValue(detected_fps)
-            QMessageBox.information(
-                self,
-                "FPS Detected",
-                f"Frame rate detected: {detected_fps:.2f} FPS\n\n"
-                f"Time per frame: {1000.0 / detected_fps:.2f} ms",
-            )
 
     def _auto_detect_fps(self, video_path):
         """Auto-detect FPS from video metadata and return the value."""
@@ -12176,26 +12131,6 @@ class MainWindow(QMainWindow):
         from hydra_suite.paths import get_presets_dir
 
         return str(get_presets_dir())
-
-    def _on_preset_selection_changed(self, index):
-        """Update description label when preset selection changes."""
-        filepath = self._setup_panel.combo_presets.currentData()
-        if not filepath or not os.path.exists(filepath):
-            self._setup_panel.preset_description_label.setVisible(False)
-            return
-
-        try:
-            with open(filepath, "r") as f:
-                cfg = json.load(f)
-
-            description = cfg.get("description", "")
-            if description:
-                self._setup_panel.preset_description_label.setText(f"📋 {description}")
-                self._setup_panel.preset_description_label.setVisible(True)
-            else:
-                self._setup_panel.preset_description_label.setVisible(False)
-        except (OSError, json.JSONDecodeError):
-            self._setup_panel.preset_description_label.setVisible(False)
 
     def _populate_preset_combo(self):
         """Populate the preset combo box by auto-scanning configs folder."""
