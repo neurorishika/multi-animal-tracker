@@ -2,10 +2,15 @@
 
 ## Product Surface
 
-The repository provides two user-facing UIs:
+The HYDRA Suite provides seven tools:
 
-- **HYDRA GUI** (`hydra`): multi-animal tracking from video to cleaned trajectories.
-- **PoseKit Labeler** (`posekit-labeler`): pose annotation and dataset workflow.
+- **HYDRA** (`hydra`): launcher and tool selector.
+- **TrackerKit** (`trackerkit`): multi-animal tracking from video to cleaned trajectories.
+- **PoseKit** (`posekit`): pose annotation and dataset workflow.
+- **ClassKit** (`classkit`): classification and embedding toolkit for identity analysis.
+- **DetectKit** (`detectkit`): detection model training and dataset management.
+- **FilterKit** (`filterkit`): dataset filtering and curation.
+- **RefineKit** (`refinekit`): interactive trajectory proofreading.
 
 ## High-Level Flow
 
@@ -16,8 +21,12 @@ The repository provides two user-facing UIs:
 
 ## Choose the Right Tool
 
-- Use **MAT** for position/orientation tracking and trajectory analysis.
+- Use **TrackerKit** for position/orientation tracking and trajectory analysis.
 - Use **PoseKit** for keypoint annotation, pose inference loops, and pose dataset prep.
+- Use **ClassKit** for identity classification, embedding visualization, and active learning.
+- Use **DetectKit** for training and evaluating detection models.
+- Use **FilterKit** for curating and filtering datasets.
+- Use **RefineKit** for interactive proofreading and correction of tracked trajectories.
 
 ## Reading This Guide
 

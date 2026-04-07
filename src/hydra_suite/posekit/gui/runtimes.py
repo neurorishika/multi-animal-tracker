@@ -1,3 +1,5 @@
+"""Compute-runtime helpers and fallback stubs for PoseKit inference settings."""
+
 try:
     from hydra_suite.runtime.compute_runtime import (
         CANONICAL_RUNTIMES,

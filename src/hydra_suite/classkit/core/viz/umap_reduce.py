@@ -1,3 +1,5 @@
+"""UMAP dimensionality reduction wrapper for embedding visualization."""
+
 from warnings import warn
 
 import numpy as np

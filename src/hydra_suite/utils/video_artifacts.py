@@ -1,3 +1,5 @@
+"""Path builders for video-related artifact files (caches, logs, detection outputs)."""
+
 from __future__ import annotations
 
 import os

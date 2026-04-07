@@ -142,6 +142,8 @@ class HydraFileDialog(QFileDialog):
                 dlg.setNameFilters(filter.split(";;"))
             else:
                 dlg.setNameFilter(filter)
+        if initialFilter:
+            dlg.selectNameFilter(initialFilter)
         if options is not None:
             dlg.setOptions(options)
         _configure(dlg)
@@ -171,6 +173,8 @@ class HydraFileDialog(QFileDialog):
                 dlg.setNameFilters(filter.split(";;"))
             else:
                 dlg.setNameFilter(filter)
+        if initialFilter:
+            dlg.selectNameFilter(initialFilter)
         if options is not None:
             dlg.setOptions(options)
         _configure(dlg)
@@ -200,6 +204,8 @@ class HydraFileDialog(QFileDialog):
                 dlg.setNameFilters(filter.split(";;"))
             else:
                 dlg.setNameFilter(filter)
+        if initialFilter:
+            dlg.selectNameFilter(initialFilter)
         if options is not None:
             dlg.setOptions(options)
         _configure(dlg)

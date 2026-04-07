@@ -1,4 +1,4 @@
-# UI Components Reference (MAT)
+# UI Components Reference (TrackerKit)
 
 This reference describes the HYDRA Suite UI by tab, with practical guidance for selecting values.
 

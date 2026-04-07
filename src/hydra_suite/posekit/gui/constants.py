@@ -1,3 +1,5 @@
+"""Shared constants for PoseKit GUI: file extensions, defaults, and thresholds."""
+
 from typing import Set
 
 IMG_EXTS: Set[str] = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}

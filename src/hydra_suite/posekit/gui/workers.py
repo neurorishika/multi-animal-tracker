@@ -1,3 +1,5 @@
+"""Background workers for single-image and bulk pose prediction in PoseKit."""
+
 from __future__ import annotations
 
 import logging

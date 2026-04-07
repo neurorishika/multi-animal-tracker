@@ -14,9 +14,10 @@ This section mixes narrative notes with auto-generated API documentation.
 
 ## API Sections
 
-- App: launcher and bootstrap APIs
+- Launcher: bootstrap and entry point APIs
+- TrackerKit GUI: tracking interface, orchestrators, panels, workers
 - Core: tracking pipeline algorithms
 - Data: outputs/cache/dataset APIs
-- GUI: stable tracking GUI modules
 - PoseKit: pose-labeling app modules
+- Widgets: shared UI base classes (BaseWorker, BaseDialog, WelcomePage)
 - Utils: shared helper utilities

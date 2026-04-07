@@ -28,8 +28,8 @@ Dataset generation supports active learning loops for improving detector models.
 
 ## Practical Loop
 
-1. Run MAT and generate candidate frames.
+1. Run TrackerKit and generate candidate frames.
 2. Validate/annotate selected frames.
 3. Retrain YOLO model.
-4. Re-run MAT on representative videos.
+4. Re-run TrackerKit on representative videos.
 5. Compare confidence and identity continuity metrics.

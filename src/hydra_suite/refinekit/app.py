@@ -1,3 +1,5 @@
+"""RefineKit application entry point: parses arguments and launches the GUI."""
+
 import argparse
 import sys
 from pathlib import Path

@@ -1,3 +1,5 @@
+"""Concrete image embedder using timm pretrained vision models."""
+
 import os
 from contextlib import contextmanager
 from pathlib import Path

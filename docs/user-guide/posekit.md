@@ -1,6 +1,6 @@
-# PoseKit Labeler
+# PoseKit
 
-PoseKit is now organized under `hydra_suite.posekit` and launched via `posekit-labeler`.
+PoseKit is now organized under `hydra_suite.posekit` and launched via `posekit`.
 
 ## Full UI Control Reference
 

@@ -1,3 +1,5 @@
+"""Background QRunnable worker for image ingestion, embedding, indexing, and UMAP."""
+
 from pathlib import Path
 
 import numpy as np

@@ -1,6 +1,6 @@
 # Data Flow
 
-## MAT Pipeline
+## TrackerKit Pipeline
 
 1. Video frames are read (optionally prefetched).
 2. Detector generates per-frame measurements.

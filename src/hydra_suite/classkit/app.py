@@ -1,3 +1,5 @@
+"""Entry point for the ClassKit labeler application."""
+
 import sys
 
 from PySide6.QtWidgets import QApplication

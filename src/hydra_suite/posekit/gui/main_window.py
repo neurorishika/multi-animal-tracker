@@ -1,3 +1,5 @@
+"""PoseKit main window: coordinates canvas, panels, and annotation state."""
+
 from __future__ import annotations
 
 import csv
@@ -5238,6 +5240,4 @@ class MainWindow(QMainWindow):
                 cluster_ids.append(mapping[key])
             else:
                 cluster_ids.append(-1)
-        return cluster_ids
-        return cluster_ids
         return cluster_ids

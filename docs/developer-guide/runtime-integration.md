@@ -81,7 +81,7 @@ Examples already used:
 
 Ensure the UI includes the new pipeline in the runtime context set.
 
-MAT pattern:
+TrackerKit pattern:
 
 - Gather enabled pipeline set.
 - Call `allowed_runtimes_for_pipelines(...)`.
@@ -142,7 +142,7 @@ A new model/method integration is complete only when:
 2. It runs from canonical `compute_runtime` without extra runtime selectors.
 3. Its ONNX/TensorRT artifacts are auto-managed (if applicable).
 4. Caches remain valid and runtime/model-aware.
-5. MAT and PoseKit behavior is consistent where the feature exists.
+5. TrackerKit and PoseKit behavior is consistent where the feature exists.
 
 ## Common Anti-Patterns (Do Not Add)
 

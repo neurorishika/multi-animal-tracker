@@ -27,7 +27,7 @@
   \node[core=PoseGreen, right=of mat] (pose) {\textbf{PoseKit}\\Pose annotation, prediction, smart frame selection, evaluation, and training support.};
   \node[core=ClassRed, below=of pose] (class) {\textbf{ClassKit}\\Embedding-driven classification curation, clustering, and active learning.};
   \node[core=SieveBlue, below=of mat] (sieve) {\textbf{FilterKit}\\Deduplication, temporal thinning, and diversity-aware dataset reduction.};
-  \node[note, below=16mm of sieve, anchor=west] (legend) at ([xshift=-0.1cm]sieve.south west) {\textbf{Workflow summary.} MAT exports crops and trajectory-derived datasets to PoseKit and ClassKit. PoseKit returns pose geometry and skeleton definitions used during tracking. FilterKit filters large image corpora before annotation, classification, or replay-oriented review.};
+  \node[note, below=16mm of sieve, anchor=west] (legend) at ([xshift=-0.1cm]sieve.south west) {\textbf{Workflow summary.} TrackerKit exports crops and trajectory-derived datasets to PoseKit and ClassKit. PoseKit returns pose geometry and skeleton definitions used during tracking. FilterKit filters large image corpora before annotation, classification, or replay-oriented review.};
 
   \draw[arrow] (mat.east) -- (pose.west);
   \draw[arrow] (pose.west) to[bend left=22] (mat.east);

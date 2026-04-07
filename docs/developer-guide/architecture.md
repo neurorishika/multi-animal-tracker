@@ -2,11 +2,14 @@
 
 ## System Layers
 
-- `hydra_suite.tracker`: MAT launcher, GUI, dialogs, widgets.
+- `hydra_suite.launcher`: HYDRA launcher entry point and tool selector.
+- `hydra_suite.trackerkit`: TrackerKit multi-animal tracking GUI — decomposed into orchestrators, panels, workers, and widgets.
 - `hydra_suite.posekit`: pose-labeling application and related dialogs/inference flows.
 - `hydra_suite.classkit`: classification/embedding toolkit.
+- `hydra_suite.detectkit`: detection model training tool.
 - `hydra_suite.refinekit`: interactive proofreading.
 - `hydra_suite.filterkit`: data sieve tool.
+- `hydra_suite.widgets`: shared UI components (BaseWorker, BaseDialog, WelcomePage, recents).
 - `hydra_suite.integrations`: external tool bridges (SLEAP, X-AnyLabeling).
 - `hydra_suite.core`: detection, filtering, assignment, post-processing, worker orchestration.
 - `hydra_suite.runtime`: compute runtime selection and GPU utilities.
@@ -24,10 +27,12 @@
 
 ## Runtime Entry Paths
 
-- MAT: `hydra_suite.tracker.app.launcher:main`
-- PoseKit: `hydra_suite.posekit.ui.main:main`
-- FilterKit: `hydra_suite.filterkit.gui:main`
+- HYDRA Launcher: `hydra_suite.launcher.app:main`
+- TrackerKit: `hydra_suite.trackerkit.app:main`
+- PoseKit: `hydra_suite.posekit.gui.main:main`
 - ClassKit: `hydra_suite.classkit.app:main`
+- DetectKit: `hydra_suite.detectkit.app:main`
+- FilterKit: `hydra_suite.filterkit.app:main`
 - RefineKit: `hydra_suite.refinekit.app:main`
 
 ## Key Operational Boundaries
@@ -66,3 +71,46 @@ All apps share paths via `hydra_suite.paths`. This module resolves user-writable
 | `HYDRA_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs.user_config_dir()` |
 
 When adding a new module that needs to read models, configs, or assets, always import from `hydra_suite.paths` — never construct paths relative to `__file__`.
+
+## TrackerKit Decomposition
+
+TrackerKit's `main_window.py` has been decomposed from a monolith into focused subpackages:
+
+### Orchestrators (`trackerkit/gui/orchestrators/`)
+
+Business logic delegates extracted from MainWindow:
+
+- `config.py` — configuration load/save, parameter synchronization
+- `session.py` — session lifecycle, video loading, output management
+- `tracking.py` — tracking execution, forward/backward passes, worker coordination
+
+### Panels (`trackerkit/gui/panels/`)
+
+Each UI tab is a self-contained panel class:
+
+- `setup_panel.py` — video, FPS, output paths, resize, runtime settings
+- `detection_panel.py` — detection backend, thresholds, morphology, YOLO settings
+- `tracking_panel.py` — assignment, Kalman, lifecycle, motion logic
+- `identity_panel.py` — crop extraction, identity method settings
+- `postprocess_panel.py` — cleanup, interpolation, merge, video output
+- `dataset_panel.py` — dataset export configuration
+
+### Workers (`trackerkit/gui/workers/`)
+
+Background tasks running on `QThread` (inheriting `BaseWorker`):
+
+- `crops_worker.py` — crop extraction for identity analysis
+- `preview_worker.py` — detection preview rendering
+- `merge_worker.py` — forward/backward merge operations
+- `dataset_worker.py` — dataset generation
+- `video_worker.py` — video rendering
+
+### Widgets (`trackerkit/gui/widgets/`)
+
+TrackerKit-specific reusable UI primitives:
+
+- `collapsible.py` — collapsible section container
+- `help_label.py` — inline help text widget
+- `loss_plot_widget.py` — training loss visualization
+- `stacked_page.py` — stacked page navigation
+- `tooltip_button.py` — button with rich tooltip

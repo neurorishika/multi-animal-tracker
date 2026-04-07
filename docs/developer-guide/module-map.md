@@ -2,11 +2,13 @@
 
 ## Entrypoints
 
-- `hydra_suite.tracker.app.launcher`
-- `hydra_suite.posekit.ui.main`
-- `hydra_suite.filterkit.gui`
-- `hydra_suite.classkit.app`
-- `hydra_suite.refinekit.app`
+- `hydra_suite.launcher.app` — HYDRA launcher / tool selector
+- `hydra_suite.trackerkit.app` — TrackerKit multi-animal tracking
+- `hydra_suite.posekit.gui.main` — PoseKit pose labeling
+- `hydra_suite.classkit.app` — ClassKit classification / embedding
+- `hydra_suite.detectkit.app` — DetectKit detection model training
+- `hydra_suite.filterkit.app` — FilterKit dataset filtering
+- `hydra_suite.refinekit.app` — RefineKit interactive proofreading
 
 ## Core
 
@@ -29,18 +31,52 @@
 
 - `hydra_suite.runtime.compute_runtime`
 
-## MAT GUI
+## TrackerKit GUI
 
-- `hydra_suite.tracker.gui.main_window`
-- `hydra_suite.tracker.gui.dialogs.train_yolo_dialog`
-- `hydra_suite.tracker.gui.widgets.histograms`
+- `hydra_suite.trackerkit.gui.main_window` — thin coordinator
+- `hydra_suite.trackerkit.gui.orchestrators.config` — configuration management
+- `hydra_suite.trackerkit.gui.orchestrators.session` — session lifecycle
+- `hydra_suite.trackerkit.gui.orchestrators.tracking` — tracking execution
+- `hydra_suite.trackerkit.gui.panels.setup_panel`
+- `hydra_suite.trackerkit.gui.panels.detection_panel`
+- `hydra_suite.trackerkit.gui.panels.tracking_panel`
+- `hydra_suite.trackerkit.gui.panels.identity_panel`
+- `hydra_suite.trackerkit.gui.panels.postprocess_panel`
+- `hydra_suite.trackerkit.gui.panels.dataset_panel`
+- `hydra_suite.trackerkit.gui.workers.crops_worker`
+- `hydra_suite.trackerkit.gui.workers.preview_worker`
+- `hydra_suite.trackerkit.gui.workers.merge_worker`
+- `hydra_suite.trackerkit.gui.workers.dataset_worker`
+- `hydra_suite.trackerkit.gui.workers.video_worker`
+- `hydra_suite.trackerkit.gui.widgets.*`
+- `hydra_suite.trackerkit.gui.dialogs.*`
+- `hydra_suite.trackerkit.gui.model_utils`
 
 ## PoseKit
 
-- `hydra_suite.posekit.ui.main`
-- `hydra_suite.posekit.ui.main_window`
+- `hydra_suite.posekit.gui.main`
+- `hydra_suite.posekit.gui.main_window`
+- `hydra_suite.posekit.gui.canvas`
+- `hydra_suite.posekit.gui.models`
+- `hydra_suite.posekit.gui.project`
+- `hydra_suite.posekit.gui.workers`
+- `hydra_suite.posekit.gui.dialogs.*`
+- `hydra_suite.posekit.config.schemas`
 - `hydra_suite.posekit.core.extensions`
-- `hydra_suite.posekit.inference`
+- `hydra_suite.posekit.inference.worker`
+
+## DetectKit
+
+- `hydra_suite.detectkit.app`
+- `hydra_suite.detectkit.config.schemas`
+- `hydra_suite.detectkit.gui.panels.*`
+
+## Shared Widgets
+
+- `hydra_suite.widgets.workers` — `BaseWorker` base class for all threaded tasks
+- `hydra_suite.widgets.dialogs` — `BaseDialog` base class for modal dialogs
+- `hydra_suite.widgets.welcome_page` — `WelcomePage` splash screen
+- `hydra_suite.widgets.recents` — recent files management
 
 ## Integrations and Utils
 

@@ -1,3 +1,5 @@
+"""Utilities for filtering and validating pose keypoints before rendering."""
+
 from __future__ import annotations
 
 import math

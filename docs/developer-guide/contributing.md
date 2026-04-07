@@ -15,7 +15,7 @@ uv pip install -r requirements-docs.txt
 ## Documentation Requirements
 
 - Use current package paths (`hydra_suite.posekit`, new `core/*` layout).
-- Keep command names canonical (`posekit-labeler`) and avoid legacy alternate spellings.
+- Keep command names canonical (`posekit`) and avoid legacy alternate spellings.
 - Run strict docs build before opening PR:
 
 ```bash

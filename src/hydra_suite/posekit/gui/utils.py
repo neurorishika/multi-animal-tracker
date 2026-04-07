@@ -1,3 +1,5 @@
+"""Utility functions for PoseKit: path helpers, image enhancement, palettes, and UI settings."""
+
 import hashlib
 import json
 import logging

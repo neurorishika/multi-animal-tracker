@@ -1,3 +1,5 @@
+"""Interactive graphics canvas for keypoint annotation and pose prediction overlays."""
+
 from __future__ import annotations
 
 from typing import List, Optional, Tuple

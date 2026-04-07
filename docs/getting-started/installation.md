@@ -6,7 +6,7 @@ There are three ways to install HYDRA Suite, depending on your situation:
 |--------|-------------|
 | [**pip install**](#pip-install-from-pypi) | You want to use the software. One command, no git needed. |
 | [**pip install from GitHub**](#pip-install-from-github) | You want the latest unreleased version, or the package isn't on PyPI yet. |
-| [**conda + pip (developer)**](#conda--pip-developer-install) | You're developing the code. Editable install, Makefile workflows. |
+| [**conda + pip (developer)**](#conda-pip-developer-install) | You're developing the code. Editable install, Makefile workflows. |
 
 All three methods support full GPU acceleration. See the [platform matrix](#platform-matrix) for what's available on each platform.
 
@@ -225,10 +225,12 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 ### Launch
 
 ```bash
-hydra              # HYDRA Suite GUI
-posekit-labeler    # PoseKit pose-labeling GUI
-filterkit           # FilterKit tool
+hydra              # HYDRA Suite launcher
+trackerkit         # TrackerKit tracking GUI
+posekit            # PoseKit pose-labeling GUI
 classkit           # ClassKit labeler
+detectkit          # DetectKit training
+filterkit          # FilterKit tool
 refinekit          # RefineKit proofreading
 ```
 
@@ -267,7 +269,7 @@ HYDRA_CONFIG_DIR=./my-project-config mat
 python -c "from hydra_suite.paths import print_paths; print_paths()"
 ```
 
-All sub-applications (MAT, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same `hydra_suite.paths` module, so they all respect these overrides and share the same data directories.
+All sub-applications (TrackerKit, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same `hydra_suite.paths` module, so they all respect these overrides and share the same data directories.
 
 ### Programmatic access from other tools
 

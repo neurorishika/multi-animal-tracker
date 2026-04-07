@@ -1,6 +1,6 @@
 # Troubleshooting
 
-## MAT Issues
+## TrackerKit Issues
 
 ## App starts but tracking quality is poor
 

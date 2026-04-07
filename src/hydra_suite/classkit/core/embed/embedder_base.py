@@ -1,3 +1,5 @@
+"""Abstract base class defining the interface for image embedding models."""
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List

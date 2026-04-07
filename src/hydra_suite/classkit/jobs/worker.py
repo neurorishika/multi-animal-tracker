@@ -1,3 +1,5 @@
+"""Generic QRunnable worker for running arbitrary callables in a thread pool."""
+
 import sys
 import traceback
 from typing import Any, Callable

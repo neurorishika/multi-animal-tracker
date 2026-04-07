@@ -1,9 +1,9 @@
-# Quickstart (MAT)
+# Quickstart (TrackerKit)
 
 ## Launch
 
 ```bash
-hydra
+trackerkit
 ```
 
 The main window opens maximized and exposes the tabbed workflow.

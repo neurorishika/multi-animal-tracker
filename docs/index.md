@@ -4,8 +4,13 @@
 
 Welcome to the central documentation for:
 
-- `hydra`/ `hydra` (tracking GUI)
-- `posekit-labeler` / `pose` (pose labeling GUI)
+- `hydra` (launcher / tool selector)
+- `trackerkit` (multi-animal tracking)
+- `posekit` (pose labeling)
+- `classkit` (classification / embedding)
+- `detectkit` (detection model training)
+- `filterkit` (dataset filtering)
+- `refinekit` (interactive proofreading)
 
 !!! info "Use This Site as the Source of Truth"
     This docs site is the canonical guide for setup, workflows, feature behavior, and reference material.
@@ -59,15 +64,16 @@ Welcome to the central documentation for:
 ## Launch Commands
 
 ```bash
-# Tracking GUI
-hydra
-# or
+# HYDRA launcher (tool selector)
 hydra
 
-# Pose labeling GUI
-posekit-labeler
-# or
-pose
+# Individual tools
+trackerkit         # Multi-animal tracking
+posekit            # Pose labeling
+classkit           # Classification / embedding
+detectkit          # Detection model training
+filterkit          # Dataset filtering
+refinekit          # Interactive proofreading
 ```
 
 ## Local Docs Workflow
@@ -90,11 +96,19 @@ pose
 
 This documentation maps to the current package layout:
 
-- `hydra_suite.app`
+- `hydra_suite.launcher`
+- `hydra_suite.trackerkit`
+- `hydra_suite.posekit`
+- `hydra_suite.classkit`
+- `hydra_suite.detectkit`
+- `hydra_suite.filterkit`
+- `hydra_suite.refinekit`
 - `hydra_suite.core`
 - `hydra_suite.data`
-- `hydra_suite.gui`
-- `hydra_suite.posekit`
+- `hydra_suite.training`
+- `hydra_suite.runtime`
+- `hydra_suite.integrations`
+- `hydra_suite.widgets`
 - `hydra_suite.utils`
-
-Legacy flat docs are archived under `docs/archive/legacy-flat/`.
+- `hydra_suite.paths`
+- `hydra_suite.resources`

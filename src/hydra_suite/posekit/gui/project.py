@@ -1,3 +1,5 @@
+"""Project discovery, creation, path repair, and multi-source management."""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,5 @@
+"""ClassKit configuration schemas and dataclass exports."""
+
 from .schemas import ALConfig as ALConfig
 from .schemas import ClassKitConfig as ClassKitConfig
 from .schemas import Factor as Factor

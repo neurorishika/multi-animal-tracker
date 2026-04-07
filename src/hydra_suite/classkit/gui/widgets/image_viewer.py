@@ -1,3 +1,5 @@
+"""Zoomable image viewer widget with optional CLAHE enhancement."""
+
 import cv2
 import numpy as np
 from PySide6.QtCore import QRectF, Qt

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This page documents frequently used runtime keys from the MAT GUI and saved configuration state.
+This page documents frequently used runtime keys from the TrackerKit GUI and saved configuration state.
 
 ## Full UI Control Reference
 

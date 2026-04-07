@@ -42,16 +42,16 @@ Platform-specific environments are documented in the [online docs](https://neuro
 ## Launch
 
 ```bash
-# HYDRA Suite GUI
+# HYDRA Suite launcher
 hydra
 
-# PoseKit labeler
-posekit-labeler
-
-# Other tools
-filterkit
-classkit
-refinekit
+# Individual tools
+trackerkit         # Multi-animal tracking
+posekit            # Pose labeling
+classkit           # Classification / embedding
+detectkit          # Detection model training
+filterkit          # Dataset filtering
+refinekit          # Interactive proofreading
 ```
 
 ## Common Commands

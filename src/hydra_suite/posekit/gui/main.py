@@ -1,3 +1,5 @@
+"""PoseKit application entry point: CLI argument parsing and startup."""
+
 from __future__ import annotations
 
 import argparse

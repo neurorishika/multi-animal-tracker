@@ -1,3 +1,5 @@
+"""Colorblind-safe palette and category-to-color mapping utilities."""
+
 from __future__ import annotations
 
 import math

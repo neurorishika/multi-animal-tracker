@@ -1,3 +1,5 @@
+"""Data models for PoseKit: Keypoint, FrameAnn, DataSource, and Project."""
+
 from __future__ import annotations
 
 import json

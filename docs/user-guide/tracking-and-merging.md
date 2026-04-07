@@ -7,7 +7,8 @@ It is written in two layers:
 - The first sections explain the system in plain language.
 - The later sections describe the implemented decision logic closely enough to tune runs and interpret failure modes.
 
-![Tracking pipeline overview](../assets/figures/tracking-pipeline.svg)
+<!-- TODO: add tracking-pipeline.svg diagram -->
+<!-- ![Tracking pipeline overview](../assets/figures/tracking-pipeline.svg) -->
 
 ## Plain-English Overview
 
@@ -139,7 +140,8 @@ Post-processing turns raw trajectories into analysis-ready outputs. The current 
 - relink fragments using motion and optional pose continuity,
 - and interpolate short missing spans.
 
-![Post-processing stack](../assets/figures/postprocessing-stack.svg)
+<!-- TODO: add postprocessing-stack.svg diagram -->
+<!-- ![Post-processing stack](../assets/figures/postprocessing-stack.svg) -->
 
 ## The Current Tracking Logic in Detail
 
@@ -193,7 +195,8 @@ That reduces bad candidate pairs and also improves performance when the number o
 
 The assignment step is intentionally staged rather than monolithic.
 
-![Association and lifecycle diagram](../assets/figures/association-lifecycle.svg)
+<!-- TODO: add association-lifecycle.svg diagram -->
+<!-- ![Association and lifecycle diagram](../assets/figures/association-lifecycle.svg) -->
 
 #### Phase 1: established tracks
 

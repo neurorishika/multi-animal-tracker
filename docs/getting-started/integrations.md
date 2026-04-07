@@ -1,17 +1,17 @@
 # Integrations
 
-## SLEAP Integration (MAT + PoseKit)
+## SLEAP Integration (TrackerKit + PoseKit)
 
 SLEAP inference is executed from the **SLEAP conda/mamba environment selected in the UI**.
 
 ### Why this env is separate
 
-Do not rely on the main MAT environment for SLEAP export/runtime dependencies.
-In practice, the `uv`-based MAT install path does not guarantee the SLEAP runtime/export modules needed for all SLEAP backends.
+Do not rely on the main TrackerKit environment for SLEAP export/runtime dependencies.
+In practice, the `uv`-based TrackerKit install path does not guarantee the SLEAP runtime/export modules needed for all SLEAP backends.
 
 Create a dedicated SLEAP environment and select it from:
 
-- MAT: `Analyze Individuals -> Pose Extraction -> SLEAP env`
+- TrackerKit: `Analyze Individuals -> Pose Extraction -> SLEAP env`
 - PoseKit: `Inference -> SLEAP -> Conda environment`
 
 To use ONNX/TensorRT SLEAP prediction inside PoseKit, also enable:
@@ -117,7 +117,7 @@ See also:
 
 ## X-AnyLabeling Integration
 
-`X-AnyLabeling` is useful for adding labels to additional frames and correcting detection misses before rerunning MAT pipelines.
+`X-AnyLabeling` is useful for adding labels to additional frames and correcting detection misses before rerunning TrackerKit pipelines.
 
 ### Install (git clone method)
 
@@ -132,9 +132,9 @@ python app.py
 
 If your local clone uses a different launch command, follow the repository instructions from the current branch README/get-started docs.
 
-### Recommended labeling workflow for MAT data
+### Recommended labeling workflow for TrackerKit data
 
-- Export or collect frames where MAT missed animals or produced poor detections.
+- Export or collect frames where TrackerKit missed animals or produced poor detections.
 - Open those images in `X-AnyLabeling`.
 - Use one of these tools to add/fix labels:
 
@@ -144,10 +144,10 @@ If your local clone uses a different launch command, follow the repository instr
 - Manual OBB tool (use when oriented boxes are specifically needed)
 
 - Prefer segmentation masks over OBB for day-to-day correction speed and annotation quality.
-- Export labels in the format needed for your downstream MAT training or validation workflow.
+- Export labels in the format needed for your downstream TrackerKit training or validation workflow.
 
 ### Notes
 
 - Segmentation editing is generally more user-friendly than manual OBB editing for correction tasks.
 - OBB remains useful when your model or evaluation requires oriented boxes specifically.
-- Keep class names and label conventions consistent with your MAT dataset configuration.
+- Keep class names and label conventions consistent with your TrackerKit dataset configuration.

@@ -198,4 +198,3 @@ class AddSourceDialog(QDialog):
     @property
     def description(self) -> str:
         return self._le_desc.text().strip()
-        return self._le_desc.text().strip()

@@ -1,3 +1,5 @@
+"""Interactive scatter-plot view for exploring UMAP embedding projections."""
+
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QWheelEvent

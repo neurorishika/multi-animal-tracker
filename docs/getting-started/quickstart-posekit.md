@@ -3,9 +3,7 @@
 ## Launch
 
 ```bash
-posekit-labeler
-# or
-pose
+posekit
 ```
 
 ## Basic Project Setup

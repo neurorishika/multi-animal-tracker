@@ -1,3 +1,5 @@
+"""SQLite-backed database for ClassKit image metadata, embeddings, and cache management."""
+
 import csv
 import json
 import sqlite3

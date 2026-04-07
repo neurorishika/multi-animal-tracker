@@ -1,3 +1,5 @@
+"""Skeleton editor dialog for defining keypoint names and edge topology."""
+
 import json
 import os
 from pathlib import Path

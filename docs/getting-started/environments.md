@@ -1,6 +1,6 @@
 # Conda Environments and Makefile Reference
 
-This page documents the conda environment files and Makefile targets used in the [developer install path](installation.md#conda--pip-developer-install).
+This page documents the conda environment files and Makefile targets used in the [developer install path](installation.md#conda-pip-developer-install).
 
 ## Environment files
 

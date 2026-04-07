@@ -1,3 +1,5 @@
+"""Export labeled images to PyTorch ImageFolder directory structure."""
+
 import os
 import shutil
 from pathlib import Path

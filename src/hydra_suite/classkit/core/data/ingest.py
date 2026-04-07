@@ -1,3 +1,5 @@
+"""Image scanning, hashing, and database ingestion utilities."""
+
 import hashlib
 from pathlib import Path
 from typing import Generator, List, Union

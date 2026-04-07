@@ -10,14 +10,14 @@
 
 ::: hydra_suite.posekit.inference.worker
 
-::: hydra_suite.posekit.ui
+::: hydra_suite.posekit.gui
 
-::: hydra_suite.posekit.ui.canvas
+::: hydra_suite.posekit.gui.canvas
 
-::: hydra_suite.posekit.ui.main_window
+::: hydra_suite.posekit.gui.main_window
 
-::: hydra_suite.posekit.ui.models
+::: hydra_suite.posekit.gui.models
 
-::: hydra_suite.posekit.ui.project
+::: hydra_suite.posekit.gui.project
 
-::: hydra_suite.posekit.ui.workers
+::: hydra_suite.posekit.gui.workers
