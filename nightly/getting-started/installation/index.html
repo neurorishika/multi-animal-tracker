@@ -886,7 +886,7 @@
         
   
   <span class="md-ellipsis">
-    Quickstart (HYDRA)
+    Quickstart (TrackerKit)
   </span>
   
 
@@ -1204,11 +1204,95 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/posekit-labeler/" class="md-nav__link">
+      <a href="../../user-guide/posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    PoseKit Labeler
+    PoseKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/classkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ClassKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/detectkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    DetectKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/filterkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FilterKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/refinekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    RefineKit
   </span>
   
 
@@ -1363,6 +1447,27 @@
   
   <span class="md-ellipsis">
     Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/tracking-optimization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Optimization
   </span>
   
 
@@ -1547,6 +1652,27 @@
   
   
     <li class="md-nav__item">
+      <a href="../../developer-guide/publishing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Publishing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../developer-guide/contributing/" class="md-nav__link">
         
   
@@ -1642,7 +1768,7 @@
         
   
   <span class="md-ellipsis">
-    UI Components (HYDRA)
+    UI Components (TrackerKit)
   </span>
   
 
@@ -1684,7 +1810,7 @@
         
   
   <span class="md-ellipsis">
-    API (App)
+    API (Launcher)
   </span>
   
 
@@ -1747,7 +1873,28 @@
         
   
   <span class="md-ellipsis">
-    API (GUI)
+    API (TrackerKit GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-widgets/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Widgets)
   </span>
   
 
@@ -2309,7 +2456,7 @@
 <td>You want the latest unreleased version, or the package isn't on PyPI yet.</td>
 </tr>
 <tr>
-<td><a href="#conda--pip-developer-install"><strong>conda + pip (developer)</strong></a></td>
+<td><a href="#conda-pip-developer-install"><strong>conda + pip (developer)</strong></a></td>
 <td>You're developing the code. Editable install, Makefile workflows.</td>
 </tr>
 </tbody>
@@ -2526,11 +2673,13 @@
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="c1"># Should include &#39;CUDAExecutionProvider&#39;</span>
 </span></code></pre></div>
 <h3 id="launch">Launch<a class="headerlink" href="#launch" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>hydra<span class="w">              </span><span class="c1"># HYDRA Suite GUI</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>posekit-labeler<span class="w">    </span><span class="c1"># PoseKit pose-labeling GUI</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>filterkit<span class="w">           </span><span class="c1"># FilterKit tool</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>hydra<span class="w">              </span><span class="c1"># HYDRA Suite launcher</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>trackerkit<span class="w">         </span><span class="c1"># TrackerKit tracking GUI</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>posekit<span class="w">            </span><span class="c1"># PoseKit pose-labeling GUI</span>
 </span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>classkit<span class="w">           </span><span class="c1"># ClassKit labeler</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>refinekit<span class="w">          </span><span class="c1"># RefineKit proofreading</span>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>detectkit<span class="w">          </span><span class="c1"># DetectKit training</span>
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>filterkit<span class="w">          </span><span class="c1"># FilterKit tool</span>
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>refinekit<span class="w">          </span><span class="c1"># RefineKit proofreading</span>
 </span></code></pre></div>
 <h3 id="data-directories">Data directories<a class="headerlink" href="#data-directories" title="Permanent link">&para;</a></h3>
 <p>User data is stored in platform-appropriate locations (not inside the package):</p>
@@ -2599,7 +2748,7 @@
 </span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="c1"># Check where everything currently points</span>
 </span><span id="__span-16-9"><a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;from hydra_suite.paths import print_paths; print_paths()&quot;</span>
 </span></code></pre></div>
-<p>All sub-applications (MAT, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same <code>hydra_suite.paths</code> module, so they all respect these overrides and share the same data directories.</p>
+<p>All sub-applications (TrackerKit, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same <code>hydra_suite.paths</code> module, so they all respect these overrides and share the same data directories.</p>
 <h3 id="programmatic-access-from-other-tools">Programmatic access from other tools<a class="headerlink" href="#programmatic-access-from-other-tools" title="Permanent link">&para;</a></h3>
 <p>Scripts and notebooks can access the same paths:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">hydra_suite.paths</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_models_dir</span><span class="p">,</span> <span class="n">get_presets_dir</span><span class="p">,</span> <span class="n">get_skeleton_dir</span>

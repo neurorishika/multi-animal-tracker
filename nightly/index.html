@@ -566,7 +566,7 @@
         
   
   <span class="md-ellipsis">
-    Quickstart (HYDRA)
+    Quickstart (TrackerKit)
   </span>
   
 
@@ -884,11 +884,95 @@
   
   
     <li class="md-nav__item">
-      <a href="user-guide/posekit-labeler/" class="md-nav__link">
+      <a href="user-guide/posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    PoseKit Labeler
+    PoseKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="user-guide/classkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ClassKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="user-guide/detectkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    DetectKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="user-guide/filterkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FilterKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="user-guide/refinekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    RefineKit
   </span>
   
 
@@ -1043,6 +1127,27 @@
   
   <span class="md-ellipsis">
     Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="developer-guide/tracking-optimization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Optimization
   </span>
   
 
@@ -1227,6 +1332,27 @@
   
   
     <li class="md-nav__item">
+      <a href="developer-guide/publishing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Publishing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="developer-guide/contributing/" class="md-nav__link">
         
   
@@ -1322,7 +1448,7 @@
         
   
   <span class="md-ellipsis">
-    UI Components (HYDRA)
+    UI Components (TrackerKit)
   </span>
   
 
@@ -1364,7 +1490,7 @@
         
   
   <span class="md-ellipsis">
-    API (App)
+    API (Launcher)
   </span>
   
 
@@ -1427,7 +1553,28 @@
         
   
   <span class="md-ellipsis">
-    API (GUI)
+    API (TrackerKit GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="reference/api-widgets/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Widgets)
   </span>
   
 
@@ -1659,8 +1806,13 @@
 <p><img alt="HYDRA Suite Banner" src="assets/banner.png" /></p>
 <p>Welcome to the central documentation for:</p>
 <ul>
-<li><code>hydra</code>/ <code>hydra</code> (tracking GUI)</li>
-<li><code>posekit-labeler</code> / <code>pose</code> (pose labeling GUI)</li>
+<li><code>hydra</code> (launcher / tool selector)</li>
+<li><code>trackerkit</code> (multi-animal tracking)</li>
+<li><code>posekit</code> (pose labeling)</li>
+<li><code>classkit</code> (classification / embedding)</li>
+<li><code>detectkit</code> (detection model training)</li>
+<li><code>filterkit</code> (dataset filtering)</li>
+<li><code>refinekit</code> (interactive proofreading)</li>
 </ul>
 <div class="admonition info">
 <p class="admonition-title">Use This Site as the Source of Truth</p>
@@ -1702,15 +1854,16 @@
 </ul>
 </div>
 <h2 id="launch-commands">Launch Commands<a class="headerlink" href="#launch-commands" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Tracking GUI</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># HYDRA launcher (tool selector)</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>hydra
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># or</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>hydra
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># Pose labeling GUI</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>posekit-labeler
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># or</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>pose
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Individual tools</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>trackerkit<span class="w">         </span><span class="c1"># Multi-animal tracking</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>posekit<span class="w">            </span><span class="c1"># Pose labeling</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>classkit<span class="w">           </span><span class="c1"># Classification / embedding</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>detectkit<span class="w">          </span><span class="c1"># Detection model training</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>filterkit<span class="w">          </span><span class="c1"># Dataset filtering</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>refinekit<span class="w">          </span><span class="c1"># Interactive proofreading</span>
 </span></code></pre></div>
 <h2 id="local-docs-workflow">Local Docs Workflow<a class="headerlink" href="#local-docs-workflow" title="Permanent link">&para;</a></h2>
 <div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Serve locally</label><label for="__tabbed_1_2">Strict build</label></div>
@@ -1730,14 +1883,23 @@
 <h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
 <p>This documentation maps to the current package layout:</p>
 <ul>
-<li><code>hydra_suite.app</code></li>
+<li><code>hydra_suite.launcher</code></li>
+<li><code>hydra_suite.trackerkit</code></li>
+<li><code>hydra_suite.posekit</code></li>
+<li><code>hydra_suite.classkit</code></li>
+<li><code>hydra_suite.detectkit</code></li>
+<li><code>hydra_suite.filterkit</code></li>
+<li><code>hydra_suite.refinekit</code></li>
 <li><code>hydra_suite.core</code></li>
 <li><code>hydra_suite.data</code></li>
-<li><code>hydra_suite.gui</code></li>
-<li><code>hydra_suite.posekit</code></li>
+<li><code>hydra_suite.training</code></li>
+<li><code>hydra_suite.runtime</code></li>
+<li><code>hydra_suite.integrations</code></li>
+<li><code>hydra_suite.widgets</code></li>
 <li><code>hydra_suite.utils</code></li>
+<li><code>hydra_suite.paths</code></li>
+<li><code>hydra_suite.resources</code></li>
 </ul>
-<p>Legacy flat docs are archived under <code>docs/archive/legacy-flat/</code>.</p>
 
 
 

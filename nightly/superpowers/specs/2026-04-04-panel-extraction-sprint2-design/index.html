@@ -1,0 +1,2367 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User and developer documentation for HYDRA Suite">
+      
+      
+      
+        <link rel="canonical" href="https://neurorishika.github.io/hydra-suite/nightly/superpowers/specs/2026-04-04-panel-extraction-sprint2-design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
+    
+    
+      
+        <title>Panel Extraction Sprint 2 — Design Spec - HYDRA Suite Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#panel-extraction-sprint-2-design-spec" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="HYDRA Suite Docs" class="md-header__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            HYDRA Suite Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Panel Extraction Sprint 2 — Design Spec
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/neurorishika/hydra-suite" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/hydra-suite
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../user-guide/overview/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../developer-guide/architecture/" class="md-tabs__link">
+          
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../reference/api-index/" class="md-tabs__link">
+          
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="HYDRA Suite Docs" class="md-nav__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    HYDRA Suite Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/neurorishika/hydra-suite" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/hydra-suite
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/environments/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Environments and Makefile
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/integrations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Integrations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart-hydra/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (TrackerKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/platforms/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Platform Notes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    User Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            User Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workflow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    End-to-End Workflow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/detection-modes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Detection Modes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/tracking-and-merging/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/post-processing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Post-processing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/compute-runtimes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Compute Runtimes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Outputs and CSV Schema
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/dataset-generation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Dataset Generation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/individual-analysis/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Individual Analysis
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    PoseKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/classkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ClassKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/detectkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    DetectKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/filterkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FilterKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/refinekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    RefineKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Developer Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Developer Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/module-map/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Module Map
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/data-flow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Flow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/tracking-optimization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Optimization
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/gpu-backends/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    GPU Backends
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/runtime-integration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Runtime Integration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CUDA Dependency Updates
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/performance-tuning/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Tuning
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/confidence-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Confidence Metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/extending-detection/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Detection
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/extending-identity/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Identity
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/code-health/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Code Health & Auditing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/publishing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Publishing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-index/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API Index
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/ui-components-hydra/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (TrackerKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/ui-components-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-app/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Launcher)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-core/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Core)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-data/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Data)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-gui/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (TrackerKit GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-widgets/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Widgets)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Utils)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/cli-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CLI Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/technical-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Technical Reference (LaTeX)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/changelog/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Changelog
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FAQ
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#measured-starting-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      Measured Starting State
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-option-c-phased-extraction-is-the-right-tradeoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      Why Option C (Phased Extraction) Is the Right Tradeoff
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#panel-constructor-signature" class="md-nav__link">
+    <span class="md-ellipsis">
+      Panel Constructor Signature
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#widget-attribute-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Widget Attribute Visibility
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#helper-method-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      Helper Method Access
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-widget-classes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Custom Widget Classes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#module-level-flags-detectionpanel-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      Module-Level Flags (DetectionPanel Only)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-mainwindow-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      How MainWindow Changes
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-panel-extraction-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      Per-Panel Extraction Scope
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Per-Panel Extraction Scope">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-datasetpanel-smallest-380-lines-30-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 1 — DatasetPanel (smallest: 380 lines, 30 widgets)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-setuppanel-697-lines-58-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 2 — SetupPanel (697 lines, 58 widgets)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-3-trackingpanel-795-lines-48-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 3 — TrackingPanel (795 lines, 48 widgets)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-4-postprocesspanel-601-lines-67-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 4 — PostProcessPanel (601 lines, 67 widgets)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-5-identitypanel-497-lines-51-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 5 — IdentityPanel (497 lines, 51 widgets)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-6-detectionpanel-1014-lines-73-widgets-largest-saved-for-last" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 6 — DetectionPanel (1,014 lines, 73 widgets) — largest, saved for last
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#widget-reference-update-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Widget Reference Update Strategy
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Widget Reference Update Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mechanical-process-per-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      Mechanical Process (Per Panel)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verification-after-each-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      Verification After Each Panel
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#test-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Test Strategy
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Test Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#regression-baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      Regression Baseline
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-test-updates-per-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required Test Updates Per Panel
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optional-panel-smoke-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Optional: Panel Smoke Tests
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#completion-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      Completion Criteria
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-for-this-sprint" class="md-nav__link">
+    <span class="md-ellipsis">
+      Out of Scope for This Sprint
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-created-or-modified" class="md-nav__link">
+    <span class="md-ellipsis">
+      Files Created or Modified
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/neurorishika/hydra-suite/edit/main/docs/superpowers/specs/2026-04-04-panel-extraction-sprint2-design.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="panel-extraction-sprint-2-design-spec">Panel Extraction Sprint 2 — Design Spec<a class="headerlink" href="#panel-extraction-sprint-2-design-spec" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-04-04
+<strong>Author:</strong> Rishika Mohanta
+<strong>Status:</strong> Approved
+<strong>Predecessor:</strong> <code>2026-04-04-codebase-simplification-design.md</code> (Slice 4, Phase 1)</p>
+<hr />
+<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
+<p>Extract the 6 <code>setup_*_ui()</code> methods from <code>trackerkit/gui/main_window.py</code> into the 6 stub panel classes that were scaffolded in Sprint 1. After this sprint, <code>main_window.py</code> shrinks from 19,975 lines to approximately 16,000 lines. The panels package becomes real — each panel owns its widget tree and exposes every widget as a public attribute. MainWindow business logic continues to access panel widgets via <code>self._panel_name.widget_name</code> rather than the old <code>self.widget_name</code>.</p>
+<p>This is <strong>Phase 1 of Slice 4</strong> from the parent simplification spec. No business logic moves in this sprint. No signal handler methods move. Only the UI construction code migrates.</p>
+<hr />
+<h2 id="measured-starting-state">Measured Starting State<a class="headerlink" href="#measured-starting-state" title="Permanent link">&para;</a></h2>
+<p>From static analysis of <code>main_window.py</code> (19,975 lines):</p>
+<table>
+<thead>
+<tr>
+<th>Panel class</th>
+<th>MainWindow method</th>
+<th>Source lines</th>
+<th>Public widgets assigned</th>
+<th>External refs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SetupPanel</code></td>
+<td><code>setup_setup_ui</code></td>
+<td>4341–5037 (697 lines)</td>
+<td>58</td>
+<td>~247</td>
+</tr>
+<tr>
+<td><code>DetectionPanel</code></td>
+<td><code>setup_detection_ui</code></td>
+<td>5038–6051 (1,014 lines)</td>
+<td>73</td>
+<td>~293</td>
+</tr>
+<tr>
+<td><code>TrackingPanel</code></td>
+<td><code>setup_tracking_ui</code></td>
+<td>6052–6846 (795 lines)</td>
+<td>48</td>
+<td>~158</td>
+</tr>
+<tr>
+<td><code>PostProcessPanel</code></td>
+<td><code>setup_data_ui</code></td>
+<td>6847–7447 (601 lines)</td>
+<td>67</td>
+<td>~230</td>
+</tr>
+<tr>
+<td><code>DatasetPanel</code></td>
+<td><code>setup_dataset_ui</code></td>
+<td>7448–7827 (380 lines)</td>
+<td>30</td>
+<td>~87</td>
+</tr>
+<tr>
+<td><code>IdentityPanel</code></td>
+<td><code>setup_individual_analysis_ui</code></td>
+<td>7828–8324 (497 lines)</td>
+<td>51</td>
+<td>~188</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td></td>
+<td><strong>3,984 lines</strong></td>
+<td><strong>327 widgets</strong></td>
+<td><strong>~1,203 refs</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Key observations from analysis:
+- No widget name is shared across panels (zero name collisions).
+- No setup method references a widget owned by another setup method (panels are build-time independent).
+- Each setup method references <code>self.tab_X</code> exactly once — the very first line (<code>QVBoxLayout(self.tab_X)</code>) — to attach its layout to the tab container.
+- Signal connections inside setup methods all point to <code>self.handler_name</code> on MainWindow. There are 33, 16, 2, 7, 6, and 21 connections respectively across the six panels.
+- Helper methods called during build (<code>_create_help_label</code>, <code>_set_compact_scroll_layout</code>, <code>_set_compact_section_widget</code>, <code>_remember_collapsible_state</code>, <code>_populate_preset_combo</code>, etc.) live in MainWindow and must remain callable during panel construction.
+- <code>CollapsibleGroupBox</code>, <code>AccordionContainer</code>, and <code>CompactHelpLabel</code> are defined in <code>main_window.py</code> above the <code>MainWindow</code> class (lines 3190, 3345, 3365). They are used in the setup methods and must be importable from <code>main_window.py</code> during panel construction.
+- <code>DetectionPanel</code> uses module-level flags <code>TORCH_CUDA_AVAILABLE</code>, <code>MPS_AVAILABLE</code>, <code>TENSORRT_AVAILABLE</code> imported at the top of <code>main_window.py</code>.
+- Tests in <code>test_main_window_config_persistence.py</code> access widgets by <code>window.widget_name</code>. After extraction those references must become <code>window._panel_name.widget_name</code>, which means the test file also needs updating per panel.</p>
+<hr />
+<h2 id="why-option-c-phased-extraction-is-the-right-tradeoff">Why Option C (Phased Extraction) Is the Right Tradeoff<a class="headerlink" href="#why-option-c-phased-extraction-is-the-right-tradeoff" title="Permanent link">&para;</a></h2>
+<p>Three options exist for this extraction:</p>
+<p><strong>Option A — Panels set attributes on MainWindow.</strong> Each <code>_build_ui()</code> receives <code>main_window</code> and does <code>main_window.widget_name = QWidget(...)</code>. This keeps the 1,203 external references in MainWindow unchanged but is an anti-pattern: panels mutate a foreign object's namespace, which defeats the purpose of encapsulation and makes it impossible to test panels independently.</p>
+<p><strong>Option B — Full ownership migration in one pass.</strong> Panels own widgets as private attributes, and all 1,203 references in MainWindow's 16,000-line business logic section are updated to <code>self._panel.widget_name</code> in the same commit. This is architecturally correct but represents a ~1,600-line diff in business logic code that has no regression coverage. One missed reference causes a silent <code>AttributeError</code> at runtime. The risk of introducing regressions without detection is unacceptably high.</p>
+<p><strong>Option C — Phased.</strong> Panels own widgets as <em>public</em> attributes (no underscore prefix). Phase 1 (this sprint) moves only the UI construction code. After each panel extraction, every <code>self.widget_name</code> reference in the remaining MainWindow code is mechanically rewritten to <code>self._panel_name.widget_name</code>. The attribute still exists, it is just accessed through the panel. The existing test suite runs after each panel, providing regression signal before moving on to the next. Phase 2 (a future sprint) moves business logic methods into panels and converts public widget attributes to private ones.</p>
+<p>Option C is the right tradeoff because:
+1. It is mechanically safe — each individual panel extraction is an independent, reviewable, testable change.
+2. It preserves test coverage signal throughout the sprint.
+3. It does not require the 16,000-line business logic section to be understood or modified beyond mechanical search-and-replace.
+4. It leaves a clean seam for Phase 2.</p>
+<hr />
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<h3 id="panel-constructor-signature">Panel Constructor Signature<a class="headerlink" href="#panel-constructor-signature" title="Permanent link">&para;</a></h3>
+<p>All six panels follow this constructor pattern (update the Sprint 1 stubs to match):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">main_window</span><span class="p">:</span> <span class="s2">&quot;MainWindow&quot;</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">TrackerConfig</span><span class="p">,</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>             <span class="n">parent</span><span class="p">:</span> <span class="n">QWidget</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">parent</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">_main_window</span> <span class="o">=</span> <span class="n">main_window</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">_build_ui</span><span class="p">()</span>
+</span></code></pre></div>
+<p><code>main_window</code> is passed so that signal connections (<code>.connect(self._main_window.some_handler)</code>) work identically to the original code. This is not a long-term dependency — Phase 2 will move the handlers into the panels and remove <code>_main_window</code>.</p>
+<h3 id="widget-attribute-visibility">Widget Attribute Visibility<a class="headerlink" href="#widget-attribute-visibility" title="Permanent link">&para;</a></h3>
+<p>All widgets created in <code>_build_ui()</code> are assigned as <strong>public</strong> attributes (<code>self.widget_name = ...</code>, no underscore). This is intentional: MainWindow must still reach them via <code>self._panel.widget_name</code> throughout Sprint 2. Private attributes (<code>self._widget_name</code>) happen in Phase 2 when the accessing business logic moves into the panel.</p>
+<h3 id="helper-method-access">Helper Method Access<a class="headerlink" href="#helper-method-access" title="Permanent link">&para;</a></h3>
+<p>The six panels will call MainWindow helper methods during <code>_build_ui()</code>:
+- <code>self._main_window._create_help_label(...)</code>
+- <code>self._main_window._set_compact_scroll_layout(...)</code>
+- <code>self._main_window._set_compact_section_widget(...)</code>
+- <code>self._main_window._remember_collapsible_state(...)</code></p>
+<p>These helpers are utility methods with no side effects on MainWindow state. They remain on MainWindow for now.</p>
+<h3 id="custom-widget-classes">Custom Widget Classes<a class="headerlink" href="#custom-widget-classes" title="Permanent link">&para;</a></h3>
+<p><code>CollapsibleGroupBox</code>, <code>AccordionContainer</code>, and <code>CompactHelpLabel</code> are defined at module level in <code>main_window.py</code>. Panels import them directly:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">hydra_suite.trackerkit.gui.main_window</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">CollapsibleGroupBox</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">AccordionContainer</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">CompactHelpLabel</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>These will move to <code>trackerkit/gui/widgets/</code> in a later sprint.</p>
+<h3 id="module-level-flags-detectionpanel-only">Module-Level Flags (DetectionPanel Only)<a class="headerlink" href="#module-level-flags-detectionpanel-only" title="Permanent link">&para;</a></h3>
+<p><code>DetectionPanel._build_ui()</code> uses <code>TORCH_CUDA_AVAILABLE</code>, <code>MPS_AVAILABLE</code>, and <code>TENSORRT_AVAILABLE</code>. Import them in <code>detection_panel.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">hydra_suite.utils.gpu_utils</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">MPS_AVAILABLE</span><span class="p">,</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">TENSORRT_AVAILABLE</span><span class="p">,</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">TORCH_CUDA_AVAILABLE</span><span class="p">,</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="how-mainwindow-changes">How MainWindow Changes<a class="headerlink" href="#how-mainwindow-changes" title="Permanent link">&para;</a></h3>
+<p>In <code>init_ui()</code>, the six blocks that currently do:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="bp">self</span><span class="o">.</span><span class="n">tab_setup</span> <span class="o">=</span> <span class="n">QWidget</span><span class="p">()</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="bp">self</span><span class="o">.</span><span class="n">setup_setup_ui</span><span class="p">()</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="bp">self</span><span class="o">.</span><span class="n">tabs</span><span class="o">.</span><span class="n">addTab</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">tab_setup</span><span class="p">,</span> <span class="s2">&quot;Get Started&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<p>become:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="bp">self</span><span class="o">.</span><span class="n">_setup_panel</span> <span class="o">=</span> <span class="n">SetupPanel</span><span class="p">(</span><span class="n">main_window</span><span class="o">=</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">)</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="bp">self</span><span class="o">.</span><span class="n">tabs</span><span class="o">.</span><span class="n">addTab</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_setup_panel</span><span class="p">,</span> <span class="s2">&quot;Get Started&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The <code>tab_X</code> attributes disappear (they are no longer needed — the panel widget is the tab). The <code>setup_*_ui()</code> method bodies are deleted from <code>main_window.py</code>.</p>
+<p>All remaining <code>self.widget_name</code> references throughout <code>main_window.py</code> are rewritten to <code>self._panel_name.widget_name</code> after each extraction.</p>
+<hr />
+<h2 id="per-panel-extraction-scope">Per-Panel Extraction Scope<a class="headerlink" href="#per-panel-extraction-scope" title="Permanent link">&para;</a></h2>
+<p>Extraction order follows risk-first (smallest/simplest panels first to validate the pattern).</p>
+<h3 id="step-1-datasetpanel-smallest-380-lines-30-widgets">Step 1 — DatasetPanel (smallest: 380 lines, 30 widgets)<a class="headerlink" href="#step-1-datasetpanel-smallest-380-lines-30-widgets" title="Permanent link">&para;</a></h3>
+<p><strong>Source:</strong> <code>setup_dataset_ui</code> (lines 7448–7827)
+<strong>Target:</strong> <code>trackerkit/gui/panels/dataset_panel.py</code>
+<strong>Panel attribute on MainWindow:</strong> <code>self._dataset_panel</code>
+<strong>Tab label:</strong> <code>"Build Dataset"</code></p>
+<p>Body of <code>setup_dataset_ui</code> moves verbatim into <code>DatasetPanel._build_ui()</code>. The first line <code>layout = QVBoxLayout(self.tab_dataset)</code> becomes <code>layout = self._layout</code>. After move: delete <code>setup_dataset_ui</code> from <code>main_window.py</code>, replace the 3-line tab block with 2-line panel instantiation, rewrite ~87 external references from <code>self.widget</code> to <code>self._dataset_panel.widget</code>, remove <code>self.tab_dataset</code> attribute.</p>
+<p><code>combo_xanylabeling_env</code> is referenced in <code>test_main_window_config_persistence.py</code> — update to <code>window._dataset_panel.combo_xanylabeling_env</code>.</p>
+<p><strong>Expected MainWindow line count after Step 1:</strong> ≤ 19,600 lines.</p>
+<h3 id="step-2-setuppanel-697-lines-58-widgets">Step 2 — SetupPanel (697 lines, 58 widgets)<a class="headerlink" href="#step-2-setuppanel-697-lines-58-widgets" title="Permanent link">&para;</a></h3>
+<p><strong>Source:</strong> <code>setup_setup_ui</code> (lines 4341–5037)
+<strong>Target:</strong> <code>trackerkit/gui/panels/setup_panel.py</code>
+<strong>Panel attribute on MainWindow:</strong> <code>self._setup_panel</code>
+<strong>Tab label:</strong> <code>"Get Started"</code></p>
+<p>Signal connections reference handlers including <code>_load_selected_preset</code>, <code>_save_custom_preset</code>, <code>_on_preset_selection_changed</code>, <code>_add_videos_to_batch</code>, <code>_clear_batch</code>, <code>_detect_fps_from_current_video</code>. All connected as <code>self._main_window.handler_name</code>.</p>
+<p>The <code>_populate_preset_combo()</code> and <code>_populate_compute_runtime_options()</code> calls at the end of <code>setup_setup_ui</code> (lines 5035–5036) become <code>self._main_window._populate_preset_combo()</code> etc., or are called from <code>MainWindow.__init__</code> after panel construction.</p>
+<p><strong>Expected MainWindow line count after Step 2:</strong> ≤ 18,900 lines.</p>
+<h3 id="step-3-trackingpanel-795-lines-48-widgets">Step 3 — TrackingPanel (795 lines, 48 widgets)<a class="headerlink" href="#step-3-trackingpanel-795-lines-48-widgets" title="Permanent link">&para;</a></h3>
+<p><strong>Source:</strong> <code>setup_tracking_ui</code> (lines 6052–6846)
+<strong>Target:</strong> <code>trackerkit/gui/panels/tracking_panel.py</code>
+<strong>Panel attribute on MainWindow:</strong> <code>self._tracking_panel</code>
+<strong>Tab label:</strong> <code>"Track Movement"</code></p>
+<p>Only 2 signal connections (to <code>_open_parameter_helper</code> and <code>_on_confidence_density_map_toggled</code>). This is the simplest connection surface of the larger panels.</p>
+<p><code>chk_enable_confidence_density_map</code> and <code>g_density</code> are referenced in <code>test_main_window_config_persistence.py</code> — update to <code>window._tracking_panel.*</code>.</p>
+<p><strong>Expected MainWindow line count after Step 3:</strong> ≤ 18,100 lines.</p>
+<h3 id="step-4-postprocesspanel-601-lines-67-widgets">Step 4 — PostProcessPanel (601 lines, 67 widgets)<a class="headerlink" href="#step-4-postprocesspanel-601-lines-67-widgets" title="Permanent link">&para;</a></h3>
+<p><strong>Source:</strong> <code>setup_data_ui</code> (lines 6847–7447)
+<strong>Target:</strong> <code>trackerkit/gui/panels/postprocess_panel.py</code>
+<strong>Panel attribute on MainWindow:</strong> <code>self._postprocess_panel</code>
+<strong>Tab label:</strong> <code>"Clean Results"</code></p>
+<p>Signal handlers: <code>_on_cleaning_toggled</code>, <code>_on_video_output_toggled</code>, <code>_open_refinekit</code>, <code>_select_video_pose_color</code>, <code>select_video_output</code>.</p>
+<p><strong>Expected MainWindow line count after Step 4:</strong> ≤ 17,500 lines.</p>
+<h3 id="step-5-identitypanel-497-lines-51-widgets">Step 5 — IdentityPanel (497 lines, 51 widgets)<a class="headerlink" href="#step-5-identitypanel-497-lines-51-widgets" title="Permanent link">&para;</a></h3>
+<p><strong>Source:</strong> <code>setup_individual_analysis_ui</code> (lines 7828–8324)
+<strong>Target:</strong> <code>trackerkit/gui/panels/identity_panel.py</code>
+<strong>Panel attribute on MainWindow:</strong> <code>self._identity_panel</code>
+<strong>Tab label:</strong> <code>"Analyze Individuals"</code></p>
+<p>Largest signal surface (21 connections). Handlers include <code>_add_cnn_classifier_row</code>, <code>_on_identity_analysis_toggled</code>, <code>_on_pose_analysis_toggled</code>, <code>_on_runtime_context_changed</code>, <code>_refresh_pose_sleap_envs</code>.</p>
+<p><code>combo_yolo_headtail_model</code> and <code>combo_yolo_headtail_model_type</code> are referenced in <code>test_main_window_config_persistence.py</code> — update to <code>window._identity_panel.*</code>.</p>
+<p>The <code>_sync_individual_analysis_mode_ui()</code> call that currently follows <code>self.setup_individual_analysis_ui()</code> in <code>init_ui</code> must remain as <code>self._sync_individual_analysis_mode_ui()</code> in MainWindow after panel instantiation.</p>
+<p><strong>Expected MainWindow line count after Step 5:</strong> ≤ 17,000 lines.</p>
+<h3 id="step-6-detectionpanel-1014-lines-73-widgets-largest-saved-for-last">Step 6 — DetectionPanel (1,014 lines, 73 widgets) — largest, saved for last<a class="headerlink" href="#step-6-detectionpanel-1014-lines-73-widgets-largest-saved-for-last" title="Permanent link">&para;</a></h3>
+<p><strong>Source:</strong> <code>setup_detection_ui</code> (lines 5038–6051)
+<strong>Target:</strong> <code>trackerkit/gui/panels/detection_panel.py</code>
+<strong>Panel attribute on MainWindow:</strong> <code>self._detection_panel</code>
+<strong>Tab label:</strong> <code>"Find Animals"</code></p>
+<p>Additional imports: <code>TORCH_CUDA_AVAILABLE</code>, <code>MPS_AVAILABLE</code>, <code>TENSORRT_AVAILABLE</code> from <code>hydra_suite.utils.gpu_utils</code>.</p>
+<p>Signal handlers: <code>_on_brightness_changed</code>, <code>_on_contrast_changed</code>, <code>_on_gamma_changed</code>, <code>_on_tensorrt_toggled</code>, <code>_on_yolo_mode_changed</code>, <code>_open_bg_parameter_helper</code>, <code>_update_body_size_info</code>, <code>on_yolo_model_changed</code>, <code>_refresh_yolo_detect_model_combo</code>, <code>_refresh_yolo_crop_obb_model_combo</code>, <code>_refresh_yolo_model_combo</code>.</p>
+<p><strong>Expected MainWindow line count after Step 6:</strong> ≤ 16,050 lines.</p>
+<hr />
+<h2 id="widget-reference-update-strategy">Widget Reference Update Strategy<a class="headerlink" href="#widget-reference-update-strategy" title="Permanent link">&para;</a></h2>
+<p>After each panel's <code>_build_ui()</code> is populated and the <code>setup_*_ui()</code> method is deleted from <code>main_window.py</code>, all remaining <code>self.widget_name</code> references in <code>main_window.py</code> must be updated to <code>self._panel_name.widget_name</code>.</p>
+<h3 id="mechanical-process-per-panel">Mechanical Process (Per Panel)<a class="headerlink" href="#mechanical-process-per-panel" title="Permanent link">&para;</a></h3>
+<ol>
+<li>
+<p>Collect the full set of public widget names assigned in the extracted panel (use <code>grep -n "^\s*self\.[a-z_]* =" panel_file.py | sed 's/.*self\.\([a-z_]*\) = .*/\1/' | sort -u</code>).</p>
+</li>
+<li>
+<p>For each name, apply a whole-word substitution in <code>main_window.py</code> only:
+   <code>self.widget_name</code> → <code>self._panel_name.widget_name</code></p>
+</li>
+</ol>
+<p>Use whole-word matching to avoid false positives (e.g., <code>self.spin_fps</code> must not match <code>self.spin_fps_target</code>).</p>
+<ol>
+<li>
+<p>Do NOT substitute inside the panel file itself — panel code uses <code>self.widget_name</code> where <code>self</code> is the panel.</p>
+</li>
+<li>
+<p>Handle <code>self.tab_X</code> removal: after extraction, delete the 3-line tab creation block from <code>init_ui</code>.</p>
+</li>
+</ol>
+<h3 id="verification-after-each-panel">Verification After Each Panel<a class="headerlink" href="#verification-after-each-panel" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Import smoke test — catches missing attributes at module load</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>conda<span class="w"> </span>run<span class="w"> </span>-n<span class="w"> </span>hydra-mps<span class="w"> </span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;from hydra_suite.trackerkit.gui.main_window import MainWindow; print(&#39;ok&#39;)&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Full test suite</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>conda<span class="w"> </span>run<span class="w"> </span>-n<span class="w"> </span>hydra-mps<span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-x<span class="w"> </span>-q<span class="w"> </span>--ignore<span class="o">=</span>tests/test_confidence_density.py<span class="w"> </span>--ignore<span class="o">=</span>tests/test_correction_writer.py<span class="w"> </span>--ignore<span class="o">=</span>tests/test_tag_identity.py
+</span></code></pre></div>
+<p>A successful import confirms no broken cross-module references. Any new test failure must be resolved before starting the next panel.</p>
+<hr />
+<h2 id="test-strategy">Test Strategy<a class="headerlink" href="#test-strategy" title="Permanent link">&para;</a></h2>
+<h3 id="regression-baseline">Regression Baseline<a class="headerlink" href="#regression-baseline" title="Permanent link">&para;</a></h3>
+<p>Before starting, confirm the baseline: 841 tests collected, 1 deselected (benchmark), with 3 collection errors in pre-existing files (<code>test_correction_writer.py</code>, <code>test_tag_identity.py</code>, <code>test_confidence_density.py</code>).</p>
+<h3 id="required-test-updates-per-panel">Required Test Updates Per Panel<a class="headerlink" href="#required-test-updates-per-panel" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Test file</th>
+<th>Widget refs to update</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DatasetPanel</code></td>
+<td><code>test_main_window_config_persistence.py</code></td>
+<td><code>window.combo_xanylabeling_env</code></td>
+</tr>
+<tr>
+<td><code>TrackingPanel</code></td>
+<td><code>test_main_window_config_persistence.py</code></td>
+<td><code>window.chk_enable_confidence_density_map</code>, <code>window.g_density</code></td>
+</tr>
+<tr>
+<td><code>IdentityPanel</code></td>
+<td><code>test_main_window_config_persistence.py</code></td>
+<td><code>window.combo_yolo_headtail_model</code>, <code>window.combo_yolo_headtail_model_type</code></td>
+</tr>
+</tbody>
+</table>
+<p>Test updates happen in the same commit as the panel extraction.</p>
+<h3 id="optional-panel-smoke-tests">Optional: Panel Smoke Tests<a class="headerlink" href="#optional-panel-smoke-tests" title="Permanent link">&para;</a></h3>
+<p>Add <code>tests/test_trackerkit_panels_smoke.py</code> with one test per panel:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_setup_panel_builds_without_error</span><span class="p">(</span><span class="n">qapp</span><span class="p">,</span> <span class="n">main_window</span><span class="p">):</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="k">assert</span> <span class="n">main_window</span><span class="o">.</span><span class="n">_setup_panel</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">main_window</span><span class="o">.</span><span class="n">_setup_panel</span><span class="p">,</span> <span class="s2">&quot;combo_presets&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<hr />
+<h2 id="completion-criteria">Completion Criteria<a class="headerlink" href="#completion-criteria" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Panel</th>
+<th>Method deleted</th>
+<th>MainWindow target</th>
+<th>Tests pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>DatasetPanel</code></td>
+<td><code>setup_dataset_ui</code></td>
+<td>≤ 19,600 lines</td>
+<td>841+ collected</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>SetupPanel</code></td>
+<td><code>setup_setup_ui</code></td>
+<td>≤ 18,900 lines</td>
+<td>841+ collected</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>TrackingPanel</code></td>
+<td><code>setup_tracking_ui</code></td>
+<td>≤ 18,100 lines</td>
+<td>841+ collected</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>PostProcessPanel</code></td>
+<td><code>setup_data_ui</code></td>
+<td>≤ 17,500 lines</td>
+<td>841+ collected</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>IdentityPanel</code></td>
+<td><code>setup_individual_analysis_ui</code></td>
+<td>≤ 17,000 lines</td>
+<td>841+ collected</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>DetectionPanel</code></td>
+<td><code>setup_detection_ui</code></td>
+<td>≤ 16,050 lines</td>
+<td>841+ collected</td>
+</tr>
+</tbody>
+</table>
+<p>Final state:
+- [ ] All 6 <code>setup_*_ui()</code> methods deleted from <code>main_window.py</code>
+- [ ] All 6 <code>tab_X = QWidget()</code> attributes deleted from <code>init_ui()</code>
+- [ ] All 6 panels are instantiated in <code>init_ui()</code> and added directly to <code>self.tabs</code>
+- [ ] All 327 public widget attributes are accessible as <code>self._panel_name.widget_name</code> from MainWindow
+- [ ] <code>main_window.py</code> is under 16,100 lines
+- [ ] 841+ tests collected, all passing
+- [ ] <code>test_main_window_config_persistence.py</code> references updated to panel-qualified widget paths</p>
+<hr />
+<h2 id="out-of-scope-for-this-sprint">Out of Scope for This Sprint<a class="headerlink" href="#out-of-scope-for-this-sprint" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Moving any business logic method (event handlers, workflows) from MainWindow into panels</li>
+<li>Making panel widget attributes private (underscore prefix)</li>
+<li>Moving <code>CollapsibleGroupBox</code>, <code>AccordionContainer</code>, <code>CompactHelpLabel</code> out of <code>main_window.py</code></li>
+<li>Moving helper methods (<code>_create_help_label</code>, <code>_set_compact_*</code>) out of MainWindow</li>
+<li>Removing <code>_main_window</code> back-reference from panels (deferred to Phase 2)</li>
+<li>Any changes to workers, dialogs, config schemas, or other kits</li>
+</ul>
+<hr />
+<h2 id="files-created-or-modified">Files Created or Modified<a class="headerlink" href="#files-created-or-modified" title="Permanent link">&para;</a></h2>
+<p><strong>Modified:</strong>
+- <code>src/hydra_suite/trackerkit/gui/main_window.py</code> — 6 setup methods deleted, <code>init_ui()</code> updated, ~1,203 widget references updated
+- <code>tests/test_main_window_config_persistence.py</code> — 3–5 widget references updated to panel-qualified paths</p>
+<p><strong>Populated (bodies added to Sprint 1 stubs):</strong>
+- <code>src/hydra_suite/trackerkit/gui/panels/setup_panel.py</code>
+- <code>src/hydra_suite/trackerkit/gui/panels/detection_panel.py</code>
+- <code>src/hydra_suite/trackerkit/gui/panels/tracking_panel.py</code>
+- <code>src/hydra_suite/trackerkit/gui/panels/postprocess_panel.py</code>
+- <code>src/hydra_suite/trackerkit/gui/panels/dataset_panel.py</code>
+- <code>src/hydra_suite/trackerkit/gui/panels/identity_panel.py</code></p>
+<p><strong>Created (optional):</strong>
+- <code>tests/test_trackerkit_panels_smoke.py</code></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>

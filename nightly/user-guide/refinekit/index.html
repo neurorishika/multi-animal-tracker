@@ -10,24 +10,28 @@
       
       
       
-        <link rel="canonical" href="https://neurorishika.github.io/hydra-suite/nightly/superpowers/specs/2026-04-03-hydra-rename-design/">
+        <link rel="canonical" href="https://neurorishika.github.io/hydra-suite/nightly/user-guide/refinekit/">
       
       
+        <link rel="prev" href="../filterkit/">
       
       
-      <link rel="icon" href="../../../assets/images/favicon.png">
+        <link rel="next" href="../troubleshooting/">
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
     
     
       
-        <title>HYDRA Rename Design Spec - HYDRA Suite Docs</title>
+        <title>RefineKit - HYDRA Suite Docs</title>
       
     
     
-      <link rel="stylesheet" href="../../../assets/stylesheets/main.0253249f.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.0253249f.min.css">
       
         
-        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
       
       
 
@@ -46,9 +50,9 @@
       
     
     
-      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -74,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#hydra-rename-design-spec" class="md-skip">
+        <a href="#refinekit" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +96,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../../.." title="HYDRA Suite Docs" class="md-header__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
+    <a href="../.." title="HYDRA Suite Docs" class="md-header__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -112,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              HYDRA Rename Design Spec
+              RefineKit
             
           </span>
         </div>
@@ -221,7 +225,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../../.." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
     
@@ -240,7 +244,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../getting-started/installation/" class="md-tabs__link">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
           
   
   Getting Started
@@ -254,11 +258,13 @@
         
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../../user-guide/overview/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../overview/" class="md-tabs__link">
           
   
   User Guide
@@ -276,7 +282,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../developer-guide/architecture/" class="md-tabs__link">
+        <a href="../../developer-guide/architecture/" class="md-tabs__link">
           
   
   Developer Guide
@@ -294,7 +300,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../reference/api-index/" class="md-tabs__link">
+        <a href="../../reference/api-index/" class="md-tabs__link">
           
   
   Reference
@@ -327,7 +333,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../../.." title="HYDRA Suite Docs" class="md-nav__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
+    <a href="../.." title="HYDRA Suite Docs" class="md-nav__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -357,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../.." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -419,7 +425,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../getting-started/installation/" class="md-nav__link">
+      <a href="../../getting-started/installation/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -440,7 +446,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../getting-started/environments/" class="md-nav__link">
+      <a href="../../getting-started/environments/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -461,7 +467,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../getting-started/integrations/" class="md-nav__link">
+      <a href="../../getting-started/integrations/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -482,11 +488,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../getting-started/quickstart-hydra/" class="md-nav__link">
+      <a href="../../getting-started/quickstart-hydra/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    Quickstart (HYDRA)
+    Quickstart (TrackerKit)
   </span>
   
 
@@ -503,7 +509,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../getting-started/quickstart-posekit/" class="md-nav__link">
+      <a href="../../getting-started/quickstart-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -524,7 +530,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../getting-started/platforms/" class="md-nav__link">
+      <a href="../../getting-started/platforms/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -549,27 +555,30 @@
       
   
   
+    
   
   
+  
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
-        
-          
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
             
   
   <span class="md-ellipsis">
@@ -580,7 +589,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             User Guide
@@ -594,7 +603,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/overview/" class="md-nav__link">
+      <a href="../overview/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -615,7 +624,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/workflow/" class="md-nav__link">
+      <a href="../workflow/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -636,7 +645,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/detection-modes/" class="md-nav__link">
+      <a href="../detection-modes/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -657,7 +666,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/tracking-and-merging/" class="md-nav__link">
+      <a href="../tracking-and-merging/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -678,7 +687,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/post-processing/" class="md-nav__link">
+      <a href="../post-processing/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -699,7 +708,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/configuration-reference/" class="md-nav__link">
+      <a href="../configuration-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -720,7 +729,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/compute-runtimes/" class="md-nav__link">
+      <a href="../compute-runtimes/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -741,7 +750,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+      <a href="../outputs-and-csv-schema/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -762,7 +771,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/dataset-generation/" class="md-nav__link">
+      <a href="../dataset-generation/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -783,7 +792,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/individual-analysis/" class="md-nav__link">
+      <a href="../individual-analysis/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -804,11 +813,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/posekit-labeler/" class="md-nav__link">
+      <a href="../posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    PoseKit Labeler
+    PoseKit
   </span>
   
 
@@ -825,7 +834,167 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../user-guide/troubleshooting/" class="md-nav__link">
+      <a href="../classkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ClassKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../detectkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    DetectKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../filterkit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FilterKit
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    RefineKit
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    RefineKit
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      Purpose
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      Launch
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Workflow
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      Key Features
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -895,7 +1064,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/architecture/" class="md-nav__link">
+      <a href="../../developer-guide/architecture/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -916,7 +1085,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/module-map/" class="md-nav__link">
+      <a href="../../developer-guide/module-map/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -937,7 +1106,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/data-flow/" class="md-nav__link">
+      <a href="../../developer-guide/data-flow/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -958,7 +1127,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+      <a href="../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -979,7 +1148,28 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/gpu-backends/" class="md-nav__link">
+      <a href="../../developer-guide/tracking-optimization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Optimization
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/gpu-backends/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1000,7 +1190,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/runtime-integration/" class="md-nav__link">
+      <a href="../../developer-guide/runtime-integration/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1021,7 +1211,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+      <a href="../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1042,7 +1232,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/performance-tuning/" class="md-nav__link">
+      <a href="../../developer-guide/performance-tuning/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1063,7 +1253,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/confidence-metrics/" class="md-nav__link">
+      <a href="../../developer-guide/confidence-metrics/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1084,7 +1274,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/extending-detection/" class="md-nav__link">
+      <a href="../../developer-guide/extending-detection/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1105,7 +1295,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/extending-identity/" class="md-nav__link">
+      <a href="../../developer-guide/extending-identity/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1126,7 +1316,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/code-health/" class="md-nav__link">
+      <a href="../../developer-guide/code-health/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1147,7 +1337,28 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../developer-guide/contributing/" class="md-nav__link">
+      <a href="../../developer-guide/publishing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Publishing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/contributing/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1217,7 +1428,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-index/" class="md-nav__link">
+      <a href="../../reference/api-index/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1238,11 +1449,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/ui-components-hydra/" class="md-nav__link">
+      <a href="../../reference/ui-components-hydra/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    UI Components (HYDRA)
+    UI Components (TrackerKit)
   </span>
   
 
@@ -1259,7 +1470,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/ui-components-posekit/" class="md-nav__link">
+      <a href="../../reference/ui-components-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1280,11 +1491,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-app/" class="md-nav__link">
+      <a href="../../reference/api-app/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    API (App)
+    API (Launcher)
   </span>
   
 
@@ -1301,7 +1512,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-core/" class="md-nav__link">
+      <a href="../../reference/api-core/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1322,7 +1533,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-data/" class="md-nav__link">
+      <a href="../../reference/api-data/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1343,11 +1554,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-gui/" class="md-nav__link">
+      <a href="../../reference/api-gui/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    API (GUI)
+    API (TrackerKit GUI)
   </span>
   
 
@@ -1364,7 +1575,28 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-posekit/" class="md-nav__link">
+      <a href="../../reference/api-widgets/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Widgets)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1385,7 +1617,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/api-utils/" class="md-nav__link">
+      <a href="../../reference/api-utils/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1406,7 +1638,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/cli-reference/" class="md-nav__link">
+      <a href="../../reference/cli-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1427,7 +1659,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/technical-reference/" class="md-nav__link">
+      <a href="../../reference/technical-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1448,7 +1680,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/changelog/" class="md-nav__link">
+      <a href="../../reference/changelog/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1469,7 +1701,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../reference/faq/" class="md-nav__link">
+      <a href="../../reference/faq/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1517,63 +1749,36 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#naming-map" class="md-nav__link">
+  <a href="#purpose" class="md-nav__link">
     <span class="md-ellipsis">
-      Naming Map
+      Purpose
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#cli-entry-points" class="md-nav__link">
+  <a href="#launch" class="md-nav__link">
     <span class="md-ellipsis">
-      CLI Entry Points
+      Launch
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#directory-structure" class="md-nav__link">
+  <a href="#workflow" class="md-nav__link">
     <span class="md-ellipsis">
-      Directory Structure
+      Workflow
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#brand-assets" class="md-nav__link">
+  <a href="#key-features" class="md-nav__link">
     <span class="md-ellipsis">
-      Brand Assets
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#data-directory-migration" class="md-nav__link">
-    <span class="md-ellipsis">
-      Data Directory Migration
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#scope-summary" class="md-nav__link">
-    <span class="md-ellipsis">
-      Scope Summary
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#execution-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      Execution Order
+      Key Features
     </span>
   </a>
   
@@ -1594,7 +1799,7 @@
                   
 
   
-    <a href="https://github.com/neurorishika/hydra-suite/edit/main/docs/superpowers/specs/2026-04-03-hydra-rename-design.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/neurorishika/hydra-suite/edit/main/docs/user-guide/refinekit.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1602,144 +1807,27 @@
   
 
 
-<h1 id="hydra-rename-design-spec">HYDRA Rename Design Spec<a class="headerlink" href="#hydra-rename-design-spec" title="Permanent link">&para;</a></h1>
-<p><strong>Date:</strong> 2026-04-03
-<strong>Branch:</strong> <code>refactor/src-reorganization</code>
-<strong>Scope:</strong> Rename project from "hydra-suite" / "MAT" / "hydra_suite" to "HYDRA" (Holistic YOLO-based Detection Recognition and Analysis Suite)</p>
-<h2 id="naming-map">Naming Map<a class="headerlink" href="#naming-map" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Old</th>
-<th>New</th>
-<th>Context</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>hydra-suite</code></td>
-<td><code>hydra-suite</code></td>
-<td>pip package name, conda env base, GitHub repo, platformdirs app name</td>
-</tr>
-<tr>
-<td><code>hydra_suite</code></td>
-<td><code>hydra_suite</code></td>
-<td>Python package (imports)</td>
-</tr>
-<tr>
-<td><code>hydra_suite.tracker</code></td>
-<td><code>hydra_suite.tracker</code></td>
-<td>Main tracker app module</td>
-</tr>
-<tr>
-<td><code>hydra</code></td>
-<td><code>hydra</code></td>
-<td>CLI entry point</td>
-</tr>
-<tr>
-<td><code>MAT</code></td>
-<td><code>HYDRA</code></td>
-<td>Acronym in docs/comments</td>
-</tr>
-<tr>
-<td><code>MAT_DATA_DIR</code> / <code>MAT_CONFIG_DIR</code></td>
-<td><code>HYDRA_DATA_DIR</code> / <code>HYDRA_CONFIG_DIR</code></td>
-<td>Env var overrides</td>
-</tr>
-<tr>
-<td><code>hydra-suite</code> (conda)</td>
-<td><code>hydra</code> / <code>hydra-mps</code> / <code>hydra-cuda</code> / <code>hydra-rocm</code></td>
-<td>Conda environment names</td>
-</tr>
-<tr>
-<td><code>neurorishika/hydra-suite</code></td>
-<td><code>neurorishika/hydra-suite</code></td>
-<td>GitHub repo URL</td>
-</tr>
-<tr>
-<td><code>~/...hydra-suite/</code></td>
-<td><code>~/...hydra-suite/</code></td>
-<td>User data/config dirs</td>
-</tr>
-</tbody>
-</table>
-<h2 id="cli-entry-points">CLI Entry Points<a class="headerlink" href="#cli-entry-points" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Command</th>
-<th>Target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>hydra</code></td>
-<td><code>hydra_suite.tracker.app.launcher:main</code></td>
-</tr>
-<tr>
-<td><code>posekit</code></td>
-<td><code>hydra_suite.posekit.ui.main:main</code></td>
-</tr>
-<tr>
-<td><code>detectkit</code></td>
-<td><code>hydra_suite.detectkit.app:main</code></td>
-</tr>
-<tr>
-<td><code>classkit</code></td>
-<td><code>hydra_suite.classkit.app:main</code></td>
-</tr>
-<tr>
-<td><code>filterkit</code></td>
-<td><code>hydra_suite.filterkit.gui:main</code></td>
-</tr>
-<tr>
-<td><code>refinekit</code></td>
-<td><code>hydra_suite.refinekit.app:main</code></td>
-</tr>
-</tbody>
-</table>
-<p>No aliases. One command per tool.</p>
-<h2 id="directory-structure">Directory Structure<a class="headerlink" href="#directory-structure" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/hydra_suite/     --&gt;  src/hydra_suite/
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>src/hydra_suite/mat/ --&gt;  src/hydra_suite/tracker/
+<h1 id="refinekit">RefineKit<a class="headerlink" href="#refinekit" title="Permanent link">&para;</a></h1>
+<p>RefineKit is the interactive trajectory proofreading tool, launched via <code>refinekit</code>.</p>
+<h2 id="purpose">Purpose<a class="headerlink" href="#purpose" title="Permanent link">&para;</a></h2>
+<p>Review and correct tracked trajectories with an interactive canvas, synchronized video views, and a suspicion-based review queue.</p>
+<h2 id="launch">Launch<a class="headerlink" href="#launch" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>refinekit
 </span></code></pre></div>
-<p>All other subdirectories (core, posekit, classkit, filterkit, refinekit, detectkit, runtime, data, training, utils, resources, paths, integrations) keep their names, just move under <code>hydra_suite/</code>.</p>
-<h2 id="brand-assets">Brand Assets<a class="headerlink" href="#brand-assets" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Remove obsolete SVGs: <code>hydra.svg</code> and any other old brand files</li>
-<li><code>hydra.svg</code> already exists and is the new primary brand asset</li>
-<li>Update tests that assert on old brand file names</li>
-</ul>
-<h2 id="data-directory-migration">Data Directory Migration<a class="headerlink" href="#data-directory-migration" title="Permanent link">&para;</a></h2>
-<p>No migration code in the runtime. Data dirs on the developer's machine are moved manually during implementation. Other users have an existing migration script in the repo.</p>
-<h2 id="scope-summary">Scope Summary<a class="headerlink" href="#scope-summary" title="Permanent link">&para;</a></h2>
-<ul>
-<li>~3,350 import/reference changes across ~185 .py files</li>
-<li>~149 occurrences of <code>hydra-suite</code> in config/docs</li>
-<li>~138 <code>MAT</code> acronym references across ~60 files</li>
-<li>~22 brand-related references</li>
-<li>8 entry points in pyproject.toml</li>
-<li>4 conda environment definitions</li>
-<li>4 environment*.yml files</li>
-<li>~25 GitHub URLs</li>
-<li>~41 documentation .md files</li>
-</ul>
-<h2 id="execution-order">Execution Order<a class="headerlink" href="#execution-order" title="Permanent link">&para;</a></h2>
+<h2 id="workflow">Workflow<a class="headerlink" href="#workflow" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Rename directory <code>src/hydra_suite/</code> to <code>src/hydra_suite/</code> (including <code>mat/</code> to <code>tracker/</code>)</li>
-<li>Remove old brand SVGs (<code>hydra.svg</code>, etc.)</li>
-<li>Global find-replace across all .py files: <code>hydra_suite.tracker</code> to <code>hydra_suite.tracker</code>, then <code>hydra_suite</code> to <code>hydra_suite</code></li>
-<li>Update <code>pyproject.toml</code> (package name, entry points, URLs, coverage, package data)</li>
-<li>Update <code>Makefile</code> (env names, variable prefixes)</li>
-<li>Update <code>environment*.yml</code> (env names)</li>
-<li>Update all docs (.md files, mkdocs.yml, README)</li>
-<li>Update <code>CLAUDE.md</code></li>
-<li>Update test files (imports, hardcoded string assertions)</li>
-<li>Update <code>.flake8.strict</code> and other config referencing old names</li>
-<li>Move data dirs on dev machine</li>
-<li>Run <code>make format</code> and <code>make lint</code></li>
-<li>Run tests to validate</li>
+<li>Load tracked trajectories and source video.</li>
+<li>Review flagged suspicious segments in the suspicion queue.</li>
+<li>Correct identity assignments using the interactive canvas and timeline editor.</li>
+<li>Export refined trajectories.</li>
 </ol>
+<h2 id="key-features">Key Features<a class="headerlink" href="#key-features" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Suspicion queue for prioritized review of likely errors</li>
+<li>Synchronized multi-video grid for cross-referencing</li>
+<li>Interactive canvas for identity correction</li>
+<li>Timeline editor for temporal navigation and segment review</li>
+</ul>
 
 
 
@@ -1792,10 +1880,10 @@
     </div>
     
     
-    <script id="__config" type="application/json">{"base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      <script src="../../assets/javascripts/bundle.83f73b43.min.js"></script>
       
     
   </body>

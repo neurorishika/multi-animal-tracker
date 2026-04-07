@@ -147,7 +147,7 @@ This manuscript documents the current implementation of the tracking system in t
   \item explain the algorithmic design to technically fluent readers,
   \item remain understandable to collaborators who are not tracking specialists,
   \item map runtime behavior back to the actual user interface controls,
-  \item and situate tracking within the broader MAT ecosystem that also includes PoseKit, ClassKit, and FilterKit.
+  \item and situate tracking within the broader TrackerKit ecosystem that also includes PoseKit, ClassKit, and FilterKit.
 \end{itemize}
 \end{minipage}
 
@@ -182,7 +182,7 @@ This manuscript documents the current implementation of the tracking system in t
 
 \section{Executive Overview}
 
-HYDRA Suite (MAT) is not a single monolithic algorithm. The current system is a staged evidence-integration pipeline whose online and offline phases intentionally serve different purposes.
+TrackerKit is not a single monolithic algorithm. The current system is a staged evidence-integration pipeline whose online and offline phases intentionally serve different purposes.
 
 \begin{itemize}
   \item The online phase answers: which detections belong to which tracks right now?
@@ -208,15 +208,15 @@ The tracking algorithm does not live alone. The repository is now a small ecosys
 
 \begin{center}
   \resizebox{\linewidth}{!}{\input{figures/ecosystem}}
-  \captionof{figure}{Relationship between MAT and the adjacent tools in the repository.}
+  \captionof{figure}{Relationship between TrackerKit and the adjacent tools in the repository.}
   \label{fig:ecosystem}
 \end{center}
 
 \subsection{HYDRA Suite}
 
-\brandchip{HYDRABlue}{MAT}
+\brandchip{HYDRABlue}{TrackerKit}
 
-MAT is the tracking workbench. It handles:
+TrackerKit is the tracking workbench. It handles:
 
 \begin{itemize}
   \item video ingest and preview,
@@ -240,7 +240,7 @@ PoseKit is the repository's pose-labeling and pose-inference application. From t
   \item and downstream training / evaluation loops for pose datasets.
 \end{itemize}
 
-In practical workflow terms, MAT often feeds PoseKit by exporting individual crops or curated datasets for keypoint annotation. PoseKit then feeds back richer body geometry that MAT can use for directed heading and pose-aware association.
+In practical workflow terms, TrackerKit often feeds PoseKit by exporting individual crops or curated datasets for keypoint annotation. PoseKit then feeds back richer body geometry that TrackerKit can use for directed heading and pose-aware association.
 
 \subsection{ClassKit}
 
@@ -981,9 +981,9 @@ for crop or short-tracklet image sets $\mathcal{I}$, and then define an offline 
   + \gamma \cos\!\bigl(\phi(\mathcal{I}_a), \phi(\mathcal{I}_b)\bigr).
 \end{equation}
 
-The current architecture is already a good host for this idea because MAT can export crops, ClassKit can curate identity-relevant image sets, and FilterKit can deduplicate or diversity-filter those sets before training. In practice:
+The current architecture is already a good host for this idea because TrackerKit can export crops, ClassKit can curate identity-relevant image sets, and FilterKit can deduplicate or diversity-filter those sets before training. In practice:
 \begin{itemize}
-  \item MAT remains conservative online,
+  \item TrackerKit remains conservative online,
   \item PoseKit and ClassKit help build structured post hoc training data,
   \item FilterKit trims redundant crop corpora,
   \item and the learned fusion model can operate only on residual fragments that survive the conservative motion pipeline.
@@ -1039,7 +1039,7 @@ Beyond the immediate work above, the technical roadmap suggested by the current 
   \item add stronger explicit identity channels such as tags or color markers when the experiment permits them,
   \item use richer learned fusion only after the experiment, where whole-trajectory evidence is available,
   \item accelerate the detection front-end so the identity stack can spend compute where uncertainty is highest rather than everywhere uniformly,
-  \item and keep tightening the handoff among MAT, PoseKit, ClassKit, and FilterKit so downstream model-building workflows become part of the tracking loop rather than a manual afterthought.
+  \item and keep tightening the handoff among TrackerKit, PoseKit, ClassKit, and FilterKit so downstream model-building workflows become part of the tracking loop rather than a manual afterthought.
 \end{enumerate}
 
 This direction preserves the strongest property of the current tracker: it exposes uncertainty instead of hiding it. Future improvements should therefore increase evidence quality and speed without turning the core assignment stage into a black box that is hard to audit.
@@ -1268,7 +1268,7 @@ The following code paths are the highest-value audit points for the current beha
 \codepath{src/hydra_suite/core/filters/kalman.py} & vectorized Kalman prediction / correction with anisotropic process noise, maturity damping, and Joseph-form updates \\
 \codepath{src/hydra_suite/core/assigners/hungarian.py} & cost matrix construction, advanced gating, pose rejection, staged assignment, and lost-slot respawn logic \\
 \codepath{src/hydra_suite/core/post/processing.py} & fragment cleaning, conservative forward/backward resolution, relinking, and interpolation \\
-\codepath{src/hydra_suite/core/identity/runtime_api.py} & pose runtime construction shared across MAT and PoseKit \\
+\codepath{src/hydra_suite/core/identity/runtime_api.py} & pose runtime construction shared across TrackerKit and PoseKit \\
 \codepath{src/hydra_suite/gui/main_window.py} & UI control collection, scaling from user multipliers to runtime values, and config compatibility logic \\
 \codepath{src/hydra_suite/posekit/ui/main_window.py} & project-driven pose annotation, prediction, smart selection, and evaluation flows \\
 \codepath{src/hydra_suite/classkit/gui/mainwindow.py} & active-learning classification workbench built on embeddings and persistent project state \\
@@ -1280,7 +1280,7 @@ The following code paths are the highest-value audit points for the current beha
 
 \section{Summary}
 
-The current MAT tracker is best described as a conservative, modular tracking system rather than a single closed-form tracker. It deliberately combines:
+The current TrackerKit tracker is best described as a conservative, modular tracking system rather than a single closed-form tracker. It deliberately combines:
 
 \begin{itemize}
   \item online motion prediction,
