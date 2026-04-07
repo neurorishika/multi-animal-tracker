@@ -57,17 +57,20 @@ class _BboxCanvas(QWidget):
     # ------------------------------------------------------------------
 
     def mousePressEvent(self, ev: QMouseEvent) -> None:  # noqa: N802
+        """Begin a new selection rectangle at the left-button press position."""
         if ev.button() == Qt.MouseButton.LeftButton:
             self._start = ev.position().toPoint()
             self._end = self._start
             self.update()
 
     def mouseMoveEvent(self, ev: QMouseEvent) -> None:  # noqa: N802
+        """Extend the selection rectangle to the current cursor position and repaint."""
         if self._start is not None:
             self._end = ev.position().toPoint()
             self.update()
 
     def mouseReleaseEvent(self, ev: QMouseEvent) -> None:  # noqa: N802
+        """Finalise the selection rectangle at the release position and trigger a repaint."""
         if ev.button() == Qt.MouseButton.LeftButton and self._start is not None:
             self._end = ev.position().toPoint()
             self.update()
@@ -227,6 +230,7 @@ class BboxSelectorDialog(QDialog):
         self.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        """Confirm the current selection when Enter or Return is pressed."""
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._on_ok()
             return

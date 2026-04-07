@@ -67,6 +67,7 @@ class CNNIdentityCache:
             self._data = dict(raw)
 
     def exists(self) -> bool:
+        """Return True if the cache file exists on disk."""
         return self._path.exists()
 
     def save(self, frame_idx: int, predictions: list[ClassPrediction]) -> None:
@@ -358,6 +359,7 @@ class CNNIdentityBackend:
         return results
 
     def close(self) -> None:
+        """Release the loaded model and inference function, marking the backend as unloaded."""
         self._model = None
         self._infer_fn = None
         self._loaded = False
@@ -383,6 +385,7 @@ class TrackCNNHistory:
 
     @property
     def n_tracks(self) -> int:
+        """Number of track slots currently tracked in the history."""
         return len(self._history)
 
     def resize(self, n_tracks: int) -> None:

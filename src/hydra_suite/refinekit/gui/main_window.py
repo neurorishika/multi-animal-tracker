@@ -53,12 +53,13 @@ class _ScorerWorker(BaseWorker):
 
     events_ready = Signal(list)
 
-    def __init__(self, scorer, df, parent=None):
+    def __init__(self, scorer, df, parent=None) -> None:
         super().__init__(parent)
         self._scorer = scorer
         self._df = df
 
     def execute(self):
+        """Run the scorer's full pass over the trajectory DataFrame and emit the resulting event list."""
         try:
             events = self._scorer.score_all(self._df)
         except Exception:
@@ -70,7 +71,7 @@ class _ScorerWorker(BaseWorker):
 class MainWindow(QMainWindow):
     """RefineKit main window."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("RefineKit")
 
@@ -919,6 +920,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Handle Ctrl+O to open a video file and Ctrl+Q/W to quit the application."""
         key = event.key()
         mod = event.modifiers()
         ctrl = Qt.KeyboardModifier.ControlModifier
@@ -930,7 +932,8 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
-    def closeEvent(self, event):  # noqa: N802
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """Disconnect the scorer worker and flush the correction writer before closing."""
         # Let any running scorer finish silently rather than blocking shutdown
         if self._scorer_worker is not None and self._scorer_worker.isRunning():
             try:

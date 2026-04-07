@@ -45,6 +45,7 @@ class DataSource:
     description: str = ""  # human-readable label, e.g. "Species A – Jan 2025"
 
     def to_dict(self, base: Path) -> dict:
+        """Serialize the source to a JSON-compatible dict with paths made relative to *base*."""
         return {
             "source_id": self.source_id,
             "dataset_root": str(_relativize_path(self.dataset_root, base)),
@@ -55,6 +56,8 @@ class DataSource:
 
     @staticmethod
     def from_dict(d: dict, base: Path) -> "DataSource":
+        """Reconstruct a DataSource from a serialized dict, resolving paths relative to *base*."""
+
         def _rp(key: str) -> Path:
             raw = Path(d[key])
             return _resolve_project_path(raw, base, {})

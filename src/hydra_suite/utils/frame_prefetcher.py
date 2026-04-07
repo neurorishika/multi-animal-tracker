@@ -258,6 +258,7 @@ class SparseFramePrefetcher:
         self._started = False
 
     def start(self):
+        """Start the background thread that seeks to and reads each requested frame index."""
         if self._started:
             return
         self.stop_requested.clear()
@@ -298,6 +299,7 @@ class SparseFramePrefetcher:
             return None
 
     def stop(self):
+        """Signal the background thread to stop and drain the frame queue."""
         if not self._started:
             return
         self.stop_requested.set()
@@ -348,6 +350,7 @@ class SequentialScanPrefetcher:
         self._started = False
 
     def start(self):
+        """Seek to the first needed frame and start the sequential scan thread."""
         if self._started:
             return
         self.stop_requested.clear()
@@ -392,6 +395,7 @@ class SequentialScanPrefetcher:
             return None
 
     def stop(self):
+        """Signal the scan thread to stop and drain any buffered frames."""
         if not self._started:
             return
         self.stop_requested.set()

@@ -59,6 +59,7 @@ class TemperatureScaling:
 
         # Define NLL loss
         def eval_loss():
+            """Compute cross-entropy loss with the current temperature scaling factor."""
             scaled_logits = logits_tensor / temperature
             loss = F.cross_entropy(scaled_logits, labels_tensor)
             return loss
@@ -67,6 +68,7 @@ class TemperatureScaling:
         optimizer = LBFGS([temperature], lr=0.01, max_iter=max_iter)
 
         def closure():
+            """LBFGS closure: zero gradients, compute loss, and backpropagate."""
             optimizer.zero_grad()
             loss = eval_loss()
             loss.backward()

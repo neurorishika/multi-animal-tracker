@@ -112,7 +112,7 @@ except ImportError:
 class MainWindow(QMainWindow):
     """MainWindow API surface documentation."""
 
-    def __init__(self, project: Project, image_paths: List[Path]):
+    def __init__(self, project: Project, image_paths: List[Path]) -> None:
         super().__init__()
         self.config = PoseKitConfig()
         self.setWindowTitle("PoseKit Labeler")
@@ -1324,7 +1324,8 @@ class MainWindow(QMainWindow):
             if worker_attr:
                 setattr(self, worker_attr, None)
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj, event) -> bool:
+        """Suppress mouse-wheel events on spin-boxes to prevent accidental value changes."""
         if event is not None and event.type() == QEvent.Wheel:
             if isinstance(obj, QAbstractSpinBox):
                 return True

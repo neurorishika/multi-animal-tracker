@@ -46,7 +46,7 @@ class ShortcutEditorDialog(QDialog):
         ("Undo last label (Ctrl+Z)", "Ctrl+Z"),
     ]
 
-    def __init__(self, current: Optional[dict] = None, parent=None):
+    def __init__(self, current: Optional[dict] = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
         self.setMinimumWidth(500)

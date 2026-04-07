@@ -59,7 +59,7 @@ class _EventCard(QFrame):
 
     clicked = Signal(object)
 
-    def __init__(self, event: SuspicionEvent, parent: Optional[QWidget] = None):
+    def __init__(self, event: SuspicionEvent, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.swap_event = event
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -129,7 +129,8 @@ class _EventCard(QFrame):
     # Mouse handling
     # ------------------------------------------------------------------
 
-    def mousePressEvent(self, event):  # noqa: N802
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        """Emit the ``clicked`` signal with this card's suspicion event when the user clicks the card."""
         self.clicked.emit(self.swap_event)
         super().mousePressEvent(event)
 
@@ -146,7 +147,7 @@ class SuspicionQueueWidget(QWidget):
     rescore_all_requested = Signal()
     merge_wizard_requested = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._events: List[SuspicionEvent] = []
         self._cards: List[_EventCard] = []

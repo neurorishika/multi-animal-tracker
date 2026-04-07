@@ -178,6 +178,7 @@ class TrackEditorModel:
 
     @property
     def can_undo(self) -> bool:
+        """True if there is at least one undo snapshot available."""
         return len(self._history) > 0
 
     # ------------------------------------------------------------------
@@ -186,6 +187,7 @@ class TrackEditorModel:
 
     @property
     def fragments(self) -> List[TrackFragment]:
+        """All fragments in the model, including deleted ones."""
         return self._fragments
 
     @property
@@ -197,9 +199,11 @@ class TrackEditorModel:
 
     @property
     def frame_range(self) -> Tuple[int, int]:
+        """Inclusive ``(start, end)`` frame range visible in the editor."""
         return self._frame_range
 
     def fragment_by_id(self, frag_id: int) -> Optional[TrackFragment]:
+        """Return the fragment with the given ``frag_id``, or ``None`` if not found."""
         for f in self._fragments:
             if f.frag_id == frag_id:
                 return f

@@ -134,6 +134,7 @@ class MergeWizardModel:
 
     @property
     def current_source(self) -> Optional[TrackSegment]:
+        """TrackSegment for the current dying track, or None if the wizard is finished."""
         sid = self.current_source_id
         if sid is None:
             return None
@@ -180,12 +181,14 @@ class MergeWizardModel:
 
     @property
     def has_more_hypotheses(self) -> bool:
+        """True if there is a next page of hypotheses for the current source."""
         return (
             self._hypothesis_page + 1
         ) * _HYPOTHESES_PER_PAGE < self._total_hypotheses
 
     @property
     def has_prev_hypotheses(self) -> bool:
+        """True if there is a previous page of hypotheses for the current source."""
         return self._hypothesis_page > 0
 
     def accept(self, hypothesis_idx: int) -> Optional[Tuple[int, int]]:
@@ -325,6 +328,7 @@ class MergeWizardModel:
 
     @property
     def is_finished(self) -> bool:
+        """True when all source tracks have been resolved, skipped, or exhausted."""
         return self.current_source_id is None
 
     @property
@@ -336,6 +340,7 @@ class MergeWizardModel:
 
     @property
     def merges_applied(self) -> int:
+        """Total number of merge or swap operations accepted so far."""
         return self._merges_applied
 
     @property
@@ -362,6 +367,7 @@ class MergeWizardModel:
 
     @property
     def df(self) -> pd.DataFrame:
+        """The current trajectory DataFrame, updated in-place after each accepted merge or swap."""
         return self._df
 
     def _advance(self) -> None:
@@ -495,7 +501,7 @@ class _FrameDetections:
     the refinekit CSV.
     """
 
-    def __init__(self, cache: DetectionCache, inv_resize: float):
+    def __init__(self, cache: DetectionCache, inv_resize: float) -> None:
         self._cache = cache
         self._inv_resize = inv_resize  # 1.0 / resize_factor
 
@@ -749,6 +755,7 @@ def _make_overlay_fn(
     _det_map = _build_det_index_map(df, _visible_ids, frame_start, frame_end)
 
     def overlay(bgr: np.ndarray, frame_idx: int) -> np.ndarray:
+        """Draw merge-candidate overlay: source and target tails with a bridging dashed line."""
         _draw_base_overlay(bgr, frame_idx, frame_dets, ox, oy, _det_map, ctx_data)
 
         # Source tail
@@ -991,6 +998,7 @@ def _make_swap_overlay_fn(
     _det_map = _build_det_index_map(df, _visible_ids, frame_start, frame_end)
 
     def overlay(bgr: np.ndarray, frame_idx: int) -> np.ndarray:
+        """Draw swap-candidate overlay: pre/post target segments and source trajectory around the swap frame."""
         _draw_base_overlay(bgr, frame_idx, frame_dets, ox, oy, _det_map, ctx_data)
 
         _draw_swap_pre_target(
@@ -1247,6 +1255,7 @@ class MergeWizardDialog(QDialog):
 
     @property
     def merges_applied(self) -> int:
+        """Number of merges or swaps the user has accepted during this wizard session."""
         return self._model.merges_applied
 
     # ------------------------------------------------------------------
@@ -1541,6 +1550,7 @@ class MergeWizardDialog(QDialog):
     # ------------------------------------------------------------------
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Route keyboard shortcuts: digits to accept hypotheses, S/F/N/P for skip/flag/page navigation, Space for play, Ctrl+Z to undo."""
         key = event.key()
         mod = event.modifiers()
 
@@ -1587,5 +1597,6 @@ class MergeWizardDialog(QDialog):
         return False
 
     def closeEvent(self, event) -> None:
+        """Stop all video playback threads in the synced grid before closing the dialog."""
         self._grid.cleanup()
         super().closeEvent(event)

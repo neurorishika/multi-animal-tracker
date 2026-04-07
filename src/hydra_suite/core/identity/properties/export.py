@@ -32,6 +32,11 @@ def _sanitize_keypoint_name(name: str, idx: int) -> str:
 def build_pose_keypoint_labels(
     keypoint_names: Optional[Sequence[str]], max_keypoints: int
 ) -> List[str]:
+    """Build a deduplicated, sanitized list of column-safe keypoint label strings.
+
+    Uses provided names where available, appending auto-generated 'kp###' labels
+    to reach at least *max_keypoints* entries.
+    """
     names = list(keypoint_names or [])
     labels: List[str] = []
     used = set()
@@ -54,6 +59,7 @@ def build_pose_keypoint_labels(
 
 
 def pose_wide_columns_for_labels(labels: Sequence[str]) -> List[str]:
+    """Return the ordered list of wide-format column names (X, Y, Conf) for each keypoint label."""
     cols: List[str] = []
     for label in labels:
         cols.extend(
@@ -151,6 +157,7 @@ def _filter_labels_for_ignore(
 def flatten_pose_keypoints_row(
     keypoints: Any, labels: Sequence[str]
 ) -> Dict[str, float]:
+    """Expand a (K, 3) keypoints array into a flat dict of PoseKpt_<label>_X/Y/Conf columns."""
     arr = np.asarray(keypoints, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] != 3:
         arr = np.zeros((0, 3), dtype=np.float32)

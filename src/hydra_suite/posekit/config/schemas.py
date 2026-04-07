@@ -21,6 +21,7 @@ class PoseKitConfig:
     autosave_delay_ms: int = 3000
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize all user preferences to a JSON-compatible dictionary for persistence."""
         return {
             "mode": self.mode,
             "show_predictions": self.show_predictions,
@@ -31,6 +32,7 @@ class PoseKitConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PoseKitConfig":
+        """Reconstruct a PoseKitConfig from a dictionary produced by ``to_dict``."""
         return cls(
             mode=data.get("mode", "frame"),
             show_predictions=data.get("show_predictions", True),

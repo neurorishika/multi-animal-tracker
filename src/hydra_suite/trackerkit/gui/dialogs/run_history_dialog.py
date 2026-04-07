@@ -49,7 +49,7 @@ _COLUMNS = ["Run ID", "Role", "Status", "Started", "Base Model", "Epochs"]
 class RunHistoryDialog(BaseDialog):
     """Browse training runs recorded in the registry."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(
             title="Training Run History",
             parent=parent,

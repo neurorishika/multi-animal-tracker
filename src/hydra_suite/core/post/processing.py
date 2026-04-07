@@ -23,12 +23,15 @@ except Exception:
     NUMBA_AVAILABLE = False
 
     def njit(*args, **kwargs):
+        """CPU fallback for numba.njit when Numba is unavailable; returns the function unchanged."""
+
         def decorator(func):
             return func
 
         return decorator
 
     def prange(*args):
+        """CPU fallback for numba.prange when Numba is unavailable; delegates to built-in range."""
         return range(*args)
 
 
@@ -42,6 +45,8 @@ if NUMBA_AVAILABLE:
 else:
     # Create no-op decorator when Numba not available
     def jit(*args, **kwargs):
+        """CPU fallback for numba.jit when Numba is unavailable; returns the function unchanged."""
+
         def decorator(func):
             return func
 

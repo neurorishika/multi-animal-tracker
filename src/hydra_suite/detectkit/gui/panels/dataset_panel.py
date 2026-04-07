@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 class DatasetPanel(QWidget):
     """Left panel: source list, image browser, X-AnyLabeling launch."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._main_window = None
         self._project: DetectKitProject | None = None

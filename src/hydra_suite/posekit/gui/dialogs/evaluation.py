@@ -99,6 +99,7 @@ class EvaluationWorker(QObject):
         self._cancel = False
 
     def cancel(self):
+        """Request early termination of the evaluation run."""
         self._cancel = True
 
     def _validate_inputs(self):
@@ -370,6 +371,7 @@ class EvaluationWorker(QObject):
         return overall, per_kpt, worst
 
     def run(self):
+        """Run pose prediction on eval frames, compute PCK/OKS/per-keypoint metrics, and emit results."""
         try:
             if not self._validate_inputs():
                 return
@@ -623,6 +625,7 @@ class EvaluationDashboardDialog(QDialog):
         self._apply_backend_ui()
 
     def lock_model_path(self: object, path: str) -> object:
+        """Pre-fill the model weights field with *path* and make it read-only."""
         if path:
             self.weights_edit.setText(path)
         self._lock_model = True
@@ -663,7 +666,8 @@ class EvaluationDashboardDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """Persist dialog settings and cancel any in-progress evaluation worker before closing."""
         self._save_settings()
         if self._thread:
             self._worker.cancel()

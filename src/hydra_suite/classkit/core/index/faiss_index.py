@@ -36,6 +36,11 @@ class KnnIndex:
     # ── add ──────────────────────────────────────────────────────────────────
 
     def add(self, embeddings: np.ndarray):
+        """Add a batch of embedding vectors to the index.
+
+        Vectors are appended and assigned sequential integer IDs starting from the
+        current count. Raises ``ValueError`` if shape is incompatible with index dimensionality.
+        """
         if embeddings.ndim != 2 or embeddings.shape[1] != self.d:
             raise ValueError(
                 f"Expected embeddings shape (N, {self.d}), got {embeddings.shape}"

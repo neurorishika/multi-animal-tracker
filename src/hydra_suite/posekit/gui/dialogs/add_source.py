@@ -28,7 +28,7 @@ from ..utils import list_images
 class AddSourceDialog(QDialog):
     """Let the user pick a dataset folder to add as a new source to the project."""
 
-    def __init__(self, project, parent=None):
+    def __init__(self, project, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add Dataset Source")
         self.setMinimumWidth(520)
@@ -197,4 +197,5 @@ class AddSourceDialog(QDialog):
 
     @property
     def description(self) -> str:
+        """Return the human-readable description text entered by the user for this source."""
         return self._le_desc.text().strip()

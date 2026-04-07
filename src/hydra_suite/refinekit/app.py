@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 
 def main():
+    """Parse CLI arguments and launch the RefineKit interactive proofreading GUI."""
     ap = argparse.ArgumentParser(
         description="RefineKit — Interactive Identity Proofreading"
     )

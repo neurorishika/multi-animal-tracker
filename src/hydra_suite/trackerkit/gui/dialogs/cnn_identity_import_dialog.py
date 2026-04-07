@@ -10,7 +10,7 @@ from hydra_suite.widgets import BaseDialog
 class CNNIdentityImportDialog(BaseDialog):
     """Pre-filled dialog for user to verify and annotate CNN identity model import."""
 
-    def __init__(self, meta: dict, parent=None):
+    def __init__(self, meta: dict, parent=None) -> None:
         super().__init__(
             "Import CNN Identity Model",
             parent=parent,
@@ -43,7 +43,9 @@ class CNNIdentityImportDialog(BaseDialog):
         self.add_content(form_widget)
 
     def species(self) -> str:
+        """Return the entered species name, defaulting to 'unknown' if blank."""
         return self._species_edit.text().strip() or "unknown"
 
     def classification_label(self) -> str:
+        """Return the optional classification tag entered for the imported model."""
         return self._label_edit.text().strip()

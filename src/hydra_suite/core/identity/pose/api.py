@@ -105,6 +105,11 @@ def build_runtime_config(
     keypoint_names_override: Optional[Sequence[str]] = None,
     skeleton_edges_override: Optional[Sequence[Sequence[int]]] = None,
 ) -> PoseRuntimeConfig:
+    """Construct a PoseRuntimeConfig from a tracking params dict.
+
+    Resolves backend family, runtime flavor, device, batch size, skeleton, and
+    all model-path fields, applying compute_runtime-derived overrides where appropriate.
+    """
     backend_family = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
     runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "auto")).strip().lower()
     model_path = str(params.get("POSE_MODEL_DIR", "")).strip()

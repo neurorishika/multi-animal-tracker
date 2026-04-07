@@ -124,9 +124,11 @@ class ConfigOrchestrator:
                 cfg = json.load(f)
 
             def get_cfg(*a, **kw):
+                """Look up a config key in the current file's dict, with fallback default."""
                 return self._cfg_get(cfg, *a, **kw)
 
             def get_cfg_time(*a, **kw):
+                """Look up a time-valued config key, converting legacy frame-based values to seconds."""
                 return self._cfg_get_time(cfg, *a, **kw)
 
             self._load_config_file_paths(cfg, get_cfg, preset_mode)

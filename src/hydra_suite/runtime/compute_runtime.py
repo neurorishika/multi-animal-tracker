@@ -72,6 +72,7 @@ def _normalize_runtime(runtime: str) -> str:
 
 
 def runtime_label(runtime: str) -> str:
+    """Return a human-readable display name for a canonical runtime identifier."""
     rt = _normalize_runtime(runtime)
     return {
         "cpu": "CPU",

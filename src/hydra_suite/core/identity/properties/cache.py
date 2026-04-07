@@ -321,9 +321,11 @@ class IndividualPropertiesCache:
         return frames
 
     def is_compatible(self) -> bool:
+        """Return True if the loaded cache matches the expected schema version."""
         return self._compatible
 
     def get_cached_frames(self) -> Iterable[int]:
+        """Return a sorted iterable of frame indices present in the cache."""
         return sorted(self._cached_frames)
 
     def add_frame(
@@ -368,6 +370,7 @@ class IndividualPropertiesCache:
         self._data[f"{frame_key}_pose_keypoints"] = pose_keypoints_arr
 
     def save(self, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Flush all accumulated frame data to a compressed .npz file on disk."""
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot save.")
         meta = {
@@ -453,6 +456,7 @@ class IndividualPropertiesCache:
         return None
 
     def close(self) -> None:
+        """Close the underlying NpzFile handle and release all in-memory cache data."""
         if self._loaded_data is not None:
             self._loaded_data.close()
             self._loaded_data = None

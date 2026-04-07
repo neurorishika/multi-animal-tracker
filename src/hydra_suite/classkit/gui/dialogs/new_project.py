@@ -59,7 +59,7 @@ _BTN_NEUTRAL = (
 class NewProjectDialog(QDialog):
     """Dialog for creating a new ClassKit project."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Create New Project")
         self.setMinimumWidth(520)

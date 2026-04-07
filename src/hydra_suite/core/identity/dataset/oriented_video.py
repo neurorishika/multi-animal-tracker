@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FrameTask:
+    """Encapsulates the affine transform and geometry for one track crop within a single frame."""
+
     frame_id: int
     trajectory_id: int
     affine: np.ndarray
@@ -34,12 +36,16 @@ class FrameTask:
 
 @dataclass
 class FrameBundle:
+    """Groups all FrameTask objects and polygon corners that belong to a single video frame."""
+
     tasks: list[FrameTask] = field(default_factory=list)
     polygons: list[np.ndarray] = field(default_factory=list)
 
 
 @dataclass
 class OrientedTrackVideoExportResult:
+    """Summary statistics returned after an oriented per-track video export run."""
+
     output_dir: str
     dataset_dir: str
     exported_videos: int
@@ -49,6 +55,7 @@ class OrientedTrackVideoExportResult:
     missing_rows: int
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the export result to a plain dictionary."""
         return asdict(self)
 
 
@@ -121,6 +128,11 @@ class OrientedTrackVideoExporter:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> OrientedTrackVideoExportResult:
+        """Build orientation-corrected MP4 videos for every trajectory in the final CSV.
+
+        Streams the source video once, warps each frame into a canonical per-animal crop,
+        and writes one output file per track to the configured output sub-directory.
+        """
         self._emit(progress_callback, 2, "Loading final cleaned trajectories...")
         trajectories_df = self._load_final_dataframe()
         self._emit(progress_callback, 8, "Loading interpolated ROI cache...")

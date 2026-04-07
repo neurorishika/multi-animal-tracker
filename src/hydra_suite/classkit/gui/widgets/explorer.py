@@ -23,7 +23,7 @@ class ExplorerView(QGraphicsView):
     point_hovered = Signal(int)  # Emits index when hovering over a point
     empty_double_clicked = Signal()  # Emits when empty background is double-clicked
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -409,7 +409,7 @@ class ExplorerView(QGraphicsView):
             self.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
             self._has_fitted_view = True
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
             if not self.labeling_mode:
@@ -420,7 +420,7 @@ class ExplorerView(QGraphicsView):
                 if idx in self.interactive_indices:
                     self.point_clicked.emit(idx)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
         super().mouseMoveEvent(event)
         item = self.itemAt(event.pos())
         if isinstance(item, QGraphicsEllipseItem):
@@ -431,14 +431,14 @@ class ExplorerView(QGraphicsView):
         else:
             self._last_hover_idx = None
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, event) -> None:
         super().mouseDoubleClickEvent(event)
         if event.button() == Qt.LeftButton:
             item = self.itemAt(event.pos())
             if not isinstance(item, QGraphicsEllipseItem):
                 self.empty_double_clicked.emit()
 
-    def wheelEvent(self, event: QWheelEvent):
+    def wheelEvent(self, event: QWheelEvent) -> None:
         """Zoom logic."""
         delta = event.angleDelta().y()
         if delta == 0:

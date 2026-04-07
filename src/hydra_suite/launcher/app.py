@@ -264,6 +264,7 @@ class AppCard(QWidget):
             )
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
+        """Scale the tool icon proportionally to the card width on resize."""
         side = max(
             self._ICON_MIN,
             min(int(self.width() * self._ICON_FRACTION), self._ICON_MAX),

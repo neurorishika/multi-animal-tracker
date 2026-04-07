@@ -106,12 +106,13 @@ class _TestWorker(BaseWorker):
     image_ready = Signal(np.ndarray)  # annotated BGR frame
     finished_all = Signal()
 
-    def __init__(self, params: dict, image_paths: list[str]):
+    def __init__(self, params: dict, image_paths: list[str]) -> None:
         super().__init__()
         self.params = params
         self.image_paths = image_paths
 
     def execute(self):
+        """Load the YOLO OBB detector and run inference on each provided image, emitting detections per frame."""
         from hydra_suite.core.detectors import YOLOOBBDetector
 
         self.status.emit("Loading model...")
@@ -321,7 +322,8 @@ class ModelTestDialog(BaseDialog):
         if not current.startswith("Error"):
             self.status_label.setText("Inference complete.")
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """Terminate any running inference worker before closing the dialog."""
         if self._worker is not None and self._worker.isRunning():
             self._worker.quit()
             self._worker.wait(3000)

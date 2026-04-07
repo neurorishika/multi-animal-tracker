@@ -8,6 +8,7 @@ from .gui.main_window import MainWindow
 
 
 def main():
+    """Launch the ClassKit Labeler application, showing the main window maximized."""
     app = QApplication(sys.argv)
     app.setApplicationName("ClassKitLabeler")
     app.setApplicationDisplayName("ClassKit Labeler")

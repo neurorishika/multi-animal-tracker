@@ -61,19 +61,26 @@ class RoleTrainingWorker(BaseWorker):
     progress_signal = Signal(str, int, int)
     done_signal = Signal(list)
 
-    def __init__(self, orchestrator, role_entries):
+    def __init__(self, orchestrator, role_entries) -> None:
         super().__init__()
         self.orchestrator = orchestrator
         self.role_entries = role_entries
         self._cancel = False
 
     def cancel(self):
+        """Request cancellation; the running role loop checks this flag before each role."""
         self._cancel = True
 
     def _should_cancel(self) -> bool:
         return bool(self._cancel)
 
     def execute(self):
+        """Run each role's training sequentially, emitting per-role signals and a final summary.
+
+        Iterates over ``role_entries``, calling the orchestrator for each role and emitting
+        ``role_started``, ``role_finished``, and ``progress_signal`` along the way.
+        Stops early if ``cancel()`` was called.  Emits ``done_signal`` with the full results list.
+        """
         results = []
         parent_run = ""
         for entry in self.role_entries:
@@ -133,7 +140,7 @@ class RoleTrainingWorker(BaseWorker):
 class TrainingPanel(QWidget):
     """Right-side training panel for DetectKit."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         self._main_window = None

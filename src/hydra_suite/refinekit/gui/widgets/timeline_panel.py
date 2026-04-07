@@ -46,7 +46,7 @@ class _TimelineCanvas(QWidget):
     split_at = Signal(int, int)  # (track_id, frame)
     region_edit_requested = Signal(int, int)  # (frame_start, frame_end)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._tracks: Dict[int, Tuple[int, int]] = {}
         self._track_order: List[int] = []
@@ -70,6 +70,7 @@ class _TimelineCanvas(QWidget):
         tracks: Dict[int, Tuple[int, int]],
         total_frames: int,
     ) -> None:
+        """Populate the panel with track presence data and set the total frame count for coordinate mapping."""
         self._tracks = dict(tracks)
         self._track_order = sorted(tracks.keys())
         self._total_frames = max(total_frames, 1)
@@ -80,6 +81,7 @@ class _TimelineCanvas(QWidget):
         self.setMinimumHeight(max(len(self._track_order) * self._row_height + 4, 50))
 
     def set_highlight_range(self, frame_range: Optional[Tuple[int, int]]) -> None:
+        """Update the highlighted frame range and repaint the widget."""
         self.update()
 
     # ------------------------------------------------------------------
@@ -109,6 +111,7 @@ class _TimelineCanvas(QWidget):
     # ------------------------------------------------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """Emit a split-at signal on left-click over a track bar, or begin a right-drag range selection."""
         pos = event.position().toPoint()
 
         if event.button() == Qt.MouseButton.LeftButton:
@@ -190,7 +193,7 @@ class TimelinePanelWidget(QWidget):
     split_requested = Signal(int, int)  # (track_id, frame)
     region_edit_requested = Signal(int, int)  # (frame_start, frame_end)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
         layout = QVBoxLayout(self)

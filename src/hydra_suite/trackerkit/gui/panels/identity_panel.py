@@ -682,7 +682,7 @@ class IdentityPanel(QWidget):
 
         remove_requested = Signal(object)
 
-        def __init__(self, main_window, parent=None):
+        def __init__(self, main_window, parent=None) -> None:
             super().__init__(parent)
             self._main_window = main_window
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)

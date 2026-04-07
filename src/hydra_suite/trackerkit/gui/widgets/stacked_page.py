@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QStackedWidget
 class CurrentPageStackedWidget(QStackedWidget):
     """A stacked widget whose size hint tracks the active page."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.currentChanged.connect(lambda _index: self.updateGeometry())
 

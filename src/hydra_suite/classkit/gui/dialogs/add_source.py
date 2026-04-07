@@ -63,7 +63,9 @@ class AddSourceDialog(QDialog):
     dialog offers to open FilterKit before continuing.
     """
 
-    def __init__(self, existing_sources: Optional[List[Path]] = None, parent=None):
+    def __init__(
+        self, existing_sources: Optional[List[Path]] = None, parent=None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add Image Sources")
         self.setMinimumWidth(580)

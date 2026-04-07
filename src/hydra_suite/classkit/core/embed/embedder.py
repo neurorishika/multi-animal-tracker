@@ -79,6 +79,12 @@ def resolve_embedder_device(device: str) -> str:
 
 
 class TimmEmbedder(EmbedderBase):
+    """Image embedder backed by timm pretrained vision models (e.g. DINOv2, ViT).
+
+    Lazily loads model weights on first use and falls back to a local cache when
+    the network is unavailable.
+    """
+
     def __init__(
         self, model_name: str = "vit_base_patch14_dinov2.lvd142m", device: str = "cuda"
     ):
@@ -92,6 +98,7 @@ class TimmEmbedder(EmbedderBase):
         self._dim = None
 
     def load_model(self):
+        """Download (or load from cache) the pretrained timm model and configure transforms."""
         print(f"Loading model: {self.model_name} on {self.device}")
 
         try:
@@ -146,6 +153,7 @@ class TimmEmbedder(EmbedderBase):
 
     @property
     def dimension(self) -> int:
+        """Output feature dimensionality; loads the model if not yet loaded."""
         if self._dim is None:
             self.load_model()
         return self._dim
@@ -153,6 +161,12 @@ class TimmEmbedder(EmbedderBase):
     def embed(
         self, image_paths: List[Path], batch_size: int = 32, preprocess_fn=None
     ) -> np.ndarray:
+        """Run batched inference and return an (N, D) float32 embedding matrix.
+
+        Failed images are silently skipped so batch shapes remain consistent.
+        An optional ``preprocess_fn(path, PIL.Image) -> PIL.Image`` is applied before
+        the model's own transform.
+        """
         if self.model is None:
             self.load_model()
 

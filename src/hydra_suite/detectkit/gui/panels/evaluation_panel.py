@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class EvaluationPanel(QWidget):
     """Evaluate dataset quality and run quick model tests."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._proj = None
         self._main_window = None
@@ -48,10 +48,12 @@ class EvaluationPanel(QWidget):
     # ---- Public API ----
 
     def set_project(self, proj: DetectKitProject, main_window) -> None:
+        """Bind the panel to a project so subsequent analysis reads the correct sources."""
         self._proj = proj
         self._main_window = main_window
 
     def collect_state(self, proj: DetectKitProject) -> None:
+        """No-op: the evaluation panel has no user-editable state that needs to be persisted."""
         pass  # nothing to persist
 
     # ---- Handlers ----

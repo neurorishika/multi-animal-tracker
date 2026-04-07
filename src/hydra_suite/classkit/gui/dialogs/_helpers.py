@@ -26,7 +26,7 @@ class _KeyCapture(QLineEdit):
     ``setKeySequence(QKeySequence)``, ``keySequence() -> QKeySequence``.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._seq = QKeySequence()
         self._capturing = False
@@ -51,12 +51,12 @@ class _KeyCapture(QLineEdit):
     def _refresh(self):
         self.setText(self._seq.toString() if self._seq else "")
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         self._capturing = True
         self.setText("⌨  press key…")
         self.setFocus()
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event) -> None:
         if not self._capturing:
             super().keyPressEvent(event)
             return
@@ -74,7 +74,7 @@ class _KeyCapture(QLineEdit):
         self._capturing = False
         self._refresh()
 
-    def focusOutEvent(self, event):
+    def focusOutEvent(self, event) -> None:
         if self._capturing:
             self._capturing = False
             self._refresh()
@@ -84,7 +84,7 @@ class _KeyCapture(QLineEdit):
 class _LabelRow(QWidget):
     """A single label row: name QLineEdit + QKeySequenceEdit for shortcut."""
 
-    def __init__(self, label: str = "", shortcut: str = "", parent=None):
+    def __init__(self, label: str = "", shortcut: str = "", parent=None) -> None:
         super().__init__(parent)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -132,7 +132,7 @@ class _LabelRow(QWidget):
 class _SchemeWrapper:
     """Wraps a raw scheme dict to satisfy the ``scheme.to_dict()`` contract."""
 
-    def __init__(self, d: dict):
+    def __init__(self, d: dict) -> None:
         self._d = d
 
     def to_dict(self) -> dict:

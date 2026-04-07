@@ -110,6 +110,10 @@ class HydraFileDialog(QFileDialog):
         dir: str = "",
         options: QFileDialog.Options | None = None,
     ) -> str:
+        """Open a directory picker with HYDRA sidebar shortcuts and return the selected path.
+
+        Returns an empty string if the dialog is dismissed without a selection.
+        """
         dlg = QFileDialog(parent, caption, dir)
         dlg.setFileMode(QFileDialog.FileMode.Directory)
         dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
@@ -135,6 +139,10 @@ class HydraFileDialog(QFileDialog):
         initialFilter: str = "",
         options: QFileDialog.Options | None = None,
     ) -> tuple[str, str]:
+        """Open a single-file picker with HYDRA sidebar shortcuts and return ``(path, selected_filter)``.
+
+        Returns ``("", "")`` if the dialog is dismissed without a selection.
+        """
         dlg = QFileDialog(parent, caption, dir)
         dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
         if filter:
@@ -166,6 +174,10 @@ class HydraFileDialog(QFileDialog):
         initialFilter: str = "",
         options: QFileDialog.Options | None = None,
     ) -> tuple[list[str], str]:
+        """Open a multi-file picker with HYDRA sidebar shortcuts and return ``(paths, selected_filter)``.
+
+        Returns ``([], "")`` if the dialog is dismissed without a selection.
+        """
         dlg = QFileDialog(parent, caption, dir)
         dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
         if filter:
@@ -196,6 +208,10 @@ class HydraFileDialog(QFileDialog):
         initialFilter: str = "",
         options: QFileDialog.Options | None = None,
     ) -> tuple[str, str]:
+        """Open a save-file picker with HYDRA sidebar shortcuts and return ``(path, selected_filter)``.
+
+        Returns ``("", "")`` if the dialog is dismissed without a selection.
+        """
         dlg = QFileDialog(parent, caption, dir)
         dlg.setFileMode(QFileDialog.FileMode.AnyFile)
         dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)

@@ -44,7 +44,7 @@ class SieveWorker(BaseWorker):
     finished = Signal(object)
     error = Signal(str)
 
-    def __init__(self, dataset_path, config):
+    def __init__(self, dataset_path, config) -> None:
         super().__init__()
         self.dataset_path = dataset_path
         self.config = config
@@ -320,7 +320,7 @@ class SieveWorker(BaseWorker):
 
 
 class PreviewListWidget(QListWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setIconSize(QSize(72, 72))
         self.setViewMode(QListWidget.IconMode)
@@ -335,12 +335,12 @@ class PreviewListWidget(QListWidget):
 
 
 class NoWheelSpinBox(QSpinBox):
-    def wheelEvent(self, event):
+    def wheelEvent(self, event) -> None:
         event.ignore()
 
 
 class DuplicateClusterExplorer(QDialog):
-    def __init__(self, clusters, parent=None):
+    def __init__(self, clusters, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Duplicate Cluster Explorer")
         self.resize(1000, 700)
@@ -475,7 +475,7 @@ class DuplicateClusterExplorer(QDialog):
 class FilterKitWindow(QMainWindow):
     TRANSACTION_FILE = ".filterkit_last_transaction.json"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.config = FilterKitConfig()
         self.apply_stylesheet()
@@ -1103,7 +1103,7 @@ class FilterKitWindow(QMainWindow):
         )
         self.logo_label.show()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if hasattr(self, "logo_label") and self.logo_label.isVisible():
             self._show_logo()

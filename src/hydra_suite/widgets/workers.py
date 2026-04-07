@@ -29,6 +29,7 @@ class BaseWorker(QThread):
     error: Signal = Signal(str)
 
     def run(self) -> None:
+        """Wrap execute() in error handling, emitting the error signal on failure."""
         try:
             self.execute()
         except Exception as exc:  # noqa: BLE001

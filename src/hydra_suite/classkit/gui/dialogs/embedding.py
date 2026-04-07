@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 class EmbeddingDialog(QDialog):
     """Dialog for configuring embedding computation."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Compute Embeddings")
         self.setMinimumWidth(500)

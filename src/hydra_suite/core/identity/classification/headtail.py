@@ -94,22 +94,27 @@ class HeadTailAnalyzer:
 
     @property
     def is_available(self) -> bool:
+        """True if a model is loaded and the backend is not 'none'."""
         return self._model is not None and self._backend != "none"
 
     @property
     def backend(self) -> str:
+        """Name of the active inference backend (e.g. 'tiny', 'classkit_tiny', 'yolo', or 'none')."""
         return self._backend
 
     @property
     def class_names(self) -> Optional[List[str]]:
+        """Class names reported by the loaded model, or None if unavailable."""
         return self._class_names
 
     @property
     def input_size(self) -> Optional[Tuple[int, int]]:
+        """Expected (height, width) crop input size for the loaded model, or None."""
         return self._input_size
 
     @property
     def model(self):
+        """The underlying loaded model object."""
         return self._model
 
     def analyze_crops(
@@ -242,6 +247,7 @@ class HeadTailAnalyzer:
                 continue
 
     def close(self) -> None:
+        """Release the loaded model and reset the backend to 'none'."""
         self._model = None
         self._backend = "none"
 
@@ -384,6 +390,7 @@ class HeadTailAnalyzer:
                 )
 
             def forward(self, x):
+                """Run the feature extractor then the classifier head; returns a (B,1) logit tensor."""
                 x = self.features(x)
                 return self.classifier(x)
 

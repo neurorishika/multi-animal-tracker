@@ -45,7 +45,7 @@ _PALETTE = [
 class OBBCanvas(QGraphicsView):
     """Read-only image viewer with oriented-bounding-box overlays."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         # Rendering
@@ -181,7 +181,7 @@ class OBBCanvas(QGraphicsView):
     # Events
     # ------------------------------------------------------------------
 
-    def wheelEvent(self, event):  # noqa: N802
+    def wheelEvent(self, event) -> None:  # noqa: N802
         """Zoom in/out on scroll."""
         factor = 1.15
         if event.angleDelta().y() > 0:
@@ -196,7 +196,7 @@ class OBBCanvas(QGraphicsView):
         self._zoom = new_zoom
         self.scale(zoom_factor, zoom_factor)
 
-    def mousePressEvent(self, event):  # noqa: N802
+    def mousePressEvent(self, event) -> None:  # noqa: N802
         """Start panning on MiddleButton or Ctrl+LeftButton."""
         if event.button() == Qt.MouseButton.MiddleButton or (
             event.button() == Qt.MouseButton.LeftButton
@@ -209,7 +209,7 @@ class OBBCanvas(QGraphicsView):
             return
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event):  # noqa: N802
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
         """Adjust scrollbars while panning."""
         if self._panning and self._pan_start is not None:
             delta = event.position() - self._pan_start
@@ -224,7 +224,7 @@ class OBBCanvas(QGraphicsView):
             return
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event):  # noqa: N802
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         """End panning."""
         if self._panning:
             self._panning = False
@@ -234,7 +234,7 @@ class OBBCanvas(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def resizeEvent(self, event):  # noqa: N802
+    def resizeEvent(self, event) -> None:  # noqa: N802
         """Re-fit image when the widget is resized."""
         super().resizeEvent(event)
         if self._pix_item is not None:

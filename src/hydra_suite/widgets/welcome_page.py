@@ -137,7 +137,8 @@ class _RecentItemRow(QWidget):
         layout.addWidget(name_label)
         layout.addWidget(path_label, stretch=1)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
+        """Open the recent project on left-click via the registered callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._on_click(self._full_path)
         super().mousePressEvent(event)
@@ -151,7 +152,7 @@ class _RecentItemRow(QWidget):
 class WelcomePage(QWidget):
     """Shared welcome/splash page for all hydra-suite applications."""
 
-    def __init__(self, config: WelcomeConfig, parent: Optional[QWidget] = None):
+    def __init__(self, config: WelcomeConfig, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._config = config
         self.setObjectName("welcomePage")

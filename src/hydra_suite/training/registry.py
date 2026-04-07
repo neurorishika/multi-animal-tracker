@@ -21,6 +21,7 @@ def _use_project_root_override() -> bool:
 
 
 def get_runs_root() -> Path:
+    """Return the directory where training run metadata and artifacts are stored."""
     if _use_project_root_override():
         root = _project_root() / "training" / "runs"
         root.mkdir(parents=True, exist_ok=True)
@@ -32,10 +33,12 @@ def get_runs_root() -> Path:
 
 
 def get_registry_path() -> Path:
+    """Return the path to the JSON file that indexes all training runs."""
     return get_runs_root() / "registry.json"
 
 
 def load_registry() -> dict[str, Any]:
+    """Load the training run registry from disk, returning an empty structure on failure."""
     path = get_registry_path()
     if not path.exists():
         return {"runs": []}
@@ -52,6 +55,7 @@ def load_registry() -> dict[str, Any]:
 
 
 def save_registry(registry: dict[str, Any]) -> None:
+    """Atomically write the training run registry dict to disk as JSON."""
     path = get_registry_path()
     path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
 
@@ -85,6 +89,7 @@ def dataset_fingerprint(dataset_dir: str | Path) -> str:
 
 
 def new_run_id(role: str) -> str:
+    """Generate a unique run ID combining timestamp, role name, and random suffix."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     tail = hashlib.sha1(os.urandom(16)).hexdigest()[:8]
     return f"{stamp}_{role}_{tail}"
@@ -123,6 +128,7 @@ def create_run_record(
 
 
 def update_run_record(run_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+    """Merge *patch* into the registry record for *run_id* and persist; return the updated record or None."""
     reg = load_registry()
     for rec in reg.get("runs", []):
         if rec.get("run_id") == run_id:

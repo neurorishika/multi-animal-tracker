@@ -43,7 +43,7 @@ from .widgets.color_utils import best_text_color, build_category_color_map, to_h
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("ClassKit: Active Learning Dataset Builder")
         self.resize(1600, 1000)
@@ -1854,7 +1854,7 @@ class MainWindow(QMainWindow):
         """Coalesce strip rebuilds to avoid repeated widget churn during rapid labeling."""
         self._history_refresh_timer.start()
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event) -> None:
         """Route digit keys to stepper when in multi-factor labeling mode."""
         if self._stepper is not None:
             key_text = event.text()
@@ -1863,7 +1863,7 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(event)
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, watched, event) -> bool:
         """Handle clicks on history cards without QPushButton construction."""
         if event.type() == QEvent.MouseButtonRelease:
             index = watched.property("history_index") if watched is not None else None
@@ -3320,7 +3320,7 @@ class MainWindow(QMainWindow):
         )
 
         class ContrastSettingsDialog(QDialog):
-            def __init__(self, clip, grid, parent=None):
+            def __init__(self, clip, grid, parent=None) -> None:
                 super().__init__(parent)
                 self.setWindowTitle("Contrast Enhancement Settings")
                 layout = QVBoxLayout(self)
@@ -4023,7 +4023,7 @@ class MainWindow(QMainWindow):
         exp_label_expansion = context["settings"].get("label_expansion") or {}
 
         class MultiHeadExportWorker(ExportWorker):
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.scheme = kwargs.pop("scheme")
                 self.labels_str = kwargs.pop("labels_str")
                 super().__init__(*args, **kwargs)
@@ -4743,7 +4743,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Auto-triggering UMAP projection...")
             self.compute_umap()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         """Ensure pending label updates are flushed before close."""
         self._flush_pending_label_updates(force=True)
         super().closeEvent(event)

@@ -131,13 +131,14 @@ class _PrefetchThread(QThread):
 
     frame_decoded = Signal(int, object)
 
-    def __init__(self, path: str, start: int, end: int, parent=None):
+    def __init__(self, path: str, start: int, end: int, parent=None) -> None:
         super().__init__(parent)
         self._path = path
         self._start = start
         self._end = end
 
     def run(self) -> None:
+        """Read frames from ``start`` to ``end`` sequentially and emit each via ``frame_decoded``."""
         cap = cv2.VideoCapture(self._path)
         if not cap.isOpened():
             return
@@ -165,7 +166,9 @@ class _PlaybackThread(QThread):
     frame_ready = Signal(int, object)
     finished_playback = Signal()
 
-    def __init__(self, path: str, start: int, total: int, fps: float, parent=None):
+    def __init__(
+        self, path: str, start: int, total: int, fps: float, parent=None
+    ) -> None:
         super().__init__(parent)
         self._path = path
         self._start = start
@@ -173,6 +176,7 @@ class _PlaybackThread(QThread):
         self._interval_ms = max(1, int(1000.0 / max(fps, 1.0)))
 
     def run(self) -> None:
+        """Play frames sequentially at the target FPS, emitting each via ``frame_ready`` with a throttled sleep."""
         cap = cv2.VideoCapture(self._path)
         if not cap.isOpened():
             return
@@ -202,7 +206,7 @@ class VideoPlayerWidget(QWidget):
 
     frame_changed = Signal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         self._video_path: Optional[str] = None
@@ -281,6 +285,7 @@ class VideoPlayerWidget(QWidget):
         self._refresh()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        """Toggle play/pause on Space and step one frame with Left/Right arrow keys."""
         if event.key() == Qt.Key.Key_Space:
             self._toggle_play()
         elif event.key() == Qt.Key.Key_Right:
@@ -295,6 +300,7 @@ class VideoPlayerWidget(QWidget):
     # ------------------------------------------------------------------
 
     def load_video(self, path: str) -> None:
+        """Open a video file, read its frame count and FPS, and reset the slider and display."""
         self._stop_playback()
         self._stop_prefetch()
         self._video_path = path
@@ -313,6 +319,7 @@ class VideoPlayerWidget(QWidget):
         self.seek_to(0)
 
     def load_trajectories(self, df: pd.DataFrame) -> None:
+        """Attach a trajectory DataFrame and rebuild the per-frame index used for overlay rendering."""
         self._df = df
         self._df_by_frame = (
             {int(fid): grp for fid, grp in df.groupby("FrameID")}
@@ -322,6 +329,7 @@ class VideoPlayerWidget(QWidget):
         self._refresh()
 
     def seek_to(self, frame: int) -> None:
+        """Jump to the given frame index, stopping playback if active, and refresh the display."""
         frame = max(0, min(frame, self._total_frames - 1))
         if self._is_playing:
             self._stop_playback()
@@ -333,6 +341,7 @@ class VideoPlayerWidget(QWidget):
         self._refresh()
 
     def highlight_tracks(self, track_ids: List[int]) -> None:
+        """Set the tracks to render with emphasis in the overlay and refresh the current frame."""
         self._highlight_ids = set(track_ids)
         self._refresh()
 
@@ -522,6 +531,7 @@ class VideoPlayerWidget(QWidget):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        """Stop active playback and prefetch threads before the widget is destroyed."""
         self._stop_playback()
         self._stop_prefetch()
         super().closeEvent(event)

@@ -56,7 +56,7 @@ _DARK_STYLE = """
 class SourceManagerDialog(QDialog):
     """Full source manager showing existing sources with add/remove capability."""
 
-    def __init__(self, db_path: Path, parent=None):
+    def __init__(self, db_path: Path, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Source Manager")
         self.setMinimumSize(640, 480)

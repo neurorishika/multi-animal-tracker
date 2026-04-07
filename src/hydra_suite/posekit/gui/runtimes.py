@@ -21,14 +21,17 @@ except Exception:
     ]
 
     def runtime_label(runtime: str) -> str:
+        """Return a human-readable uppercase label for a canonical runtime identifier."""
         return str(runtime or "cpu").strip().upper()
 
     def allowed_runtimes_for_pipelines(_pipelines):
+        """Return the set of runtimes supported by all given pipeline keys (fallback: cpu only)."""
         return ["cpu"]
 
     def infer_compute_runtime_from_legacy(
         yolo_device, enable_tensorrt, pose_runtime_flavor
     ):
+        """Derive the canonical compute-runtime string from legacy per-field settings."""
         if enable_tensorrt:
             return "tensorrt"
         flavor = str(pose_runtime_flavor or "").lower()
@@ -41,6 +44,7 @@ except Exception:
         return "cpu"
 
     def derive_pose_runtime_settings(compute_runtime: str, backend_family: str):
+        """Translate a canonical compute-runtime key into backend-specific runtime settings dict."""
         rt = str(compute_runtime or "cpu").strip().lower()
         if rt == "onnx_cpu":
             return {"pose_runtime_flavor": "onnx_cpu", "pose_sleap_device": "cpu"}

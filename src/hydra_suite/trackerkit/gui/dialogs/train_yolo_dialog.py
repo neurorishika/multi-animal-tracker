@@ -64,7 +64,7 @@ class RoleTrainingWorker(BaseWorker):
     progress_signal = Signal(str, int, int)
     done_signal = Signal(list)
 
-    def __init__(self, orchestrator, role_entries):
+    def __init__(self, orchestrator, role_entries) -> None:
         super().__init__()
         self.orchestrator = orchestrator
         self.role_entries = role_entries
@@ -131,7 +131,7 @@ class RoleTrainingWorker(BaseWorker):
 class TrainYoloDialog(BaseDialog):
     """MAT role-aware training center replacing legacy OBB-only trainer."""
 
-    def __init__(self, parent=None, class_name="object", conda_envs=None):
+    def __init__(self, parent=None, class_name="object", conda_envs=None) -> None:
         super().__init__(
             title="Training Center (YOLO Multi-Role)",
             parent=parent,

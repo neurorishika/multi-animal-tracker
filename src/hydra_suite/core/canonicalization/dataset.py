@@ -104,6 +104,7 @@ class MatMetadataCanonicalizer:
         self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
     def summary(self) -> dict[str, Any]:
+        """Return a dict summarising canonicalization activity: enabled flag, applied/skipped counts, skip reasons, and margin."""
         return {
             "enabled": self.enabled,
             "applied_count": int(self.applied_count),

@@ -45,7 +45,7 @@ class LossPlotWidget(QWidget):
     _MARGIN_TOP = 20
     _MARGIN_BOTTOM = 30
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.series: dict[str, list[float]] = {k: [] for k in _SERIES_KEYS}
         self.colors: dict[str, QColor] = {
@@ -81,7 +81,7 @@ class LossPlotWidget(QWidget):
     # Painting
     # ------------------------------------------------------------------
 
-    def paintEvent(self, event):  # noqa: N802
+    def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 

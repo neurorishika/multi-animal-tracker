@@ -337,7 +337,7 @@ class PreviewDetectionWorker(BaseWorker):
     finished_signal = Signal(dict)
     error_signal = Signal(str)
 
-    def __init__(self, preview_frame_rgb, context, use_detection_filters):
+    def __init__(self, preview_frame_rgb, context, use_detection_filters) -> None:
         super().__init__()
         self.preview_frame_rgb = preview_frame_rgb
         self.context = context

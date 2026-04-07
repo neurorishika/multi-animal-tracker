@@ -65,7 +65,7 @@ QGroupBox::title { padding: 0 4px; }
 class MainWindow(QMainWindow):
     """DetectKit main application window."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("DetectKit")
         self.setStyleSheet(_DARK_STYLESHEET)
@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
     # Events
     # ------------------------------------------------------------------
 
-    def closeEvent(self, event):  # noqa: N802
+    def closeEvent(self, event) -> None:  # noqa: N802
         """Auto-save the project on close."""
         self._save_current_project()
         super().closeEvent(event)

@@ -1881,7 +1881,7 @@ class SessionOrchestrator:
             self._mw.video_label.unsetCursor()
         logger.info("All ROI shapes cleared")
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event) -> None:
         """Handle key press events - cancel ROI on Escape."""
         if event.key() == Qt.Key_Escape and self._mw.roi_selection_active:
             self._mw.clear_roi()

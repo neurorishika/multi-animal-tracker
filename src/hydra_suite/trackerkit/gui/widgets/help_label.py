@@ -17,7 +17,9 @@ from hydra_suite.trackerkit.gui.widgets.tooltip_button import ImmediateTooltipBu
 class CompactHelpLabel(QWidget):
     """Compact inline help affordance that keeps full guidance in an explicit icon."""
 
-    def __init__(self, text: str = "", parent=None, attach_to_title: bool = True):
+    def __init__(
+        self, text: str = "", parent=None, attach_to_title: bool = True
+    ) -> None:
         super().__init__(parent)
         self._text = ""
         self._attach_to_title = attach_to_title
@@ -61,12 +63,12 @@ class CompactHelpLabel(QWidget):
     def setWordWrap(self, enabled: bool) -> None:
         return None
 
-    def showEvent(self, event):
+    def showEvent(self, event) -> None:
         super().showEvent(event)
         if self._attach_to_title and self._attached_host is None:
             QTimer.singleShot(0, self._maybe_attach_to_title)
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, watched, event) -> bool:
         if watched is self._attached_host and self._title_button is not None:
             self._position_groupbox_help_button()
         return super().eventFilter(watched, event)

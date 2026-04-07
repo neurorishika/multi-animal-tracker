@@ -36,7 +36,7 @@ _COLUMNS = ["Run ID", "Role", "Status", "Started", "Base Model", "Epochs"]
 class HistoryPanel(QWidget):
     """Browse training run history from the registry."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._proj = None
         self._main_window = None
@@ -74,11 +74,13 @@ class HistoryPanel(QWidget):
     # ---- Public API ----
 
     def set_project(self, proj: DetectKitProject, main_window) -> None:
+        """Bind the panel to a project and immediately refresh the training run table."""
         self._proj = proj
         self._main_window = main_window
         self._load_registry()
 
     def collect_state(self, proj: DetectKitProject) -> None:
+        """No-op: the history panel displays read-only data and has no state to persist."""
         pass  # nothing to persist
 
     # ---- Internal ----

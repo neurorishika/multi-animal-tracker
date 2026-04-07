@@ -66,7 +66,7 @@ class _TimelineEditorCanvas(QWidget):
     fragment_selected = Signal(object)  # TrackFragment or None
     reassign_failed = Signal()  # drag-to-reassign was rejected (overlap)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._model: Optional[TrackEditorModel] = None
         self._selected_frag_id: Optional[int] = None
@@ -347,7 +347,7 @@ class TimelineEditorWidget(QWidget):
     frame_cursor_changed = Signal(int)
     fragment_selected = Signal(object)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
         layout = QVBoxLayout(self)

@@ -234,12 +234,15 @@ class TagObservationCache:
     # ------------------------------------------------------------------
 
     def is_compatible(self) -> bool:
+        """Return whether the loaded cache matches the current detector and video settings."""
         return self._compatible
 
     def get_frame_range(self) -> Tuple[int, int]:
+        """Return the (start_frame, end_frame) range stored in the cache."""
         return self._start_frame, self._end_frame if self._end_frame is not None else 0
 
     def covers_frame_range(self, start_frame: int, end_frame: int) -> bool:
+        """Check whether every frame in [start_frame, end_frame] has cached observations."""
         if self._loaded_data is None or self._cached_frames is None:
             return False
         if self._start_frame > start_frame or (
@@ -249,9 +252,11 @@ class TagObservationCache:
         return all(f in self._cached_frames for f in range(start_frame, end_frame + 1))
 
     def get_total_frames(self) -> int:
+        """Return the number of frames with cached tag observations."""
         return self._total_frames
 
     def get_metadata(self) -> Dict[str, Any]:
+        """Return a copy of the cache metadata dict (detector settings, version, etc.)."""
         return dict(self._metadata)
 
     # ------------------------------------------------------------------
@@ -259,6 +264,7 @@ class TagObservationCache:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
+        """Release the underlying .npz memory-mapped file handle."""
         if self._loaded_data is not None:
             self._loaded_data.close()
             self._loaded_data = None

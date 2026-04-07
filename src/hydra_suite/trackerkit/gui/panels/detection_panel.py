@@ -1809,6 +1809,7 @@ class DetectionPanel(QWidget):
         self._on_yolo_mode_changed(index)
 
     def on_yolo_detect_model_changed(self, index: object) -> object:
+        """Handle sequential detection model combo-box changes, opening the add-model dialog when the sentinel item is selected."""
         if self.combo_yolo_detect_model.itemData(index, Qt.UserRole) == "__add_new__":
             self._main_window._handle_add_new_yolo_model(
                 combo=self.combo_yolo_detect_model,
@@ -1822,6 +1823,7 @@ class DetectionPanel(QWidget):
         self._on_yolo_mode_changed(index)
 
     def on_yolo_crop_obb_model_changed(self, index: object) -> object:
+        """Handle sequential crop OBB model combo-box changes, opening the add-model dialog when the sentinel item is selected."""
         if self.combo_yolo_crop_obb_model.itemData(index, Qt.UserRole) == "__add_new__":
             self._main_window._handle_add_new_yolo_model(
                 combo=self.combo_yolo_crop_obb_model,

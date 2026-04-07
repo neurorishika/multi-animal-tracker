@@ -81,6 +81,7 @@ class _FrameLoader(QThread):
         self.frames: Dict[int, np.ndarray] = {}
 
     def run(self) -> None:
+        """Decode the requested frame range, crop each frame to the bounding box, and store the results in ``self.frames``."""
         cap = cv2.VideoCapture(self._path)
         if not cap.isOpened():
             self.finished.emit()
@@ -432,6 +433,7 @@ class TrackEditorDialog(QDialog):
         self.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Handle Enter to apply edits, Ctrl+Z to undo, and F to fit the canvas view."""
         key = event.key()
         mod = event.modifiers()
         ctrl_or_meta = (
@@ -542,16 +544,19 @@ class TrackEditorDialog(QDialog):
     # ------------------------------------------------------------------
 
     def reject(self):
+        """Cancel the dialog, stopping frame loading and discarding all edits."""
         self._loader.requestInterruption()
         self._loader.frames.clear()
         super().reject()
 
     def accept(self):
+        """Accept the dialog, stopping frame loading while keeping the computed edit ops."""
         self._loader.requestInterruption()
         self._loader.frames.clear()
         super().accept()
 
-    def closeEvent(self, event):  # noqa: N802
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """Stop the frame-loading thread and release cached frames before the dialog closes."""
         self._loader.requestInterruption()
         self._loader.frames.clear()
         super().closeEvent(event)

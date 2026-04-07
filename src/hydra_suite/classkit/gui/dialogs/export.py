@@ -23,7 +23,7 @@ from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noq
 class ExportDialog(QDialog):
     """Dialog for configuring dataset export."""
 
-    def __init__(self, default_output: str = "", parent=None):
+    def __init__(self, default_output: str = "", parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Export Dataset")
         self.setMinimumWidth(560)

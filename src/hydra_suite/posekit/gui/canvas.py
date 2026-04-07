@@ -38,7 +38,7 @@ from .utils import get_keypoint_palette
 class PoseCanvas(QGraphicsView):
     """Interactive graphics canvas for keypoint editing and prediction overlays."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setDragMode(QGraphicsView.NoDrag)

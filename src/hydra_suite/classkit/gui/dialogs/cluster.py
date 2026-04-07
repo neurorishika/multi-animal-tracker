@@ -18,7 +18,7 @@ from hydra_suite.classkit.core.cluster.clustering_backend import (
 class ClusterDialog(QDialog):
     """Dialog for configuring clustering."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Cluster Configuration")
         self.setMinimumWidth(500)

@@ -103,6 +103,7 @@ class ActiveLearningWorker(QObject):
         self._cancel = False
 
     def cancel(self):
+        """Request early termination of the active-learning scoring run."""
         self._cancel = True
 
     def _predict_keypoints(self, weights_path: str, paths: List[Path]):
@@ -275,6 +276,7 @@ class ActiveLearningWorker(QObject):
         self.finished.emit(scores)
 
     def run(self):
+        """Score candidate frames using the selected active-learning strategy and emit ranked results."""
         try:
             paths = [self.image_paths[i] for i in self.candidate_indices]
             if not paths:
@@ -508,6 +510,7 @@ class ActiveLearningDialog(QDialog):
         self._apply_backend_ui()
 
     def lock_model_path(self: object, path: str) -> object:
+        """Pre-fill and lock all model-path fields so the user cannot change them."""
         if path:
             self.weights_a_edit.setText(path)
             self.weights_b1_edit.setText(path)
@@ -590,7 +593,8 @@ class ActiveLearningDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """Persist dialog settings to disk before the window closes."""
         self._save_settings()
         super().closeEvent(event)
 

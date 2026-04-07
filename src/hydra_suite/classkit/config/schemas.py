@@ -7,6 +7,8 @@ from typing import Dict, List, Optional
 
 @dataclass
 class ModelConfig:
+    """Embedding model selection and compute configuration."""
+
     name: str = "vit_b_16"
     batch_size: int = 32
     device: str = "cuda"
@@ -14,6 +16,8 @@ class ModelConfig:
 
 @dataclass
 class ALConfig:
+    """Active-learning batch configuration, including acquisition strategy weights."""
+
     batch_size: int = 40
     strategy_weights: Dict[str, float] = field(  # noqa: DC01  (dataclass field)
         default_factory=lambda: {
@@ -27,11 +31,14 @@ class ALConfig:
 
 @dataclass
 class Factor:
+    """A single labeling axis with its allowed labels and optional keyboard shortcuts."""
+
     name: str
     labels: List[str]
     shortcut_keys: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        """Serialize this factor to a plain dict for JSON persistence."""
         return {
             "name": self.name,
             "labels": self.labels,
@@ -40,6 +47,7 @@ class Factor:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Factor":
+        """Reconstruct a Factor from a previously serialized dict."""
         return cls(
             name=d["name"],
             labels=d["labels"],
@@ -49,6 +57,12 @@ class Factor:
 
 @dataclass
 class LabelingScheme:
+    """Multi-factor compositional labeling scheme.
+
+    Each Factor defines one labeling axis; composite labels are encoded by joining
+    per-factor values with ``|``.
+    """
+
     name: str
     factors: List[Factor]
     training_modes: List[str]
@@ -56,6 +70,7 @@ class LabelingScheme:
 
     @property
     def total_classes(self) -> int:
+        """Total number of unique composite class combinations (product of per-factor counts)."""
         result = 1
         for f in self.factors:
             result *= len(f.labels)

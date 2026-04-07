@@ -67,6 +67,7 @@ class _MultiCropLoader(QThread):
         }
 
     def run(self) -> None:
+        """Decode the frame range once, extract each configured crop region, and store all results in ``self.frames``."""
         cap = cv2.VideoCapture(self._path)
         if not cap.isOpened():
             self.finished.emit()
@@ -105,7 +106,7 @@ class SyncedVideoGrid(QWidget):
 
     frame_changed = Signal(int)
 
-    def __init__(self, n_panels: int = 3, parent: Optional[QWidget] = None):
+    def __init__(self, n_panels: int = 3, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._n_panels = n_panels
         self._panels: List[InteractiveCanvas] = []
@@ -324,6 +325,7 @@ class SyncedVideoGrid(QWidget):
             self._play_timer.start()
 
     def panel(self, idx: int) -> InteractiveCanvas:
+        """Return the InteractiveCanvas at the given panel index."""
         return self._panels[idx]
 
     # ------------------------------------------------------------------

@@ -18,12 +18,14 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen
 
 # Settings helpers
 def load_ui_settings():
+    """Load the persistent PoseKit UI settings dictionary from disk."""
     from ..utils import load_ui_settings as _load
 
     return _load()
 
 
 def save_ui_settings(settings):
+    """Write the PoseKit UI settings dictionary back to disk."""
     from ..utils import save_ui_settings as _save
 
     return _save(settings)
@@ -68,14 +70,15 @@ def _save_dialog_settings(key: str, data: Dict) -> None:
 
 
 def make_pose_infer(out_root: Path, keypoint_names: List[str]):
+    """Construct and return a PoseInferenceService configured for the given project output root."""
     if PoseInferenceService is None:
         raise RuntimeError("PoseInferenceService not available. Check imports.")
     return PoseInferenceService(out_root, keypoint_names)
 
 
-def get_available_devices() -> object:
+def get_available_devices() -> List[str]:
     """Get list of available compute devices based on gpu_utils flags."""
-    devices = ["auto", "cpu"]
+    devices: List[str] = ["auto", "cpu"]
     if CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE or ROCM_AVAILABLE:
         devices.append("cuda")
     if MPS_AVAILABLE:
@@ -113,6 +116,7 @@ def list_sleap_envs() -> Tuple[List[str], str]:
 
 
 def make_histogram_image(values, bins: int = 20, width: int = 360, height: int = 120):
+    """Render a bar-chart histogram of *values* into a QImage of the requested dimensions."""
     img = QImage(width, height, QImage.Format_ARGB32)
     img.fill(QColor(248, 248, 248))
     if not values:
@@ -134,6 +138,7 @@ def make_histogram_image(values, bins: int = 20, width: int = 360, height: int =
 
 
 def format_float(val, digits: int = 3):
+    """Format a numeric value to a fixed number of decimal places, returning ``'n/a'`` for non-finite inputs."""
     if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
         return "n/a"
     try:

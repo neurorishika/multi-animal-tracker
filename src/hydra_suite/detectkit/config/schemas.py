@@ -14,6 +14,7 @@ class DetectKitConfig:
     compute_runtime: str = "cpu"
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the config to a plain dictionary suitable for JSON persistence."""
         return {
             "last_project_path": self.last_project_path,
             "compute_runtime": self.compute_runtime,
@@ -21,6 +22,7 @@ class DetectKitConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DetectKitConfig:
+        """Deserialize a ``DetectKitConfig`` from a plain dictionary, using defaults for missing keys."""
         return cls(
             last_project_path=data.get("last_project_path", ""),
             compute_runtime=data.get("compute_runtime", "cpu"),

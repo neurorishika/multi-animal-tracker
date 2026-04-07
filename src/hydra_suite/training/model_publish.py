@@ -20,6 +20,7 @@ def _use_project_root_override() -> bool:
 
 
 def get_models_root() -> Path:
+    """Return the platform-appropriate directory where published trained models are stored."""
     if _use_project_root_override():
         root = _project_root() / "models"
         root.mkdir(parents=True, exist_ok=True)
@@ -80,6 +81,7 @@ def _registry_path() -> Path:
 
 
 def load_model_registry() -> dict[str, Any]:
+    """Load the published-model registry JSON, returning an empty dict on missing or corrupt files."""
     path = _registry_path()
     if not path.exists():
         return {}
@@ -91,6 +93,7 @@ def load_model_registry() -> dict[str, Any]:
 
 
 def save_model_registry(registry: dict[str, Any]) -> None:
+    """Persist the published-model registry dict to disk as pretty-printed JSON."""
     _registry_path().write_text(json.dumps(registry, indent=2), encoding="utf-8")
 
 

@@ -54,6 +54,7 @@ def _build_tiny_classifier_class():
             self.classifier = nn.Sequential(nn.Flatten(), *layers)
 
         def forward(self, x):
+            """Pass input through the feature backbone and classification head."""
             x = self.features(x)
             return self.classifier(x)
 

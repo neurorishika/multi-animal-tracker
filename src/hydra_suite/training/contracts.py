@@ -158,6 +158,7 @@ class TrainingRunSpec:
     custom_params: CustomCNNParams | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the run spec to a plain dict, converting the role enum to its string value."""
         out = asdict(self)
         out["role"] = self.role.value
         return out
@@ -182,6 +183,7 @@ class ValidationReport:
     stats: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the validation report including all issues and collected statistics."""
         return {
             "valid": bool(self.valid),
             "issues": [asdict(i) for i in self.issues],

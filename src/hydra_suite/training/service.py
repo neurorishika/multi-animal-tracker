@@ -66,6 +66,7 @@ class TrainingOrchestrator:
         *,
         require_train_val: bool = False,
     ) -> ValidationReport:
+        """Validate OBB/detect source datasets, checking splits, class IDs, and annotation integrity."""
         all_issues = []
         stats = {"sources": []}
 
@@ -99,6 +100,7 @@ class TrainingOrchestrator:
         seed: int,
         dedup: bool,
     ) -> DatasetBuildResult:
+        """Merge multiple OBB source datasets into a single unified dataset with optional deduplication."""
         out_root = self.workspace_root / "datasets"
         out_root.mkdir(parents=True, exist_ok=True)
         return merge_obb_sources(
@@ -121,6 +123,7 @@ class TrainingOrchestrator:
         min_crop_size_px: int = 64,
         enforce_square: bool = True,
     ) -> DatasetBuildResult:
+        """Derive a role-specific dataset (detect, crop-OBB, classify) from a merged OBB dataset."""
         out_root = self.workspace_root / "derived" / role.value
         out_root.mkdir(parents=True, exist_ok=True)
         return prepare_role_dataset(
@@ -143,6 +146,7 @@ class TrainingOrchestrator:
         progress_cb: Callable[[int, int], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> dict:
+        """Execute a training run: register in the run registry, train, and optionally publish the model."""
         run_id = new_run_id(spec.role.value)
         run_dir = self.workspace_root / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)

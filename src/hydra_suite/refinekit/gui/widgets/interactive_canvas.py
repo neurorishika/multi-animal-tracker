@@ -46,7 +46,7 @@ _ZOOM_SLIDER_SCALE = 100  # slider integer = zoom * scale
 class _FrameLabel(QLabel):
     """QLabel that accepts touch events so pinch gestures work."""
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         if QGestureEvent is not None:
             self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
@@ -69,7 +69,7 @@ class InteractiveCanvas(QWidget):
 
     zoom_changed = Signal(float)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
         self._pixmap: Optional[QPixmap] = None

@@ -252,6 +252,8 @@ def _build_tiny_dataset_class(input_w, input_h):
     from torch.utils.data import Dataset
 
     class TinyDataset(Dataset):
+        """Image dataset that loads crops, applies optional augmentation, and normalizes for TinyClassifier training."""
+
         def __init__(self, items, augment=False, profile=None):
             self.items = items
             self.augment = augment

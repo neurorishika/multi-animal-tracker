@@ -431,6 +431,7 @@ class BgParameterHelperDialog(BaseDialog):
         self._apply_weight_preset("Balanced (default)")
 
     def get_scoring_weights(self) -> Dict[str, float]:
+        """Return the current COUNT, CONSISTENCY, and STABILITY objective weights as a param dict."""
         return {
             "SCORE_WEIGHT_COUNT": self.spin_w_count.value(),
             "SCORE_WEIGHT_CONSISTENCY": self.spin_w_consistency.value(),
@@ -625,6 +626,7 @@ class BgParameterHelperDialog(BaseDialog):
     # ══════════════════════════════════════════════════════════════════════════
 
     def get_tuning_config(self) -> Dict[str, bool]:
+        """Return a mapping of background-subtraction parameter names to whether each is enabled for auto-tuning."""
         return {
             "THRESHOLD_VALUE": self.cb_threshold.isChecked(),
             "MORPH_KERNEL_SIZE": self.cb_morph.isChecked(),
@@ -1063,6 +1065,7 @@ class BgParameterHelperDialog(BaseDialog):
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        """Stop any running optimizer or preview worker before closing the dialog."""
         if self.optimizer is not None and self.optimizer.isRunning():
             self.optimizer.stop()
             self.optimizer.wait(3000)

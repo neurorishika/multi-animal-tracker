@@ -65,7 +65,7 @@ class AprilTagAutoLabelDialog(QDialog):
     caller's responsibility.
     """
 
-    def __init__(self, image_paths=None, parent=None):
+    def __init__(self, image_paths=None, parent=None) -> None:
         super().__init__(parent)
         self._image_paths = image_paths or []
         self.setWindowTitle("Auto-label AprilTags")

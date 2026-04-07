@@ -46,7 +46,7 @@ class NewProjectDialog(QDialog):
       3. Add at least one dataset source (required before Create is enabled)
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("New PoseKit Project")
         self.setMinimumSize(QSize(820, 600))
@@ -263,6 +263,7 @@ class NewProjectDialog(QDialog):
     # ── accessors ───────────────────────────────────────────────────────
 
     def get_project_location(self) -> Optional[Path]:
+        """Return the full path for the new project directory, or ``None`` if not yet configured."""
         if self._parent_dir is None:
             return None
         name = self._le_name.text().strip()
@@ -271,14 +272,17 @@ class NewProjectDialog(QDialog):
         return self._parent_dir / name
 
     def get_classes(self) -> List[str]:
+        """Return the list of class names entered by the user, defaulting to ``['object']`` if empty."""
         lines = [s.strip() for s in self._classes_edit.toPlainText().splitlines()]
         out = [s for s in lines if s]
         return out if out else ["object"]
 
     def get_keypoints(self) -> List[str]:
+        """Return the ordered list of keypoint names defined in the wizard."""
         return list(self._kpt_names) if self._kpt_names else ["kp1", "kp2"]
 
     def get_edges(self) -> List[Tuple[int, int]]:
+        """Return the skeleton edge list as pairs of 0-based keypoint indices."""
         return list(self._edges)
 
     def get_sources(self) -> List[Tuple[Path, str]]:
@@ -286,6 +290,7 @@ class NewProjectDialog(QDialog):
         return list(self._sources)
 
     def get_options(self) -> Tuple[bool, float]:
+        """Return ``(autosave_enabled, bbox_pad_fraction)`` from the wizard options page."""
         return bool(self._autosave_cb.isChecked()), float(self._pad_spin.value())
 
 

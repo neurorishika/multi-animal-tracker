@@ -26,12 +26,15 @@ from hydra_suite.utils.image_processing import apply_image_adjustments
 if not NUMBA_AVAILABLE:
 
     def njit(*args, **kwargs):
+        """CPU fallback for numba.njit when Numba is unavailable; returns the function unchanged."""
+
         def decorator(func):
             return func
 
         return decorator
 
     def prange(*args, **kwargs):
+        """CPU fallback for numba.prange when Numba is unavailable; delegates to built-in range."""
         return range(*args, **kwargs)
 
 

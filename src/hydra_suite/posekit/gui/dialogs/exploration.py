@@ -50,7 +50,7 @@ logger = logging.getLogger("pose_label.dialogs.exploration")
 class SmartSelectDialog(QDialog):
     """Dialog for smart frame selection using embeddings and clustering."""
 
-    def __init__(self, parent, project, image_paths: List[Path], is_labeled_fn):
+    def __init__(self, parent, project, image_paths: List[Path], is_labeled_fn) -> None:
         super().__init__(parent)
         self.setWindowTitle("Smart Select (Embeddings)")
         self.setMinimumSize(QSize(720, 420))
@@ -352,7 +352,8 @@ class SmartSelectDialog(QDialog):
             },
         )
 
-    def closeEvent(self: object, event: object) -> object:
+    def closeEvent(self, event) -> None:
+        """Persist smart-select dialog settings to disk before the window closes."""
         self._save_settings()
         super().closeEvent(event)
 
@@ -628,7 +629,7 @@ class EmbeddingExplorerView(QGraphicsView):
     point_hovered = Signal(int)
     point_clicked = Signal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -758,7 +759,8 @@ class EmbeddingExplorerView(QGraphicsView):
         item.setPen(self._point_pen(idx, rs))
         item.setZValue(self._point_z(idx))
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
+        """Emit ``point_hovered`` with the index of the scatter point currently under the cursor."""
         super().mouseMoveEvent(event)
         item = self.itemAt(event.pos())
         if isinstance(item, QGraphicsEllipseItem):
@@ -769,14 +771,16 @@ class EmbeddingExplorerView(QGraphicsView):
         else:
             self._last_hover_idx = None
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
+        """Emit ``point_clicked`` with the index of the scatter point clicked by the left button."""
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
             item = self.itemAt(event.pos())
             if isinstance(item, QGraphicsEllipseItem):
                 self.point_clicked.emit(item.data(0))
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event) -> None:
+        """Zoom the scatter view in or out, redrawing points when the dataset is small enough."""
         delta = event.angleDelta().y()
         if not delta:
             return
@@ -812,7 +816,7 @@ class EmbeddingExplorerDialog(QDialog):
         self.setWindowTitle("Embedding Explorer (UMAP)")
         self.setMinimumSize(QSize(1200, 760))
 
-        self.embeddings = embeddings
+        self.embeddings: Optional[np.ndarray] = embeddings
         self.image_paths = image_paths
         self.cluster_ids = cluster_ids
         self.is_labeled_fn = is_labeled_fn or (lambda p: False)
@@ -1087,7 +1091,8 @@ class EmbeddingExplorerDialog(QDialog):
                 selected_set=set(),
             )
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """Cancel any running UMAP worker, release embedding memory, and close the dialog."""
         if self._umap_worker:
             self._umap_worker.cancel()
         if self._umap_thread:
@@ -1120,9 +1125,11 @@ class UMAPWorker(QObject):
         self._cancelled = False
 
     def cancel(self):
+        """Request early termination of the UMAP projection computation."""
         self._cancelled = True
 
     def run(self):
+        """Fit a 2-D UMAP projection on the stored embeddings and emit the result array."""
         try:
             if self._cancelled:
                 return

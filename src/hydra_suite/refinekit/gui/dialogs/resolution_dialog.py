@@ -94,6 +94,7 @@ class _FrameLoader(QThread):
         self.crops: Dict[int, np.ndarray] = {}
 
     def run(self) -> None:
+        """Decode frames in the configured range, crop to the bounding box, draw track markers, and store results in ``self.crops``."""
         cap = cv2.VideoCapture(self._path)
         if not cap.isOpened():
             self.finished.emit()

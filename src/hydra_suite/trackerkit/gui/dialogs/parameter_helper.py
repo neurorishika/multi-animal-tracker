@@ -81,6 +81,8 @@ def _badge_item(cost: float, display: str) -> QTableWidgetItem:
 
 
 class ParameterHelperDialog(BaseDialog):
+    """Interactive dialog for auto-tuning core tracking parameters (Kalman, YOLO thresholds, assignment weights) against a detection cache."""
+
     def __init__(
         self,
         video_path: str,
@@ -120,6 +122,7 @@ class ParameterHelperDialog(BaseDialog):
     # ── UI construction ───────────────────────────────────────────────────────
 
     def setup_ui(self):
+        """Build the full dialog layout: left controls/results table and right live-preview panel."""
         container = QWidget()
         root = QVBoxLayout(container)
         root.setSpacing(0)
@@ -991,6 +994,7 @@ class ParameterHelperDialog(BaseDialog):
     # ── Config gathering ──────────────────────────────────────────────────────
 
     def get_tuning_config(self) -> Dict[str, bool]:
+        """Return a mapping of tracking parameter names to whether each is selected for Optuna optimization."""
         return {
             "YOLO_CONFIDENCE_THRESHOLD": self.cb_conf.isChecked(),
             "YOLO_IOU_THRESHOLD": self.cb_iou.isChecked(),
@@ -1011,6 +1015,7 @@ class ParameterHelperDialog(BaseDialog):
     # ── Optimization ──────────────────────────────────────────────────────────
 
     def run_optimization(self):
+        """Start the Optuna-based tracking optimizer with the selected parameters and trial budget."""
         config = self.get_tuning_config()
         if not any(config.values()):
             QMessageBox.warning(
@@ -1064,11 +1069,13 @@ class ParameterHelperDialog(BaseDialog):
 
     @Slot(int, str)
     def on_progress(self, val: int, msg: str):
+        """Update the progress bar and status label with the optimizer's current trial progress."""
         self.progress.setValue(val)
         self.status_label.setText(msg)
 
     @Slot(list)
     def on_results(self, results: List[OptimizationResult]):
+        """Populate the results table with ranked optimization trials and colour-coded sub-score badges."""
         self.results = results
         n_show = min(len(results), 50)
         self.table.setRowCount(n_show)
@@ -1412,7 +1419,7 @@ class ParameterHelperDialog(BaseDialog):
             f"Restored {len(restored)} cached results from previous run."
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         self._save_state()
         if self.optimizer and self.optimizer.isRunning():
             self.optimizer.stop()

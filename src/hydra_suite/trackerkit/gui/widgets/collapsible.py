@@ -14,7 +14,9 @@ class CollapsibleGroupBox(QWidget):
 
     toggled = Signal(bool)  # Emitted when expanded/collapsed
 
-    def __init__(self, title: str, parent=None, initially_expanded: bool = False):
+    def __init__(
+        self, title: str, parent=None, initially_expanded: bool = False
+    ) -> None:
         super().__init__(parent)
         self._is_expanded = initially_expanded
         self._title = title
@@ -140,7 +142,7 @@ class CollapsibleGroupBox(QWidget):
         self._help_button.setVisible(bool(self._help_tooltip))
         self._position_help_button()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._position_help_button()
 
@@ -166,7 +168,7 @@ class AccordionContainer:
     Manages a group of CollapsibleGroupBox widgets to ensure only one is expanded at a time.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._collapsibles = []
 
     def addCollapsible(self: object, collapsible: CollapsibleGroupBox) -> object:

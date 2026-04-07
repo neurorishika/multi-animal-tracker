@@ -116,6 +116,7 @@ class TrainingWorker(QObject):
         self._proc = None
 
     def cancel(self):
+        """Request early termination and send SIGTERM to any running training subprocess."""
         self._cancel = True
         try:
             if self._proc and self._proc.poll() is None:
@@ -124,6 +125,7 @@ class TrainingWorker(QObject):
             pass
 
     def run(self):
+        """Build the YOLO pose dataset, launch the training subprocess, and stream log output."""
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Training run dir: {self.run_dir}")
@@ -327,6 +329,7 @@ class SleapExportWorker(QObject):
         self.aux_items = aux_items or []
 
     def run(self):
+        """Export annotations to COCO format and convert them to a SLEAP .slp dataset via the conda env."""
         try:
             if not self.env_name:
                 self.failed.emit("No SLEAP conda environment selected.")
@@ -416,7 +419,7 @@ class SleapExportWorker(QObject):
 class TrainingRunnerDialog(QDialog):
     """Dialog to configure and run training/export."""
 
-    def __init__(self, parent, project, image_paths: List[Path]):
+    def __init__(self, parent, project, image_paths: List[Path]) -> None:
         super().__init__(parent)
         self.setWindowTitle("Training Runner")
         self.setMinimumSize(QSize(760, 600))
@@ -1130,7 +1133,8 @@ class TrainingRunnerDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """Persist dialog settings and cancel any running training or export worker before closing."""
         self._save_settings()
         if self._thread:
             self._worker.cancel()

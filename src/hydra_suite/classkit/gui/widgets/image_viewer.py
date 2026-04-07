@@ -13,7 +13,7 @@ class ImageCanvas(QGraphicsView):
     Supports zooming, panning, and displaying an image.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -188,7 +188,7 @@ class ImageCanvas(QGraphicsView):
         self._display_pixmap(pixmap)
         self._last_path = None  # mark as not from a path so next set_image reloads
 
-    def wheelEvent(self, event: QWheelEvent):
+    def wheelEvent(self, event: QWheelEvent) -> None:
         """Zoom logic from PoseKit."""
         delta = event.angleDelta().y()
         if delta == 0:

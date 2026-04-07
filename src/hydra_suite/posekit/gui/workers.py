@@ -404,7 +404,7 @@ class SleapServiceWorker(QObject):
 
     finished = Signal(bool, str, str)
 
-    def __init__(self, env_name: str, out_root: Path):
+    def __init__(self, env_name: str, out_root: Path) -> None:
         super().__init__()
         self.env_name = env_name
         self.out_root = Path(out_root)

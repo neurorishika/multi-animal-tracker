@@ -62,6 +62,7 @@ try:
 except ImportError:
 
     def get_available_devices():
+        """Return a fallback list of compute device names when PoseKit is unavailable."""
         return ["auto", "cpu", "cuda", "mps"]
 
 
@@ -100,7 +101,7 @@ class MainWindow(QMainWindow):
 
     parameters_changed = Signal(dict)
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the main application window and UI components."""
         super().__init__()
         self.config = TrackerConfig()
@@ -1501,7 +1502,7 @@ class MainWindow(QMainWindow):
         """Compute median color from current preview frame or load from video."""
         self._session_orch._compute_median_background_color()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         """Persist MAT-specific UI layout state on close."""
         self._save_ui_settings()
         super().closeEvent(event)
@@ -1942,7 +1943,7 @@ class MainWindow(QMainWindow):
         """Clear all ROI shapes and reset state."""
         self._session_orch.clear_roi()
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event) -> None:
         """Handle key press events."""
         self._session_orch.keyPressEvent(event)
 
@@ -2129,6 +2130,7 @@ class MainWindow(QMainWindow):
             )
 
     def on_yolo_headtail_model_changed(self: object, index: object) -> object:
+        """Handle head/tail classification model combo-box changes, opening the add-model dialog when the sentinel item is selected."""
         if (
             self._identity_panel.combo_yolo_headtail_model.itemData(index, Qt.UserRole)
             == "__add_new__"

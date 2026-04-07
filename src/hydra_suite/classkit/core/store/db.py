@@ -10,6 +10,13 @@ import numpy as np
 
 
 class ClassKitDB:
+    """SQLite-backed store for ClassKit project state.
+
+    Manages image metadata (paths, labels, splits), embedding caches, clustering
+    results, UMAP projections, active-learning candidates, prediction caches, and
+    trained model records — all persisted in a single SQLite file.
+    """
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._init_db()
@@ -234,6 +241,11 @@ class ClassKitDB:
             conn.commit()
 
     def get_all_labels(self) -> List[Optional[str]]:
+        """Return the label for every image, ordered by insertion ID.
+
+        The list index corresponds to the same image order used for embedding arrays.
+        Unlabeled images yield ``None``.
+        """
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
@@ -242,6 +254,7 @@ class ClassKitDB:
             return [r[0] for r in c.fetchall()]
 
     def count_images(self) -> int:
+        """Return the total number of images registered in the database."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM images")
@@ -659,6 +672,7 @@ class ClassKitDB:
             return payload
 
     def close(self):
+        """No-op; provided for API symmetry with connection-holding DB wrappers."""
         pass
 
     # ── Prediction cache ────────────────────────────────────────────────
