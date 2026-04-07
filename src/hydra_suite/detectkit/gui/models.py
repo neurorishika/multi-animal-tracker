@@ -125,7 +125,7 @@ class DetectKitProject:
         proj = DetectKitProject()
         known = {f.name: f for f in fields(proj)}
 
-        for name, fld in known.items():
+        for name in known:
             if name not in raw:
                 continue
             val = raw[name]

@@ -719,7 +719,7 @@ class ClassKitDB:
             num_classes,
             names_json,
             mode,
-            canon,
+            _,
             model_id,
             probs_path,
             timestamp,

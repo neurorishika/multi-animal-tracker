@@ -68,33 +68,6 @@ class OBBGeometryMixin:
 
         return ious
 
-    def _compute_obb_iou(self, corners1, corners2):
-        """
-        Compute IOU between two oriented bounding boxes efficiently.
-
-        Args:
-            corners1: (4, 2) array of corner points for first OBB
-            corners2: (4, 2) array of corner points for second OBB
-
-        Returns:
-            IOU value (0-1)
-        """
-        p1 = cv2.convexHull(np.asarray(corners1, dtype=np.float32)).reshape(-1, 2)
-        p2 = cv2.convexHull(np.asarray(corners2, dtype=np.float32)).reshape(-1, 2)
-        area1 = float(abs(cv2.contourArea(p1)))
-        area2 = float(abs(cv2.contourArea(p2)))
-        if area1 <= 1e-9 or area2 <= 1e-9:
-            return 0.0
-        try:
-            inter_area, _ = cv2.intersectConvexConvex(p1, p2)
-            inter_area = float(max(0.0, inter_area))
-        except Exception:
-            inter_area = 0.0
-        union = area1 + area2 - inter_area
-        if union <= 1e-9:
-            return 0.0
-        return inter_area / union
-
     # ------------------------------------------------------------------
     # NMS / overlap filtering
     # ------------------------------------------------------------------

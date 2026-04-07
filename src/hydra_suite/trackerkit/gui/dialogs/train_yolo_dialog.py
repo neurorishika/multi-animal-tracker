@@ -973,9 +973,7 @@ class TrainYoloDialog(BaseDialog):
         crop_report, crop_warnings = format_size_analysis(
             stats, training_imgsz=crop_imgsz
         )
-        direct_report, direct_warnings = format_size_analysis(
-            stats, training_imgsz=direct_imgsz
-        )
+        _, direct_warnings = format_size_analysis(stats, training_imgsz=direct_imgsz)
 
         sections = []
         sections.append("=" * 50)

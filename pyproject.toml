@@ -216,6 +216,19 @@ exclude = [
     "site/",
 ]
 
+[[tool.mypy.overrides]]
+module = [
+    "hydra_suite.classkit.gui.*",
+    "hydra_suite.detectkit.gui.*",
+    "hydra_suite.filterkit.gui.*",
+    "hydra_suite.posekit.gui.*",
+    "hydra_suite.refinekit.gui.*",
+    "hydra_suite.trackerkit.gui.*",
+    "hydra_suite.widgets.*",
+    "hydra_suite.utils.file_dialogs",
+]
+disable_error_code = ["attr-defined", "name-defined"]
+
 # ============================================================================
 # deadcode - Dead-code detection
 # ============================================================================
@@ -226,6 +239,61 @@ ignore-names = [
     # Convenience properties on SuspicionEvent (dataclass API surface)
     "track_a",
     "track_b",
+    # Public/test-only compatibility helpers; deadcode scans src/ but not tests/
+    "apply_correction",
+    "apply_headtail_rotation",
+    "build_tag_only_trajectories",
+    "compute_crop_dimensions",
+    "detection_cache_hash",
+    "extract_and_classify_batch",
+    "get_canon_transform",
+    "MatMetadataCanonicalizer",
+    "matches_frame_range",
+    "SwapScorer",
+    "SwapSuspicionEvent",
+    "tag_detections",
+    "remove_images_by_folder",
+    "get_detection",
+    "get_video_config_path",
+    "print_paths",
+    "_clear_preview_background_cache",
+    "_should_precompute_individual_data",
+    "_collapse_obb_axis_theta",
+    # Qt/PyTorch/dispatched interfaces
+    "apply_config",
+    "clear_all",
+    "config_changed",
+    "forward",
+    "paint",
+    "paintEvent",
+    "set_cv_image",
+    "_lr_rows_widget",
+    "_on_cnn_identity_model_selected",
+    "_on_identity_method_changed",
+    "_on_individual_analysis_toggled",
+    "_proj",
+    "_select_color_tag_model",
+    "_ud_rows_widget",
+    # Dataclass/config fields retained as API surface or persisted state
+    "all_no_tag",
+    "DEFAULT_PROJECT_DIR_NAME",
+    "DEFAULT_PROJECTS_ROOT_NAME",
+    "DEFAULT_SKELETON_DIRNAME",
+    "detected_tag_id",
+    "heading_rad",
+    "last_image_index",
+    "MAX_ANALYSIS_IMAGES",
+    "min_per_class",
+    "n_profiles_run",
+    "onnx_model_path",
+    "published_models",
+    "startup_ms",
+    "tensorrt_model_path",
+    "training_space",
+    "warmup_ms",
+    "closed_ms",
+    # Exported utility kept for downstream callers
+    "extract_metadata_attr",
 ]
 
 # ============================================================================

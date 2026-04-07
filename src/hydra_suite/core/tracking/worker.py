@@ -1198,7 +1198,6 @@ class TrackingWorker(QThread):
         # === UNIFIED PRECOMPUTE ===
         props_path = None
         tag_observation_cache_path = None
-        cnn_identity_cache_path = None
 
         phases = self._build_precompute_phases(
             p, detection_method, detection_cache, start_frame, end_frame
@@ -1250,7 +1249,6 @@ class TrackingWorker(QThread):
 
             props_path = results.get("pose")
             tag_observation_cache_path = results.get("apriltag")
-            cnn_identity_cache_path = results.get("cnn_identity")
             profiler.phase_end("precompute")
 
             if props_path:

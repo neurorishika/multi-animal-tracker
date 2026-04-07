@@ -51,7 +51,6 @@ class HeadTailAnalyzer:
         self._device = device
         self._conf_threshold = conf_threshold
         self._ref_ar = max(1.0, reference_aspect_ratio)
-        self._canonical_margin = canonical_margin
         self._padding_fraction = max(0.0, canonical_margin - 1.0)
         self._predict_device = predict_device
 
@@ -81,7 +80,6 @@ class HeadTailAnalyzer:
         obj._device = device
         obj._conf_threshold = conf_threshold
         obj._ref_ar = max(1.0, reference_aspect_ratio)
-        obj._canonical_margin = canonical_margin
         obj._padding_fraction = max(0.0, canonical_margin - 1.0)
         obj._predict_device = predict_device
         obj._model = model
