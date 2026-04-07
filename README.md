@@ -1,7 +1,7 @@
 # HYDRA Suite
 
 <div align="center">
-  <img src="brand/banner.png" alt="HYDRA Suite Banner" width="100%" />
+  <img src="docs/assets/banner.png" alt="HYDRA Suite Banner" width="100%" />
 </div>
 
 <p align="center"><strong>The primary documentation lives here:</strong><br><a href="https://neurorishika.github.io/hydra-suite/">https://neurorishika.github.io/hydra-suite/</a></p>
