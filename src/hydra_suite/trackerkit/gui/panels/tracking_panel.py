@@ -849,9 +849,9 @@ class TrackingPanel(QWidget):
         )
 
         self.chk_enable_confidence_density_map.stateChanged.connect(
-            self._main_window._on_confidence_density_map_toggled
+            self._on_confidence_density_map_toggled
         )
-        self._main_window._on_confidence_density_map_toggled(
+        self._on_confidence_density_map_toggled(
             self.chk_enable_confidence_density_map.checkState()
         )
 
@@ -861,3 +861,9 @@ class TrackingPanel(QWidget):
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
         self._config = config
+
+    def _on_confidence_density_map_toggled(self, state):
+        """Show or hide the density-map controls from the top-level tracking toggle."""
+        enabled = self.chk_enable_confidence_density_map.isChecked()
+        self.g_density.setVisible(enabled)
+        self.g_density.setEnabled(enabled)

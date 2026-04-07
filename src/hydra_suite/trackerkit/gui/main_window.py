@@ -3321,15 +3321,6 @@ class MainWindow(QMainWindow):
         self._detection_panel.spin_tensorrt_batch.setEnabled(enabled)
         self._detection_panel.lbl_tensorrt_batch.setEnabled(enabled)
 
-    def _on_confidence_density_map_toggled(self, state):
-        """Show or hide the density-map controls from the top-level tracking toggle."""
-        if not hasattr(self, "_tracking_panel"):
-            return
-
-        enabled = self._tracking_panel.chk_enable_confidence_density_map.isChecked()
-        self._tracking_panel.g_density.setVisible(enabled)
-        self._tracking_panel.g_density.setEnabled(enabled)
-
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
     # =========================================================================
