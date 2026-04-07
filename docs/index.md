@@ -33,11 +33,7 @@ Multi-animal tracking, pose labeling, classification, detection training, datase
 
 ## Quick Navigation
 
-<div class="grid cards" markdown>
-
 - :material-rocket-launch: **Getting Started**
-
-    ---
 
     Installation, first launch, and platform setup.
 
@@ -45,15 +41,11 @@ Multi-animal tracking, pose labeling, classification, detection training, datase
 
 - :material-play-circle: **User Guide**
 
-    ---
-
     End-to-end workflow for tracking, post-processing, datasets, and identity analysis.
 
     [Open User Guide](user-guide/overview.md)
 
 - :material-source-branch: **Developer Guide**
-
-    ---
 
     Architecture, module map, data flow, extension points, and performance notes.
 
@@ -61,21 +53,15 @@ Multi-animal tracking, pose labeling, classification, detection training, datase
 
 - :material-book-open-page-variant: **Reference**
 
-    ---
-
     API docs, CLI docs, UI component references, FAQ, and changelog.
 
     [Open Reference](reference/api-index.md)
 
 - :material-file-document-outline: **Technical Reference**
 
-    ---
-
     Publication-style algorithm writeup plus LaTeX manuscript source for the current tracker.
 
     [Open Technical Reference](reference/technical-reference.md)
-
-</div>
 
 ## Quick Start
 
@@ -130,16 +116,14 @@ Multi-animal tracking, pose labeling, classification, detection training, datase
 
 ## Launch Commands
 
-```bash
-hydra
+    hydra
 
-trackerkit         # Multi-animal tracking
-posekit            # Pose labeling
-classkit           # Classification / embedding
-detectkit          # Detection model training
-filterkit          # Dataset filtering
-refinekit          # Interactive proofreading
-```
+    trackerkit         # Multi-animal tracking
+    posekit            # Pose labeling
+    classkit           # Classification / embedding
+    detectkit          # Detection model training
+    filterkit          # Dataset filtering
+    refinekit          # Interactive proofreading
 
 ## Local Docs Workflow
 
