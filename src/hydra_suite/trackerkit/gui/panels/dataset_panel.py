@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Signal
@@ -9,12 +12,14 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -27,6 +32,8 @@ from hydra_suite.trackerkit.config.schemas import TrackerConfig
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.gui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetPanel(QWidget):
@@ -83,7 +90,7 @@ class DatasetPanel(QWidget):
         )
         self.chk_enable_dataset_gen.setChecked(False)
         self.chk_enable_dataset_gen.toggled.connect(
-            self._main_window._on_dataset_generation_toggled
+            self._on_dataset_generation_toggled
         )
         vl_active.addWidget(self.chk_enable_dataset_gen)
 
@@ -250,14 +257,14 @@ class DatasetPanel(QWidget):
             "Environment names should start with 'x-anylabeling-' to be detected."
         )
         self.combo_xanylabeling_env.currentTextChanged.connect(
-            self._main_window._on_xanylabeling_env_changed
+            self._on_xanylabeling_env_changed
         )
         h_env.addWidget(self.combo_xanylabeling_env, 1)
         self.btn_refresh_envs = QPushButton("🔄")
         self.btn_refresh_envs.setMaximumWidth(40)
         self.btn_refresh_envs.setToolTip("Refresh conda environments list")
         self.btn_refresh_envs.clicked.connect(
-            self._main_window._refresh_xanylabeling_envs
+            self._refresh_xanylabeling_envs
         )
         h_env.addWidget(self.btn_refresh_envs)
         vl_xany.addLayout(h_env)
@@ -271,7 +278,7 @@ class DatasetPanel(QWidget):
             "Directory must contain: classes.txt, images/, and labels/"
         )
         self.btn_open_xanylabeling.clicked.connect(
-            self._main_window._open_in_xanylabeling
+            self._open_in_xanylabeling
         )
         self.btn_open_xanylabeling.setEnabled(False)
         vl_xany.addWidget(self.btn_open_xanylabeling)
@@ -314,7 +321,7 @@ class DatasetPanel(QWidget):
             "Save Individual Analysis Images to Disk"
         )
         self.chk_enable_individual_dataset.toggled.connect(
-            self._main_window._on_individual_dataset_toggled
+            self._on_individual_dataset_toggled
         )
         vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
 
@@ -414,7 +421,7 @@ class DatasetPanel(QWidget):
             "Directory must contain: images/\n"
             "PoseKit project data will be stored in: posekit_project/"
         )
-        self.btn_open_pose_label.clicked.connect(self._main_window._open_pose_label_ui)
+        self.btn_open_pose_label.clicked.connect(self._open_pose_label_ui)
         self.btn_open_pose_label.setEnabled(True)
         vl_pose.addWidget(self.btn_open_pose_label)
 
@@ -432,3 +439,338 @@ class DatasetPanel(QWidget):
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
         self._config = config
+
+    # =========================================================================
+    # Handler methods (moved from MainWindow)
+    # =========================================================================
+
+    def _on_dataset_generation_toggled(self, enabled):
+        """Enable/disable dataset generation controls."""
+        # Hide/show entire content container
+        self.active_learning_content.setVisible(enabled)
+
+    def _refresh_xanylabeling_envs(self):
+        """Scan for conda environments starting with 'x-anylabeling-'."""
+        self.combo_xanylabeling_env.clear()
+        preferred = str(self._main_window.advanced_config.get("xanylabeling_env", "")).strip()
+
+        try:
+            import subprocess
+
+            # Get list of conda environments
+            result = subprocess.run(
+                ["conda", "env", "list"], capture_output=True, text=True, timeout=10
+            )
+
+            if result.returncode == 0:
+                envs = []
+                for line in result.stdout.split("\n"):
+                    # Skip comments and empty lines
+                    if line.strip() and not line.startswith("#"):
+                        # Parse environment name (first column)
+                        parts = line.split()
+                        if parts:
+                            env_name = parts[0]
+                            # Check if it starts with 'x-anylabeling-'
+                            if env_name.startswith("x-anylabeling-"):
+                                envs.append(env_name)
+
+                if envs:
+                    self.combo_xanylabeling_env.addItems(envs)
+                    if preferred in envs:
+                        self.combo_xanylabeling_env.setCurrentText(preferred)
+                    self.btn_open_xanylabeling.setEnabled(True)
+                    logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
+                else:
+                    self.combo_xanylabeling_env.addItem(
+                        "No X-AnyLabeling envs found"
+                    )
+                    self.btn_open_xanylabeling.setEnabled(False)
+                    logger.warning(
+                        "No conda environments starting with 'x-anylabeling-' found. "
+                        "Create one with: conda create -n x-anylabeling-env python=3.10 && "
+                        "conda activate x-anylabeling-env && pip install x-anylabeling"
+                    )
+            else:
+                self.combo_xanylabeling_env.addItem("Conda not available")
+                self.btn_open_xanylabeling.setEnabled(False)
+                logger.warning("Could not detect conda environments")
+
+        except FileNotFoundError:
+            self.combo_xanylabeling_env.addItem("Conda not installed")
+            self.btn_open_xanylabeling.setEnabled(False)
+            logger.warning("Conda not found in PATH")
+        except Exception as e:
+            self.combo_xanylabeling_env.addItem("Error detecting envs")
+            self.btn_open_xanylabeling.setEnabled(False)
+            logger.error(f"Error detecting conda environments: {e}")
+
+    def _selected_xanylabeling_env(self) -> str:
+        """Return the selected X-AnyLabeling env or an empty string."""
+        env_name = self.combo_xanylabeling_env.currentText().strip()
+        invalid_prefixes = (
+            "no x-anylabeling envs",
+            "conda not available",
+            "conda not installed",
+            "error detecting envs",
+        )
+        if not env_name or env_name.lower().startswith(invalid_prefixes):
+            return ""
+        return env_name
+
+    def _on_xanylabeling_env_changed(self, _text: str) -> None:
+        """Persist the preferred X-AnyLabeling env as a global UI preference."""
+        env_name = self._selected_xanylabeling_env()
+        if not env_name:
+            return
+        if self._main_window.advanced_config.get("xanylabeling_env") == env_name:
+            return
+        self._main_window.advanced_config["xanylabeling_env"] = env_name
+        self._main_window._save_advanced_config()
+
+    def _open_in_xanylabeling(self):
+        """Open a dataset directory in X-AnyLabeling."""
+        # Get selected conda environment
+        env_name = self.combo_xanylabeling_env.currentText()
+        if (
+            not env_name
+            or env_name.startswith("No ")
+            or env_name.startswith("Conda ")
+            or env_name.startswith("Error")
+        ):
+            QMessageBox.warning(
+                self,
+                "No Environment",
+                "Please select a valid conda environment with X-AnyLabeling installed.",
+            )
+            return
+
+        video_path = self._main_window._setup_panel.file_line.text().strip()
+        start_dir = os.path.dirname(video_path) if video_path else ""
+
+        # Browse for dataset directory
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Dataset Directory",
+            start_dir,
+        )
+
+        if not directory:
+            return
+
+        dataset_path = Path(directory)
+
+        # Validate directory structure
+        classes_file = dataset_path / "classes.txt"
+        images_dir = dataset_path / "images"
+        labels_dir = dataset_path / "labels"
+
+        missing = []
+        if not classes_file.exists():
+            missing.append("classes.txt")
+        if not images_dir.exists() or not images_dir.is_dir():
+            missing.append("images/")
+        if not labels_dir.exists() or not labels_dir.is_dir():
+            missing.append("labels/")
+
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Invalid Dataset",
+                f"Dataset directory is missing required items:\n{', '.join(missing)}\n\n"
+                f"A valid dataset must contain:\n"
+                f"- classes.txt\n"
+                f"- images/ (directory)\n"
+                f"- labels/ (directory)",
+            )
+            return
+
+        # Determine shell command based on OS
+        import platform
+        import subprocess
+
+        system = platform.system()
+
+        try:
+            if system == "Darwin":  # macOS
+                # Create an AppleScript to open Terminal and run commands
+                # Source conda.sh directly to initialize conda in the session
+                script = f"""
+                tell application "Terminal"
+                    activate
+                    do script "source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
+                end tell
+                """
+                subprocess.Popen(["osascript", "-e", script])
+
+            elif system == "Windows":
+                # Use cmd.exe with conda activation
+                cmd = f'start cmd /k "conda activate {env_name} && cd /d {dataset_path} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
+                subprocess.Popen(cmd, shell=True)
+
+            else:  # Linux
+                # Try common terminal emulators
+                terminals = ["gnome-terminal", "konsole", "xterm"]
+                terminal_found = False
+
+                for terminal in terminals:
+                    try:
+                        if terminal == "gnome-terminal":
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "--",
+                                    "bash",
+                                    "-c",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        elif terminal == "konsole":
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "-e",
+                                    "bash",
+                                    "-c",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        else:  # xterm
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "-e",
+                                    "bash",
+                                    "-c",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        terminal_found = True
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if not terminal_found:
+                    QMessageBox.warning(
+                        self,
+                        "No Terminal Found",
+                        "Could not find a supported terminal emulator (gnome-terminal, konsole, or xterm).",
+                    )
+                    return
+
+            logger.info(f"Opened X-AnyLabeling for dataset: {dataset_path}")
+            QMessageBox.information(
+                self,
+                "X-AnyLabeling Launched",
+                f"X-AnyLabeling is starting in environment: {env_name}\n\n"
+                f"Commands being executed:\n"
+                f"1. Convert YOLO to X-Label format\n"
+                f"2. Open X-AnyLabeling with images\n\n"
+                f"Dataset: {dataset_path}",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open X-AnyLabeling: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Launch Error", f"Failed to open X-AnyLabeling:\n{str(e)}"
+            )
+
+    def _open_pose_label_ui(self):
+        """Open a dataset folder in PoseKit Labeler."""
+        video_path = self._main_window._setup_panel.file_line.text().strip()
+        if video_path:
+            start_dir = os.path.dirname(video_path)
+        else:
+            start_dir = str(Path.home())
+
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Pose Dataset Folder",
+            start_dir,
+        )
+        if not directory:
+            return
+
+        dataset_root = Path(directory).expanduser().resolve()
+        images_dir = dataset_root / "images"
+        if not images_dir.exists() or not images_dir.is_dir():
+            QMessageBox.warning(
+                self,
+                "Invalid Dataset",
+                "Selected folder does not contain an `images/` directory.\n\n"
+                "Please select a dataset root with this structure:\n"
+                "dataset_root/\n"
+                "  images/\n",
+            )
+            return
+
+        # Check if images directory has any images
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+        has_images = any(
+            f.suffix.lower() in image_extensions
+            for f in images_dir.rglob("*")
+            if f.is_file()
+        )
+
+        if not has_images:
+            QMessageBox.warning(
+                self,
+                "No Images Found",
+                f"No image files found in:\n{images_dir}\n\n"
+                f"Supported formats: {', '.join(image_extensions)}",
+            )
+            return
+
+        # Launch pose_label.py using the current Python interpreter
+        import subprocess
+        import sys
+
+        try:
+            # The labeler lives in the posekit.gui.main module.
+            # dataset_panel.py is at .../trackerkit/gui/panels/dataset_panel.py
+            # so parent.parent gives .../trackerkit/gui/
+            gui_dir = Path(__file__).parent.parent
+            package_root = gui_dir.parent
+            labeler_dir = package_root / "posekit" / "ui"
+            pose_label_script = labeler_dir / "main.py"
+
+            if not pose_label_script.exists():
+                QMessageBox.critical(
+                    self,
+                    "Script Not Found",
+                    f"Could not find posekit UI entry point at:\n{pose_label_script}",
+                )
+                return
+
+            # Use the current Python executable (same environment as mat).
+            # Run as a module to support relative imports inside the package.
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "hydra_suite.posekit.gui.main",
+                    str(dataset_root),
+                ],
+                cwd=str(package_root.parent),  # root where hydra_suite package lives
+            )
+
+            logger.info(f"Opened PoseKit Labeler for dataset: {dataset_root}")
+            QMessageBox.information(
+                self,
+                "PoseKit Labeler Launched",
+                f"PoseKit Labeler is starting...\n\n"
+                f"Dataset: {dataset_root}\n"
+                f"Images: {images_dir}\n\n"
+                f"Project data will be created/loaded at:\n"
+                f"{dataset_root / 'posekit_project'}",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open Pose Label UI: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Launch Error", f"Failed to open Pose Label UI:\n{str(e)}"
+            )
+
+    def _on_individual_dataset_toggled(self, enabled):
+        """Enable/disable individual dataset generation controls."""
+        self._main_window._sync_individual_analysis_mode_ui()
