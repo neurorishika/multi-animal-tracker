@@ -101,37 +101,284 @@ class EvaluationWorker(QObject):
     def cancel(self):
         self._cancel = True
 
+    def _validate_inputs(self):
+        if self.backend != "sleap":
+            try:
+                import ultralytics  # noqa: F401
+            except ImportError as e:
+                self.failed.emit(
+                    f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
+                )
+                return False
+        if self.backend == "sleap":
+            if not self.weights_path.exists() or not self.weights_path.is_dir():
+                self.failed.emit(f"SLEAP model dir not found: {self.weights_path}")
+                return False
+            if not self.sleap_env:
+                self.failed.emit("Select a SLEAP conda env.")
+                return False
+        else:
+            if not self.weights_path.exists() and not self.pred_cache:
+                self.failed.emit(f"Weights not found: {self.weights_path}")
+                return False
+        return True
+
+    def _run_predictions(self):
+        if self.pred_cache is not None:
+            return True
+        infer = make_pose_infer(self.out_root, self.keypoint_names)
+        preds, err = infer.predict(
+            self.weights_path,
+            self.eval_paths,
+            device=self.device,
+            imgsz=self.imgsz,
+            conf=self.conf,
+            batch=self.batch,
+            progress_cb=self.progress.emit,
+            backend=self.backend,
+            sleap_env=self.sleap_env,
+            sleap_device=self.sleap_device,
+            sleap_batch=self.sleap_batch,
+            sleap_max_instances=1,
+        )
+        if preds is None:
+            self.failed.emit(err or "Prediction failed.")
+            return False
+        self.pred_cache = preds
+        return True
+
+    def _score_keypoints(
+        self,
+        gt_kpts,
+        pred_xy,
+        pred_conf,
+        w,
+        h,
+        scale,
+        num_kpts,
+        kpt_counts,
+        kpt_pck,
+        kpt_oks,
+        kpt_err_sum,
+        kpt_conf_sum,
+        per_kpt_errors,
+    ):
+        total_kpts = total_pck = 0
+        total_oks = total_err = total_conf = 0.0
+        frame_errs = [None] * num_kpts
+        frame_confs = [None] * num_kpts
+        for k in range(num_kpts):
+            if gt_kpts[k].v <= 0:
+                continue
+            if pred_conf is not None and pred_conf[k] <= 0.0:
+                continue
+            px, py = pred_xy[k]
+            err = float(math.hypot(px - (gt_kpts[k].x * w), py - (gt_kpts[k].y * h)))
+            conf = float(pred_conf[k]) if pred_conf is not None else 0.0
+            ok = err <= (self.pck_thr * scale)
+            oks = math.exp(-((err**2) / (2 * (self.oks_sigma * scale) ** 2)))
+            total_kpts += 1
+            total_pck += 1 if ok else 0
+            total_oks += oks
+            total_err += err
+            total_conf += conf
+            kpt_counts[k] += 1
+            kpt_pck[k] += 1 if ok else 0
+            kpt_oks[k] += oks
+            kpt_err_sum[k] += err
+            kpt_conf_sum[k] += conf
+            per_kpt_errors[k].append(err)
+            frame_errs[k] = err
+            frame_confs[k] = conf
+        return (
+            total_kpts,
+            total_pck,
+            total_oks,
+            total_err,
+            total_conf,
+            frame_errs,
+            frame_confs,
+        )
+
+    def _get_image_size(self, Image, img_path):
+        try:
+            with Image.open(img_path) as im:
+                return im.size
+        except Exception:
+            return (1, 1)
+
+    def _compute_scale(self, bbox, w, h):
+        if bbox is not None:
+            _, _, bw, bh = bbox
+            scale = max(bw * w, bh * h)
+        else:
+            scale = max(w, h)
+        if scale <= 0:
+            scale = max(w, h, 1)
+        return scale
+
+    def _score_one_frame(
+        self,
+        Image,
+        img_path,
+        num_kpts,
+        kpt_counts,
+        kpt_pck,
+        kpt_oks,
+        kpt_err_sum,
+        kpt_conf_sum,
+        per_kpt_errors,
+    ):
+        label_path = self.labels_dir / f"{img_path.stem}.txt"
+        gt = load_yolo_pose_label(label_path, num_kpts)
+        if not gt:
+            return None, None
+        _, gt_kpts, bbox = gt
+        w, h = self._get_image_size(Image, img_path)
+        scale = self._compute_scale(bbox, w, h)
+        pred_list = self.pred_cache.get(str(img_path))
+        if pred_list is None:
+            pred_list = self.pred_cache.get(str(img_path.resolve()))
+        if not pred_list:
+            return None, None
+        if len(pred_list) != num_kpts:
+            self.failed.emit(
+                "Prediction keypoint count mismatch. "
+                f"Model has {len(pred_list)} keypoints, project expects {num_kpts}. "
+                "Please select a matching model."
+            )
+            return None, "mismatch"
+        pred_xy = np.array([[p[0], p[1]] for p in pred_list], dtype=np.float32)
+        pred_conf = np.array([p[2] for p in pred_list], dtype=np.float32)
+        fk, fp, fo, fe, fc, frame_errs, frame_confs = self._score_keypoints(
+            gt_kpts,
+            pred_xy,
+            pred_conf,
+            w,
+            h,
+            scale,
+            num_kpts,
+            kpt_counts,
+            kpt_pck,
+            kpt_oks,
+            kpt_err_sum,
+            kpt_conf_sum,
+            per_kpt_errors,
+        )
+        valid_errs = [e for e in frame_errs if e is not None]
+        valid_confs = [c for c in frame_confs if c is not None]
+        frame_record = None
+        if valid_errs:
+            mean_err = float(np.mean(valid_errs))
+            mean_conf = float(np.mean(valid_confs)) if valid_confs else 0.0
+            mean_err_norm = mean_err / (scale + 1e-6)
+            frame_record = {
+                "image_path": str(img_path),
+                "mean_error_px": mean_err,
+                "mean_error_norm": mean_err_norm,
+                "mean_conf": mean_conf,
+                "kpt_errors": frame_errs,
+                "kpt_confs": frame_confs,
+            }
+        totals = (fk, fp, fo, fe, fc)
+        return frame_record, totals
+
+    def _score_frames(
+        self,
+        Image,
+        num_kpts,
+        kpt_counts,
+        kpt_pck,
+        kpt_oks,
+        kpt_err_sum,
+        kpt_conf_sum,
+        per_kpt_errors,
+    ):
+        total = len(self.eval_paths)
+        per_frame = []
+        total_kpts = total_pck = 0
+        total_oks = total_err = total_conf = 0.0
+        for idx, img_path in enumerate(self.eval_paths):
+            if self._cancel:
+                self.log.emit("Canceled.")
+                return None, None, None, None, None, None
+            frame_record, totals = self._score_one_frame(
+                Image,
+                img_path,
+                num_kpts,
+                kpt_counts,
+                kpt_pck,
+                kpt_oks,
+                kpt_err_sum,
+                kpt_conf_sum,
+                per_kpt_errors,
+            )
+            if totals == "mismatch":
+                return None, None, None, None, None, None
+            if totals is not None:
+                fk, fp, fo, fe, fc = totals
+                total_kpts += fk
+                total_pck += fp
+                total_oks += fo
+                total_err += fe
+                total_conf += fc
+                if frame_record is not None:
+                    per_frame.append(frame_record)
+            self.progress.emit(idx + 1, total)
+        return per_frame, total_kpts, total_pck, total_oks, total_err, total_conf
+
+    def _build_results(
+        self,
+        per_frame,
+        total_kpts,
+        total_pck,
+        total_oks,
+        total_err,
+        total_conf,
+        kpt_counts,
+        kpt_pck,
+        kpt_oks,
+        kpt_err_sum,
+        kpt_conf_sum,
+        per_kpt_errors,
+    ):
+        overall = {
+            "frames": len(per_frame),
+            "total_kpts": total_kpts,
+            "pck": (total_pck / total_kpts) if total_kpts else 0.0,
+            "oks": (total_oks / total_kpts) if total_kpts else 0.0,
+            "mean_error_px": (total_err / total_kpts) if total_kpts else 0.0,
+            "mean_conf": (total_conf / total_kpts) if total_kpts else 0.0,
+        }
+        per_kpt = []
+        for i, name in enumerate(self.keypoint_names):
+            count = kpt_counts[i]
+            per_kpt.append(
+                {
+                    "name": name,
+                    "count": count,
+                    "pck": (kpt_pck[i] / count) if count else 0.0,
+                    "oks": (kpt_oks[i] / count) if count else 0.0,
+                    "mean_error_px": (kpt_err_sum[i] / count) if count else 0.0,
+                    "mean_conf": (kpt_conf_sum[i] / count) if count else 0.0,
+                }
+            )
+        per_frame_sorted = sorted(
+            per_frame, key=lambda x: x.get("mean_error_norm", 0.0), reverse=True
+        )
+        worst = per_frame_sorted[:50]
+        return overall, per_kpt, worst
+
     def run(self):
         try:
-            if self.backend != "sleap":
-                try:
-                    import ultralytics  # noqa: F401
-                except ImportError as e:
-                    self.failed.emit(
-                        f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
-                    )
-                    return
-
-            if self.backend == "sleap":
-                if not self.weights_path.exists() or not self.weights_path.is_dir():
-                    self.failed.emit(f"SLEAP model dir not found: {self.weights_path}")
-                    return
-                if not self.sleap_env:
-                    self.failed.emit("Select a SLEAP conda env.")
-                    return
-            else:
-                if not self.weights_path.exists() and not self.pred_cache:
-                    self.failed.emit(f"Weights not found: {self.weights_path}")
-                    return
+            if not self._validate_inputs():
+                return
 
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Eval run dir: {self.run_dir}")
             self.log.emit(f"Evaluating {len(self.eval_paths)} frames...")
 
-            total = len(self.eval_paths)
             num_kpts = len(self.keypoint_names)
-
-            per_frame = []
             per_kpt_errors = [[] for _ in range(num_kpts)]
             kpt_counts = [0] * num_kpts
             kpt_pck = [0] * num_kpts
@@ -139,32 +386,8 @@ class EvaluationWorker(QObject):
             kpt_err_sum = [0.0] * num_kpts
             kpt_conf_sum = [0.0] * num_kpts
 
-            total_kpts = 0
-            total_pck = 0
-            total_oks = 0.0
-            total_err = 0.0
-            total_conf = 0.0
-
-            if self.pred_cache is None:
-                infer = make_pose_infer(self.out_root, self.keypoint_names)
-                preds, err = infer.predict(
-                    self.weights_path,
-                    self.eval_paths,
-                    device=self.device,
-                    imgsz=self.imgsz,
-                    conf=self.conf,
-                    batch=self.batch,
-                    progress_cb=self.progress.emit,
-                    backend=self.backend,
-                    sleap_env=self.sleap_env,
-                    sleap_device=self.sleap_device,
-                    sleap_batch=self.sleap_batch,
-                    sleap_max_instances=1,
-                )
-                if preds is None:
-                    self.failed.emit(err or "Prediction failed.")
-                    return
-                self.pred_cache = preds
+            if not self._run_predictions():
+                return
 
             if self.pred_cache:
                 try:
@@ -173,132 +396,40 @@ class EvaluationWorker(QObject):
                     self.failed.emit(f"PIL not available: {e}")
                     return
 
-                for idx, img_path in enumerate(self.eval_paths):
-                    if self._cancel:
-                        self.log.emit("Canceled.")
-                        return
-
-                    label_path = self.labels_dir / f"{img_path.stem}.txt"
-                    gt = load_yolo_pose_label(label_path, num_kpts)
-                    if not gt:
-                        self.progress.emit(idx + 1, total)
-                        continue
-
-                    _, gt_kpts, bbox = gt
-                    try:
-                        with Image.open(img_path) as im:
-                            w, h = im.size
-                    except Exception:
-                        w, h = (1, 1)
-                    if bbox is not None:
-                        _, _, bw, bh = bbox
-                        scale = max(bw * w, bh * h)
-                    else:
-                        scale = max(w, h)
-                    if scale <= 0:
-                        scale = max(w, h, 1)
-
-                    pred_list = self.pred_cache.get(str(img_path))
-                    if pred_list is None:
-                        pred_list = self.pred_cache.get(str(img_path.resolve()))
-                    if not pred_list:
-                        self.progress.emit(idx + 1, total)
-                        continue
-                    if len(pred_list) != num_kpts:
-                        self.failed.emit(
-                            "Prediction keypoint count mismatch. "
-                            f"Model has {len(pred_list)} keypoints, project expects {num_kpts}. "
-                            "Please select a matching model."
-                        )
-                        return
-
-                    pred_xy = np.array(
-                        [[p[0], p[1]] for p in pred_list], dtype=np.float32
-                    )
-                    pred_conf = np.array([p[2] for p in pred_list], dtype=np.float32)
-
-                    frame_errs = [None] * num_kpts
-                    frame_confs = [None] * num_kpts
-                    for k in range(num_kpts):
-                        if gt_kpts[k].v <= 0:
-                            continue
-                        if pred_conf is not None and pred_conf[k] <= 0.0:
-                            continue
-
-                        px, py = pred_xy[k]
-                        err = float(
-                            math.hypot(px - (gt_kpts[k].x * w), py - (gt_kpts[k].y * h))
-                        )
-                        conf = float(pred_conf[k]) if pred_conf is not None else 0.0
-
-                        ok = err <= (self.pck_thr * scale)
-                        oks = math.exp(
-                            -((err**2) / (2 * (self.oks_sigma * scale) ** 2))
-                        )
-
-                        total_kpts += 1
-                        total_pck += 1 if ok else 0
-                        total_oks += oks
-                        total_err += err
-                        total_conf += conf
-
-                        kpt_counts[k] += 1
-                        kpt_pck[k] += 1 if ok else 0
-                        kpt_oks[k] += oks
-                        kpt_err_sum[k] += err
-                        kpt_conf_sum[k] += conf
-
-                        per_kpt_errors[k].append(err)
-                        frame_errs[k] = err
-                        frame_confs[k] = conf
-
-                    valid_errs = [e for e in frame_errs if e is not None]
-                    valid_confs = [c for c in frame_confs if c is not None]
-                    if valid_errs:
-                        mean_err = float(np.mean(valid_errs))
-                        mean_conf = float(np.mean(valid_confs)) if valid_confs else 0.0
-                        mean_err_norm = mean_err / (scale + 1e-6)
-                        per_frame.append(
-                            {
-                                "image_path": str(img_path),
-                                "mean_error_px": mean_err,
-                                "mean_error_norm": mean_err_norm,
-                                "mean_conf": mean_conf,
-                                "kpt_errors": frame_errs,
-                                "kpt_confs": frame_confs,
-                            }
-                        )
-
-                    self.progress.emit(idx + 1, total)
-
-            # finalize
-            overall = {
-                "frames": len(per_frame),
-                "total_kpts": total_kpts,
-                "pck": (total_pck / total_kpts) if total_kpts else 0.0,
-                "oks": (total_oks / total_kpts) if total_kpts else 0.0,
-                "mean_error_px": (total_err / total_kpts) if total_kpts else 0.0,
-                "mean_conf": (total_conf / total_kpts) if total_kpts else 0.0,
-            }
-
-            per_kpt = []
-            for i, name in enumerate(self.keypoint_names):
-                count = kpt_counts[i]
-                per_kpt.append(
-                    {
-                        "name": name,
-                        "count": count,
-                        "pck": (kpt_pck[i] / count) if count else 0.0,
-                        "oks": (kpt_oks[i] / count) if count else 0.0,
-                        "mean_error_px": (kpt_err_sum[i] / count) if count else 0.0,
-                        "mean_conf": (kpt_conf_sum[i] / count) if count else 0.0,
-                    }
+                result = self._score_frames(
+                    Image,
+                    num_kpts,
+                    kpt_counts,
+                    kpt_pck,
+                    kpt_oks,
+                    kpt_err_sum,
+                    kpt_conf_sum,
+                    per_kpt_errors,
                 )
+                per_frame, total_kpts, total_pck, total_oks, total_err, total_conf = (
+                    result
+                )
+                if per_frame is None:
+                    return
+            else:
+                per_frame = []
+                total_kpts = total_pck = 0
+                total_oks = total_err = total_conf = 0.0
 
-            per_frame_sorted = sorted(
-                per_frame, key=lambda x: x.get("mean_error_norm", 0.0), reverse=True
+            overall, per_kpt, worst = self._build_results(
+                per_frame,
+                total_kpts,
+                total_pck,
+                total_oks,
+                total_err,
+                total_conf,
+                kpt_counts,
+                kpt_pck,
+                kpt_oks,
+                kpt_err_sum,
+                kpt_conf_sum,
+                per_kpt_errors,
             )
-            worst = per_frame_sorted[:50]
 
             self.log.emit("Evaluation finished.")
             self.finished.emit(

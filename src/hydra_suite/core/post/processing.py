@@ -801,6 +801,82 @@ def process_trajectories(trajectories_full: object, params: object) -> object:
     return final_trajectories, stats
 
 
+def _drop_source_column(traj_list):
+    for traj in traj_list:
+        if "_source" in traj.columns:
+            traj.drop(columns=["_source"], inplace=True)
+
+
+def _find_merge_candidates(forward_dfs, backward_dfs, agreement_distance, min_overlap):
+    if NUMBA_AVAILABLE and len(forward_dfs) > 5 and len(backward_dfs) > 5:
+        logger.debug("Using Numba-accelerated merge candidate search")
+        fwd_x, fwd_y, fwd_frames, fwd_starts, fwd_ends = _prepare_trajectory_arrays(
+            forward_dfs
+        )
+        bwd_x, bwd_y, bwd_frames, bwd_starts, bwd_ends = _prepare_trajectory_arrays(
+            backward_dfs
+        )
+        try:
+            fi_arr, bi_arr, agreeing_arr, common_arr = (
+                _compute_all_merge_candidates_numba(
+                    fwd_x,
+                    fwd_y,
+                    fwd_frames,
+                    fwd_starts,
+                    fwd_ends,
+                    bwd_x,
+                    bwd_y,
+                    bwd_frames,
+                    bwd_starts,
+                    bwd_ends,
+                    agreement_distance,
+                    min_overlap,
+                )
+            )
+            return list(zip(fi_arr, bi_arr, agreeing_arr, common_arr))
+        except Exception as e:
+            logger.warning(f"Numba acceleration failed, falling back to Python: {e}")
+    return _find_merge_candidates_python(
+        forward_dfs, backward_dfs, agreement_distance, min_overlap
+    )
+
+
+def _apply_merge_candidates(
+    merge_candidates, forward_dfs, backward_dfs, agreement_distance, min_length
+):
+    used_forward = set()
+    used_backward = set()
+    result_trajectories = []
+    merge_candidates.sort(key=lambda x: -x[2])
+    for fi, bi, agreeing, total_common in merge_candidates:
+        if fi in used_forward or bi in used_backward:
+            continue
+        used_forward.add(fi)
+        used_backward.add(bi)
+        logger.debug(
+            f"Merging forward_{fi} with backward_{bi}: "
+            f"{agreeing}/{total_common} agreeing frames"
+        )
+        merged_segments = _conservative_merge(
+            forward_dfs[fi], backward_dfs[bi], agreement_distance, min_length
+        )
+        result_trajectories.extend(merged_segments)
+    for fi, fwd in enumerate(forward_dfs):
+        if fi not in used_forward:
+            result_trajectories.append(fwd.copy())
+    for bi, bwd in enumerate(backward_dfs):
+        if bi not in used_backward:
+            result_trajectories.append(bwd.copy())
+    return result_trajectories
+
+
+def _reassign_trajectory_ids(result_trajectories):
+    for new_id, traj in enumerate(result_trajectories):
+        traj["TrajectoryID"] = new_id
+        if "_source" in traj.columns:
+            traj.drop(columns=["_source"], inplace=True)
+
+
 def resolve_trajectories(
     forward_trajs: object, backward_trajs: object, params: object = None
 ) -> object:
@@ -883,95 +959,23 @@ def resolve_trajectories(
 
     # If only one direction has trajectories, return those
     if not forward_dfs:
-        for traj in backward_dfs:
-            if "_source" in traj.columns:
-                traj.drop(columns=["_source"], inplace=True)
+        _drop_source_column(backward_dfs)
         return backward_dfs
     if not backward_dfs:
-        for traj in forward_dfs:
-            if "_source" in traj.columns:
-                traj.drop(columns=["_source"], inplace=True)
+        _drop_source_column(forward_dfs)
         return forward_dfs
 
     # Find merge candidates based on overlap counting
-    # Use Numba-accelerated version if available
-    if NUMBA_AVAILABLE and len(forward_dfs) > 5 and len(backward_dfs) > 5:
-        logger.debug("Using Numba-accelerated merge candidate search")
-
-        # Prepare trajectory arrays for Numba
-        fwd_x, fwd_y, fwd_frames, fwd_starts, fwd_ends = _prepare_trajectory_arrays(
-            forward_dfs
-        )
-        bwd_x, bwd_y, bwd_frames, bwd_starts, bwd_ends = _prepare_trajectory_arrays(
-            backward_dfs
-        )
-
-        try:
-            # Run Numba-accelerated candidate search
-            fi_arr, bi_arr, agreeing_arr, common_arr = (
-                _compute_all_merge_candidates_numba(
-                    fwd_x,
-                    fwd_y,
-                    fwd_frames,
-                    fwd_starts,
-                    fwd_ends,
-                    bwd_x,
-                    bwd_y,
-                    bwd_frames,
-                    bwd_starts,
-                    bwd_ends,
-                    AGREEMENT_DISTANCE,
-                    MIN_OVERLAP_FRAMES,
-                )
-            )
-            merge_candidates = list(zip(fi_arr, bi_arr, agreeing_arr, common_arr))
-        except Exception as e:
-            logger.warning(f"Numba acceleration failed, falling back to Python: {e}")
-            merge_candidates = _find_merge_candidates_python(
-                forward_dfs, backward_dfs, AGREEMENT_DISTANCE, MIN_OVERLAP_FRAMES
-            )
-    else:
-        merge_candidates = _find_merge_candidates_python(
-            forward_dfs, backward_dfs, AGREEMENT_DISTANCE, MIN_OVERLAP_FRAMES
-        )
+    merge_candidates = _find_merge_candidates(
+        forward_dfs, backward_dfs, AGREEMENT_DISTANCE, MIN_OVERLAP_FRAMES
+    )
 
     logger.info(f"Found {len(merge_candidates)} merge candidates")
 
     # Now merge candidates using conservative strategy
-    used_forward = set()
-    used_backward = set()
-    result_trajectories = []
-
-    # Sort by number of agreeing frames (most agreement first)
-    merge_candidates.sort(key=lambda x: -x[2])
-
-    for fi, bi, agreeing, total_common in merge_candidates:
-        if fi in used_forward or bi in used_backward:
-            continue
-
-        used_forward.add(fi)
-        used_backward.add(bi)
-
-        logger.debug(
-            f"Merging forward_{fi} with backward_{bi}: "
-            f"{agreeing}/{total_common} agreeing frames"
-        )
-
-        # Perform conservative merge
-        merged_segments = _conservative_merge(
-            forward_dfs[fi], backward_dfs[bi], AGREEMENT_DISTANCE, MIN_LENGTH
-        )
-        result_trajectories.extend(merged_segments)
-
-    # Add unused forward trajectories
-    for fi, fwd in enumerate(forward_dfs):
-        if fi not in used_forward:
-            result_trajectories.append(fwd.copy())
-
-    # Add unused backward trajectories
-    for bi, bwd in enumerate(backward_dfs):
-        if bi not in used_backward:
-            result_trajectories.append(bwd.copy())
+    result_trajectories = _apply_merge_candidates(
+        merge_candidates, forward_dfs, backward_dfs, AGREEMENT_DISTANCE, MIN_LENGTH
+    )
 
     # Note: Filtering by MIN_LENGTH is deferred until after stitching
     # to allow small fragments to be reconnected.
@@ -1013,14 +1017,138 @@ def resolve_trajectories(
     result_trajectories = _clean_trajectories(result_trajectories, MIN_LENGTH)
 
     # Reassign trajectory IDs and remove internal columns
-    for new_id, traj in enumerate(result_trajectories):
-        traj["TrajectoryID"] = new_id
-        if "_source" in traj.columns:
-            traj.drop(columns=["_source"], inplace=True)
+    _reassign_trajectory_ids(result_trajectories)
 
     logger.info(f"Final result: {len(result_trajectories)} trajectories")
 
     return result_trajectories
+
+
+def _classify_frame_pair(t1_by_frame, t2_by_frame, frame, agreement_distance):
+    in_t1 = frame in t1_by_frame
+    in_t2 = frame in t2_by_frame
+    if in_t1 and in_t2:
+        r1 = t1_by_frame[frame]
+        r2 = t2_by_frame[frame]
+        x1_valid = not pd.isna(r1.get("X"))
+        x2_valid = not pd.isna(r2.get("X"))
+        if not x1_valid and not x2_valid:
+            return "agree", _average_trajectory_rows(r1, r2)
+        if not x1_valid:
+            return "t2_only", r2
+        if not x2_valid:
+            return "t1_only", r1
+        dx = r1["X"] - r2["X"]
+        dy = r1["Y"] - r2["Y"]
+        dist = np.sqrt(dx * dx + dy * dy)
+        if dist <= agreement_distance:
+            return "agree", _average_trajectory_rows(r1, r2)
+        return "disagree", (r1, r2)
+    if in_t1:
+        return "t1_only", t1_by_frame[frame]
+    return "t2_only", t2_by_frame[frame]
+
+
+def _advance_merged_state(
+    classification,
+    data,
+    current_segment,
+    split_t1_segment,
+    split_t2_segment,
+    result_segments_rows,
+    short_segments_rows,
+    min_length,
+):
+    def _append_segment(seg):
+        if len(seg) >= min_length:
+            result_segments_rows.append(seg)
+        elif seg:
+            short_segments_rows.append(seg)
+
+    if classification in ("agree", "t1_only", "t2_only"):
+        current_segment.append(data)
+        return "merged", current_segment, split_t1_segment, split_t2_segment
+    # disagree: end merged segment, start split
+    _append_segment(current_segment)
+    r1, r2 = data
+    return "split", [], [r1.copy()], [r2.copy()]
+
+
+def _advance_split_state(
+    classification,
+    data,
+    current_segment,
+    split_t1_segment,
+    split_t2_segment,
+    result_segments_rows,
+    short_segments_rows,
+    min_length,
+):
+    def _append_segment(seg):
+        if len(seg) >= min_length:
+            result_segments_rows.append(seg)
+        elif seg:
+            short_segments_rows.append(seg)
+
+    if classification == "agree":
+        _append_segment(split_t1_segment)
+        _append_segment(split_t2_segment)
+        return "merged", [data], [], []
+    if classification == "disagree":
+        r1, r2 = data
+        split_t1_segment.append(r1.copy())
+        split_t2_segment.append(r2.copy())
+    elif classification == "t1_only":
+        split_t1_segment.append(data.copy())
+    elif classification == "t2_only":
+        split_t2_segment.append(data.copy())
+    return "split", current_segment, split_t1_segment, split_t2_segment
+
+
+def _finalize_state_machine_segments(
+    state,
+    current_segment,
+    split_t1_segment,
+    split_t2_segment,
+    result_segments_rows,
+    short_segments_rows,
+    min_length,
+):
+    def _append_segment(seg):
+        if len(seg) >= min_length:
+            result_segments_rows.append(seg)
+        elif seg:
+            short_segments_rows.append(seg)
+
+    if state == "merged":
+        _append_segment(current_segment)
+    elif state == "split":
+        _append_segment(split_t1_segment)
+        _append_segment(split_t2_segment)
+
+
+def _build_final_segments_from_rows(
+    result_segments_rows, short_segments_rows, agreement_distance
+):
+    max_spatial_jump = agreement_distance * 5
+    final_segments = []
+    for seg_rows in result_segments_rows:
+        if not seg_rows:
+            continue
+        sub_segments_rows = _split_rows_into_segments(
+            seg_rows, max_gap=5, max_spatial_jump=max_spatial_jump
+        )
+        final_segments.extend(pd.DataFrame(seg) for seg in sub_segments_rows if seg)
+    if short_segments_rows:
+        n_short = sum(len(s) for s in short_segments_rows)
+        logger.debug(
+            f"Conservative merge: preserving {len(short_segments_rows)} short "
+            f"segment(s) ({n_short} total frames) for downstream stitching"
+        )
+        for seg_rows in short_segments_rows:
+            if seg_rows:
+                final_segments.append(pd.DataFrame(seg_rows))
+    return final_segments
 
 
 def _conservative_merge(traj1, traj2, agreement_distance, min_length):
@@ -1054,125 +1182,51 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
     split_t1_segment = []
     split_t2_segment = []
 
-    def _append_segment(segment_rows):
-        if len(segment_rows) >= min_length:
-            result_segments_rows.append(segment_rows)
-        elif segment_rows:
-            short_segments_rows.append(segment_rows)
-
     for frame in all_frames:
-        in_t1 = frame in t1_by_frame
-        in_t2 = frame in t2_by_frame
-
-        if in_t1 and in_t2:
-            r1 = t1_by_frame[frame]
-            r2 = t2_by_frame[frame]
-
-            x1_valid = not pd.isna(r1.get("X"))
-            x2_valid = not pd.isna(r2.get("X"))
-
-            if not x1_valid and not x2_valid:
-                classification = "agree"
-                data = _average_trajectory_rows(r1, r2)
-            elif not x1_valid:
-                classification = "t2_only"
-                data = r2
-            elif not x2_valid:
-                classification = "t1_only"
-                data = r1
-            else:
-                dx = r1["X"] - r2["X"]
-                dy = r1["Y"] - r2["Y"]
-                dist = np.sqrt(dx * dx + dy * dy)
-                if dist <= agreement_distance:
-                    classification = "agree"
-                    data = _average_trajectory_rows(r1, r2)
-                else:
-                    classification = "disagree"
-                    data = (r1, r2)
-        elif in_t1:
-            classification = "t1_only"
-            data = t1_by_frame[frame]
-        else:
-            classification = "t2_only"
-            data = t2_by_frame[frame]
-
+        classification, data = _classify_frame_pair(
+            t1_by_frame, t2_by_frame, frame, agreement_distance
+        )
         if state == "merged":
-            if classification == "agree":
-                current_segment.append(data)
-            elif classification == "t1_only":
-                current_segment.append(data)
-            elif classification == "t2_only":
-                current_segment.append(data)
-            elif classification == "disagree":
-                # End current merged segment and start split
-                _append_segment(current_segment)
-                current_segment = []
-
-                # Start split segments
-                state = "split"
-                r1, r2 = data
-                split_t1_segment = [r1.copy()]
-                split_t2_segment = [r2.copy()]
-
-        elif state == "split":
-            if classification == "agree":
-                # End split, save segments, start new merged segment
-                _append_segment(split_t1_segment)
-                _append_segment(split_t2_segment)
-                split_t1_segment = []
-                split_t2_segment = []
-
-                state = "merged"
-                current_segment = [data]
-
-            elif classification == "disagree":
-                r1, r2 = data
-                split_t1_segment.append(r1.copy())
-                split_t2_segment.append(r2.copy())
-
-            elif classification == "t1_only":
-                split_t1_segment.append(data.copy())
-                # t2 segment gets a gap (handled by frame continuity later)
-
-            elif classification == "t2_only":
-                split_t2_segment.append(data.copy())
-                # t1 segment gets a gap
+            state, current_segment, split_t1_segment, split_t2_segment = (
+                _advance_merged_state(
+                    classification,
+                    data,
+                    current_segment,
+                    split_t1_segment,
+                    split_t2_segment,
+                    result_segments_rows,
+                    short_segments_rows,
+                    min_length,
+                )
+            )
+        else:
+            state, current_segment, split_t1_segment, split_t2_segment = (
+                _advance_split_state(
+                    classification,
+                    data,
+                    current_segment,
+                    split_t1_segment,
+                    split_t2_segment,
+                    result_segments_rows,
+                    short_segments_rows,
+                    min_length,
+                )
+            )
 
     # Finalize remaining segments
-    if state == "merged":
-        _append_segment(current_segment)
-    elif state == "split":
-        _append_segment(split_t1_segment)
-        _append_segment(split_t2_segment)
+    _finalize_state_machine_segments(
+        state,
+        current_segment,
+        split_t1_segment,
+        split_t2_segment,
+        result_segments_rows,
+        short_segments_rows,
+        min_length,
+    )
 
-    # Further split any segments with large gaps OR spatial jumps
-    max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
-    final_segments = []
-    for seg_rows in result_segments_rows:
-        if not seg_rows:
-            continue
-        sub_segments_rows = _split_rows_into_segments(
-            seg_rows, max_gap=5, max_spatial_jump=max_spatial_jump
-        )
-        final_segments.extend(pd.DataFrame(seg) for seg in sub_segments_rows if seg)
-
-    # Also include short segments — they carry real detections that should
-    # not be silently discarded.  Downstream stitching may reconnect them;
-    # if not, the final MIN_LENGTH filter in resolve_trajectories will
-    # remove them cleanly (with the benefit of having been available for
-    # stitching attempts).
-    if short_segments_rows:
-        n_short = sum(len(s) for s in short_segments_rows)
-        logger.debug(
-            f"Conservative merge: preserving {len(short_segments_rows)} short "
-            f"segment(s) ({n_short} total frames) for downstream stitching"
-        )
-        for seg_rows in short_segments_rows:
-            if seg_rows:
-                final_segments.append(pd.DataFrame(seg_rows))
-
-    return final_segments
+    return _build_final_segments_from_rows(
+        result_segments_rows, short_segments_rows, agreement_distance
+    )
 
 
 def _merge_col(r1, r2, col, merge_fn):

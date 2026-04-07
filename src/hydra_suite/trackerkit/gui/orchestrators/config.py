@@ -85,6 +85,28 @@ class ConfigOrchestrator:
             )
             logger.info(f"Configuration loaded from {config_path}")
 
+    @staticmethod
+    def _cfg_get(cfg, new_key, *legacy_keys, default=None):
+        """Get config value with fallback to legacy keys."""
+        if new_key in cfg:
+            return cfg[new_key]
+        for key in legacy_keys:
+            if key in cfg:
+                return cfg[key]
+        return default
+
+    @staticmethod
+    def _cfg_get_time(cfg, seconds_key, *frame_keys, default_seconds):
+        """Load a time parameter, converting legacy frame-based values to seconds."""
+        val = ConfigOrchestrator._cfg_get(cfg, seconds_key, default=None)
+        if val is not None:
+            return float(val)
+        config_fps = float(ConfigOrchestrator._cfg_get(cfg, "fps", default=30.0))
+        for fk in frame_keys:
+            if fk in cfg:
+                return float(cfg[fk]) / config_fps
+        return default_seconds
+
     def _load_config_from_file(self, config_path, preset_mode=False):
         """Internal method to load config from a specific file path.
 
@@ -97,1123 +119,1042 @@ class ConfigOrchestrator:
         """
         if not os.path.isfile(config_path):
             return
-
-        def get_cfg(
-            new_key: object, *legacy_keys: object, default: object = None
-        ) -> object:
-            """Helper to get config value with fallback to legacy keys."""
-            if new_key in cfg:
-                return cfg[new_key]
-            for key in legacy_keys:
-                if key in cfg:
-                    return cfg[key]
-            return default
-
-        def get_cfg_time(
-            seconds_key: str,
-            *frame_keys: str,
-            default_seconds: float,
-        ) -> float:
-            """Load a time parameter, with backward-compat from frame-based configs.
-
-            Tries ``seconds_key`` first (new-style, value in seconds).
-            Falls back to legacy ``frame_keys`` (old-style, value in frames),
-            converting ``frames / config_fps`` to seconds.
-            """
-            val = get_cfg(seconds_key, default=None)
-            if val is not None:
-                return float(val)
-            # Try legacy frame-based keys and convert
-            config_fps = float(get_cfg("fps", default=30.0))
-            for fk in frame_keys:
-                if fk in cfg:
-                    return float(cfg[fk]) / config_fps
-            return default_seconds
-
         try:
             with open(config_path, "r") as f:
                 cfg = json.load(f)
 
-            # === FILE MANAGEMENT ===
-            # Skip file paths when loading presets (only load for full configs)
-            if not preset_mode:
-                # Only set paths if they're currently empty (preserve existing paths)
-                if not self._panels.setup.file_line.text().strip():
-                    video_path = get_cfg("file_path", default="")
-                    if video_path:
-                        # Use the same setup logic as browsing for a file
-                        self._setup_video_file(video_path, skip_config_load=True)
-                if not self._panels.setup.csv_line.text().strip():
-                    self._panels.setup.csv_line.setText(get_cfg("csv_path", default=""))
-                self._panels.postprocess.check_video_output.setChecked(
-                    get_cfg("video_output_enabled", default=False)
-                )
-                saved_video_path = get_cfg("video_output_path", default="")
-                if (
-                    saved_video_path
-                    and not self._panels.postprocess.video_out_line.text().strip()
-                ):
-                    self._panels.postprocess.video_out_line.setText(saved_video_path)
+            def get_cfg(*a, **kw):
+                return self._cfg_get(cfg, *a, **kw)
 
-            # === REFERENCE PARAMETERS ===
-            # Only load video-specific reference parameters from configs (not presets)
-            if not preset_mode:
-                # Load FPS if saved in config
-                saved_fps = get_cfg("fps", default=None)
-                if saved_fps is not None:
-                    self._panels.setup.spin_fps.setValue(saved_fps)
+            def get_cfg_time(*a, **kw):
+                return self._cfg_get_time(cfg, *a, **kw)
 
-                # Load reference body size if saved in config
-                saved_body_size = get_cfg("reference_body_size", default=None)
-                if saved_body_size is not None:
-                    self._panels.detection.spin_reference_body_size.setValue(
-                        saved_body_size
-                    )
-
-                # Load frame range if saved in config
-                saved_start_frame = get_cfg("start_frame", default=None)
-                if (
-                    saved_start_frame is not None
-                    and self._panels.setup.spin_start_frame.isEnabled()
-                ):
-                    self._panels.setup.spin_start_frame.setValue(saved_start_frame)
-
-                saved_end_frame = get_cfg("end_frame", default=None)
-                if (
-                    saved_end_frame is not None
-                    and self._panels.setup.spin_end_frame.isEnabled()
-                ):
-                    self._panels.setup.spin_end_frame.setValue(saved_end_frame)
-
-            # === SYSTEM PERFORMANCE ===
-            self._panels.setup.spin_resize.setValue(
-                get_cfg("resize_factor", default=1.0)
-            )
-            self._panels.setup.check_save_confidence.setChecked(
-                get_cfg("save_confidence_metrics", default=True)
-            )
-            self._panels.setup.chk_use_cached_detections.setChecked(
-                get_cfg("use_cached_detections", default=True)
-            )
-            self._panels.setup.chk_visualization_free.setChecked(
-                get_cfg("visualization_free_mode", default=False)
-            )
-
-            # === DETECTION STRATEGY ===
-            det_method = get_cfg("detection_method", default="background_subtraction")
-            self._panels.detection.combo_detection_method.setCurrentIndex(
-                0 if det_method == "background_subtraction" else 1
-            )
-
-            # === SIZE FILTERING ===
-            self._panels.detection.chk_size_filtering.setChecked(
-                get_cfg("enable_size_filtering", default=False)
-            )
-            self._panels.detection.spin_min_object_size.setValue(
-                get_cfg("min_object_size_multiplier", default=0.3)
-            )
-            self._panels.detection.spin_max_object_size.setValue(
-                get_cfg("max_object_size_multiplier", default=3.0)
-            )
-
-            # === IMAGE ENHANCEMENT ===
-            self._panels.detection.slider_brightness.setValue(
-                int(get_cfg("brightness", default=0.0))
-            )
-            self._panels.detection.slider_contrast.setValue(
-                int(get_cfg("contrast", default=1.0) * 100)
-            )
-            self._panels.detection.slider_gamma.setValue(
-                int(get_cfg("gamma", default=1.0) * 100)
-            )
-            self._panels.detection.chk_dark_on_light.setChecked(
-                get_cfg("dark_on_light_background", default=True)
-            )
-
-            # === BACKGROUND SUBTRACTION ===
-            self._panels.detection.spin_bg_prime.setValue(
-                get_cfg_time(
-                    "background_prime_seconds",
-                    "background_prime_frames",
-                    "bg_prime_frames",
-                    default_seconds=0.33,
-                )
-            )
-            self._panels.detection.chk_adaptive_bg.setChecked(
-                get_cfg(
-                    "enable_adaptive_background", "adaptive_background", default=True
-                )
-            )
-            self._panels.detection.spin_bg_learning.setValue(
-                get_cfg("background_learning_rate", default=0.001)
-            )
-            self._panels.detection.spin_threshold.setValue(
-                get_cfg("subtraction_threshold", "threshold_value", default=50)
-            )
-
-            # === LIGHTING STABILIZATION ===
-            self._panels.detection.chk_lighting_stab.setChecked(
-                get_cfg(
-                    "enable_lighting_stabilization",
-                    "lighting_stabilization",
-                    default=True,
-                )
-            )
-            self._panels.detection.spin_lighting_smooth.setValue(
-                get_cfg("lighting_smooth_factor", default=0.95)
-            )
-            self._panels.detection.spin_lighting_median.setValue(
-                get_cfg("lighting_median_window", default=5)
-            )
-
-            # === MORPHOLOGY & NOISE ===
-            self._panels.detection.spin_morph_size.setValue(
-                get_cfg("morph_kernel_size", default=5)
-            )
-            self._panels.detection.spin_min_contour.setValue(
-                get_cfg("min_contour_area", default=50)
-            )
-            self._panels.detection.spin_max_contour_multiplier.setValue(
-                get_cfg("max_contour_multiplier", default=20)
-            )
-
-            # === ADVANCED SEPARATION ===
-            self._panels.detection.chk_conservative_split.setChecked(
-                get_cfg("enable_conservative_split", default=True)
-            )
-            self._panels.detection.spin_conservative_kernel.setValue(
-                get_cfg("conservative_kernel_size", default=3)
-            )
-            self._panels.detection.spin_conservative_erode.setValue(
-                get_cfg(
-                    "conservative_erode_iterations",
-                    "conservative_erode_iter",
-                    default=1,
-                )
-            )
-            self._panels.detection.chk_additional_dilation.setChecked(
-                get_cfg("enable_additional_dilation", default=False)
-            )
-            self._panels.detection.spin_dilation_kernel_size.setValue(
-                get_cfg("dilation_kernel_size", default=3)
-            )
-            self._panels.detection.spin_dilation_iterations.setValue(
-                get_cfg("dilation_iterations", default=2)
-            )
-
-            # === YOLO CONFIGURATION ===
-            yolo_mode = str(get_cfg("yolo_obb_mode", default="direct")).strip().lower()
-            if yolo_mode not in {"direct", "sequential"}:
-                yolo_mode = "direct"
-            self._panels.detection.combo_yolo_obb_mode.setCurrentIndex(
-                1 if yolo_mode == "sequential" else 0
-            )
-
-            yolo_direct_model = get_cfg(
-                "yolo_obb_direct_model_path",
-                "yolo_model_path",
-                default="",
-            )
-            yolo_detect_model = get_cfg("yolo_detect_model_path", default="")
-            yolo_crop_obb_model = get_cfg(
-                "yolo_crop_obb_model_path",
-                default=yolo_direct_model,
-            )
-            yolo_headtail_model = get_cfg("yolo_headtail_model_path", default="")
-            yolo_headtail_model_type = str(
-                get_cfg(
-                    "yolo_headtail_model_type",
-                    default=self._mw._infer_yolo_headtail_model_type(
-                        yolo_headtail_model
-                    ),
-                )
-            ).strip()
-
-            from hydra_suite.trackerkit.gui.main_window import resolve_model_path
-
-            resolved_yolo_direct = resolve_model_path(yolo_direct_model)
-            resolved_yolo_detect = resolve_model_path(yolo_detect_model)
-            resolved_yolo_crop_obb = resolve_model_path(yolo_crop_obb_model)
-            resolved_yolo_headtail = resolve_model_path(yolo_headtail_model)
-
-            if preset_mode:
-                for model_key, model_cfg, model_resolved in (
-                    ("Direct OBB model", yolo_direct_model, resolved_yolo_direct),
-                    (
-                        "Sequential detect model",
-                        yolo_detect_model,
-                        resolved_yolo_detect,
-                    ),
-                    (
-                        "Sequential crop OBB model",
-                        yolo_crop_obb_model,
-                        resolved_yolo_crop_obb,
-                    ),
-                    ("Head-tail model", yolo_headtail_model, resolved_yolo_headtail),
-                ):
-                    if not model_cfg:
-                        continue
-                    if os.path.isabs(str(model_cfg)):
-                        continue
-                    if os.path.exists(model_resolved):
-                        continue
-                    logger.warning(
-                        "Preset references non-existent %s: %s (expected: %s)",
-                        model_key,
-                        model_cfg,
-                        model_resolved,
-                    )
-
-            self._panels.detection._refresh_yolo_model_combo(
-                preferred_model_path=yolo_direct_model
-            )
-            self._mw._set_yolo_model_selection(resolved_yolo_direct)
-            self._panels.detection._refresh_yolo_detect_model_combo(
-                preferred_model_path=yolo_detect_model
-            )
-            self._mw._set_yolo_detect_model_selection(resolved_yolo_detect)
-            self._panels.detection._refresh_yolo_crop_obb_model_combo(
-                preferred_model_path=yolo_crop_obb_model
-            )
-            self._mw._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
-            headtail_type_idx = (
-                self._panels.identity.combo_yolo_headtail_model_type.findText(
-                    "tiny" if yolo_headtail_model_type.lower() == "tiny" else "YOLO"
-                )
-            )
-            if headtail_type_idx >= 0:
-                self._panels.identity.combo_yolo_headtail_model_type.setCurrentIndex(
-                    headtail_type_idx
-                )
-            self._panels.identity._refresh_yolo_headtail_model_combo(
-                preferred_model_path=yolo_headtail_model
-            )
-            self._mw._set_yolo_headtail_model_selection(resolved_yolo_headtail)
-            self._panels.identity.chk_pose_overrides_headtail.setChecked(
-                bool(get_cfg("pose_overrides_headtail", default=True))
-            )
-            self._panels.detection.spin_yolo_seq_crop_pad.setValue(
-                float(get_cfg("yolo_seq_crop_pad_ratio", default=0.15))
-            )
-            self._panels.detection.spin_yolo_seq_min_crop_px.setValue(
-                int(get_cfg("yolo_seq_min_crop_size_px", default=64))
-            )
-            self._panels.detection.chk_yolo_seq_square_crop.setChecked(
-                bool(get_cfg("yolo_seq_enforce_square_crop", default=True))
-            )
-            self._panels.detection.spin_yolo_seq_stage2_imgsz.setValue(
-                int(get_cfg("yolo_seq_stage2_imgsz", default=160))
-            )
-            self._panels.detection.chk_yolo_seq_stage2_pow2_pad.setChecked(
-                bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
-            )
-            self._panels.detection.spin_yolo_seq_detect_conf.setValue(
-                float(get_cfg("yolo_seq_detect_conf_threshold", default=0.25))
-            )
-            self._panels.identity.spin_yolo_headtail_conf.setValue(
-                float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
-            )
-            self._panels.detection.spin_reference_aspect_ratio.setValue(
-                float(get_cfg("reference_aspect_ratio", default=2.0))
-            )
-            self._panels.detection.chk_enable_aspect_ratio_filtering.setChecked(
-                bool(get_cfg("enable_aspect_ratio_filtering", default=False))
-            )
-            self._panels.detection.spin_min_ar_multiplier.setValue(
-                float(get_cfg("min_aspect_ratio_multiplier", default=0.5))
-            )
-            self._panels.detection.spin_max_ar_multiplier.setValue(
-                float(get_cfg("max_aspect_ratio_multiplier", default=2.0))
-            )
-            self._panels.detection._on_yolo_mode_changed(
-                self._panels.detection.combo_yolo_obb_mode.currentIndex()
-            )
-
-            self._panels.detection.spin_yolo_confidence.setValue(
-                get_cfg("yolo_confidence_threshold", default=0.25)
-            )
-            self._panels.detection.spin_yolo_iou.setValue(
-                get_cfg("yolo_iou_threshold", default=0.7)
-            )
-            self._panels.detection.chk_use_custom_obb_iou.setChecked(True)
-            yolo_cls = get_cfg("yolo_target_classes", default=None)
-            if yolo_cls:
-                self._panels.detection.line_yolo_classes.setText(
-                    ",".join(map(str, yolo_cls))
-                )
-            else:
-                self._panels.detection.line_yolo_classes.clear()
-
-            compute_runtime_cfg = (
-                str(
-                    get_cfg(
-                        "compute_runtime",
-                        default=infer_compute_runtime_from_legacy(
-                            yolo_device=str(get_cfg("yolo_device", default="auto")),
-                            enable_tensorrt=bool(
-                                get_cfg("enable_tensorrt", default=False)
-                            ),
-                            pose_runtime_flavor=str(
-                                get_cfg("pose_runtime_flavor", default="auto")
-                            ),
-                        ),
-                    )
-                )
-                .strip()
-                .lower()
-            )
-            self._mw._populate_compute_runtime_options(preferred=compute_runtime_cfg)
-            self._mw._on_runtime_context_changed()
-
-            # TensorRT batch size is still configurable (runtime-derived usage).
-            self._panels.detection.spin_tensorrt_batch.setValue(
-                get_cfg("tensorrt_max_batch_size", default=16)
-            )
-            self._panels.detection.spin_tensorrt_batch.setEnabled(
-                bool(
-                    derive_detection_runtime_settings(
-                        self._mw._selected_compute_runtime()
-                    )["enable_tensorrt"]
-                )
-            )
-            self._panels.detection.lbl_tensorrt_batch.setEnabled(
-                bool(
-                    derive_detection_runtime_settings(
-                        self._mw._selected_compute_runtime()
-                    )["enable_tensorrt"]
-                )
-            )
-
-            # YOLO Batching settings
-            self._panels.detection.chk_enable_yolo_batching.setChecked(
-                get_cfg("enable_yolo_batching", default=True)
-            )
-            batch_mode = get_cfg("yolo_batch_size_mode", default="auto")
-            self._panels.detection.combo_yolo_batch_mode.setCurrentIndex(
-                0 if batch_mode == "auto" else 1
-            )
-            self._panels.detection.spin_yolo_batch_size.setValue(
-                get_cfg("yolo_manual_batch_size", default=16)
-            )
-            # Re-apply runtime-derived constraints (e.g., TensorRT => manual batch mode).
-            self._mw._on_runtime_context_changed()
-
-            # === CORE TRACKING ===
-            self._panels.setup.spin_max_targets.setValue(
-                get_cfg("max_targets", default=4)
-            )
-            self._panels.tracking.spin_max_dist.setValue(
-                get_cfg(
-                    "max_assignment_distance_multiplier",
-                    "max_dist_multiplier",
-                    default=1.5,
-                )
-            )
-            self._panels.tracking.spin_continuity_thresh.setValue(
-                get_cfg(
-                    "recovery_search_distance_multiplier",
-                    "continuity_threshold_multiplier",
-                    default=0.5,
-                )
-            )
-            self._panels.tracking.chk_enable_backward.setChecked(
-                get_cfg("enable_backward_tracking", default=True)
-            )
-
-            # === KALMAN FILTER ===
-            self._panels.tracking.spin_kalman_noise.setValue(
-                get_cfg("kalman_process_noise", "kalman_noise", default=0.03)
-            )
-            self._panels.tracking.spin_kalman_meas.setValue(
-                get_cfg("kalman_measurement_noise", "kalman_meas_noise", default=0.1)
-            )
-            self._panels.tracking.spin_kalman_damping.setValue(
-                get_cfg("kalman_velocity_damping", "kalman_damping", default=0.95)
-            )
-            self._panels.tracking.spin_kalman_maturity_age.setValue(
-                get_cfg_time(
-                    "kalman_maturity_age_seconds",
-                    "kalman_maturity_age",
-                    default_seconds=0.17,
-                )
-            )
-            self._panels.tracking.spin_kalman_initial_velocity_retention.setValue(
-                get_cfg("kalman_initial_velocity_retention", default=0.2)
-            )
-            self._panels.tracking.spin_kalman_max_velocity.setValue(
-                get_cfg("kalman_max_velocity_multiplier", default=2.0)
-            )
-            self._panels.tracking.spin_kalman_longitudinal_noise.setValue(
-                get_cfg("kalman_longitudinal_noise_multiplier", default=5.0)
-            )
-            self._panels.tracking.spin_kalman_lateral_noise.setValue(
-                get_cfg("kalman_lateral_noise_multiplier", default=0.1)
-            )
-
-            # === COST FUNCTION WEIGHTS ===
-            self._panels.tracking.spin_Wp.setValue(
-                get_cfg("weight_position", "W_POSITION", default=1.0)
-            )
-            self._panels.tracking.spin_Wo.setValue(
-                get_cfg("weight_orientation", "W_ORIENTATION", default=1.0)
-            )
-            self._panels.tracking.spin_Wa.setValue(
-                get_cfg("weight_area", "W_AREA", default=0.001)
-            )
-            self._panels.tracking.spin_Wasp.setValue(
-                get_cfg("weight_aspect_ratio", "W_ASPECT", default=0.1)
-            )
-            self._panels.tracking.chk_use_mahal.setChecked(
-                get_cfg("use_mahalanobis_distance", "USE_MAHALANOBIS", default=True)
-            )
-
-            # === ASSIGNMENT ALGORITHM ===
-            self._panels.tracking.combo_assignment_method.setCurrentIndex(
-                1 if get_cfg("enable_greedy_assignment", default=False) else 0
-            )
-            self._panels.tracking.chk_spatial_optimization.setChecked(
-                get_cfg("enable_spatial_optimization", default=False)
-            )
-            self._panels.tracking.spin_assoc_gate_multiplier.setValue(
-                get_cfg(
-                    "association_stage1_motion_gate_multiplier",
-                    "ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER",
-                    default=1.4,
-                )
-            )
-            self._panels.tracking.spin_assoc_max_area_ratio.setValue(
-                get_cfg(
-                    "association_stage1_max_area_ratio",
-                    "ASSOCIATION_STAGE1_MAX_AREA_RATIO",
-                    default=2.5,
-                )
-            )
-            self._panels.tracking.spin_assoc_max_aspect_diff.setValue(
-                get_cfg(
-                    "association_stage1_max_aspect_diff",
-                    "ASSOCIATION_STAGE1_MAX_ASPECT_DIFF",
-                    default=0.8,
-                )
-            )
-            self._panels.tracking.chk_enable_pose_rejection.setChecked(
-                get_cfg(
-                    "enable_pose_rejection",
-                    "ENABLE_POSE_REJECTION",
-                    default=True,
-                )
-            )
-            self._panels.tracking.spin_pose_rejection_threshold.setValue(
-                get_cfg(
-                    "pose_rejection_threshold",
-                    "POSE_REJECTION_THRESHOLD",
-                    default=0.5,
-                )
-            )
-            self._panels.tracking.spin_pose_rejection_min_visibility.setValue(
-                get_cfg(
-                    "pose_rejection_min_visibility",
-                    "POSE_REJECTION_MIN_VISIBILITY",
-                    default=0.5,
-                )
-            )
-            self._panels.tracking.spin_track_feature_ema_alpha.setValue(
-                get_cfg(
-                    "track_feature_ema_alpha",
-                    "TRACK_FEATURE_EMA_ALPHA",
-                    default=0.85,
-                )
-            )
-            self._panels.tracking.spin_assoc_high_conf_threshold.setValue(
-                get_cfg(
-                    "association_high_confidence_threshold",
-                    "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD",
-                    default=0.7,
-                )
-            )
-
-            # === ORIENTATION & MOTION ===
-            self._panels.tracking.spin_velocity.setValue(
-                get_cfg("velocity_threshold", default=5.0)
-            )
-            self._panels.tracking.chk_instant_flip.setChecked(
-                get_cfg("enable_instant_flip", "instant_flip", default=True)
-            )
-            self._panels.tracking.spin_max_orient.setValue(
-                get_cfg(
-                    "max_orientation_delta_stopped",
-                    "max_orient_delta_stopped",
-                    default=30.0,
-                )
-            )
-            self._panels.tracking.chk_directed_orient_smoothing.setChecked(
-                bool(get_cfg("directed_orient_smoothing", default=True))
-            )
-            self._panels.tracking.spin_directed_orient_flip_conf.setValue(
-                float(get_cfg("directed_orient_flip_confidence", default=0.7))
-            )
-            self._panels.tracking.spin_directed_orient_flip_persist.setValue(
-                int(get_cfg("directed_orient_flip_persistence", default=3))
-            )
-
-            # === TRACK LIFECYCLE ===
-            self._panels.tracking.spin_lost_thresh.setValue(
-                get_cfg_time(
-                    "lost_threshold_seconds",
-                    "lost_frames_threshold",
-                    "lost_threshold_frames",
-                    default_seconds=0.33,
-                )
-            )
-            self._panels.tracking.spin_min_respawn_distance.setValue(
-                get_cfg("min_respawn_distance_multiplier", default=2.5)
-            )
-            self._panels.tracking.spin_min_detections_to_start.setValue(
-                get_cfg_time(
-                    "min_detections_to_start_seconds",
-                    "min_detections_to_start",
-                    default_seconds=0.03,
-                )
-            )
-            self._panels.tracking.spin_min_detect.setValue(
-                get_cfg_time(
-                    "min_detect_seconds",
-                    "min_detect_frames",
-                    "min_detect_counts",
-                    default_seconds=0.33,
-                )
-            )
-            self._panels.tracking.spin_min_track.setValue(
-                get_cfg_time(
-                    "min_track_seconds",
-                    "min_track_frames",
-                    "min_track_counts",
-                    default_seconds=0.33,
-                )
-            )
-
-            # === POST-PROCESSING ===
-            self._panels.postprocess.enable_postprocessing.setChecked(
-                get_cfg("enable_postprocessing", default=True)
-            )
-            self._panels.postprocess.spin_min_trajectory_length.setValue(
-                get_cfg_time(
-                    "min_trajectory_length_seconds",
-                    "min_trajectory_length",
-                    default_seconds=0.33,
-                )
-            )
-            self._panels.postprocess.spin_max_velocity_break.setValue(
-                get_cfg("max_velocity_break", default=50.0)
-            )
-            self._panels.postprocess.spin_max_occlusion_gap.setValue(
-                get_cfg_time(
-                    "max_occlusion_gap_seconds",
-                    "max_occlusion_gap",
-                    default_seconds=1.0,
-                )
-            )
-            self._panels.postprocess.chk_enable_tracklet_relinking.setChecked(
-                get_cfg("enable_tracklet_relinking", default=False)
-            )
-            self._panels.postprocess.spin_relink_pose_max_distance.setValue(
-                get_cfg("relink_pose_max_distance", default=0.45)
-            )
-            self._panels.postprocess.spin_pose_export_min_valid_fraction.setValue(
-                get_cfg("pose_export_min_valid_fraction", default=0.5)
-            )
-            self._panels.postprocess.spin_pose_export_min_valid_keypoints.setValue(
-                get_cfg("pose_export_min_valid_keypoints", default=3)
-            )
-            self._panels.postprocess.spin_relink_min_pose_quality.setValue(
-                get_cfg("relink_min_pose_quality", default=0.6)
-            )
-            self._panels.postprocess.spin_pose_postproc_max_gap.setValue(
-                get_cfg("pose_postproc_max_gap", default=5)
-            )
-            self._panels.postprocess.spin_pose_temporal_outlier_zscore.setValue(
-                get_cfg("pose_temporal_outlier_zscore", default=3.0)
-            )
-            self._panels.tracking.chk_enable_confidence_density_map.setChecked(
-                get_cfg("enable_confidence_density_map", default=True)
-            )
-            self._panels.tracking.spin_density_gaussian_sigma_scale.setValue(
-                get_cfg("density_gaussian_sigma_scale", default=1.0)
-            )
-            self._panels.tracking.spin_density_temporal_sigma.setValue(
-                get_cfg("density_temporal_sigma", default=2.0)
-            )
-            self._panels.tracking.spin_density_binarize_threshold.setValue(
-                get_cfg("density_binarize_threshold", default=0.3)
-            )
-            self._panels.tracking.spin_density_conservative_factor.setValue(
-                get_cfg("density_conservative_factor", default=0.7)
-            )
-            self._panels.tracking.spin_density_min_duration.setValue(
-                int(get_cfg("density_min_frame_duration", default=3))
-            )
-            self._panels.tracking.spin_density_min_area_bodies.setValue(
-                float(get_cfg("density_min_area_bodies", default=0.25))
-            )
-            self._panels.tracking.spin_density_downsample_factor.setValue(
-                int(get_cfg("density_downsample_factor", default=8))
-            )
-            self._mw._on_confidence_density_map_toggled(
-                self._panels.tracking.chk_enable_confidence_density_map.checkState()
-            )
-            self._panels.postprocess.spin_max_velocity_zscore.setValue(
-                get_cfg("max_velocity_zscore", default=0.0)
-            )
-            self._panels.postprocess.spin_velocity_zscore_window.setValue(
-                get_cfg_time(
-                    "velocity_zscore_window_seconds",
-                    "velocity_zscore_window",
-                    default_seconds=0.33,
-                )
-            )
-            self._panels.postprocess.spin_velocity_zscore_min_vel.setValue(
-                get_cfg("velocity_zscore_min_velocity", default=2.0)
-            )
-            interp_method = get_cfg("interpolation_method", default="None")
-            idx = self._panels.postprocess.combo_interpolation_method.findText(
-                interp_method, Qt.MatchFixedString
-            )
-            if idx >= 0:
-                self._panels.postprocess.combo_interpolation_method.setCurrentIndex(idx)
-            self._panels.postprocess.spin_interpolation_max_gap.setValue(
-                get_cfg_time(
-                    "interpolation_max_gap_seconds",
-                    "interpolation_max_gap",
-                    default_seconds=0.33,
-                )
-            )
-            self._panels.postprocess.spin_heading_flip_max_burst.setValue(
-                int(get_cfg("heading_flip_max_burst", default=5))
-            )
-            self._panels.postprocess.chk_cleanup_temp_files.setChecked(
-                get_cfg("cleanup_temp_files", default=True)
-            )
-
-            # === TRAJECTORY MERGING (Conservative Strategy) ===
-            # Agreement distance and min overlap frames for conservative merging
-            self._panels.postprocess.spin_merge_overlap_multiplier.setValue(
-                get_cfg("merge_agreement_distance_multiplier", default=0.5)
-            )
-            self._panels.postprocess.spin_min_overlap_frames.setValue(
-                get_cfg("min_overlap_frames", default=5)
-            )
-
-            # === VIDEO VISUALIZATION ===
-            self._panels.postprocess.check_show_labels.setChecked(
-                get_cfg("video_show_labels", default=True)
-            )
-            self._panels.postprocess.check_show_orientation.setChecked(
-                get_cfg("video_show_orientation", default=True)
-            )
-            self._panels.postprocess.check_show_trails.setChecked(
-                get_cfg("video_show_trails", default=False)
-            )
-            self._panels.postprocess.spin_trail_duration.setValue(
-                get_cfg("video_trail_duration", default=1.0)
-            )
-            self._panels.postprocess.spin_marker_size.setValue(
-                get_cfg("video_marker_size", default=0.3)
-            )
-            self._panels.postprocess.spin_text_scale.setValue(
-                get_cfg("video_text_scale", default=0.5)
-            )
-            self._panels.postprocess.spin_arrow_length.setValue(
-                get_cfg("video_arrow_length", default=0.7)
-            )
-            self._panels.postprocess.check_video_show_pose.setChecked(
-                get_cfg(
-                    "video_show_pose",
-                    default=bool(self._mw.advanced_config.get("video_show_pose", True)),
-                )
-            )
-            pose_color_mode = str(
-                get_cfg(
-                    "video_pose_color_mode",
-                    default=self._mw.advanced_config.get(
-                        "video_pose_color_mode", "track"
-                    ),
-                )
-            ).strip()
-            self._panels.postprocess.combo_video_pose_color_mode.setCurrentIndex(
-                0 if pose_color_mode == "track" else 1
-            )
-            self._panels.postprocess.spin_video_pose_point_radius.setValue(
-                int(
-                    get_cfg(
-                        "video_pose_point_radius",
-                        default=self._mw.advanced_config.get(
-                            "video_pose_point_radius", 3
-                        ),
-                    )
-                )
-            )
-            self._panels.postprocess.spin_video_pose_point_thickness.setValue(
-                int(
-                    get_cfg(
-                        "video_pose_point_thickness",
-                        default=self._mw.advanced_config.get(
-                            "video_pose_point_thickness", -1
-                        ),
-                    )
-                )
-            )
-            self._panels.postprocess.spin_video_pose_line_thickness.setValue(
-                int(
-                    get_cfg(
-                        "video_pose_line_thickness",
-                        default=self._mw.advanced_config.get(
-                            "video_pose_line_thickness", 2
-                        ),
-                    )
-                )
-            )
-            pose_color = get_cfg(
-                "video_pose_color",
-                default=self._mw.advanced_config.get(
-                    "video_pose_color", [255, 255, 255]
-                ),
-            )
-            if isinstance(pose_color, (list, tuple)) and len(pose_color) == 3:
-                self._panels.postprocess._video_pose_color = tuple(
-                    int(max(0, min(255, float(v)))) for v in pose_color
-                )
-                self._panels.postprocess._update_video_pose_color_button()
-            self._mw._sync_video_pose_overlay_controls()
-
-            # === VISUALIZATION OVERLAYS ===
-            self._panels.setup.chk_show_circles.setChecked(
-                get_cfg("show_track_markers", "show_circles", default=True)
-            )
-            self._panels.setup.chk_show_orientation.setChecked(
-                get_cfg("show_orientation_lines", "show_orientation", default=True)
-            )
-            self._panels.setup.chk_show_trajectories.setChecked(
-                get_cfg("show_trajectory_trails", "show_trajectories", default=True)
-            )
-            self._panels.setup.chk_show_labels.setChecked(
-                get_cfg("show_id_labels", "show_labels", default=True)
-            )
-            self._panels.setup.chk_show_state.setChecked(
-                get_cfg("show_state_text", "show_state", default=True)
-            )
-            self._panels.setup.chk_show_kalman_uncertainty.setChecked(
-                get_cfg("show_kalman_uncertainty", default=False)
-            )
-            self._panels.detection.chk_show_fg.setChecked(
-                get_cfg("show_foreground_mask", "show_fg", default=True)
-            )
-            self._panels.detection.chk_show_bg.setChecked(
-                get_cfg("show_background_model", "show_bg", default=True)
-            )
-            self._panels.detection.chk_show_yolo_obb.setChecked(
-                get_cfg("show_yolo_obb", default=False)
-            )
-            self._panels.setup.spin_traj_hist.setValue(
-                get_cfg("trajectory_history_seconds", "traj_history", default=5)
-            )
-            self._panels.setup.chk_debug_logging.setChecked(
-                get_cfg("debug_logging", default=False)
-            )
-            self._panels.setup.chk_enable_profiling.setChecked(
-                get_cfg("enable_profiling", default=False)
-            )
-            self._mw.slider_zoom.setValue(
-                int(get_cfg("zoom_factor", default=1.0) * 100)
-            )
-
-            # === DATASET GENERATION ===
-            self._panels.dataset.chk_enable_dataset_gen.setChecked(
-                get_cfg("enable_dataset_generation", default=False)
-            )
-            self._panels.dataset.line_dataset_class_name.setText(
-                get_cfg("dataset_class_name", default="object")
-            )
-            self._panels.dataset.spin_dataset_max_frames.setValue(
-                get_cfg("dataset_max_frames", default=100)
-            )
-            self._panels.dataset.spin_dataset_conf_threshold.setValue(
-                get_cfg(
-                    "dataset_confidence_threshold",
-                    "dataset_conf_threshold",
-                    default=0.5,
-                )
-            )
-            # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
-            self._panels.dataset.spin_dataset_diversity_window.setValue(
-                get_cfg("dataset_diversity_window", default=30)
-            )
-            self._panels.dataset.chk_dataset_include_context.setChecked(
-                get_cfg("dataset_include_context", default=True)
-            )
-            self._panels.dataset.chk_dataset_probabilistic.setChecked(
-                get_cfg("dataset_probabilistic_sampling", default=True)
-            )
-            self._panels.dataset.chk_metric_low_confidence.setChecked(
-                get_cfg("metric_low_confidence", default=True)
-            )
-            self._panels.dataset.chk_metric_count_mismatch.setChecked(
-                get_cfg("metric_count_mismatch", default=True)
-            )
-            self._panels.dataset.chk_metric_high_assignment_cost.setChecked(
-                get_cfg("metric_high_assignment_cost", default=True)
-            )
-            self._panels.dataset.chk_metric_track_loss.setChecked(
-                get_cfg("metric_track_loss", default=True)
-            )
-            self._panels.dataset.chk_metric_high_uncertainty.setChecked(
-                get_cfg("metric_high_uncertainty", default=False)
-            )
-
-            # === INDIVIDUAL ANALYSIS ===
-            old_method = str(
-                get_cfg("identity_method", default="none_disabled")
-            ).lower()
-            # Backward compat: rename color_tags_yolo -> cnn_classifier on load
-            if old_method == "color_tags_yolo":
-                old_method = "cnn_classifier"
-            self._panels.identity.g_identity.setChecked(old_method != "none_disabled")
-
-            # --- New format or migrate from old format ---
-            _new_cnn_classifiers = get_cfg("cnn_classifiers", default=None)
-            if _new_cnn_classifiers is not None:
-                # New format: load use_apriltags + cnn_classifiers list
-                self._panels.identity.g_apriltags.setChecked(
-                    bool(get_cfg("use_apriltags", default=False))
-                )
-                for entry in _new_cnn_classifiers or []:
-                    row = self._panels.identity._add_cnn_classifier_row()
-                    row.load_from_config(entry)
-            else:
-                # Old single-method config: migrate
-                if old_method == "apriltags":
-                    self._panels.identity.g_apriltags.setChecked(True)
-                elif old_method in ("cnn_classifier",):
-                    cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
-                    if cnn_model_rel:
-                        row = self._panels.identity._add_cnn_classifier_row()
-                        row.load_from_config(
-                            {
-                                "rel_path": cnn_model_rel,
-                                "label": get_cfg(
-                                    "cnn_classifier_label", default="identity"
-                                ),
-                                "confidence": float(
-                                    get_cfg("cnn_classifier_confidence", default=0.5)
-                                ),
-                                "window": int(
-                                    get_cfg("cnn_classifier_window", default=10)
-                                ),
-                                "match_bonus": float(
-                                    get_cfg(
-                                        "cnn_classifier_match_bonus",
-                                        "identity_match_bonus",
-                                        default=20.0,
-                                    )
-                                ),
-                                "mismatch_penalty": float(
-                                    get_cfg(
-                                        "cnn_classifier_mismatch_penalty",
-                                        "identity_mismatch_penalty",
-                                        default=50.0,
-                                    )
-                                ),
-                            }
-                        )
-
-            # Shared identity cost settings
-            self._panels.identity.spin_identity_match_bonus.setValue(
-                float(
-                    get_cfg(
-                        "identity_match_bonus",
-                        "tag_match_bonus",
-                        "cnn_classifier_match_bonus",
-                        default=20.0,
-                    )
-                )
-            )
-            self._panels.identity.spin_identity_mismatch_penalty.setValue(
-                float(
-                    get_cfg(
-                        "identity_mismatch_penalty",
-                        "tag_mismatch_penalty",
-                        "cnn_classifier_mismatch_penalty",
-                        default=50.0,
-                    )
-                )
-            )
-            apriltag_family = get_cfg("apriltag_family", default="tag36h11")
-            idx = self._panels.identity.combo_apriltag_family.findText(apriltag_family)
-            self._panels.identity.combo_apriltag_family.setCurrentIndex(max(0, idx))
-            self._panels.identity.spin_apriltag_decimate.setValue(
-                float(get_cfg("apriltag_decimate", default=1.0))
-            )
-
-            # Warn users who had a non-default cnn_classifier_crop_padding in their config
-            _legacy_crop_padding = get_cfg("cnn_classifier_crop_padding", default=None)
-            if _legacy_crop_padding is not None and float(_legacy_crop_padding) != 0.1:
-                logger.warning(
-                    "Config key 'cnn_classifier_crop_padding' (value=%.2f) is no longer used. "
-                    "All precompute phases now use 'individual_crop_padding'. "
-                    "Update your crop padding setting in the Individual Analysis panel.",
-                    float(_legacy_crop_padding),
-                )
-
-            self._panels.identity.chk_enable_pose_extractor.setChecked(
-                get_cfg("enable_pose_extractor", default=False)
-            )
-            pose_backend = (
-                str(get_cfg("pose_model_type", default="yolo")).strip().upper()
-            )
-            pose_backend_idx = self._panels.identity.combo_pose_model_type.findText(
-                pose_backend
-            )
-            if pose_backend_idx >= 0:
-                self._panels.identity.combo_pose_model_type.setCurrentIndex(
-                    pose_backend_idx
-                )
-            yolo_pose_model = str(get_cfg("pose_yolo_model_dir", default="")).strip()
-            sleap_pose_model = str(get_cfg("pose_sleap_model_dir", default="")).strip()
-            legacy_pose_model = str(get_cfg("pose_model_dir", default="")).strip()
-            if not yolo_pose_model and pose_backend.lower() == "yolo":
-                yolo_pose_model = legacy_pose_model
-            if not sleap_pose_model and pose_backend.lower() == "sleap":
-                sleap_pose_model = legacy_pose_model
-            self._mw._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
-            self._mw._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
-            active_backend = (
-                self._panels.identity.combo_pose_model_type.currentText()
-                .strip()
-                .lower()
-            )
-            self._mw._refresh_pose_model_combo(
-                preferred_model_path=self._mw._pose_model_path_for_backend(
-                    active_backend
-                )
-            )
-            pose_runtime_flavor = derive_pose_runtime_settings(
-                self._mw._selected_compute_runtime(),
-                backend_family=self._panels.identity.combo_pose_model_type.currentText()
-                .strip()
-                .lower(),
-            )["pose_runtime_flavor"]
-            self._mw._populate_pose_runtime_flavor_options(
-                backend=self._panels.identity.combo_pose_model_type.currentText()
-                .strip()
-                .lower(),
-                preferred=pose_runtime_flavor,
-            )
-            self._panels.identity.spin_pose_min_kpt_conf_valid.setValue(
-                get_cfg("pose_min_kpt_conf_valid", default=0.2)
-            )
-            self._panels.identity.line_pose_skeleton_file.setText(
-                get_cfg("pose_skeleton_file", default="")
-            )
-            self._panels.identity._refresh_pose_direction_keypoint_lists()
-            ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
-            self._mw._set_pose_group_selection(
-                self._panels.identity.list_pose_ignore_keypoints, ignore_kpts
-            )
-            ant_kpts = get_cfg("pose_direction_anterior_keypoints", default=[])
-            self._mw._set_pose_group_selection(
-                self._panels.identity.list_pose_direction_anterior, ant_kpts
-            )
-            post_kpts = get_cfg("pose_direction_posterior_keypoints", default=[])
-            self._mw._set_pose_group_selection(
-                self._panels.identity.list_pose_direction_posterior, post_kpts
-            )
-            self._mw._apply_pose_keypoint_selection_constraints("ignore")
-            self._mw.advanced_config["pose_sleap_env"] = str(
-                get_cfg("pose_sleap_env", default="sleap")
-            )
-            self._panels.identity._refresh_pose_sleap_envs()
-            if hasattr(self, "_identity_panel"):
-                self._panels.identity.chk_sleap_experimental_features.setChecked(
-                    get_cfg("pose_sleap_experimental_features", default=False)
-                )
-            shared_pose_batch = int(
-                get_cfg(
-                    "pose_batch_size",
-                    default=get_cfg(
-                        "pose_yolo_batch",
-                        default=get_cfg("pose_sleap_batch", default=4),
-                    ),
-                )
-            )
-            self._panels.identity.spin_pose_batch.setValue(shared_pose_batch)
-
-            # === REAL-TIME INDIVIDUAL DATASET ===
-            self._panels.dataset.chk_suppress_foreign_obb_dataset.setChecked(
-                get_cfg("suppress_foreign_obb_dataset", default=False)
-            )
-            self._panels.dataset.chk_enable_individual_dataset.setChecked(
-                get_cfg(
-                    "enable_individual_image_save",
-                    "enable_individual_dataset",
-                    default=False,
-                )
-            )
-            self._panels.dataset.chk_generate_individual_track_videos.setChecked(
-                get_cfg("generate_oriented_track_videos", default=False)
-            )
-            format_text = get_cfg("individual_output_format", default="png").upper()
-            format_idx = self._panels.dataset.combo_individual_format.findText(
-                format_text
-            )
-            if format_idx >= 0:
-                self._panels.dataset.combo_individual_format.setCurrentIndex(format_idx)
-            self._panels.dataset.spin_individual_interval.setValue(
-                get_cfg("individual_save_interval", default=1)
-            )
-            self._panels.identity.chk_individual_interpolate.setChecked(
-                get_cfg("individual_interpolate_occlusions", default=True)
-            )
-            self._panels.identity.spin_individual_padding.setValue(
-                get_cfg("individual_crop_padding", default=0.1)
-            )
-            # Load background color
-            bg_color = get_cfg("individual_background_color", default=[0, 0, 0])
-            if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
-                self._panels.identity._background_color = tuple(bg_color)
-            self._mw._update_background_color_button()
-            self._panels.identity.chk_suppress_foreign_obb.setChecked(
-                get_cfg("suppress_foreign_obb_regions", default=True)
-            )
-            self._mw._sync_individual_analysis_mode_ui()
-
-            # === ROI ===
-            self._mw.roi_shapes = cfg.get("roi_shapes", [])
-            if self._mw.roi_shapes:
-                # Regenerate the combined mask from loaded shapes
-                # Need to get video frame dimensions first
-                video_path = cfg.get("file_path", "")
-                if video_path and os.path.exists(video_path):
-                    cap = cv2.VideoCapture(video_path)
-                    if cap.isOpened():
-                        ret, frame = cap.read()
-                        if ret:
-                            fh, fw = frame.shape[:2]
-                            self._mw._generate_combined_roi_mask(fh, fw)
-                            num_shapes = len(self._mw.roi_shapes)
-                            shape_summary = ", ".join(
-                                [s["type"] for s in self._mw.roi_shapes]
-                            )
-                            self._mw.roi_status_label.setText(
-                                f"Loaded ROI: {num_shapes} shape(s) ({shape_summary})"
-                            )
-                            self._mw.btn_undo_roi.setEnabled(True)
-                            logger.info(f"Loaded {num_shapes} ROI shapes from config")
-                        cap.release()
-                else:
-                    # Video not available yet, just store shapes for later
-                    logger.info(
-                        f"Loaded {len(self._mw.roi_shapes)} ROI shapes (mask will be generated when video loads)"
-                    )
+            self._load_config_file_paths(cfg, get_cfg, preset_mode)
+            self._load_config_reference_params(cfg, get_cfg, preset_mode)
+            self._load_config_system_performance(get_cfg)
+            self._load_config_detection(get_cfg, get_cfg_time)
+            self._load_config_yolo(cfg, get_cfg, preset_mode)
+            self._load_config_core_tracking(get_cfg, get_cfg_time)
+            self._load_config_orientation_and_lifecycle(get_cfg, get_cfg_time)
+            self._load_config_postprocessing(get_cfg, get_cfg_time)
+            self._load_config_visualization(get_cfg)
+            self._load_config_dataset(get_cfg)
+            self._load_config_individual_analysis(cfg, get_cfg)
         except Exception as e:
             logger.warning(f"Failed to load configuration: {e}")
+
+    def _load_config_file_paths(self, cfg, get_cfg, preset_mode):
+        if preset_mode:
+            return
+        if not self._panels.setup.file_line.text().strip():
+            video_path = get_cfg("file_path", default="")
+            if video_path:
+                self._setup_video_file(video_path, skip_config_load=True)
+        if not self._panels.setup.csv_line.text().strip():
+            self._panels.setup.csv_line.setText(get_cfg("csv_path", default=""))
+        self._panels.postprocess.check_video_output.setChecked(
+            get_cfg("video_output_enabled", default=False)
+        )
+        saved_video_path = get_cfg("video_output_path", default="")
+        if (
+            saved_video_path
+            and not self._panels.postprocess.video_out_line.text().strip()
+        ):
+            self._panels.postprocess.video_out_line.setText(saved_video_path)
+
+    def _load_config_reference_params(self, cfg, get_cfg, preset_mode):
+        if preset_mode:
+            return
+        saved_fps = get_cfg("fps", default=None)
+        if saved_fps is not None:
+            self._panels.setup.spin_fps.setValue(saved_fps)
+        saved_body_size = get_cfg("reference_body_size", default=None)
+        if saved_body_size is not None:
+            self._panels.detection.spin_reference_body_size.setValue(saved_body_size)
+        saved_start_frame = get_cfg("start_frame", default=None)
+        if (
+            saved_start_frame is not None
+            and self._panels.setup.spin_start_frame.isEnabled()
+        ):
+            self._panels.setup.spin_start_frame.setValue(saved_start_frame)
+        saved_end_frame = get_cfg("end_frame", default=None)
+        if (
+            saved_end_frame is not None
+            and self._panels.setup.spin_end_frame.isEnabled()
+        ):
+            self._panels.setup.spin_end_frame.setValue(saved_end_frame)
+
+    def _load_config_system_performance(self, get_cfg):
+        self._panels.setup.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
+        self._panels.setup.check_save_confidence.setChecked(
+            get_cfg("save_confidence_metrics", default=True)
+        )
+        self._panels.setup.chk_use_cached_detections.setChecked(
+            get_cfg("use_cached_detections", default=True)
+        )
+        self._panels.setup.chk_visualization_free.setChecked(
+            get_cfg("visualization_free_mode", default=False)
+        )
+
+    def _load_config_detection(self, get_cfg, get_cfg_time):
+        det_method = get_cfg("detection_method", default="background_subtraction")
+        self._panels.detection.combo_detection_method.setCurrentIndex(
+            0 if det_method == "background_subtraction" else 1
+        )
+        self._panels.detection.chk_size_filtering.setChecked(
+            get_cfg("enable_size_filtering", default=False)
+        )
+        self._panels.detection.spin_min_object_size.setValue(
+            get_cfg("min_object_size_multiplier", default=0.3)
+        )
+        self._panels.detection.spin_max_object_size.setValue(
+            get_cfg("max_object_size_multiplier", default=3.0)
+        )
+        self._panels.detection.slider_brightness.setValue(
+            int(get_cfg("brightness", default=0.0))
+        )
+        self._panels.detection.slider_contrast.setValue(
+            int(get_cfg("contrast", default=1.0) * 100)
+        )
+        self._panels.detection.slider_gamma.setValue(
+            int(get_cfg("gamma", default=1.0) * 100)
+        )
+        self._panels.detection.chk_dark_on_light.setChecked(
+            get_cfg("dark_on_light_background", default=True)
+        )
+        self._panels.detection.spin_bg_prime.setValue(
+            get_cfg_time(
+                "background_prime_seconds",
+                "background_prime_frames",
+                "bg_prime_frames",
+                default_seconds=0.33,
+            )
+        )
+        self._panels.detection.chk_adaptive_bg.setChecked(
+            get_cfg("enable_adaptive_background", "adaptive_background", default=True)
+        )
+        self._panels.detection.spin_bg_learning.setValue(
+            get_cfg("background_learning_rate", default=0.001)
+        )
+        self._panels.detection.spin_threshold.setValue(
+            get_cfg("subtraction_threshold", "threshold_value", default=50)
+        )
+        self._panels.detection.chk_lighting_stab.setChecked(
+            get_cfg(
+                "enable_lighting_stabilization",
+                "lighting_stabilization",
+                default=True,
+            )
+        )
+        self._panels.detection.spin_lighting_smooth.setValue(
+            get_cfg("lighting_smooth_factor", default=0.95)
+        )
+        self._panels.detection.spin_lighting_median.setValue(
+            get_cfg("lighting_median_window", default=5)
+        )
+        self._panels.detection.spin_morph_size.setValue(
+            get_cfg("morph_kernel_size", default=5)
+        )
+        self._panels.detection.spin_min_contour.setValue(
+            get_cfg("min_contour_area", default=50)
+        )
+        self._panels.detection.spin_max_contour_multiplier.setValue(
+            get_cfg("max_contour_multiplier", default=20)
+        )
+        self._panels.detection.chk_conservative_split.setChecked(
+            get_cfg("enable_conservative_split", default=True)
+        )
+        self._panels.detection.spin_conservative_kernel.setValue(
+            get_cfg("conservative_kernel_size", default=3)
+        )
+        self._panels.detection.spin_conservative_erode.setValue(
+            get_cfg(
+                "conservative_erode_iterations",
+                "conservative_erode_iter",
+                default=1,
+            )
+        )
+        self._panels.detection.chk_additional_dilation.setChecked(
+            get_cfg("enable_additional_dilation", default=False)
+        )
+        self._panels.detection.spin_dilation_kernel_size.setValue(
+            get_cfg("dilation_kernel_size", default=3)
+        )
+        self._panels.detection.spin_dilation_iterations.setValue(
+            get_cfg("dilation_iterations", default=2)
+        )
+
+    def _load_config_yolo(self, cfg, get_cfg, preset_mode):
+        yolo_mode = str(get_cfg("yolo_obb_mode", default="direct")).strip().lower()
+        if yolo_mode not in {"direct", "sequential"}:
+            yolo_mode = "direct"
+        self._panels.detection.combo_yolo_obb_mode.setCurrentIndex(
+            1 if yolo_mode == "sequential" else 0
+        )
+
+        yolo_direct_model = get_cfg(
+            "yolo_obb_direct_model_path",
+            "yolo_model_path",
+            default="",
+        )
+        yolo_detect_model = get_cfg("yolo_detect_model_path", default="")
+        yolo_crop_obb_model = get_cfg(
+            "yolo_crop_obb_model_path",
+            default=yolo_direct_model,
+        )
+        yolo_headtail_model = get_cfg("yolo_headtail_model_path", default="")
+        yolo_headtail_model_type = str(
+            get_cfg(
+                "yolo_headtail_model_type",
+                default=self._mw._infer_yolo_headtail_model_type(yolo_headtail_model),
+            )
+        ).strip()
+
+        from hydra_suite.trackerkit.gui.main_window import resolve_model_path
+
+        resolved_yolo_direct = resolve_model_path(yolo_direct_model)
+        resolved_yolo_detect = resolve_model_path(yolo_detect_model)
+        resolved_yolo_crop_obb = resolve_model_path(yolo_crop_obb_model)
+        resolved_yolo_headtail = resolve_model_path(yolo_headtail_model)
+
+        if preset_mode:
+            for model_key, model_cfg, model_resolved in (
+                ("Direct OBB model", yolo_direct_model, resolved_yolo_direct),
+                (
+                    "Sequential detect model",
+                    yolo_detect_model,
+                    resolved_yolo_detect,
+                ),
+                (
+                    "Sequential crop OBB model",
+                    yolo_crop_obb_model,
+                    resolved_yolo_crop_obb,
+                ),
+                ("Head-tail model", yolo_headtail_model, resolved_yolo_headtail),
+            ):
+                if not model_cfg:
+                    continue
+                if os.path.isabs(str(model_cfg)):
+                    continue
+                if os.path.exists(model_resolved):
+                    continue
+                logger.warning(
+                    "Preset references non-existent %s: %s (expected: %s)",
+                    model_key,
+                    model_cfg,
+                    model_resolved,
+                )
+
+        self._panels.detection._refresh_yolo_model_combo(
+            preferred_model_path=yolo_direct_model
+        )
+        self._mw._set_yolo_model_selection(resolved_yolo_direct)
+        self._panels.detection._refresh_yolo_detect_model_combo(
+            preferred_model_path=yolo_detect_model
+        )
+        self._mw._set_yolo_detect_model_selection(resolved_yolo_detect)
+        self._panels.detection._refresh_yolo_crop_obb_model_combo(
+            preferred_model_path=yolo_crop_obb_model
+        )
+        self._mw._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
+        headtail_type_idx = (
+            self._panels.identity.combo_yolo_headtail_model_type.findText(
+                "tiny" if yolo_headtail_model_type.lower() == "tiny" else "YOLO"
+            )
+        )
+        if headtail_type_idx >= 0:
+            self._panels.identity.combo_yolo_headtail_model_type.setCurrentIndex(
+                headtail_type_idx
+            )
+        self._panels.identity._refresh_yolo_headtail_model_combo(
+            preferred_model_path=yolo_headtail_model
+        )
+        self._mw._set_yolo_headtail_model_selection(resolved_yolo_headtail)
+        self._panels.identity.chk_pose_overrides_headtail.setChecked(
+            bool(get_cfg("pose_overrides_headtail", default=True))
+        )
+        self._panels.detection.spin_yolo_seq_crop_pad.setValue(
+            float(get_cfg("yolo_seq_crop_pad_ratio", default=0.15))
+        )
+        self._panels.detection.spin_yolo_seq_min_crop_px.setValue(
+            int(get_cfg("yolo_seq_min_crop_size_px", default=64))
+        )
+        self._panels.detection.chk_yolo_seq_square_crop.setChecked(
+            bool(get_cfg("yolo_seq_enforce_square_crop", default=True))
+        )
+        self._panels.detection.spin_yolo_seq_stage2_imgsz.setValue(
+            int(get_cfg("yolo_seq_stage2_imgsz", default=160))
+        )
+        self._panels.detection.chk_yolo_seq_stage2_pow2_pad.setChecked(
+            bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
+        )
+        self._panels.detection.spin_yolo_seq_detect_conf.setValue(
+            float(get_cfg("yolo_seq_detect_conf_threshold", default=0.25))
+        )
+        self._panels.identity.spin_yolo_headtail_conf.setValue(
+            float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
+        )
+        self._panels.detection.spin_reference_aspect_ratio.setValue(
+            float(get_cfg("reference_aspect_ratio", default=2.0))
+        )
+        self._panels.detection.chk_enable_aspect_ratio_filtering.setChecked(
+            bool(get_cfg("enable_aspect_ratio_filtering", default=False))
+        )
+        self._panels.detection.spin_min_ar_multiplier.setValue(
+            float(get_cfg("min_aspect_ratio_multiplier", default=0.5))
+        )
+        self._panels.detection.spin_max_ar_multiplier.setValue(
+            float(get_cfg("max_aspect_ratio_multiplier", default=2.0))
+        )
+        self._panels.detection._on_yolo_mode_changed(
+            self._panels.detection.combo_yolo_obb_mode.currentIndex()
+        )
+
+        self._panels.detection.spin_yolo_confidence.setValue(
+            get_cfg("yolo_confidence_threshold", default=0.25)
+        )
+        self._panels.detection.spin_yolo_iou.setValue(
+            get_cfg("yolo_iou_threshold", default=0.7)
+        )
+        self._panels.detection.chk_use_custom_obb_iou.setChecked(True)
+        yolo_cls = get_cfg("yolo_target_classes", default=None)
+        if yolo_cls:
+            self._panels.detection.line_yolo_classes.setText(
+                ",".join(map(str, yolo_cls))
+            )
+        else:
+            self._panels.detection.line_yolo_classes.clear()
+
+        compute_runtime_cfg = (
+            str(
+                get_cfg(
+                    "compute_runtime",
+                    default=infer_compute_runtime_from_legacy(
+                        yolo_device=str(get_cfg("yolo_device", default="auto")),
+                        enable_tensorrt=bool(get_cfg("enable_tensorrt", default=False)),
+                        pose_runtime_flavor=str(
+                            get_cfg("pose_runtime_flavor", default="auto")
+                        ),
+                    ),
+                )
+            )
+            .strip()
+            .lower()
+        )
+        self._mw._populate_compute_runtime_options(preferred=compute_runtime_cfg)
+        self._mw._on_runtime_context_changed()
+
+        # TensorRT batch size is still configurable (runtime-derived usage).
+        self._panels.detection.spin_tensorrt_batch.setValue(
+            get_cfg("tensorrt_max_batch_size", default=16)
+        )
+        self._panels.detection.spin_tensorrt_batch.setEnabled(
+            bool(
+                derive_detection_runtime_settings(self._mw._selected_compute_runtime())[
+                    "enable_tensorrt"
+                ]
+            )
+        )
+        self._panels.detection.lbl_tensorrt_batch.setEnabled(
+            bool(
+                derive_detection_runtime_settings(self._mw._selected_compute_runtime())[
+                    "enable_tensorrt"
+                ]
+            )
+        )
+
+        # YOLO Batching settings
+        self._panels.detection.chk_enable_yolo_batching.setChecked(
+            get_cfg("enable_yolo_batching", default=True)
+        )
+        batch_mode = get_cfg("yolo_batch_size_mode", default="auto")
+        self._panels.detection.combo_yolo_batch_mode.setCurrentIndex(
+            0 if batch_mode == "auto" else 1
+        )
+        self._panels.detection.spin_yolo_batch_size.setValue(
+            get_cfg("yolo_manual_batch_size", default=16)
+        )
+        # Re-apply runtime-derived constraints (e.g., TensorRT => manual batch mode).
+        self._mw._on_runtime_context_changed()
+
+    def _load_config_core_tracking(self, get_cfg, get_cfg_time):
+        self._panels.setup.spin_max_targets.setValue(get_cfg("max_targets", default=4))
+        self._panels.tracking.spin_max_dist.setValue(
+            get_cfg(
+                "max_assignment_distance_multiplier",
+                "max_dist_multiplier",
+                default=1.5,
+            )
+        )
+        self._panels.tracking.spin_continuity_thresh.setValue(
+            get_cfg(
+                "recovery_search_distance_multiplier",
+                "continuity_threshold_multiplier",
+                default=0.5,
+            )
+        )
+        self._panels.tracking.chk_enable_backward.setChecked(
+            get_cfg("enable_backward_tracking", default=True)
+        )
+        self._panels.tracking.spin_kalman_noise.setValue(
+            get_cfg("kalman_process_noise", "kalman_noise", default=0.03)
+        )
+        self._panels.tracking.spin_kalman_meas.setValue(
+            get_cfg("kalman_measurement_noise", "kalman_meas_noise", default=0.1)
+        )
+        self._panels.tracking.spin_kalman_damping.setValue(
+            get_cfg("kalman_velocity_damping", "kalman_damping", default=0.95)
+        )
+        self._panels.tracking.spin_kalman_maturity_age.setValue(
+            get_cfg_time(
+                "kalman_maturity_age_seconds",
+                "kalman_maturity_age",
+                default_seconds=0.17,
+            )
+        )
+        self._panels.tracking.spin_kalman_initial_velocity_retention.setValue(
+            get_cfg("kalman_initial_velocity_retention", default=0.2)
+        )
+        self._panels.tracking.spin_kalman_max_velocity.setValue(
+            get_cfg("kalman_max_velocity_multiplier", default=2.0)
+        )
+        self._panels.tracking.spin_kalman_longitudinal_noise.setValue(
+            get_cfg("kalman_longitudinal_noise_multiplier", default=5.0)
+        )
+        self._panels.tracking.spin_kalman_lateral_noise.setValue(
+            get_cfg("kalman_lateral_noise_multiplier", default=0.1)
+        )
+        self._panels.tracking.spin_Wp.setValue(
+            get_cfg("weight_position", "W_POSITION", default=1.0)
+        )
+        self._panels.tracking.spin_Wo.setValue(
+            get_cfg("weight_orientation", "W_ORIENTATION", default=1.0)
+        )
+        self._panels.tracking.spin_Wa.setValue(
+            get_cfg("weight_area", "W_AREA", default=0.001)
+        )
+        self._panels.tracking.spin_Wasp.setValue(
+            get_cfg("weight_aspect_ratio", "W_ASPECT", default=0.1)
+        )
+        self._panels.tracking.chk_use_mahal.setChecked(
+            get_cfg("use_mahalanobis_distance", "USE_MAHALANOBIS", default=True)
+        )
+        self._panels.tracking.combo_assignment_method.setCurrentIndex(
+            1 if get_cfg("enable_greedy_assignment", default=False) else 0
+        )
+        self._panels.tracking.chk_spatial_optimization.setChecked(
+            get_cfg("enable_spatial_optimization", default=False)
+        )
+        self._panels.tracking.spin_assoc_gate_multiplier.setValue(
+            get_cfg(
+                "association_stage1_motion_gate_multiplier",
+                "ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER",
+                default=1.4,
+            )
+        )
+        self._panels.tracking.spin_assoc_max_area_ratio.setValue(
+            get_cfg(
+                "association_stage1_max_area_ratio",
+                "ASSOCIATION_STAGE1_MAX_AREA_RATIO",
+                default=2.5,
+            )
+        )
+        self._panels.tracking.spin_assoc_max_aspect_diff.setValue(
+            get_cfg(
+                "association_stage1_max_aspect_diff",
+                "ASSOCIATION_STAGE1_MAX_ASPECT_DIFF",
+                default=0.8,
+            )
+        )
+        self._panels.tracking.chk_enable_pose_rejection.setChecked(
+            get_cfg(
+                "enable_pose_rejection",
+                "ENABLE_POSE_REJECTION",
+                default=True,
+            )
+        )
+        self._panels.tracking.spin_pose_rejection_threshold.setValue(
+            get_cfg(
+                "pose_rejection_threshold",
+                "POSE_REJECTION_THRESHOLD",
+                default=0.5,
+            )
+        )
+        self._panels.tracking.spin_pose_rejection_min_visibility.setValue(
+            get_cfg(
+                "pose_rejection_min_visibility",
+                "POSE_REJECTION_MIN_VISIBILITY",
+                default=0.5,
+            )
+        )
+        self._panels.tracking.spin_track_feature_ema_alpha.setValue(
+            get_cfg(
+                "track_feature_ema_alpha",
+                "TRACK_FEATURE_EMA_ALPHA",
+                default=0.85,
+            )
+        )
+        self._panels.tracking.spin_assoc_high_conf_threshold.setValue(
+            get_cfg(
+                "association_high_confidence_threshold",
+                "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD",
+                default=0.7,
+            )
+        )
+
+    def _load_config_orientation_and_lifecycle(self, get_cfg, get_cfg_time):
+        self._panels.tracking.spin_velocity.setValue(
+            get_cfg("velocity_threshold", default=5.0)
+        )
+        self._panels.tracking.chk_instant_flip.setChecked(
+            get_cfg("enable_instant_flip", "instant_flip", default=True)
+        )
+        self._panels.tracking.spin_max_orient.setValue(
+            get_cfg(
+                "max_orientation_delta_stopped",
+                "max_orient_delta_stopped",
+                default=30.0,
+            )
+        )
+        self._panels.tracking.chk_directed_orient_smoothing.setChecked(
+            bool(get_cfg("directed_orient_smoothing", default=True))
+        )
+        self._panels.tracking.spin_directed_orient_flip_conf.setValue(
+            float(get_cfg("directed_orient_flip_confidence", default=0.7))
+        )
+        self._panels.tracking.spin_directed_orient_flip_persist.setValue(
+            int(get_cfg("directed_orient_flip_persistence", default=3))
+        )
+        self._panels.tracking.spin_lost_thresh.setValue(
+            get_cfg_time(
+                "lost_threshold_seconds",
+                "lost_frames_threshold",
+                "lost_threshold_frames",
+                default_seconds=0.33,
+            )
+        )
+        self._panels.tracking.spin_min_respawn_distance.setValue(
+            get_cfg("min_respawn_distance_multiplier", default=2.5)
+        )
+        self._panels.tracking.spin_min_detections_to_start.setValue(
+            get_cfg_time(
+                "min_detections_to_start_seconds",
+                "min_detections_to_start",
+                default_seconds=0.03,
+            )
+        )
+        self._panels.tracking.spin_min_detect.setValue(
+            get_cfg_time(
+                "min_detect_seconds",
+                "min_detect_frames",
+                "min_detect_counts",
+                default_seconds=0.33,
+            )
+        )
+        self._panels.tracking.spin_min_track.setValue(
+            get_cfg_time(
+                "min_track_seconds",
+                "min_track_frames",
+                "min_track_counts",
+                default_seconds=0.33,
+            )
+        )
+
+    def _load_config_postprocessing(self, get_cfg, get_cfg_time):
+        self._panels.postprocess.enable_postprocessing.setChecked(
+            get_cfg("enable_postprocessing", default=True)
+        )
+        self._panels.postprocess.spin_min_trajectory_length.setValue(
+            get_cfg_time(
+                "min_trajectory_length_seconds",
+                "min_trajectory_length",
+                default_seconds=0.33,
+            )
+        )
+        self._panels.postprocess.spin_max_velocity_break.setValue(
+            get_cfg("max_velocity_break", default=50.0)
+        )
+        self._panels.postprocess.spin_max_occlusion_gap.setValue(
+            get_cfg_time(
+                "max_occlusion_gap_seconds",
+                "max_occlusion_gap",
+                default_seconds=1.0,
+            )
+        )
+        self._panels.postprocess.chk_enable_tracklet_relinking.setChecked(
+            get_cfg("enable_tracklet_relinking", default=False)
+        )
+        self._panels.postprocess.spin_relink_pose_max_distance.setValue(
+            get_cfg("relink_pose_max_distance", default=0.45)
+        )
+        self._panels.postprocess.spin_pose_export_min_valid_fraction.setValue(
+            get_cfg("pose_export_min_valid_fraction", default=0.5)
+        )
+        self._panels.postprocess.spin_pose_export_min_valid_keypoints.setValue(
+            get_cfg("pose_export_min_valid_keypoints", default=3)
+        )
+        self._panels.postprocess.spin_relink_min_pose_quality.setValue(
+            get_cfg("relink_min_pose_quality", default=0.6)
+        )
+        self._panels.postprocess.spin_pose_postproc_max_gap.setValue(
+            get_cfg("pose_postproc_max_gap", default=5)
+        )
+        self._panels.postprocess.spin_pose_temporal_outlier_zscore.setValue(
+            get_cfg("pose_temporal_outlier_zscore", default=3.0)
+        )
+        self._panels.tracking.chk_enable_confidence_density_map.setChecked(
+            get_cfg("enable_confidence_density_map", default=True)
+        )
+        self._panels.tracking.spin_density_gaussian_sigma_scale.setValue(
+            get_cfg("density_gaussian_sigma_scale", default=1.0)
+        )
+        self._panels.tracking.spin_density_temporal_sigma.setValue(
+            get_cfg("density_temporal_sigma", default=2.0)
+        )
+        self._panels.tracking.spin_density_binarize_threshold.setValue(
+            get_cfg("density_binarize_threshold", default=0.3)
+        )
+        self._panels.tracking.spin_density_conservative_factor.setValue(
+            get_cfg("density_conservative_factor", default=0.7)
+        )
+        self._panels.tracking.spin_density_min_duration.setValue(
+            int(get_cfg("density_min_frame_duration", default=3))
+        )
+        self._panels.tracking.spin_density_min_area_bodies.setValue(
+            float(get_cfg("density_min_area_bodies", default=0.25))
+        )
+        self._panels.tracking.spin_density_downsample_factor.setValue(
+            int(get_cfg("density_downsample_factor", default=8))
+        )
+        self._mw._on_confidence_density_map_toggled(
+            self._panels.tracking.chk_enable_confidence_density_map.checkState()
+        )
+        self._panels.postprocess.spin_max_velocity_zscore.setValue(
+            get_cfg("max_velocity_zscore", default=0.0)
+        )
+        self._panels.postprocess.spin_velocity_zscore_window.setValue(
+            get_cfg_time(
+                "velocity_zscore_window_seconds",
+                "velocity_zscore_window",
+                default_seconds=0.33,
+            )
+        )
+        self._panels.postprocess.spin_velocity_zscore_min_vel.setValue(
+            get_cfg("velocity_zscore_min_velocity", default=2.0)
+        )
+        interp_method = get_cfg("interpolation_method", default="None")
+        idx = self._panels.postprocess.combo_interpolation_method.findText(
+            interp_method, Qt.MatchFixedString
+        )
+        if idx >= 0:
+            self._panels.postprocess.combo_interpolation_method.setCurrentIndex(idx)
+        self._panels.postprocess.spin_interpolation_max_gap.setValue(
+            get_cfg_time(
+                "interpolation_max_gap_seconds",
+                "interpolation_max_gap",
+                default_seconds=0.33,
+            )
+        )
+        self._panels.postprocess.spin_heading_flip_max_burst.setValue(
+            int(get_cfg("heading_flip_max_burst", default=5))
+        )
+        self._panels.postprocess.chk_cleanup_temp_files.setChecked(
+            get_cfg("cleanup_temp_files", default=True)
+        )
+        self._panels.postprocess.spin_merge_overlap_multiplier.setValue(
+            get_cfg("merge_agreement_distance_multiplier", default=0.5)
+        )
+        self._panels.postprocess.spin_min_overlap_frames.setValue(
+            get_cfg("min_overlap_frames", default=5)
+        )
+
+    def _load_config_visualization(self, get_cfg):
+        self._panels.postprocess.check_show_labels.setChecked(
+            get_cfg("video_show_labels", default=True)
+        )
+        self._panels.postprocess.check_show_orientation.setChecked(
+            get_cfg("video_show_orientation", default=True)
+        )
+        self._panels.postprocess.check_show_trails.setChecked(
+            get_cfg("video_show_trails", default=False)
+        )
+        self._panels.postprocess.spin_trail_duration.setValue(
+            get_cfg("video_trail_duration", default=1.0)
+        )
+        self._panels.postprocess.spin_marker_size.setValue(
+            get_cfg("video_marker_size", default=0.3)
+        )
+        self._panels.postprocess.spin_text_scale.setValue(
+            get_cfg("video_text_scale", default=0.5)
+        )
+        self._panels.postprocess.spin_arrow_length.setValue(
+            get_cfg("video_arrow_length", default=0.7)
+        )
+        self._panels.postprocess.check_video_show_pose.setChecked(
+            get_cfg(
+                "video_show_pose",
+                default=bool(self._mw.advanced_config.get("video_show_pose", True)),
+            )
+        )
+        pose_color_mode = str(
+            get_cfg(
+                "video_pose_color_mode",
+                default=self._mw.advanced_config.get("video_pose_color_mode", "track"),
+            )
+        ).strip()
+        self._panels.postprocess.combo_video_pose_color_mode.setCurrentIndex(
+            0 if pose_color_mode == "track" else 1
+        )
+        self._panels.postprocess.spin_video_pose_point_radius.setValue(
+            int(
+                get_cfg(
+                    "video_pose_point_radius",
+                    default=self._mw.advanced_config.get("video_pose_point_radius", 3),
+                )
+            )
+        )
+        self._panels.postprocess.spin_video_pose_point_thickness.setValue(
+            int(
+                get_cfg(
+                    "video_pose_point_thickness",
+                    default=self._mw.advanced_config.get(
+                        "video_pose_point_thickness", -1
+                    ),
+                )
+            )
+        )
+        self._panels.postprocess.spin_video_pose_line_thickness.setValue(
+            int(
+                get_cfg(
+                    "video_pose_line_thickness",
+                    default=self._mw.advanced_config.get(
+                        "video_pose_line_thickness", 2
+                    ),
+                )
+            )
+        )
+        pose_color = get_cfg(
+            "video_pose_color",
+            default=self._mw.advanced_config.get("video_pose_color", [255, 255, 255]),
+        )
+        if isinstance(pose_color, (list, tuple)) and len(pose_color) == 3:
+            self._panels.postprocess._video_pose_color = tuple(
+                int(max(0, min(255, float(v)))) for v in pose_color
+            )
+            self._panels.postprocess._update_video_pose_color_button()
+        self._mw._sync_video_pose_overlay_controls()
+        self._panels.setup.chk_show_circles.setChecked(
+            get_cfg("show_track_markers", "show_circles", default=True)
+        )
+        self._panels.setup.chk_show_orientation.setChecked(
+            get_cfg("show_orientation_lines", "show_orientation", default=True)
+        )
+        self._panels.setup.chk_show_trajectories.setChecked(
+            get_cfg("show_trajectory_trails", "show_trajectories", default=True)
+        )
+        self._panels.setup.chk_show_labels.setChecked(
+            get_cfg("show_id_labels", "show_labels", default=True)
+        )
+        self._panels.setup.chk_show_state.setChecked(
+            get_cfg("show_state_text", "show_state", default=True)
+        )
+        self._panels.setup.chk_show_kalman_uncertainty.setChecked(
+            get_cfg("show_kalman_uncertainty", default=False)
+        )
+        self._panels.detection.chk_show_fg.setChecked(
+            get_cfg("show_foreground_mask", "show_fg", default=True)
+        )
+        self._panels.detection.chk_show_bg.setChecked(
+            get_cfg("show_background_model", "show_bg", default=True)
+        )
+        self._panels.detection.chk_show_yolo_obb.setChecked(
+            get_cfg("show_yolo_obb", default=False)
+        )
+        self._panels.setup.spin_traj_hist.setValue(
+            get_cfg("trajectory_history_seconds", "traj_history", default=5)
+        )
+        self._panels.setup.chk_debug_logging.setChecked(
+            get_cfg("debug_logging", default=False)
+        )
+        self._panels.setup.chk_enable_profiling.setChecked(
+            get_cfg("enable_profiling", default=False)
+        )
+        self._mw.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
+
+    def _load_config_dataset(self, get_cfg):
+        self._panels.dataset.chk_enable_dataset_gen.setChecked(
+            get_cfg("enable_dataset_generation", default=False)
+        )
+        self._panels.dataset.line_dataset_class_name.setText(
+            get_cfg("dataset_class_name", default="object")
+        )
+        self._panels.dataset.spin_dataset_max_frames.setValue(
+            get_cfg("dataset_max_frames", default=100)
+        )
+        self._panels.dataset.spin_dataset_conf_threshold.setValue(
+            get_cfg(
+                "dataset_confidence_threshold",
+                "dataset_conf_threshold",
+                default=0.5,
+            )
+        )
+        # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
+        self._panels.dataset.spin_dataset_diversity_window.setValue(
+            get_cfg("dataset_diversity_window", default=30)
+        )
+        self._panels.dataset.chk_dataset_include_context.setChecked(
+            get_cfg("dataset_include_context", default=True)
+        )
+        self._panels.dataset.chk_dataset_probabilistic.setChecked(
+            get_cfg("dataset_probabilistic_sampling", default=True)
+        )
+        self._panels.dataset.chk_metric_low_confidence.setChecked(
+            get_cfg("metric_low_confidence", default=True)
+        )
+        self._panels.dataset.chk_metric_count_mismatch.setChecked(
+            get_cfg("metric_count_mismatch", default=True)
+        )
+        self._panels.dataset.chk_metric_high_assignment_cost.setChecked(
+            get_cfg("metric_high_assignment_cost", default=True)
+        )
+        self._panels.dataset.chk_metric_track_loss.setChecked(
+            get_cfg("metric_track_loss", default=True)
+        )
+        self._panels.dataset.chk_metric_high_uncertainty.setChecked(
+            get_cfg("metric_high_uncertainty", default=False)
+        )
+
+    def _load_config_individual_analysis(self, cfg, get_cfg):
+        old_method = str(get_cfg("identity_method", default="none_disabled")).lower()
+        # Backward compat: rename color_tags_yolo -> cnn_classifier on load
+        if old_method == "color_tags_yolo":
+            old_method = "cnn_classifier"
+        self._panels.identity.g_identity.setChecked(old_method != "none_disabled")
+
+        # --- New format or migrate from old format ---
+        _new_cnn_classifiers = get_cfg("cnn_classifiers", default=None)
+        if _new_cnn_classifiers is not None:
+            # New format: load use_apriltags + cnn_classifiers list
+            self._panels.identity.g_apriltags.setChecked(
+                bool(get_cfg("use_apriltags", default=False))
+            )
+            for entry in _new_cnn_classifiers or []:
+                row = self._panels.identity._add_cnn_classifier_row()
+                row.load_from_config(entry)
+        else:
+            # Old single-method config: migrate
+            if old_method == "apriltags":
+                self._panels.identity.g_apriltags.setChecked(True)
+            elif old_method in ("cnn_classifier",):
+                cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
+                if cnn_model_rel:
+                    row = self._panels.identity._add_cnn_classifier_row()
+                    row.load_from_config(
+                        {
+                            "rel_path": cnn_model_rel,
+                            "label": get_cfg(
+                                "cnn_classifier_label", default="identity"
+                            ),
+                            "confidence": float(
+                                get_cfg("cnn_classifier_confidence", default=0.5)
+                            ),
+                            "window": int(get_cfg("cnn_classifier_window", default=10)),
+                            "match_bonus": float(
+                                get_cfg(
+                                    "cnn_classifier_match_bonus",
+                                    "identity_match_bonus",
+                                    default=20.0,
+                                )
+                            ),
+                            "mismatch_penalty": float(
+                                get_cfg(
+                                    "cnn_classifier_mismatch_penalty",
+                                    "identity_mismatch_penalty",
+                                    default=50.0,
+                                )
+                            ),
+                        }
+                    )
+
+        # Shared identity cost settings
+        self._panels.identity.spin_identity_match_bonus.setValue(
+            float(
+                get_cfg(
+                    "identity_match_bonus",
+                    "tag_match_bonus",
+                    "cnn_classifier_match_bonus",
+                    default=20.0,
+                )
+            )
+        )
+        self._panels.identity.spin_identity_mismatch_penalty.setValue(
+            float(
+                get_cfg(
+                    "identity_mismatch_penalty",
+                    "tag_mismatch_penalty",
+                    "cnn_classifier_mismatch_penalty",
+                    default=50.0,
+                )
+            )
+        )
+        apriltag_family = get_cfg("apriltag_family", default="tag36h11")
+        idx = self._panels.identity.combo_apriltag_family.findText(apriltag_family)
+        self._panels.identity.combo_apriltag_family.setCurrentIndex(max(0, idx))
+        self._panels.identity.spin_apriltag_decimate.setValue(
+            float(get_cfg("apriltag_decimate", default=1.0))
+        )
+
+        # Warn users who had a non-default cnn_classifier_crop_padding in their config
+        _legacy_crop_padding = get_cfg("cnn_classifier_crop_padding", default=None)
+        if _legacy_crop_padding is not None and float(_legacy_crop_padding) != 0.1:
+            logger.warning(
+                "Config key 'cnn_classifier_crop_padding' (value=%.2f) is no longer used. "
+                "All precompute phases now use 'individual_crop_padding'. "
+                "Update your crop padding setting in the Individual Analysis panel.",
+                float(_legacy_crop_padding),
+            )
+
+        self._panels.identity.chk_enable_pose_extractor.setChecked(
+            get_cfg("enable_pose_extractor", default=False)
+        )
+        pose_backend = str(get_cfg("pose_model_type", default="yolo")).strip().upper()
+        pose_backend_idx = self._panels.identity.combo_pose_model_type.findText(
+            pose_backend
+        )
+        if pose_backend_idx >= 0:
+            self._panels.identity.combo_pose_model_type.setCurrentIndex(
+                pose_backend_idx
+            )
+        yolo_pose_model = str(get_cfg("pose_yolo_model_dir", default="")).strip()
+        sleap_pose_model = str(get_cfg("pose_sleap_model_dir", default="")).strip()
+        legacy_pose_model = str(get_cfg("pose_model_dir", default="")).strip()
+        if not yolo_pose_model and pose_backend.lower() == "yolo":
+            yolo_pose_model = legacy_pose_model
+        if not sleap_pose_model and pose_backend.lower() == "sleap":
+            sleap_pose_model = legacy_pose_model
+        self._mw._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
+        self._mw._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
+        active_backend = (
+            self._panels.identity.combo_pose_model_type.currentText().strip().lower()
+        )
+        self._mw._refresh_pose_model_combo(
+            preferred_model_path=self._mw._pose_model_path_for_backend(active_backend)
+        )
+        pose_runtime_flavor = derive_pose_runtime_settings(
+            self._mw._selected_compute_runtime(),
+            backend_family=self._panels.identity.combo_pose_model_type.currentText()
+            .strip()
+            .lower(),
+        )["pose_runtime_flavor"]
+        self._mw._populate_pose_runtime_flavor_options(
+            backend=self._panels.identity.combo_pose_model_type.currentText()
+            .strip()
+            .lower(),
+            preferred=pose_runtime_flavor,
+        )
+        self._panels.identity.spin_pose_min_kpt_conf_valid.setValue(
+            get_cfg("pose_min_kpt_conf_valid", default=0.2)
+        )
+        self._panels.identity.line_pose_skeleton_file.setText(
+            get_cfg("pose_skeleton_file", default="")
+        )
+        self._panels.identity._refresh_pose_direction_keypoint_lists()
+        ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
+        self._mw._set_pose_group_selection(
+            self._panels.identity.list_pose_ignore_keypoints, ignore_kpts
+        )
+        ant_kpts = get_cfg("pose_direction_anterior_keypoints", default=[])
+        self._mw._set_pose_group_selection(
+            self._panels.identity.list_pose_direction_anterior, ant_kpts
+        )
+        post_kpts = get_cfg("pose_direction_posterior_keypoints", default=[])
+        self._mw._set_pose_group_selection(
+            self._panels.identity.list_pose_direction_posterior, post_kpts
+        )
+        self._mw._apply_pose_keypoint_selection_constraints("ignore")
+        self._mw.advanced_config["pose_sleap_env"] = str(
+            get_cfg("pose_sleap_env", default="sleap")
+        )
+        self._panels.identity._refresh_pose_sleap_envs()
+        if hasattr(self, "_identity_panel"):
+            self._panels.identity.chk_sleap_experimental_features.setChecked(
+                get_cfg("pose_sleap_experimental_features", default=False)
+            )
+        shared_pose_batch = int(
+            get_cfg(
+                "pose_batch_size",
+                default=get_cfg(
+                    "pose_yolo_batch",
+                    default=get_cfg("pose_sleap_batch", default=4),
+                ),
+            )
+        )
+        self._panels.identity.spin_pose_batch.setValue(shared_pose_batch)
+
+        self._panels.dataset.chk_suppress_foreign_obb_dataset.setChecked(
+            get_cfg("suppress_foreign_obb_dataset", default=False)
+        )
+        self._panels.dataset.chk_enable_individual_dataset.setChecked(
+            get_cfg(
+                "enable_individual_image_save",
+                "enable_individual_dataset",
+                default=False,
+            )
+        )
+        self._panels.dataset.chk_generate_individual_track_videos.setChecked(
+            get_cfg("generate_oriented_track_videos", default=False)
+        )
+        format_text = get_cfg("individual_output_format", default="png").upper()
+        format_idx = self._panels.dataset.combo_individual_format.findText(format_text)
+        if format_idx >= 0:
+            self._panels.dataset.combo_individual_format.setCurrentIndex(format_idx)
+        self._panels.dataset.spin_individual_interval.setValue(
+            get_cfg("individual_save_interval", default=1)
+        )
+        self._panels.identity.chk_individual_interpolate.setChecked(
+            get_cfg("individual_interpolate_occlusions", default=True)
+        )
+        self._panels.identity.spin_individual_padding.setValue(
+            get_cfg("individual_crop_padding", default=0.1)
+        )
+        # Load background color
+        bg_color = get_cfg("individual_background_color", default=[0, 0, 0])
+        if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
+            self._panels.identity._background_color = tuple(bg_color)
+        self._mw._update_background_color_button()
+        self._panels.identity.chk_suppress_foreign_obb.setChecked(
+            get_cfg("suppress_foreign_obb_regions", default=True)
+        )
+        self._mw._sync_individual_analysis_mode_ui()
+
+        # === ROI ===
+        self._mw.roi_shapes = cfg.get("roi_shapes", [])
+        if self._mw.roi_shapes:
+            # Regenerate the combined mask from loaded shapes
+            # Need to get video frame dimensions first
+            video_path = cfg.get("file_path", "")
+            if video_path and os.path.exists(video_path):
+                cap = cv2.VideoCapture(video_path)
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret:
+                        fh, fw = frame.shape[:2]
+                        self._mw._generate_combined_roi_mask(fh, fw)
+                        num_shapes = len(self._mw.roi_shapes)
+                        shape_summary = ", ".join(
+                            [s["type"] for s in self._mw.roi_shapes]
+                        )
+                        self._mw.roi_status_label.setText(
+                            f"Loaded ROI: {num_shapes} shape(s) ({shape_summary})"
+                        )
+                        self._mw.btn_undo_roi.setEnabled(True)
+                        logger.info(f"Loaded {num_shapes} ROI shapes from config")
+                    cap.release()
+            else:
+                # Video not available yet, just store shapes for later
+                logger.info(
+                    f"Loaded {len(self._mw.roi_shapes)} ROI shapes (mask will be generated when video loads)"
+                )
 
     def _atomic_json_write(self, cfg, path):
         """Write a JSON config atomically. Returns (success, error_message)."""

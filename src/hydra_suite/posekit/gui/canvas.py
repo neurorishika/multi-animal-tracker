@@ -366,24 +366,88 @@ class PoseCanvas(QGraphicsView):
         self._zoom_factor = new_zoom
         event.accept()
 
+    def _effective_parent(self):
+        parent = self.parent()
+        if parent and not hasattr(parent, "mode"):
+            parent = self.window()
+        return parent
+
+    def _advance_and_place_next_unlabeled(self, parent, pos):
+        ann = getattr(parent, "_ann", None) if parent else None
+        if not (ann and hasattr(ann, "kpts")):
+            return False
+        next_unlabeled = None
+        for i, kp in enumerate(ann.kpts):
+            if kp.v == 0:
+                next_unlabeled = i
+                break
+        if next_unlabeled is None:
+            return False
+        self._current_kpt = next_unlabeled
+        if parent:
+            parent.current_kpt = next_unlabeled
+            parent.kpt_list.setCurrentRow(next_unlabeled)
+            parent.canvas.set_current_keypoint(next_unlabeled)
+            QApplication.processEvents()
+        if self._on_place:
+            self._on_place(next_unlabeled, float(pos.x()), float(pos.y()), 2)
+        return True
+
+    def _handle_right_press(self, event):
+        pos = self.mapToScene(event.position().toPoint())
+        item = self._ellipse_item_at(pos)
+        if item is not None:
+            idx = int(item.data(0))
+            is_pred = item.data(1) == "pred"
+            if not is_pred:
+                parent = self._effective_parent()
+                if parent and hasattr(parent, "_toggle_kpt_visibility"):
+                    parent._toggle_kpt_visibility(idx)
+                    return
+        if self._on_place:
+            # Right-click marks keypoint as occluded (v=1)
+            self._on_place(self._current_kpt, float(pos.x()), float(pos.y()), 1)
+
+    def _handle_keypoint_item_click(self, event, idx, is_pred, parent, pos):
+        if is_pred:
+            # Start dragging prediction (adopt on release)
+            self._dragging_pred = idx
+            self._drag_start_pos = self.mapToScene(event.position().toPoint())
+            return super().mousePressEvent(event)
+        mode = getattr(parent, "mode", "frame") if parent else "frame"
+        if mode == "keypoint":
+            # In keypoint mode: NEVER allow dragging - treat click as placing next unlabeled keypoint
+            pos = self.mapToScene(event.position().toPoint())
+            self._advance_and_place_next_unlabeled(parent, pos)
+            # If all labeled, ignore click
+            return super().mousePressEvent(event)
+        else:
+            # In frame mode: start dragging existing keypoint
+            if self._on_select:
+                self._on_select(idx)
+            self._dragging_kpt = idx
+            self._drag_start_pos = self.mapToScene(event.position().toPoint())
+            return super().mousePressEvent(event)
+
+    def _handle_empty_left_click(self, pos):
+        parent = self._effective_parent()
+        ann = getattr(parent, "_ann", None) if parent else None
+        if ann and hasattr(ann, "kpts"):
+            # Check if all keypoints are already labeled
+            all_labeled = all(kp.v > 0 for kp in ann.kpts)
+            if all_labeled:
+                # Ignore click - all keypoints exist
+                return
+            self._advance_and_place_next_unlabeled(parent, pos)
+        else:
+            # No annotation data, place normally
+            if self._on_place:
+                self._on_place(self._current_kpt, float(pos.x()), float(pos.y()), 2)
+
     def mousePressEvent(self: object, event: object) -> None:
         """Handle placement, selection, visibility toggle, and drag-start behavior."""
         if event.button() == Qt.RightButton:
-            pos = self.mapToScene(event.position().toPoint())
-            item = self._ellipse_item_at(pos)
-            if item is not None:
-                idx = int(item.data(0))
-                is_pred = item.data(1) == "pred"
-                if not is_pred:
-                    parent = self.parent()
-                    if parent and not hasattr(parent, "mode"):
-                        parent = self.window()
-                    if parent and hasattr(parent, "_toggle_kpt_visibility"):
-                        parent._toggle_kpt_visibility(idx)
-                        return
-            if self._on_place:
-                # Right-click marks keypoint as occluded (v=1)
-                self._on_place(self._current_kpt, float(pos.x()), float(pos.y()), 1)
+            self._handle_right_press(event)
             return
 
         pos = self.mapToScene(event.position().toPoint())
@@ -392,120 +456,14 @@ class PoseCanvas(QGraphicsView):
             # Clicked on existing keypoint
             idx = int(item.data(0))
             is_pred = item.data(1) == "pred"
-
             # Get parent's mode
-            parent = self.parent()
             # If parent is splitter (default Qt behavior when added to splitter), try window()
-            if parent and not hasattr(parent, "mode"):
-                parent = self.window()
-
-            mode = getattr(parent, "mode", "frame") if parent else "frame"
-
-            if is_pred:
-                # Start dragging prediction (adopt on release)
-                self._dragging_pred = idx
-                self._drag_start_pos = self.mapToScene(event.position().toPoint())
-                return super().mousePressEvent(event)
-
-            if mode == "keypoint":
-                # In keypoint mode: NEVER allow dragging - treat click as placing next unlabeled keypoint
-                ann = getattr(parent, "_ann", None) if parent else None
-                if ann and hasattr(ann, "kpts"):
-                    # Find next unlabeled keypoint
-                    next_unlabeled = None
-                    for i, kp in enumerate(ann.kpts):
-                        if kp.v == 0:
-                            next_unlabeled = i
-                            break
-
-                    if next_unlabeled is not None:
-                        # Update canvas internal state FIRST
-                        self._current_kpt = next_unlabeled
-
-                        # Get position
-                        pos = self.mapToScene(event.position().toPoint())
-
-                        # Update parent state
-                        if parent:
-                            parent.current_kpt = next_unlabeled
-                            parent.kpt_list.setCurrentRow(next_unlabeled)
-                            # Update canvas visual state
-                            parent.canvas.set_current_keypoint(next_unlabeled)
-                            # Force UI update
-                            QApplication.processEvents()
-
-                        # Now place the keypoint with the updated state
-                        if self._on_place:
-                            self._on_place(
-                                next_unlabeled,
-                                float(pos.x()),
-                                float(pos.y()),
-                                2,
-                            )
-                    # If all labeled, ignore click
-                return super().mousePressEvent(event)
-            else:
-                # In frame mode: start dragging existing keypoint
-                if self._on_select:
-                    self._on_select(idx)
-                self._dragging_kpt = idx
-                self._drag_start_pos = self.mapToScene(event.position().toPoint())
-                return super().mousePressEvent(event)
+            parent = self._effective_parent()
+            return self._handle_keypoint_item_click(event, idx, is_pred, parent, pos)
 
         if event.button() == Qt.LeftButton:
             # Clicking on empty space - always place next unlabeled keypoint in both modes
-            parent = self.parent()
-            # If parent is splitter, try window()
-            if parent and not hasattr(parent, "mode"):
-                parent = self.window()
-
-            ann = getattr(parent, "_ann", None) if parent else None
-
-            if ann and hasattr(ann, "kpts"):
-                # Check if all keypoints are already labeled
-                all_labeled = all(kp.v > 0 for kp in ann.kpts)
-                if all_labeled:
-                    # Ignore click - all keypoints exist
-                    super().mousePressEvent(event)
-                    return
-
-                # Find next unlabeled keypoint
-                next_unlabeled = None
-                for i, kp in enumerate(ann.kpts):
-                    if kp.v == 0:
-                        next_unlabeled = i
-                        break
-
-                if next_unlabeled is not None:
-                    # Update canvas internal state FIRST
-                    self._current_kpt = next_unlabeled
-
-                    # Update parent state
-                    if parent:
-                        parent.current_kpt = next_unlabeled
-                        parent.kpt_list.setCurrentRow(next_unlabeled)
-                        # Update canvas visual state
-                        parent.canvas.set_current_keypoint(next_unlabeled)
-                        # Force UI update
-                        QApplication.processEvents()
-
-                    # Now place the keypoint with the updated state
-                    if self._on_place:
-                        self._on_place(
-                            next_unlabeled,
-                            float(pos.x()),
-                            float(pos.y()),
-                            2,
-                        )
-            else:
-                # No annotation data, place normally
-                if self._on_place:
-                    self._on_place(
-                        self._current_kpt,
-                        float(pos.x()),
-                        float(pos.y()),
-                        2,
-                    )
+            self._handle_empty_left_click(pos)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self: object, event: object) -> None:

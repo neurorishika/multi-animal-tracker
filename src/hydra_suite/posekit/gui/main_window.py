@@ -1438,95 +1438,111 @@ class MainWindow(QMainWindow):
         }
         save_ui_settings(settings)
 
+    def _apply_display_settings(self, settings):
+        if "kpt_radius" in settings:
+            self.project.kpt_radius = float(settings["kpt_radius"])
+            self.sp_kpt_size.setValue(self.project.kpt_radius)
+        if "label_font_size" in settings:
+            self.project.label_font_size = int(settings["label_font_size"])
+            self.sp_label_size.setValue(self.project.label_font_size)
+        if "kpt_opacity" in settings:
+            self.project.kpt_opacity = float(settings["kpt_opacity"])
+            self.sp_kpt_opacity.setValue(self.project.kpt_opacity)
+        if "edge_opacity" in settings:
+            self.project.edge_opacity = float(settings["edge_opacity"])
+            self.sp_edge_opacity.setValue(self.project.edge_opacity)
+        if "edge_width" in settings:
+            self.project.edge_width = float(settings["edge_width"])
+            self.sp_edge_width.setValue(self.project.edge_width)
+        if "controls_open" in settings:
+            self.controls_group.setChecked(bool(settings["controls_open"]))
+        if "frame_search" in settings:
+            self.search_edit.setText(str(settings["frame_search"]))
+        if "autosave_delay_ms" in settings:
+            self.autosave_delay_ms = int(settings["autosave_delay_ms"])
+            self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
+
+    def _apply_pred_runtime_setting(self, settings):
+        runtime_setting = str(
+            settings.get("compute_runtime", settings.get("pred_runtime", ""))
+        ).strip()
+        if not runtime_setting:
+            return
+        canonical_runtime = runtime_setting
+        if canonical_runtime not in CANONICAL_RUNTIMES:
+            canonical_runtime = infer_compute_runtime_from_legacy(
+                yolo_device="auto",
+                enable_tensorrt=False,
+                pose_runtime_flavor=runtime_setting,
+            )
+        self._populate_pred_runtime_options(
+            self._pred_backend(), preferred=canonical_runtime
+        )
+
+    def _apply_pred_batch_setting(self, settings):
+        if "pred_batch" in settings:
+            self.spin_pred_batch.setValue(int(settings["pred_batch"]))
+        elif "pred_yolo_batch" in settings:
+            self.spin_pred_batch.setValue(int(settings["pred_yolo_batch"]))
+        elif "sleap_batch_predict" in settings:
+            self.spin_pred_batch.setValue(int(settings["sleap_batch_predict"]))
+        elif "sleap_batch" in settings:
+            # Backwards compatibility for older settings key.
+            self.spin_pred_batch.setValue(int(settings["sleap_batch"]))
+
+    def _apply_pred_settings(self, settings):
+        if "pred_conf" in settings:
+            self.sp_pred_conf.setValue(float(settings["pred_conf"]))
+        if "pred_weights" in settings:
+            self.pred_weights_edit.setText(str(settings["pred_weights"]))
+        if "pred_backend" in settings:
+            backend = str(settings["pred_backend"])
+            if backend:
+                self.combo_pred_backend.setCurrentText(backend)
+        self._apply_pred_runtime_setting(settings)
+        self.pred_exported_edit.setText("")
+        self._apply_pred_batch_setting(settings)
+
+    def _apply_sleap_settings(self, settings):
+        if "sleap_env" in settings:
+            self._sleap_env_pref = str(settings["sleap_env"]).strip()
+            if self._sleap_env_pref:
+                if self._sleap_env_pref in [
+                    self.combo_sleap_env.itemText(i)
+                    for i in range(self.combo_sleap_env.count())
+                ]:
+                    self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
+        if "sleap_model_dir" in settings:
+            self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
+        if "sleap_experimental_features" in settings and hasattr(
+            self, "chk_pred_sleap_experimental"
+        ):
+            self.chk_pred_sleap_experimental.setChecked(
+                bool(settings["sleap_experimental_features"])
+            )
+
+    def _apply_prediction_visibility_settings(self, settings):
+        if "show_predictions" in settings:
+            self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
+            self.show_predictions = bool(self.cb_show_preds.isChecked())
+        if "show_pred_conf" in settings:
+            self.cb_show_pred_conf.setChecked(bool(settings["show_pred_conf"]))
+            self.show_pred_conf = bool(self.cb_show_pred_conf.isChecked())
+        if not self.pred_weights_edit.text().strip():
+            if (
+                self.project.latest_pose_weights
+                and Path(self.project.latest_pose_weights).exists()
+            ):
+                self.pred_weights_edit.setText(str(self.project.latest_pose_weights))
+
     def _load_ui_settings(self):
         """Load UI settings from persistent storage and apply defaults."""
         settings = load_ui_settings()
         if settings:
-            # Apply loaded settings to project
-            if "kpt_radius" in settings:
-                self.project.kpt_radius = float(settings["kpt_radius"])
-                self.sp_kpt_size.setValue(self.project.kpt_radius)
-            if "label_font_size" in settings:
-                self.project.label_font_size = int(settings["label_font_size"])
-                self.sp_label_size.setValue(self.project.label_font_size)
-            if "kpt_opacity" in settings:
-                self.project.kpt_opacity = float(settings["kpt_opacity"])
-                self.sp_kpt_opacity.setValue(self.project.kpt_opacity)
-            if "edge_opacity" in settings:
-                self.project.edge_opacity = float(settings["edge_opacity"])
-                self.sp_edge_opacity.setValue(self.project.edge_opacity)
-            if "edge_width" in settings:
-                self.project.edge_width = float(settings["edge_width"])
-                self.sp_edge_width.setValue(self.project.edge_width)
-            if "controls_open" in settings:
-                self.controls_group.setChecked(bool(settings["controls_open"]))
-            if "frame_search" in settings:
-                self.search_edit.setText(str(settings["frame_search"]))
-            if "autosave_delay_ms" in settings:
-                self.autosave_delay_ms = int(settings["autosave_delay_ms"])
-                self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
-            if "pred_conf" in settings:
-                self.sp_pred_conf.setValue(float(settings["pred_conf"]))
-            if "pred_weights" in settings:
-                self.pred_weights_edit.setText(str(settings["pred_weights"]))
-            if "pred_backend" in settings:
-                backend = str(settings["pred_backend"])
-                if backend:
-                    self.combo_pred_backend.setCurrentText(backend)
-            runtime_setting = str(
-                settings.get("compute_runtime", settings.get("pred_runtime", ""))
-            ).strip()
-            if runtime_setting:
-                canonical_runtime = runtime_setting
-                if canonical_runtime not in CANONICAL_RUNTIMES:
-                    canonical_runtime = infer_compute_runtime_from_legacy(
-                        yolo_device="auto",
-                        enable_tensorrt=False,
-                        pose_runtime_flavor=runtime_setting,
-                    )
-                self._populate_pred_runtime_options(
-                    self._pred_backend(), preferred=canonical_runtime
-                )
-            self.pred_exported_edit.setText("")
-            if "pred_batch" in settings:
-                self.spin_pred_batch.setValue(int(settings["pred_batch"]))
-            elif "pred_yolo_batch" in settings:
-                self.spin_pred_batch.setValue(int(settings["pred_yolo_batch"]))
-            elif "sleap_batch_predict" in settings:
-                self.spin_pred_batch.setValue(int(settings["sleap_batch_predict"]))
-            elif "sleap_batch" in settings:
-                # Backwards compatibility for older settings key.
-                self.spin_pred_batch.setValue(int(settings["sleap_batch"]))
-            if "sleap_env" in settings:
-                self._sleap_env_pref = str(settings["sleap_env"]).strip()
-                if self._sleap_env_pref:
-                    if self._sleap_env_pref in [
-                        self.combo_sleap_env.itemText(i)
-                        for i in range(self.combo_sleap_env.count())
-                    ]:
-                        self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
-            if "sleap_model_dir" in settings:
-                self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
-            if "sleap_experimental_features" in settings and hasattr(
-                self, "chk_pred_sleap_experimental"
-            ):
-                self.chk_pred_sleap_experimental.setChecked(
-                    bool(settings["sleap_experimental_features"])
-                )
-            if "show_predictions" in settings:
-                self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
-                self.show_predictions = bool(self.cb_show_preds.isChecked())
-            if "show_pred_conf" in settings:
-                self.cb_show_pred_conf.setChecked(bool(settings["show_pred_conf"]))
-                self.show_pred_conf = bool(self.cb_show_pred_conf.isChecked())
-            if not self.pred_weights_edit.text().strip():
-                if (
-                    self.project.latest_pose_weights
-                    and Path(self.project.latest_pose_weights).exists()
-                ):
-                    self.pred_weights_edit.setText(
-                        str(self.project.latest_pose_weights)
-                    )
+            self._apply_display_settings(settings)
+            self._apply_pred_settings(settings)
+            self._apply_sleap_settings(settings)
+            self._apply_prediction_visibility_settings(settings)
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
