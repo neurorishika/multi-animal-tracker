@@ -33,4 +33,4 @@ def test_config_orchestrator_constructed(main_window):
 
 
 def test_session_orchestrator_constructed(main_window):
-    assert main_window._session_orch is None  # placeholder until Task 19
+    assert main_window._session_orch is not None

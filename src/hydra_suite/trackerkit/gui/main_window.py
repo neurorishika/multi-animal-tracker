@@ -1247,7 +1247,13 @@ class MainWindow(QMainWindow):
             config=self.config,
             panels=self._panels_bundle(),
         )
-        self._session_orch = None  # placeholder until Task 19
+        from hydra_suite.trackerkit.gui.orchestrators.session import SessionOrchestrator
+
+        self._session_orch = SessionOrchestrator(
+            main_window=self,
+            config=self.config,
+            panels=self._panels_bundle(),
+        )
 
         # =====================================================================
         # INITIALIZE PRESETS
