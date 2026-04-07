@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+import cv2
+import numpy as np
+from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -35,6 +41,8 @@ from hydra_suite.utils.gpu_utils import (
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.gui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
 
 
 class DetectionPanel(QWidget):
@@ -92,7 +100,7 @@ class DetectionPanel(QWidget):
         self.combo_detection_method.addItems(["Background Subtraction", "YOLO OBB"])
         self.combo_detection_method.setFixedHeight(30)
         self.combo_detection_method.currentIndexChanged.connect(
-            self._main_window._on_detection_method_changed_ui
+            self._on_detection_method_changed_ui
         )
         method_row = QHBoxLayout()
         method_row.setSpacing(6)
@@ -177,7 +185,7 @@ class DetectionPanel(QWidget):
         self.slider_brightness.setTickPosition(QSlider.TicksBelow)
         self.slider_brightness.setTickInterval(50)
         self.slider_brightness.valueChanged.connect(
-            self._main_window._on_brightness_changed
+            self._on_brightness_changed
         )
         self.slider_brightness.setToolTip(
             "Adjust overall image brightness.\n"
@@ -203,7 +211,7 @@ class DetectionPanel(QWidget):
         self.slider_contrast.setTickPosition(QSlider.TicksBelow)
         self.slider_contrast.setTickInterval(50)
         self.slider_contrast.valueChanged.connect(
-            self._main_window._on_contrast_changed
+            self._on_contrast_changed
         )
         self.slider_contrast.setToolTip(
             "Adjust image contrast (difference between light and dark).\n"
@@ -228,7 +236,7 @@ class DetectionPanel(QWidget):
         self.slider_gamma.setValue(100)  # 1.0
         self.slider_gamma.setTickPosition(QSlider.TicksBelow)
         self.slider_gamma.setTickInterval(50)
-        self.slider_gamma.valueChanged.connect(self._main_window._on_gamma_changed)
+        self.slider_gamma.valueChanged.connect(self._on_gamma_changed)
         self.slider_gamma.setToolTip(
             "Adjust gamma correction (mid-tone brightness).\n"
             "1.0 = original, >1.0 = brighter mid-tones, <1.0 = darker mid-tones.\n"
@@ -570,7 +578,7 @@ class DetectionPanel(QWidget):
         self.combo_yolo_obb_mode.addItems(["Direct", "Sequential (Faster)"])
         self.combo_yolo_obb_mode.setFixedHeight(30)
         self.combo_yolo_obb_mode.currentIndexChanged.connect(
-            self._main_window._on_yolo_mode_changed
+            self._on_yolo_mode_changed
         )
         self.combo_yolo_obb_mode.setToolTip(
             "Direct: run OBB on full frame.\n"
@@ -587,14 +595,14 @@ class DetectionPanel(QWidget):
         f_yolo.addRow("", self.lbl_obb_mode_warning)
 
         self.combo_yolo_model = QComboBox()
-        self.combo_yolo_model.activated.connect(self._main_window.on_yolo_model_changed)
+        self.combo_yolo_model.activated.connect(self.on_yolo_model_changed)
         self.combo_yolo_model.setFixedHeight(30)
         self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
         f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
 
         self.combo_yolo_detect_model = QComboBox()
         self.combo_yolo_detect_model.activated.connect(
-            self._main_window.on_yolo_detect_model_changed
+            self.on_yolo_detect_model_changed
         )
         self.combo_yolo_detect_model.setFixedHeight(30)
         self.combo_yolo_detect_model.setToolTip(
@@ -604,7 +612,7 @@ class DetectionPanel(QWidget):
 
         self.combo_yolo_crop_obb_model = QComboBox()
         self.combo_yolo_crop_obb_model.activated.connect(
-            self._main_window.on_yolo_crop_obb_model_changed
+            self.on_yolo_crop_obb_model_changed
         )
         self.combo_yolo_crop_obb_model.setFixedHeight(30)
         self.combo_yolo_crop_obb_model.setToolTip(
@@ -745,7 +753,7 @@ class DetectionPanel(QWidget):
 
         self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
         self.chk_enable_tensorrt.stateChanged.connect(
-            self._main_window._on_tensorrt_toggled
+            self._on_tensorrt_toggled
         )
 
         self.spin_tensorrt_batch = QSpinBox()
@@ -774,7 +782,7 @@ class DetectionPanel(QWidget):
             "Only works in full tracking mode (not preview)."
         )
         self.chk_enable_yolo_batching.stateChanged.connect(
-            self._main_window._on_yolo_batching_toggled
+            self._on_yolo_batching_toggled
         )
 
         self.combo_yolo_batch_mode = QComboBox()
@@ -785,7 +793,7 @@ class DetectionPanel(QWidget):
             "Manual: Specify a fixed batch size."
         )
         self.combo_yolo_batch_mode.currentIndexChanged.connect(
-            self._main_window._on_yolo_batch_mode_changed
+            self._on_yolo_batch_mode_changed
         )
         self.lbl_yolo_batch_mode = QLabel("Batch mode")
         self.lbl_yolo_batch_mode.setStyleSheet(
@@ -804,7 +812,7 @@ class DetectionPanel(QWidget):
             "Typical values: 8-32 depending on GPU."
         )
         self.spin_yolo_batch_size.valueChanged.connect(
-            self._main_window._on_yolo_manual_batch_size_changed
+            self._on_yolo_manual_batch_size_changed
         )
         self.lbl_yolo_batch_size = QLabel("Manual batch")
         self.lbl_yolo_batch_size.setStyleSheet(
@@ -935,7 +943,7 @@ class DetectionPanel(QWidget):
             "All distance/size parameters are scaled relative to this value."
         )
         self.spin_reference_body_size.valueChanged.connect(
-            self._main_window._update_body_size_info
+            self._update_body_size_info
         )
         fl_ref.addRow("Reference body size (px)", self.spin_reference_body_size)
 
@@ -1093,3 +1101,723 @@ class DetectionPanel(QWidget):
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
         self._config = config
+
+    # =========================================================================
+    # QUERY HELPERS (moved from MainWindow)
+    # =========================================================================
+
+    def _is_yolo_detection_mode(self) -> bool:
+        """Return True when current detection mode is YOLO OBB."""
+        return self.combo_detection_method.currentIndex() == 1
+
+    def _is_identity_analysis_enabled(self) -> bool:
+        """Return effective runtime state for identity classification."""
+        if not hasattr(self._main_window, "_identity_panel"):
+            return False
+        return bool(
+            self._main_window._identity_panel.g_identity.isChecked()
+            and self._is_yolo_detection_mode()
+        )
+
+    def _selected_identity_method(self) -> str:
+        """Return canonical identity-method key for runtime/config usage."""
+        if not self._is_identity_analysis_enabled():
+            return "none_disabled"
+        cfg = self._identity_config()
+        has_apriltags = cfg.get("use_apriltags", False)
+        has_cnn = bool(cfg.get("cnn_classifiers", []))
+        if has_apriltags and not has_cnn:
+            return "apriltags"
+        if has_cnn and not has_apriltags:
+            return "cnn_classifier"
+        if has_apriltags or has_cnn:
+            return "cnn_classifier"  # multi-method: report as cnn_classifier for compat
+        return "none_disabled"
+
+    def _identity_config(self) -> dict:
+        """Return use_apriltags + cnn_classifiers config dict."""
+        if not self._is_identity_analysis_enabled():
+            return {"use_apriltags": False, "cnn_classifiers": []}
+        ip = getattr(self._main_window, "_identity_panel", None)
+        use_apriltags = ip is not None and ip.g_apriltags.isChecked()
+        match_bonus = float(ip.spin_identity_match_bonus.value() if ip is not None else 20.0)
+        mismatch_penalty = float(
+            ip.spin_identity_mismatch_penalty.value() if ip is not None else 50.0
+        )
+        cnn_classifiers = []
+        if ip is not None:
+            for row in ip._cnn_classifier_rows():
+                cfg = row.to_config()
+                if cfg is not None:
+                    cfg["match_bonus"] = match_bonus
+                    cfg["mismatch_penalty"] = mismatch_penalty
+                    cnn_classifiers.append(cfg)
+        return {
+            "use_apriltags": use_apriltags,
+            "cnn_classifiers": cnn_classifiers,
+            "match_bonus": match_bonus,
+            "mismatch_penalty": mismatch_penalty,
+        }
+
+    # =========================================================================
+    # YOLO BATCHING / TENSORRT HANDLERS (moved from MainWindow)
+    # =========================================================================
+
+    def _on_yolo_batching_toggled(self, state):
+        """Enable/disable YOLO batching controls based on checkbox."""
+        if self._main_window._runtime_requires_fixed_yolo_batch():
+            if not self.chk_enable_yolo_batching.isChecked():
+                self.chk_enable_yolo_batching.setChecked(True)
+            self.chk_enable_yolo_batching.setEnabled(False)
+            self.combo_yolo_batch_mode.setVisible(True)
+            self.lbl_yolo_batch_mode.setVisible(True)
+            self.spin_yolo_batch_size.setVisible(True)
+            self.lbl_yolo_batch_size.setVisible(True)
+            self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.combo_yolo_batch_mode.setEnabled(False)
+            self.spin_yolo_batch_size.setEnabled(True)
+            return
+        enabled = self.chk_enable_yolo_batching.isChecked()
+        self.combo_yolo_batch_mode.setVisible(enabled)
+        self.lbl_yolo_batch_mode.setVisible(enabled)
+        self.spin_yolo_batch_size.setVisible(enabled)
+        self.lbl_yolo_batch_size.setVisible(enabled)
+        self.combo_yolo_batch_mode.setEnabled(enabled)
+        manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
+        self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
+
+    def _on_yolo_manual_batch_size_changed(self, value: int):
+        """Keep legacy fixed-batch field synchronized for fixed runtimes."""
+        if self._main_window._runtime_requires_fixed_yolo_batch() and hasattr(
+            self, "spin_tensorrt_batch"
+        ):
+            self.spin_tensorrt_batch.setValue(int(value))
+
+    def _on_yolo_batch_mode_changed(self, index):
+        """Show/hide manual batch size based on selected mode."""
+        if self._main_window._runtime_requires_fixed_yolo_batch():
+            if self.combo_yolo_batch_mode.currentIndex() != 1:
+                self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.spin_yolo_batch_size.setEnabled(True)
+            return
+        is_manual = index == 1
+        batching_enabled = self.chk_enable_yolo_batching.isChecked()
+        self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
+
+    def _on_tensorrt_toggled(self, state):
+        """Enable/disable TensorRT batch size control based on checkbox."""
+        if not self.chk_enable_tensorrt.isVisible():
+            self.spin_tensorrt_batch.setVisible(False)
+            self.lbl_tensorrt_batch.setVisible(False)
+            return
+        enabled = self.chk_enable_tensorrt.isChecked()
+        self.spin_tensorrt_batch.setVisible(enabled)
+        self.lbl_tensorrt_batch.setVisible(enabled)
+        self.spin_tensorrt_batch.setEnabled(enabled)
+        self.lbl_tensorrt_batch.setEnabled(enabled)
+
+    # =========================================================================
+    # DETECTION METHOD CHANGED UI (moved from MainWindow)
+    # =========================================================================
+
+    def _on_detection_method_changed_ui(self, index):
+        """Update stack widget when detection method changes."""
+        self.stack_detection.setCurrentIndex(index)
+        is_background_subtraction = index == 0
+        self.g_img.setVisible(is_background_subtraction)
+        self.g_overlays_bg.setVisible(is_background_subtraction)
+        self.g_overlays_yolo.setVisible(not is_background_subtraction)
+        self._update_preview_display()
+        self.on_detection_method_changed(index)
+        self._main_window._on_runtime_context_changed()
+        self._main_window._queue_ui_state_save()
+
+    # =========================================================================
+    # IMAGE ADJUSTMENT HANDLERS (moved from MainWindow)
+    # =========================================================================
+
+    def _on_brightness_changed(self, value):
+        """Handle brightness slider change."""
+        self.label_brightness_val.setText(str(value))
+        self._main_window.detection_test_result = None
+        self._update_preview_display()
+
+    def _on_contrast_changed(self, value):
+        """Handle contrast slider change."""
+        contrast_val = value / 100.0
+        self.label_contrast_val.setText(f"{contrast_val:.2f}")
+        self._main_window.detection_test_result = None
+        self._update_preview_display()
+
+    def _on_gamma_changed(self, value):
+        """Handle gamma slider change."""
+        gamma_val = value / 100.0
+        self.label_gamma_val.setText(f"{gamma_val:.2f}")
+        self._main_window.detection_test_result = None
+        self._update_preview_display()
+
+    def _on_zoom_changed(self, value):
+        """Handle zoom slider change."""
+        zoom_val = value / 100.0
+        self._main_window.label_zoom_val.setText(f"{zoom_val:.2f}x")
+        if self._main_window.detection_test_result is not None:
+            self._redisplay_detection_test()
+        elif (
+            getattr(self._main_window, "roi_base_frame", None) is not None
+            and getattr(self._main_window, "roi_shapes", None)
+        ):
+            self._main_window._display_roi_with_zoom()
+        else:
+            self._update_preview_display()
+
+    # =========================================================================
+    # BODY SIZE INFO (moved from MainWindow)
+    # =========================================================================
+
+    def _update_body_size_info(self):
+        """Update the info label showing calculated body area."""
+        body_size = self.spin_reference_body_size.value()
+        body_area = math.pi * (body_size / 2.0) ** 2
+        self.label_body_size_info.setText(
+            f"\u2248 {body_area:.1f} px\u00b2 area (all size/distance params scale with this)"
+        )
+
+    # =========================================================================
+    # DETECTION STATISTICS (moved from MainWindow)
+    # =========================================================================
+
+    def _update_detection_stats(self, detected_dimensions, resize_factor=1.0):
+        """Update detection statistics display."""
+        if not detected_dimensions or len(detected_dimensions) == 0:
+            self.label_detection_stats.setText(
+                "No detections found.\nAdjust parameters and try again."
+            )
+            self.btn_auto_set_body_size.setEnabled(False)
+            self._main_window.detected_sizes = None
+            return
+
+        scale_factor = 1.0 / resize_factor
+        major_axes = [dims[0] * scale_factor for dims in detected_dimensions]
+        minor_axes = [dims[1] * scale_factor for dims in detected_dimensions]
+
+        aspect_ratios = [
+            major / minor if minor > 0 else 1.0
+            for major, minor in zip(major_axes, minor_axes)
+        ]
+        geometric_means = [
+            math.sqrt(major * minor) for major, minor in zip(major_axes, minor_axes)
+        ]
+
+        stats = {
+            "major": {
+                "mean": np.mean(major_axes),
+                "median": np.median(major_axes),
+                "std": np.std(major_axes),
+                "min": np.min(major_axes),
+                "max": np.max(major_axes),
+            },
+            "minor": {
+                "mean": np.mean(minor_axes),
+                "median": np.median(minor_axes),
+                "std": np.std(minor_axes),
+                "min": np.min(minor_axes),
+                "max": np.max(minor_axes),
+            },
+            "aspect_ratio": {
+                "mean": np.mean(aspect_ratios),
+                "median": np.median(aspect_ratios),
+                "std": np.std(aspect_ratios),
+            },
+            "geometric_mean": {
+                "mean": np.mean(geometric_means),
+                "median": np.median(geometric_means),
+                "std": np.std(geometric_means),
+            },
+        }
+
+        self._main_window.detected_sizes = {
+            "major_axes": major_axes,
+            "minor_axes": minor_axes,
+            "aspect_ratios": aspect_ratios,
+            "geometric_means": geometric_means,
+            "stats": stats,
+            "count": len(detected_dimensions),
+            "resize_factor": resize_factor,
+            "recommended_body_size": stats["geometric_mean"]["median"],
+            "recommended_aspect_ratio": stats["aspect_ratio"]["median"],
+        }
+
+        stats_text = (
+            f"Analyzed {len(detected_dimensions)} detections:\n\n"
+            f"Major Axis (length):\n"
+            f"  \u2022 Median: {stats['major']['median']:.1f} px  (range: {stats['major']['min']:.1f} - {stats['major']['max']:.1f})\n"
+            f"  \u2022 Mean: {stats['major']['mean']:.1f} \u00b1 {stats['major']['std']:.1f} px\n\n"
+            f"Minor Axis (width):\n"
+            f"  \u2022 Median: {stats['minor']['median']:.1f} px  (range: {stats['minor']['min']:.1f} - {stats['minor']['max']:.1f})\n"
+            f"  \u2022 Mean: {stats['minor']['mean']:.1f} \u00b1 {stats['minor']['std']:.1f} px\n\n"
+            f"Aspect Ratio (length/width):\n"
+            f"  \u2022 Median: {stats['aspect_ratio']['median']:.2f}  Mean: {stats['aspect_ratio']['mean']:.2f} \u00b1 {stats['aspect_ratio']['std']:.2f}\n\n"
+            f"Recommended Body Size: {stats['geometric_mean']['median']:.1f} px\n"
+            f"  (geometric mean of dimensions)"
+        )
+        self.label_detection_stats.setText(stats_text)
+        self.btn_auto_set_body_size.setEnabled(True)
+        self.btn_auto_set_aspect_ratio.setEnabled(True)
+
+    # =========================================================================
+    # PREVIEW DISPLAY (moved from MainWindow)
+    # =========================================================================
+
+    def _update_preview_display(self):
+        """Update the video display with current brightness/contrast/gamma settings."""
+        if self._main_window.preview_frame_original is None:
+            return
+        if self._main_window.detection_test_result is not None:
+            self._redisplay_detection_test()
+            return
+
+        brightness = self.slider_brightness.value()
+        contrast = self.slider_contrast.value() / 100.0
+        gamma = self.slider_gamma.value() / 100.0
+        detection_method = self.combo_detection_method.currentText()
+        is_background_subtraction = detection_method == "Background Subtraction"
+
+        from hydra_suite.utils.image_processing import apply_image_adjustments
+
+        if is_background_subtraction:
+            gray = cv2.cvtColor(self._main_window.preview_frame_original, cv2.COLOR_RGB2GRAY)
+            adjusted = apply_image_adjustments(gray, brightness, contrast, gamma, use_gpu=False)
+            adjusted_rgb = cv2.cvtColor(adjusted, cv2.COLOR_GRAY2RGB)
+        else:
+            adjusted_rgb = self._main_window.preview_frame_original
+
+        h, w, ch = adjusted_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(adjusted_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+        if self._main_window.roi_mask is not None:
+            qimg = self._main_window._apply_roi_mask_to_image(qimg)
+
+        zoom_val = max(self._main_window.slider_zoom.value() / 100.0, 0.1)
+        if zoom_val != 1.0:
+            scaled_w = int(w * zoom_val)
+            scaled_h = int(h * zoom_val)
+            qimg = qimg.scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation)
+
+        pixmap = QPixmap.fromImage(qimg)
+        self._main_window.video_label.setPixmap(pixmap)
+
+    def _redisplay_detection_test(self):
+        """Redisplay the stored detection test result with current zoom."""
+        if self._main_window.detection_test_result is None:
+            return
+
+        test_frame_rgb, resize_f = self._main_window.detection_test_result
+        h, w, ch = test_frame_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+        zoom_val = max(self._main_window.slider_zoom.value() / 100.0, 0.1)
+        effective_scale = zoom_val * resize_f
+        if effective_scale != 1.0:
+            orig_h, orig_w = self._main_window.preview_frame_original.shape[:2]
+            scaled_w = int(orig_w * effective_scale)
+            scaled_h = int(orig_h * effective_scale)
+            qimg = qimg.scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation)
+
+        pixmap = QPixmap.fromImage(qimg)
+        self._main_window.video_label.setPixmap(pixmap)
+
+    # =========================================================================
+    # PREVIEW DETECTION TEST (moved from MainWindow)
+    # =========================================================================
+
+    def _test_detection_on_preview(self):
+        """Test detection algorithm on the current preview frame."""
+        from hydra_suite.trackerkit.gui.workers.preview_worker import PreviewDetectionWorker
+
+        if self._main_window.preview_frame_original is None:
+            logger.warning("No preview frame loaded")
+            return
+
+        if (
+            self._main_window.preview_detection_worker
+            and self._main_window.preview_detection_worker.isRunning()
+        ):
+            logger.info("Preview detection is already running")
+            return
+
+        use_detection_filters = False
+        detection_filters_enabled = bool(
+            self.chk_size_filtering.isChecked()
+            or self.chk_enable_aspect_ratio_filtering.isChecked()
+        )
+        if detection_filters_enabled:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Detection Filter Options")
+            msg.setText("Detection filters are currently enabled!")
+            msg.setInformativeText(
+                "For accurate size estimation, it\'s recommended to run detection\n"
+                "WITHOUT detection constraints. However, you can test with constraints\n"
+                "if you want to see how filtering affects the results.\n\n"
+                "This includes both size and aspect-ratio filtering.\n\n"
+                "How would you like to proceed?"
+            )
+            btn_without = msg.addButton(
+                "NO Detection Filtering (Recommended)", QMessageBox.AcceptRole
+            )
+            btn_with = msg.addButton("WITH Detection Filtering", QMessageBox.ActionRole)
+            btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_without)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_cancel:
+                return
+            elif clicked == btn_with:
+                use_detection_filters = True
+                logger.info("Running detection test WITH detection filtering enabled")
+            else:
+                use_detection_filters = False
+                logger.info(
+                    "Running detection test WITHOUT detection filtering (recommended for size estimation)"
+                )
+
+        context = self._collect_preview_detection_context()
+        if (
+            int(context.get("detection_method", 0)) == 1
+            and str(context.get("yolo_obb_mode", "direct")).strip().lower() == "sequential"
+        ):
+            detect_model = str(context.get("yolo_detect_model_path", "")).strip()
+            crop_obb_model = str(context.get("yolo_crop_obb_model_path", "")).strip()
+            if not detect_model or not crop_obb_model:
+                QMessageBox.warning(
+                    self,
+                    "Missing Sequential Models",
+                    "Sequential YOLO OBB mode in detection preview requires both a detect model and a crop OBB model.",
+                )
+                return
+        self._main_window.preview_detection_worker = PreviewDetectionWorker(
+            self._main_window.preview_frame_original.copy(),
+            context,
+            use_detection_filters,
+        )
+        self._main_window.preview_detection_worker.finished_signal.connect(
+            self._on_preview_detection_finished
+        )
+        self._main_window.preview_detection_worker.error_signal.connect(
+            self._on_preview_detection_error
+        )
+        self._main_window.preview_detection_worker.finished.connect(
+            self._on_preview_detection_worker_finished
+        )
+        self._main_window._set_preview_test_running(True)
+        self._main_window.preview_detection_worker.start()
+
+    def _collect_preview_detection_context(self) -> dict:
+        """Capture current UI values for async preview detection."""
+        from hydra_suite.runtime.compute_runtime import (
+            derive_detection_runtime_settings,
+            derive_pose_runtime_settings,
+        )
+
+        selected_runtime = self._main_window._preview_safe_runtime(
+            self._main_window._selected_compute_runtime()
+        )
+        runtime_detection = derive_detection_runtime_settings(selected_runtime)
+        identity_cfg = self._identity_config()
+        ip = getattr(self._main_window, "_identity_panel", None)
+        pose_backend_family = (
+            ip.combo_pose_model_type.currentText().strip().lower()
+            if ip is not None
+            else "yolo"
+        )
+        runtime_pose = derive_pose_runtime_settings(
+            selected_runtime, backend_family=pose_backend_family
+        )
+        trt_batch_size = (
+            self.spin_yolo_batch_size.value()
+            if self._main_window._runtime_requires_fixed_yolo_batch(selected_runtime)
+            else self.spin_tensorrt_batch.value()
+        )
+        class_text = self.line_yolo_classes.text().strip()
+        target_classes = None
+        if class_text:
+            try:
+                target_classes = [int(x.strip()) for x in class_text.split(",")]
+            except ValueError:
+                target_classes = None
+
+        sp = getattr(self._main_window, "_setup_panel", None)
+        return {
+            "detection_method": self.combo_detection_method.currentIndex(),
+            "video_path": sp.file_line.text() if sp is not None else "",
+            "bg_prime_seconds": self.spin_bg_prime.value(),
+            "fps": sp.spin_fps.value() if sp is not None else 25.0,
+            "brightness": self.slider_brightness.value(),
+            "contrast": self.slider_contrast.value() / 100.0,
+            "gamma": self.slider_gamma.value() / 100.0,
+            "roi_mask": (
+                self._main_window.roi_mask.copy()
+                if self._main_window.roi_mask is not None
+                else None
+            ),
+            "resize_factor": sp.spin_resize.value() if sp is not None else 1.0,
+            "dark_on_light": self.chk_dark_on_light.isChecked(),
+            "threshold_value": self.spin_threshold.value(),
+            "morph_kernel_size": self.spin_morph_size.value(),
+            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
+            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
+            "dilation_iterations": self.spin_dilation_iterations.value(),
+            "min_contour": self.spin_min_contour.value(),
+            "reference_body_size": self.spin_reference_body_size.value(),
+            "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
+            "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
+            "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
+            "max_aspect_ratio_multiplier": self.spin_max_ar_multiplier.value(),
+            "min_object_size": self.spin_min_object_size.value(),
+            "max_object_size": self.spin_max_object_size.value(),
+            "compute_runtime": selected_runtime,
+            "yolo_obb_mode": (
+                "sequential"
+                if self.combo_yolo_obb_mode.currentIndex() == 1
+                else "direct"
+            ),
+            "yolo_model_path": self._main_window._get_selected_yolo_model_path(),
+            "yolo_obb_direct_model_path": self._main_window._get_selected_yolo_model_path(),
+            "yolo_detect_model_path": self._main_window._get_selected_yolo_detect_model_path(),
+            "yolo_crop_obb_model_path": self._main_window._get_selected_yolo_crop_obb_model_path(),
+            "yolo_headtail_model_path": (
+                ip._get_selected_yolo_headtail_model_path() if ip is not None else ""
+            ),
+            "pose_overrides_headtail": (
+                ip.chk_pose_overrides_headtail.isChecked() if ip is not None else False
+            ),
+            "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
+            "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
+            "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
+            "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
+            "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
+            "yolo_headtail_conf_threshold": (
+                ip.spin_yolo_headtail_conf.value() if ip is not None else 0.25
+            ),
+            "yolo_confidence": self.spin_yolo_confidence.value(),
+            "yolo_iou": self.spin_yolo_iou.value(),
+            "yolo_target_classes": target_classes,
+            "yolo_device": runtime_detection["yolo_device"],
+            "enable_gpu_background": runtime_detection["enable_gpu_background"],
+            "enable_tensorrt": runtime_detection["enable_tensorrt"],
+            "enable_onnx_runtime": runtime_detection["enable_onnx_runtime"],
+            "tensorrt_max_batch_size": trt_batch_size,
+            "max_targets": sp.spin_max_targets.value() if sp is not None else 10,
+            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+            "enable_conservative_split": self.chk_conservative_split.isChecked(),
+            "conservative_kernel_size": self.spin_conservative_kernel.value(),
+            "conservative_erode_iterations": self.spin_conservative_erode.value(),
+            "use_apriltags": identity_cfg.get("use_apriltags", False),
+            "cnn_classifiers": identity_cfg.get("cnn_classifiers", []),
+            "apriltag_family": ip.combo_apriltag_family.currentText() if ip is not None else "tag36h11",
+            "apriltag_decimate": ip.spin_apriltag_decimate.value() if ip is not None else 1.0,
+            "enable_pose_extractor": self._main_window._is_pose_inference_enabled(),
+            "pose_model_type": pose_backend_family,
+            "pose_model_dir": self._main_window._get_resolved_pose_model_dir(pose_backend_family),
+            "pose_runtime_flavor": runtime_pose["pose_runtime_flavor"],
+            "pose_min_kpt_conf_valid": (
+                ip.spin_pose_min_kpt_conf_valid.value() if ip is not None else 0.5
+            ),
+            "pose_skeleton_file": (
+                ip.line_pose_skeleton_file.text().strip() if ip is not None else ""
+            ),
+            "pose_ignore_keypoints": self._main_window._parse_pose_ignore_keypoints(),
+            "pose_direction_anterior_keypoints": self._main_window._parse_pose_direction_anterior_keypoints(),
+            "pose_direction_posterior_keypoints": self._main_window._parse_pose_direction_posterior_keypoints(),
+            "pose_batch_size": ip.spin_pose_batch.value() if ip is not None else 1,
+            "pose_sleap_env": self._main_window._selected_pose_sleap_env(),
+            "pose_sleap_device": runtime_pose["pose_sleap_device"],
+            "pose_sleap_experimental_features": self._main_window._sleap_experimental_features_enabled(),
+            "individual_crop_padding": (
+                ip.spin_individual_padding.value() if ip is not None else 0.1
+            ),
+            "individual_background_color": (
+                [int(c) for c in ip._background_color] if ip is not None else [0, 0, 0]
+            ),
+            "suppress_foreign_obb_regions": (
+                ip.chk_suppress_foreign_obb.isChecked() if ip is not None else False
+            ),
+        }
+
+    @Slot(dict)
+    def _on_preview_detection_finished(self, result: dict):
+        """Handle successful async preview detection completion."""
+        test_frame_rgb = result.get("test_frame_rgb")
+        resize_f = float(result.get("resize_factor", 1.0))
+        detected_dimensions = result.get("detected_dimensions") or []
+        if test_frame_rgb is None:
+            logger.warning("Preview detection completed without image result")
+            return
+        self._update_detection_stats(detected_dimensions, resize_f)
+        self._main_window.detection_test_result = (test_frame_rgb.copy(), resize_f)
+        h, w, ch = test_frame_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        zoom_val = max(self._main_window.slider_zoom.value() / 100.0, 0.1)
+        effective_scale = zoom_val * resize_f
+        if effective_scale != 1.0 and self._main_window.preview_frame_original is not None:
+            orig_h, orig_w = self._main_window.preview_frame_original.shape[:2]
+            scaled_w = int(orig_w * effective_scale)
+            scaled_h = int(orig_h * effective_scale)
+            qimg = qimg.scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._main_window.video_label.setPixmap(QPixmap.fromImage(qimg))
+        self._main_window._fit_image_to_screen()
+        logger.info("Detection test completed on preview frame")
+
+    @Slot(str)
+    def _on_preview_detection_error(self, error_message: str):
+        """Handle async preview detection failure."""
+        logger.error(f"Detection test failed: {error_message}")
+        QMessageBox.warning(
+            self,
+            "Detection Test Failed",
+            "Detection test failed on preview frame. Check logs for details.",
+        )
+
+    @Slot()
+    def _on_preview_detection_worker_finished(self):
+        """Finalize async preview detection UI state and worker lifecycle."""
+        sender = self.sender()
+        if sender is self._main_window.preview_detection_worker:
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            self._main_window.preview_detection_worker = None
+        self._main_window._set_preview_test_running(False)
+
+    # =========================================================================
+    # DETECTION METHOD CHANGED (moved from MainWindow)
+    # =========================================================================
+
+    def on_detection_method_changed(self, index: object) -> object:
+        """Keep compatibility hook and synchronize YOLO-only individual-analysis controls."""
+        self._main_window._sync_individual_analysis_mode_ui()
+
+    # =========================================================================
+    # YOLO MODEL COMBO REFRESH (moved from MainWindow)
+    # =========================================================================
+
+    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
+        """Populate direct OBB model combo from repository models."""
+        self._main_window._populate_yolo_model_combo(
+            self.combo_yolo_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=False,
+            task_family="obb",
+            usage_role="obb_direct",
+        )
+
+    def _refresh_yolo_detect_model_combo(self, preferred_model_path: object = None):
+        self._main_window._populate_yolo_model_combo(
+            self.combo_yolo_detect_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="detect",
+            usage_role="seq_detect",
+        )
+
+    def _refresh_yolo_crop_obb_model_combo(self, preferred_model_path: object = None):
+        self._main_window._populate_yolo_model_combo(
+            self.combo_yolo_crop_obb_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="obb",
+            usage_role="seq_crop_obb",
+        )
+
+    # =========================================================================
+    # YOLO MODE CHANGED (moved from MainWindow)
+    # =========================================================================
+
+    def _on_yolo_mode_changed(self, _index: object) -> object:
+        """Toggle direct/sequential model controls."""
+        form = self.yolo_group.layout()
+
+        def _set_row_visible(widget: object, visible: bool):
+            if widget is None:
+                return
+            widget.setVisible(bool(visible))
+            if form is None:
+                return
+            try:
+                label = form.labelForField(widget)
+            except Exception:
+                label = None
+            if label is not None:
+                label.setVisible(bool(visible))
+
+        sequential = self.combo_yolo_obb_mode.currentIndex() == 1
+        _set_row_visible(getattr(self, "combo_yolo_model", None), not sequential)
+        _set_row_visible(getattr(self, "combo_yolo_detect_model", None), sequential)
+        _set_row_visible(getattr(self, "combo_yolo_crop_obb_model", None), sequential)
+        _set_row_visible(getattr(self, "yolo_seq_advanced", None), sequential)
+
+        ip = getattr(self._main_window, "_identity_panel", None)
+        _set_row_visible(
+            getattr(self._main_window, "headtail_model_row_widget", None), True
+        )
+        _set_row_visible(
+            getattr(self._main_window, "chk_pose_overrides_headtail", None), True
+        )
+        if ip is not None:
+            ip.spin_yolo_headtail_conf.setEnabled(
+                bool(ip._get_selected_yolo_headtail_model_path().strip())
+            )
+        self._main_window._update_obb_mode_warning()
+
+    # =========================================================================
+    # YOLO MODEL CHANGED (moved from MainWindow)
+    # =========================================================================
+
+    def on_yolo_model_changed(self, index: object) -> object:
+        """Handle direct OBB model selection."""
+        if self.combo_yolo_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._main_window._handle_add_new_yolo_model(
+                combo=self.combo_yolo_model,
+                refresh_callback=self._refresh_yolo_model_combo,
+                selection_callback=self._main_window._set_yolo_model_selection,
+                task_family="obb",
+                usage_role="obb_direct",
+                dialog_title="Add Direct OBB Model",
+            )
+            return
+        self._on_yolo_mode_changed(index)
+
+    def on_yolo_detect_model_changed(self, index: object) -> object:
+        if self.combo_yolo_detect_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._main_window._handle_add_new_yolo_model(
+                combo=self.combo_yolo_detect_model,
+                refresh_callback=self._refresh_yolo_detect_model_combo,
+                selection_callback=self._main_window._set_yolo_detect_model_selection,
+                task_family="detect",
+                usage_role="seq_detect",
+                dialog_title="Add Sequential Detect Model",
+            )
+            return
+        self._on_yolo_mode_changed(index)
+
+    def on_yolo_crop_obb_model_changed(self, index: object) -> object:
+        if self.combo_yolo_crop_obb_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._main_window._handle_add_new_yolo_model(
+                combo=self.combo_yolo_crop_obb_model,
+                refresh_callback=self._refresh_yolo_crop_obb_model_combo,
+                selection_callback=self._main_window._set_yolo_crop_obb_model_selection,
+                task_family="obb",
+                usage_role="seq_crop_obb",
+                dialog_title="Add Sequential Crop OBB Model",
+            )
+            return
+        self._on_yolo_mode_changed(index)
+        self._main_window._apply_crop_obb_training_params()
