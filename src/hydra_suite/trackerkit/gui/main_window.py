@@ -1028,7 +1028,9 @@ class MainWindow(QMainWindow):
         self.slider_zoom.setValue(100)  # 1.0x
         self.slider_zoom.setTickPosition(QSlider.TicksBelow)
         self.slider_zoom.setTickInterval(50)
-        self.slider_zoom.valueChanged.connect(self._on_zoom_changed)
+        self.slider_zoom.valueChanged.connect(
+            lambda v: self._detection_panel._on_zoom_changed(v) if hasattr(self, "_detection_panel") else None
+        )
 
         self.label_zoom_val = QLabel("1.00x")
         self.label_zoom_val.setStyleSheet(
@@ -1048,7 +1050,9 @@ class MainWindow(QMainWindow):
         preview_layout.setContentsMargins(8, 4, 8, 4)
 
         self.btn_test_detection = QPushButton("Test Detection on Preview")
-        self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
+        self.btn_test_detection.clicked.connect(
+            lambda: self._detection_panel._test_detection_on_preview() if hasattr(self, "_detection_panel") else None
+        )
         self.btn_test_detection.setEnabled(False)
         self.btn_test_detection.setStyleSheet(
             "background-color: #0e639c; color: white; font-weight: bold;"
@@ -1091,9 +1095,9 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self._detection_panel, "Find Animals")
         # Post-construction bootstrap: populate YOLO model combos now that _detection_panel is assigned
-        self._refresh_yolo_model_combo()
-        self._refresh_yolo_detect_model_combo()
-        self._refresh_yolo_crop_obb_model_combo()
+        self._detection_panel._refresh_yolo_model_combo()
+        self._detection_panel._refresh_yolo_detect_model_combo()
+        self._detection_panel._refresh_yolo_crop_obb_model_combo()
 
         # Tab 3: Individual Analysis (Identity)
         from hydra_suite.trackerkit.gui.panels.identity_panel import IdentityPanel
@@ -2280,7 +2284,7 @@ class MainWindow(QMainWindow):
             self._detection_panel.combo_yolo_batch_mode.setEnabled(
                 self._detection_panel.chk_enable_yolo_batching.isChecked()
             )
-            self._on_yolo_batch_mode_changed(
+            self._detection_panel._on_yolo_batch_mode_changed(
                 self._detection_panel.combo_yolo_batch_mode.currentIndex()
             )
         if hasattr(self, "_identity_panel"):
@@ -2665,31 +2669,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to compute median color: {e}")
             QMessageBox.warning(self, "Error", f"Failed to compute median color:\n{e}")
-
-    def _on_yolo_batching_toggled(self, state):
-        """Enable/disable YOLO batching controls based on checkbox."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_yolo_batching_toggled(state)
-
-    def _on_yolo_manual_batch_size_changed(self, value: int):
-        """Keep legacy fixed-batch field synchronized for fixed runtimes."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_yolo_manual_batch_size_changed(value)
-
-    def _on_yolo_batch_mode_changed(self, index):
-        """Show/hide manual batch size based on selected mode."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_yolo_batch_mode_changed(index)
-
-    def _on_tensorrt_toggled(self, state):
-        """Enable/disable TensorRT batch size control based on checkbox."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_tensorrt_toggled(state)
-
-    def _on_detection_method_changed_ui(self, index):
-        """Update stack widget when detection method changes."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_detection_method_changed_ui(index)
 
     def closeEvent(self, event):
         """Persist MAT-specific UI layout state on close."""
@@ -3081,7 +3060,8 @@ class MainWindow(QMainWindow):
         # Convert to RGB and update preview
         self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self.detection_test_result = None  # Clear any detection overlay
-        self._update_preview_display()
+        if hasattr(self, "_detection_panel"):
+            self._detection_panel._update_preview_display()
 
         # Update UI
         self._setup_panel.lbl_current_frame.setText(
@@ -3265,31 +3245,6 @@ class MainWindow(QMainWindow):
         self._setup_panel.spin_start_frame.setValue(0)
         self._setup_panel.spin_end_frame.setValue(self.video_total_frames - 1)
 
-    def _on_brightness_changed(self, value):
-        """Handle brightness slider change."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_brightness_changed(value)
-
-    def _on_contrast_changed(self, value):
-        """Handle contrast slider change."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_contrast_changed(value)
-
-    def _on_gamma_changed(self, value):
-        """Handle gamma slider change."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_gamma_changed(value)
-
-    def _on_zoom_changed(self, value):
-        """Handle zoom slider change."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_zoom_changed(value)
-
-    def _update_body_size_info(self):
-        """Update the info label showing calculated body area."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._update_body_size_info()
-
     def _update_fps_info(self):
         """Update the FPS info label with time per frame."""
         fps = self._setup_panel.spin_fps.value()
@@ -3314,11 +3269,6 @@ class MainWindow(QMainWindow):
                 return None
         except Exception as e:
             logger.error(f"Error detecting FPS: {e}")
-
-    def _update_detection_stats(self, detected_dimensions, resize_factor=1.0):
-        """Update detection statistics display."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._update_detection_stats(detected_dimensions, resize_factor)
 
     def _auto_set_body_size_from_detection(self):
         """Auto-set reference body size from detected geometric mean."""
@@ -3356,27 +3306,6 @@ class MainWindow(QMainWindow):
             f"Head-tail crop dimensions will adapt to this ratio.\n"
             f"Aspect ratio filtering (if enabled) will use this as the centre.",
         )
-
-    def _update_preview_display(self):
-        """Update the video display with current brightness/contrast/gamma settings."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._update_preview_display()
-
-    def _redisplay_detection_test(self):
-        """Redisplay the stored detection test result with current zoom."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._redisplay_detection_test()
-
-    def _test_detection_on_preview(self):
-        """Test detection algorithm on the current preview frame."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._test_detection_on_preview()
-
-    def _collect_preview_detection_context(self) -> dict:
-        """Capture current UI values for async preview detection."""
-        if hasattr(self, '_detection_panel'):
-            return self._detection_panel._collect_preview_detection_context()
-        return {}
 
     def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
         """Validate YOLO mode-specific model requirements before starting runs."""
@@ -3421,24 +3350,6 @@ class MainWindow(QMainWindow):
         self.btn_test_detection.setEnabled(self.preview_frame_original is not None)
         self.progress_bar.setRange(0, 100)
         self._refresh_progress_visibility()
-
-    @Slot(dict)
-    def _on_preview_detection_finished(self, result: dict):
-        """Handle successful async preview detection completion."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_preview_detection_finished(result)
-
-    @Slot(str)
-    def _on_preview_detection_error(self, error_message: str):
-        """Handle async preview detection failure."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_preview_detection_error(error_message)
-
-    @Slot()
-    def _on_preview_detection_worker_finished(self):
-        """Finalize async preview detection UI state and worker lifecycle."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_preview_detection_worker_finished()
 
     def _on_roi_mode_changed(self, index):
         """Handle ROI mode selection change."""
@@ -4056,11 +3967,6 @@ class MainWindow(QMainWindow):
         else:
             super().keyPressEvent(event)
 
-    def on_detection_method_changed(self: object, index: object) -> object:
-        """Keep compatibility hook and synchronize YOLO-only individual-analysis controls."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel.on_detection_method_changed(index)
-
     def _sanitize_model_token(self, text: object) -> object:
         """Sanitize model metadata token for safe filename use."""
         return _sanitize_model_token(text)
@@ -4330,19 +4236,6 @@ class MainWindow(QMainWindow):
         logger.info(f"Imported model to repository: {dest_path}")
         return rel_path
 
-    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
-        """Populate direct OBB model combo from repository models."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._refresh_yolo_model_combo(preferred_model_path)
-
-    def _refresh_yolo_detect_model_combo(self, preferred_model_path: object = None):
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._refresh_yolo_detect_model_combo(preferred_model_path)
-
-    def _refresh_yolo_crop_obb_model_combo(self, preferred_model_path: object = None):
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._refresh_yolo_crop_obb_model_combo(preferred_model_path)
-
     @staticmethod
     def _infer_yolo_headtail_model_type(model_path: object) -> str:
         """Infer the head-tail model family from its stored path."""
@@ -4471,11 +4364,6 @@ class MainWindow(QMainWindow):
             model_path,
         )
 
-    def _on_yolo_mode_changed(self, _index: object) -> object:
-        """Toggle direct/sequential model controls."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel._on_yolo_mode_changed(_index)
-
     def _on_headtail_model_type_changed(self, _index: object = None) -> None:
         """Refresh the head-tail model combo when the user switches YOLO ↔ tiny."""
         if hasattr(self, "_identity_panel"):
@@ -4508,19 +4396,6 @@ class MainWindow(QMainWindow):
             msg = ""
         self._detection_panel.lbl_obb_mode_warning.setText(msg)
         self._detection_panel.lbl_obb_mode_warning.setVisible(bool(msg))
-
-    def on_yolo_model_changed(self: object, index: object) -> object:
-        """Handle direct OBB model selection."""
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel.on_yolo_model_changed(index)
-
-    def on_yolo_detect_model_changed(self: object, index: object) -> object:
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel.on_yolo_detect_model_changed(index)
-
-    def on_yolo_crop_obb_model_changed(self: object, index: object) -> object:
-        if hasattr(self, '_detection_panel'):
-            self._detection_panel.on_yolo_crop_obb_model_changed(index)
 
     def _apply_crop_obb_training_params(self):
         """Auto-configure sequential inference params from model training metadata."""
@@ -4579,7 +4454,8 @@ class MainWindow(QMainWindow):
                 repository_dir=repo_dir,
             )
             return
-        self._on_yolo_mode_changed(index)
+        if hasattr(self, "_detection_panel"):
+            self._detection_panel._on_yolo_mode_changed(index)
         self._sync_individual_analysis_mode_ui()
 
     def _handle_add_new_yolo_model(
@@ -8917,13 +8793,13 @@ class MainWindow(QMainWindow):
                         model_resolved,
                     )
 
-            self._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
+            self._detection_panel._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
             self._set_yolo_model_selection(resolved_yolo_direct)
-            self._refresh_yolo_detect_model_combo(
+            self._detection_panel._refresh_yolo_detect_model_combo(
                 preferred_model_path=yolo_detect_model
             )
             self._set_yolo_detect_model_selection(resolved_yolo_detect)
-            self._refresh_yolo_crop_obb_model_combo(
+            self._detection_panel._refresh_yolo_crop_obb_model_combo(
                 preferred_model_path=yolo_crop_obb_model
             )
             self._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
@@ -8976,7 +8852,7 @@ class MainWindow(QMainWindow):
             self._detection_panel.spin_max_ar_multiplier.setValue(
                 float(get_cfg("max_aspect_ratio_multiplier", default=2.0))
             )
-            self._on_yolo_mode_changed(
+            self._detection_panel._on_yolo_mode_changed(
                 self._detection_panel.combo_yolo_obb_mode.currentIndex()
             )
 

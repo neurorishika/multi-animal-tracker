@@ -350,13 +350,13 @@ class ConfigOrchestrator:
                         model_resolved,
                     )
 
-            self._mw._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
+            self._panels.detection._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
             self._mw._set_yolo_model_selection(resolved_yolo_direct)
-            self._mw._refresh_yolo_detect_model_combo(
+            self._panels.detection._refresh_yolo_detect_model_combo(
                 preferred_model_path=yolo_detect_model
             )
             self._mw._set_yolo_detect_model_selection(resolved_yolo_detect)
-            self._mw._refresh_yolo_crop_obb_model_combo(
+            self._panels.detection._refresh_yolo_crop_obb_model_combo(
                 preferred_model_path=yolo_crop_obb_model
             )
             self._mw._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
@@ -409,7 +409,7 @@ class ConfigOrchestrator:
             self._panels.detection.spin_max_ar_multiplier.setValue(
                 float(get_cfg("max_aspect_ratio_multiplier", default=2.0))
             )
-            self._mw._on_yolo_mode_changed(
+            self._panels.detection._on_yolo_mode_changed(
                 self._panels.detection.combo_yolo_obb_mode.currentIndex()
             )
 

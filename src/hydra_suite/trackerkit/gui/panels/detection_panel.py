@@ -716,7 +716,7 @@ class DetectionPanel(QWidget):
             "Refer to your model's class definitions."
         )
         f_yolo.addRow("Classes (optional)", self.line_yolo_classes)
-        self._main_window._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
+        self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
 
         l_yolo.addWidget(self.yolo_group)
 
