@@ -36,7 +36,7 @@ exclude =
 filename = *.py
 
 # Moderate profile does not gate complexity; strict profile tracks C901 debt.
-max-complexity = 25
+max-complexity = 50
 
 # Per-file ignores
 per-file-ignores =
