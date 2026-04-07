@@ -72,6 +72,30 @@ class InterpolatedCropsWorker(BaseWorker):
         return math.radians(deg0 + (best_delta or 0.0) * t)
 
     @staticmethod
+    @staticmethod
+    def _size_from_obb_corners(obb_corners, idx):
+        if not (obb_corners and idx < len(obb_corners)):
+            return None, None
+        c = np.asarray(obb_corners[idx], dtype=np.float32)
+        if c.shape[0] < 4:
+            return None, None
+        w = float(np.linalg.norm(c[1] - c[0]))
+        h = float(np.linalg.norm(c[2] - c[1]))
+        if w < h:
+            w, h = h, w
+        return w, h
+
+    @staticmethod
+    def _size_from_shapes(shapes, idx):
+        if not (shapes and idx < len(shapes)):
+            return None, None
+        area, aspect_ratio = shapes[idx][0], shapes[idx][1]
+        if aspect_ratio > 0 and area > 0:
+            ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
+            ax1 = aspect_ratio * ax2
+            return ax1, ax2
+        return None, None
+
     def _get_detection_size(detection_cache, frame_id, detection_id):
         if detection_cache is None or detection_id is None or pd.isna(detection_id):
             return None, None
@@ -94,23 +118,11 @@ class InterpolatedCropsWorker(BaseWorker):
         if idx is None:
             return None, None
 
-        if obb_corners and idx < len(obb_corners):
-            c = np.asarray(obb_corners[idx], dtype=np.float32)
-            if c.shape[0] >= 4:
-                w = float(np.linalg.norm(c[1] - c[0]))
-                h = float(np.linalg.norm(c[2] - c[1]))
-                if w < h:
-                    w, h = h, w
-                return w, h
+        w, h = InterpolatedCropsWorker._size_from_obb_corners(obb_corners, idx)
+        if w is not None:
+            return w, h
 
-        if shapes and idx < len(shapes):
-            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
-            if aspect_ratio > 0 and area > 0:
-                ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
-                ax1 = aspect_ratio * ax2
-                return ax1, ax2
-
-        return None, None
+        return InterpolatedCropsWorker._size_from_shapes(shapes, idx)
 
     def _init_pose_backend(self, output_dir):
         """Initialize pose estimation backend. Returns (backend, kpt_source_names, kpt_labels)."""
@@ -245,6 +257,149 @@ class InterpolatedCropsWorker(BaseWorker):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
 
+    def _process_occluded_run(
+        self,
+        group,
+        traj_id,
+        last_valid_idx,
+        i,
+        j,
+        detection_cache,
+        position_scale,
+        size_scale,
+        frame_tasks,
+        interp_runs,
+        interp_gaps,
+    ):
+        prev_row = group.iloc[last_valid_idx]
+        next_row = group.iloc[j]
+        if (
+            pd.isna(prev_row["X"])
+            or pd.isna(prev_row["Y"])
+            or pd.isna(next_row["X"])
+            or pd.isna(next_row["Y"])
+        ):
+            return interp_runs, interp_gaps, j
+
+        f0 = int(prev_row["FrameID"])
+        f1 = int(next_row["FrameID"])
+        if f1 - f0 <= 1:
+            return interp_runs, interp_gaps, j
+        interp_runs += 1
+
+        interp_total = max(0, f1 - f0 - 1)
+        interp_gaps += interp_total
+
+        det_id_prev = (
+            prev_row["DetectionID"] if "DetectionID" in group.columns else None
+        )
+        det_id_next = (
+            next_row["DetectionID"] if "DetectionID" in group.columns else None
+        )
+
+        w0, h0 = self._get_detection_size(detection_cache, f0, det_id_prev)
+        w1, h1 = self._get_detection_size(detection_cache, f1, det_id_next)
+
+        if w0 is None or h0 is None or w1 is None or h1 is None:
+            ref_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
+            w0 = w0 or ref_size * 2.2
+            h0 = h0 or ref_size * 0.8
+            w1 = w1 or ref_size * 2.2
+            h1 = h1 or ref_size * 0.8
+
+        for k in range(i, j):
+            if self._should_stop():
+                return None
+            row = group.iloc[k]
+            f = int(row["FrameID"])
+            t = (f - f0) / (f1 - f0)
+            cx = float(prev_row["X"]) + t * (
+                float(next_row["X"]) - float(prev_row["X"])
+            )
+            cy = float(prev_row["Y"]) + t * (
+                float(next_row["Y"]) - float(prev_row["Y"])
+            )
+            theta = self._interp_angle(
+                float(prev_row["Theta"]), float(next_row["Theta"]), t
+            )
+            w = w0 + t * (w1 - w0)
+            h = h0 + t * (h1 - h0)
+
+            interp_index = max(1, f - f0)
+
+            frame_tasks[f].append(
+                {
+                    "frame_id": f,
+                    "cx": cx * position_scale,
+                    "cy": cy * position_scale,
+                    "w": w * size_scale,
+                    "h": h * size_scale,
+                    "theta": theta,
+                    "traj_id": traj_id,
+                    "interp_from": (f0, f1),
+                    "interp_index": interp_index,
+                    "interp_total": interp_total,
+                }
+            )
+
+        return interp_runs, interp_gaps, j
+
+    def _scan_trajectory_gaps(
+        self,
+        traj_id,
+        group,
+        detection_cache,
+        position_scale,
+        size_scale,
+        frame_tasks,
+        interp_runs,
+        interp_gaps,
+    ):
+        group = group.sort_values("FrameID").reset_index(drop=True)
+        states = group["State"].astype(str).str.strip().str.lower()
+        states = states.where(~states.str.contains("occluded", na=False), "occluded")
+        traj_occluded = int((states == "occluded").sum())
+
+        last_valid_idx = None
+        i = 0
+        while i < len(group):
+            if self._should_stop():
+                return None
+            if states[i] != "occluded":
+                if not pd.isna(group.at[i, "X"]) and not pd.isna(group.at[i, "Y"]):
+                    last_valid_idx = i
+                i += 1
+                continue
+
+            if last_valid_idx is None:
+                i += 1
+                continue
+
+            j = i
+            while j < len(group) and states[j] == "occluded":
+                j += 1
+            if j >= len(group):
+                break
+
+            run_result = self._process_occluded_run(
+                group,
+                traj_id,
+                last_valid_idx,
+                i,
+                j,
+                detection_cache,
+                position_scale,
+                size_scale,
+                frame_tasks,
+                interp_runs,
+                interp_gaps,
+            )
+            if run_result is None:
+                return None
+            interp_runs, interp_gaps, i = run_result
+
+        return interp_runs, interp_gaps, traj_occluded
+
     def _detect_interpolation_gaps(
         self, df, detection_cache, position_scale, size_scale
     ):
@@ -260,109 +415,20 @@ class InterpolatedCropsWorker(BaseWorker):
         for traj_id, group in df.groupby("TrajectoryID"):
             if self._should_stop():
                 return None
-            group = group.sort_values("FrameID").reset_index(drop=True)
-            states = group["State"].astype(str).str.strip().str.lower()
-            states = states.where(
-                ~states.str.contains("occluded", na=False), "occluded"
+            result = self._scan_trajectory_gaps(
+                traj_id,
+                group,
+                detection_cache,
+                position_scale,
+                size_scale,
+                frame_tasks,
+                interp_runs,
+                interp_gaps,
             )
-            occluded_rows += int((states == "occluded").sum())
-
-            last_valid_idx = None
-            i = 0
-            while i < len(group):
-                if self._should_stop():
-                    return None
-                if states[i] != "occluded":
-                    if not pd.isna(group.at[i, "X"]) and not pd.isna(group.at[i, "Y"]):
-                        last_valid_idx = i
-                    i += 1
-                    continue
-
-                if last_valid_idx is None:
-                    i += 1
-                    continue
-
-                j = i
-                while j < len(group) and states[j] == "occluded":
-                    j += 1
-                if j >= len(group):
-                    break
-
-                prev_row = group.iloc[last_valid_idx]
-                next_row = group.iloc[j]
-                if (
-                    pd.isna(prev_row["X"])
-                    or pd.isna(prev_row["Y"])
-                    or pd.isna(next_row["X"])
-                    or pd.isna(next_row["Y"])
-                ):
-                    i = j
-                    continue
-
-                f0 = int(prev_row["FrameID"])
-                f1 = int(next_row["FrameID"])
-                if f1 - f0 <= 1:
-                    i = j
-                    continue
-                interp_runs += 1
-
-                interp_total = max(0, f1 - f0 - 1)
-                interp_gaps += interp_total
-
-                det_id_prev = (
-                    prev_row["DetectionID"] if "DetectionID" in group.columns else None
-                )
-                det_id_next = (
-                    next_row["DetectionID"] if "DetectionID" in group.columns else None
-                )
-
-                w0, h0 = self._get_detection_size(detection_cache, f0, det_id_prev)
-                w1, h1 = self._get_detection_size(detection_cache, f1, det_id_next)
-
-                if w0 is None or h0 is None or w1 is None or h1 is None:
-                    ref_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
-                    w0 = w0 or ref_size * 2.2
-                    h0 = h0 or ref_size * 0.8
-                    w1 = w1 or ref_size * 2.2
-                    h1 = h1 or ref_size * 0.8
-
-                for k in range(i, j):
-                    if self._should_stop():
-                        return None
-                    row = group.iloc[k]
-                    f = int(row["FrameID"])
-                    t = (f - f0) / (f1 - f0)
-                    cx = float(prev_row["X"]) + t * (
-                        float(next_row["X"]) - float(prev_row["X"])
-                    )
-                    cy = float(prev_row["Y"]) + t * (
-                        float(next_row["Y"]) - float(prev_row["Y"])
-                    )
-                    theta = self._interp_angle(
-                        float(prev_row["Theta"]), float(next_row["Theta"]), t
-                    )
-                    w = w0 + t * (w1 - w0)
-                    h = h0 + t * (h1 - h0)
-
-                    interp_index = max(1, f - f0)
-
-                    frame_tasks[f].append(
-                        {
-                            "frame_id": f,
-                            "cx": cx * position_scale,
-                            "cy": cy * position_scale,
-                            "w": w * size_scale,
-                            "h": h * size_scale,
-                            "theta": theta,
-                            "traj_id": traj_id,
-                            "interp_from": (f0, f1),
-                            "interp_index": interp_index,
-                            "interp_total": interp_total,
-                        }
-                    )
-
-                i = j
-                continue
+            if result is None:
+                return None
+            interp_runs, interp_gaps, traj_occluded = result
+            occluded_rows += traj_occluded
 
         return frame_tasks, occluded_rows, interp_runs, interp_gaps
 
@@ -702,6 +768,560 @@ class InterpolatedCropsWorker(BaseWorker):
             except Exception:
                 pass
 
+    def _build_prefetcher(self, cap, needed_frames, total_frames):
+        from hydra_suite.utils.frame_prefetcher import (
+            SequentialScanPrefetcher,
+            SparseFramePrefetcher,
+        )
+
+        _frame_range = needed_frames[-1] - needed_frames[0] + 1
+        _density = total_frames / max(_frame_range, 1)
+        _use_sequential = (
+            _density >= 0.05 or (_frame_range / max(total_frames, 1)) < 100
+        )
+        if _use_sequential:
+            logger.info(
+                "Interpolation: sequential scan (%d needed / %d range, "
+                "density=%.2f%%)",
+                total_frames,
+                _frame_range,
+                _density * 100,
+            )
+            return SequentialScanPrefetcher(cap, needed_frames, buffer_size=8)
+        logger.info(
+            "Interpolation: sparse seek (%d needed / %d range, " "density=%.2f%%)",
+            total_frames,
+            _frame_range,
+            _density * 100,
+        )
+        return SparseFramePrefetcher(cap, needed_frames, buffer_size=4)
+
+    def _compute_frame_corners_and_affines(
+        self, tasks, _compute_native_scale, _canonical_ref_ar, _canonical_padding
+    ):
+        from hydra_suite.core.identity.geometry import ellipse_to_obb_corners as _e2obb
+
+        corners = [_e2obb(t["cx"], t["cy"], t["w"], t["h"], t["theta"]) for t in tasks]
+        affines = []
+        for _c in corners:
+            try:
+                _M, _cw, _ch, _ = _compute_native_scale(
+                    _c, _canonical_ref_ar, _canonical_padding
+                )
+                affines.append((_M, _cw, _ch))
+            except (ValueError, Exception):
+                affines.append(None)
+        return corners, affines
+
+    def _process_single_task(
+        self,
+        task,
+        task_idx,
+        frame,
+        _frame_all_corners,
+        _frame_affines,
+        gen,
+        save_interpolated_outputs,
+        _extract_canonical,
+        cnn_backends,
+        pose_backend,
+        interp_saved,
+        interp_rows,
+        roi_rows,
+        roi_corners,
+        _pending_crops,
+        _pending_entries,
+        _pending_cnn_crops,
+        _pending_cnn_entries,
+    ):
+        corners = _frame_all_corners[task_idx]
+        _aff = _frame_affines[task_idx]
+        filename = ""
+        if save_interpolated_outputs:
+            filename = gen.save_interpolated_crop(
+                frame=frame,
+                frame_id=task["frame_id"],
+                cx=task["cx"],
+                cy=task["cy"],
+                w=task["w"],
+                h=task["h"],
+                theta=task["theta"],
+                traj_id=task["traj_id"],
+                interp_from=task["interp_from"],
+                interp_index=task["interp_index"],
+                interp_total=task["interp_total"],
+                canonical_affine=(_aff[0] if _aff is not None else None),
+            )
+        if save_interpolated_outputs and filename:
+            interp_saved += 1
+            interp_rows.append(
+                {
+                    "frame_id": int(task["frame_id"]),
+                    "trajectory_id": int(task["traj_id"]),
+                    "filename": filename,
+                    "interp_from_start": int(task["interp_from"][0]),
+                    "interp_from_end": int(task["interp_from"][1]),
+                    "interp_index": int(task["interp_index"]),
+                    "interp_total": int(task["interp_total"]),
+                }
+            )
+            roi_rows.append(
+                {
+                    "frame_id": int(task["frame_id"]),
+                    "trajectory_id": int(task["traj_id"]),
+                    "filename": filename,
+                    "cx": float(task["cx"]),
+                    "cy": float(task["cy"]),
+                    "w": float(task["w"]),
+                    "h": float(task["h"]),
+                    "theta": float(task["theta"]),
+                    "interp_from_start": int(task["interp_from"][0]),
+                    "interp_from_end": int(task["interp_from"][1]),
+                    "interp_index": int(task["interp_index"]),
+                    "interp_total": int(task["interp_total"]),
+                }
+            )
+            roi_corners.append(corners)
+        if pose_backend is not None:
+            pose_crop, pose_crop_info = self._extract_pose_crop(
+                task_idx,
+                frame,
+                _frame_all_corners,
+                _aff,
+                corners,
+                gen,
+                _extract_canonical,
+            )
+            if pose_crop is not None and pose_crop.size > 0:
+                _pending_crops.append(pose_crop)
+                _pending_entries.append(
+                    {"task": task, "filename": filename, "crop_info": pose_crop_info}
+                )
+            if cnn_backends and pose_crop is not None and pose_crop.size > 0:
+                _pending_cnn_crops.append(pose_crop)
+                _pending_cnn_entries.append({"task": task})
+        return interp_saved
+
+    def _extract_pose_crop(
+        self,
+        task_idx,
+        frame,
+        _frame_all_corners,
+        _aff,
+        corners,
+        gen,
+        _extract_canonical,
+    ):
+        pose_crop = None
+        pose_crop_info = None
+        try:
+            _other_corners = [
+                c for ci, c in enumerate(_frame_all_corners) if ci != task_idx
+            ]
+            if _aff is not None:
+                _M_pose, _cw_pose, _ch_pose = _aff
+                _foreign = _other_corners if _other_corners else None
+                pose_crop = _extract_canonical(
+                    frame,
+                    _M_pose,
+                    _cw_pose,
+                    _ch_pose,
+                    bg_color=gen.background_color,
+                    foreign_corners=_foreign,
+                )
+                _M_inv = cv2.invertAffineTransform(_M_pose).astype(np.float32)
+                pose_crop_info = {
+                    "crop_size": (_cw_pose, _ch_pose),
+                    "M_inverse": _M_inv,
+                    "canonical": True,
+                }
+            else:
+                pose_crop, pose_crop_info = gen._extract_obb_masked_crop(
+                    frame,
+                    corners,
+                    frame.shape[0],
+                    frame.shape[1],
+                    other_corners_list=(_other_corners if _other_corners else None),
+                )
+        except Exception:
+            pose_crop = None
+            pose_crop_info = None
+        return pose_crop, pose_crop_info
+
+    def _build_finished_payload(
+        self,
+        interp_saved,
+        interp_gaps,
+        artifact_paths,
+        interp_pose_rows,
+        interp_tag_rows,
+        interp_cnn_rows,
+        interp_headtail_rows,
+        save_interpolated_outputs,
+    ):
+        def _str_or_none(p):
+            return str(p) if p else None
+
+        return {
+            "saved": interp_saved,
+            "gaps": interp_gaps,
+            "mapping_path": _str_or_none(artifact_paths["mapping_path"]),
+            "roi_csv_path": _str_or_none(artifact_paths["roi_csv_path"]),
+            "roi_npz_path": _str_or_none(artifact_paths["roi_npz_path"]),
+            "pose_csv_path": _str_or_none(artifact_paths["pose_csv_path"]),
+            "pose_rows": (
+                interp_pose_rows
+                if (interp_pose_rows and not save_interpolated_outputs)
+                else None
+            ),
+            "tag_csv_path": _str_or_none(artifact_paths["tag_csv_path"]),
+            "tag_rows": (
+                interp_tag_rows
+                if (interp_tag_rows and not artifact_paths["tag_csv_path"])
+                else None
+            ),
+            "cnn_csv_paths": (
+                artifact_paths["cnn_csv_paths"]
+                if artifact_paths["cnn_csv_paths"]
+                else None
+            ),
+            "cnn_rows": (
+                interp_cnn_rows
+                if (
+                    any(interp_cnn_rows.values())
+                    and not artifact_paths["cnn_csv_paths"]
+                )
+                else None
+            ),
+            "headtail_csv_path": _str_or_none(artifact_paths["headtail_csv_path"]),
+            "headtail_rows": (
+                interp_headtail_rows
+                if (interp_headtail_rows and not artifact_paths["headtail_csv_path"])
+                else None
+            ),
+        }
+
+    def _process_single_frame(
+        self,
+        f,
+        idx,
+        frame,
+        total_frames,
+        frame_tasks,
+        gen,
+        save_interpolated_outputs,
+        _compute_native_scale,
+        _canonical_ref_ar,
+        _canonical_padding,
+        _extract_canonical,
+        pose_backend,
+        cnn_backends,
+        cnn_labels,
+        apriltag_detector,
+        headtail_analyzer,
+        interp_saved,
+        interp_rows,
+        roi_rows,
+        roi_corners,
+        interp_pose_rows,
+        interp_tag_rows,
+        interp_cnn_rows,
+        interp_headtail_rows,
+        _pending_crops,
+        _pending_entries,
+        _pending_cnn_crops,
+        _pending_cnn_entries,
+        _pose_batch_size,
+        _cnn_batch_size,
+        pose_kpt_source_names,
+        pose_kpt_labels,
+        profiler,
+    ):
+        _frame_all_corners, _frame_affines = self._compute_frame_corners_and_affines(
+            frame_tasks[f], _compute_native_scale, _canonical_ref_ar, _canonical_padding
+        )
+        for task_idx, task in enumerate(frame_tasks[f]):
+            interp_saved = self._process_single_task(
+                task,
+                task_idx,
+                frame,
+                _frame_all_corners,
+                _frame_affines,
+                gen,
+                save_interpolated_outputs,
+                _extract_canonical,
+                cnn_backends,
+                pose_backend,
+                interp_saved,
+                interp_rows,
+                roi_rows,
+                roi_corners,
+                _pending_crops,
+                _pending_entries,
+                _pending_cnn_crops,
+                _pending_cnn_entries,
+            )
+
+        if apriltag_detector is not None and frame_tasks[f]:
+            self._detect_apriltags_in_frame(
+                apriltag_detector,
+                frame,
+                frame_tasks[f],
+                _frame_all_corners,
+                self.params,
+                interp_tag_rows,
+            )
+
+        if headtail_analyzer is not None and frame_tasks[f] and _frame_all_corners:
+            self._detect_headtail_in_frame(
+                headtail_analyzer,
+                frame,
+                frame_tasks[f],
+                _frame_all_corners,
+                interp_headtail_rows,
+            )
+
+        if (
+            pose_backend is not None
+            and _pending_crops
+            and (len(_pending_crops) >= _pose_batch_size or idx == total_frames)
+        ):
+            if self._should_stop():
+                return None
+            self._flush_pose_batch(
+                pose_backend,
+                _pending_crops,
+                _pending_entries,
+                interp_pose_rows,
+                pose_kpt_source_names,
+                pose_kpt_labels,
+                profiler,
+            )
+
+        if (
+            cnn_backends
+            and _pending_cnn_crops
+            and (len(_pending_cnn_crops) >= _cnn_batch_size or idx == total_frames)
+        ):
+            self._flush_cnn_batch(
+                cnn_backends,
+                cnn_labels,
+                _pending_cnn_crops,
+                _pending_cnn_entries,
+                interp_cnn_rows,
+                profiler,
+            )
+
+        if idx % 25 == 0 or idx == total_frames:
+            progress = int((idx / total_frames) * 100)
+            self.progress_signal.emit(
+                progress, f"Interpolating occlusions... {idx}/{total_frames}"
+            )
+            del frame
+        return interp_saved
+
+    def _run_frame_tasks_loop(
+        self,
+        frame_tasks,
+        cap,
+        gen,
+        save_interpolated_outputs,
+        _compute_native_scale,
+        _canonical_ref_ar,
+        _canonical_padding,
+        _extract_canonical,
+        pose_backend,
+        cnn_backends,
+        cnn_labels,
+        apriltag_detector,
+        headtail_analyzer,
+        interp_saved,
+        interp_rows,
+        roi_rows,
+        roi_corners,
+        interp_pose_rows,
+        interp_tag_rows,
+        interp_cnn_rows,
+        interp_headtail_rows,
+        pose_kpt_source_names,
+        pose_kpt_labels,
+        profiler,
+    ):
+        needed_frames = sorted(frame_tasks.keys())
+        total_frames = len(needed_frames)
+        _pose_batch_size = int(self.params.get("INTERP_POSE_INFERENCE_BATCH_SIZE", 64))
+        _pending_crops: list = []
+        _pending_entries: list = []
+        _cnn_batch_size = 64
+        _pending_cnn_crops: list = []
+        _pending_cnn_entries: list = []
+
+        _prefetcher = self._build_prefetcher(cap, needed_frames, total_frames)
+        _prefetcher.start()
+        for idx in range(1, total_frames + 1):
+            if self._should_stop():
+                _prefetcher.stop()
+                return None
+            _pf_item = _prefetcher.read()
+            if _pf_item is None:
+                break
+            f, ret, frame = _pf_item
+            if not ret or frame is None:
+                continue
+            result = self._process_single_frame(
+                f,
+                idx,
+                frame,
+                total_frames,
+                frame_tasks,
+                gen,
+                save_interpolated_outputs,
+                _compute_native_scale,
+                _canonical_ref_ar,
+                _canonical_padding,
+                _extract_canonical,
+                pose_backend,
+                cnn_backends,
+                cnn_labels,
+                apriltag_detector,
+                headtail_analyzer,
+                interp_saved,
+                interp_rows,
+                roi_rows,
+                roi_corners,
+                interp_pose_rows,
+                interp_tag_rows,
+                interp_cnn_rows,
+                interp_headtail_rows,
+                _pending_crops,
+                _pending_entries,
+                _pending_cnn_crops,
+                _pending_cnn_entries,
+                _pose_batch_size,
+                _cnn_batch_size,
+                pose_kpt_source_names,
+                pose_kpt_labels,
+                profiler,
+            )
+            if result is None:
+                return None
+            interp_saved = result
+        _prefetcher.stop()
+        return interp_saved
+
+    def _compute_position_scale(
+        self, df, resize_factor, frame_width, frame_height, default
+    ):
+        try:
+            max_x = df["X"].dropna().max()
+            max_y = df["Y"].dropna().max()
+            if (
+                resize_factor
+                and resize_factor < 1.0
+                and max_x <= frame_width * resize_factor * 1.05
+                and max_y <= frame_height * resize_factor * 1.05
+            ):
+                return 1.0 / resize_factor
+        except Exception:
+            return 1.0
+        return default
+
+    def _validate_and_setup(self, profiler):
+        if self._should_stop():
+            return None
+        if not self.csv_path or not os.path.exists(self.csv_path):
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+            return None
+        if not self.video_path or not os.path.exists(self.video_path):
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+            return None
+
+        output_dir = self.params.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
+        if not output_dir:
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+            return None
+
+        df = self._load_and_validate_csv()
+        if df is None:
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+            return None
+
+        resize_factor = self.params.get("RESIZE_FACTOR", 1.0)
+        position_scale = 1.0
+        size_scale = 1.0 / resize_factor if resize_factor else 1.0
+
+        detection_cache = None
+        if self.detection_cache_path and os.path.exists(self.detection_cache_path):
+            detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+
+        save_interpolated_outputs = bool(
+            self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
+        )
+        cache_interpolated_artifacts = bool(
+            save_interpolated_outputs
+            or self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+        )
+        gen_params = dict(self.params or {})
+        gen_params["ENABLE_INDIVIDUAL_DATASET"] = cache_interpolated_artifacts
+        gen_params["ENABLE_INDIVIDUAL_IMAGE_SAVE"] = save_interpolated_outputs
+
+        gen = IndividualDatasetGenerator(
+            gen_params,
+            output_dir,
+            Path(self.video_path).stem,
+            self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
+        )
+        gen.enabled = cache_interpolated_artifacts
+
+        _canonical_ref_ar = gen._canonical_ref_ar
+        _canonical_padding = gen._canonical_padding
+
+        pose_backend, pose_kpt_source_names, pose_kpt_labels = self._init_pose_backend(
+            output_dir
+        )
+        apriltag_detector = self._init_apriltag_detector()
+        cnn_backends, cnn_labels = self._init_cnn_backends()
+        headtail_analyzer = self._init_headtail_analyzer()
+
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+            return None
+
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        position_scale = self._compute_position_scale(
+            df, resize_factor, frame_width, frame_height, position_scale
+        )
+
+        if "TrajectoryID" not in df.columns:
+            logger.warning("Interpolated crops skipped: CSV missing TrajectoryID.")
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+            return None
+
+        profiler.phase_end("interp_setup")
+        interp_cnn_rows = {label: [] for label in cnn_labels}
+        return (
+            df,
+            cap,
+            detection_cache,
+            gen,
+            pose_backend,
+            cnn_backends,
+            cnn_labels,
+            apriltag_detector,
+            headtail_analyzer,
+            save_interpolated_outputs,
+            cache_interpolated_artifacts,
+            position_scale,
+            size_scale,
+            _canonical_ref_ar,
+            _canonical_padding,
+            pose_kpt_source_names,
+            pose_kpt_labels,
+            interp_cnn_rows,
+        )
+
     def execute(self):
         """Generate interpolated crops for occluded trajectory gaps."""
         from hydra_suite.core.canonicalization.crop import (
@@ -722,95 +1342,38 @@ class InterpolatedCropsWorker(BaseWorker):
         apriltag_detector = None
         headtail_analyzer = None
         try:
-            if self._should_stop():
+            setup = self._validate_and_setup(profiler)
+            if setup is None:
                 return
-            if not self.csv_path or not os.path.exists(self.csv_path):
-                self.finished_signal.emit({"saved": 0, "gaps": 0})
-                return
-            if not self.video_path or not os.path.exists(self.video_path):
-                self.finished_signal.emit({"saved": 0, "gaps": 0})
-                return
-
-            output_dir = self.params.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
-            if not output_dir:
-                self.finished_signal.emit({"saved": 0, "gaps": 0})
-                return
-
-            df = self._load_and_validate_csv()
-            if df is None:
-                self.finished_signal.emit({"saved": 0, "gaps": 0})
-                return
-
-            resize_factor = self.params.get("RESIZE_FACTOR", 1.0)
-            position_scale = 1.0
-            size_scale = 1.0 / resize_factor if resize_factor else 1.0
-
-            if self.detection_cache_path and os.path.exists(self.detection_cache_path):
-                detection_cache = DetectionCache(self.detection_cache_path, mode="r")
-
-            save_interpolated_outputs = bool(
-                self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
-            )
-            cache_interpolated_artifacts = bool(
-                save_interpolated_outputs
-                or self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
-            )
-            gen_params = dict(self.params or {})
-            gen_params["ENABLE_INDIVIDUAL_DATASET"] = cache_interpolated_artifacts
-            gen_params["ENABLE_INDIVIDUAL_IMAGE_SAVE"] = save_interpolated_outputs
-
-            gen = IndividualDatasetGenerator(
-                gen_params,
-                output_dir,
-                Path(self.video_path).stem,
-                self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
-            )
-            gen.enabled = cache_interpolated_artifacts
-
-            _canonical_ref_ar = gen._canonical_ref_ar
-            _canonical_padding = gen._canonical_padding
-
-            pose_backend, pose_kpt_source_names, pose_kpt_labels = (
-                self._init_pose_backend(output_dir)
-            )
-            apriltag_detector = self._init_apriltag_detector()
-            cnn_backends, cnn_labels = self._init_cnn_backends()
-            headtail_analyzer = self._init_headtail_analyzer()
-
-            cap = cv2.VideoCapture(self.video_path)
-            if not cap.isOpened():
-                self.finished_signal.emit({"saved": 0, "gaps": 0})
-                return
-
-            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            try:
-                max_x = df["X"].dropna().max()
-                max_y = df["Y"].dropna().max()
-                if (
-                    resize_factor
-                    and resize_factor < 1.0
-                    and max_x <= frame_width * resize_factor * 1.05
-                    and max_y <= frame_height * resize_factor * 1.05
-                ):
-                    position_scale = 1.0 / resize_factor
-            except Exception:
-                position_scale = 1.0
+            (
+                df,
+                cap,
+                detection_cache,
+                gen,
+                pose_backend,
+                cnn_backends,
+                cnn_labels,
+                apriltag_detector,
+                headtail_analyzer,
+                save_interpolated_outputs,
+                cache_interpolated_artifacts,
+                position_scale,
+                size_scale,
+                _canonical_ref_ar,
+                _canonical_padding,
+                pose_kpt_source_names,
+                pose_kpt_labels,
+                interp_cnn_rows,
+            ) = setup
 
             interp_saved = 0
             interp_rows = []
             interp_pose_rows = []
             interp_tag_rows = []
-            interp_cnn_rows = {label: [] for label in cnn_labels}
             interp_headtail_rows = []
             roi_rows = []
             roi_corners = []
-            if "TrajectoryID" not in df.columns:
-                logger.warning("Interpolated crops skipped: CSV missing TrajectoryID.")
-                self.finished_signal.emit({"saved": 0, "gaps": 0})
-                return
 
-            profiler.phase_end("interp_setup")
             profiler.phase_start("interp_gap_detection")
 
             gap_result = self._detect_interpolation_gaps(
@@ -834,262 +1397,34 @@ class InterpolatedCropsWorker(BaseWorker):
             profiler.phase_start("interp_crop_extraction")
 
             if frame_tasks:
-                needed_frames = sorted(frame_tasks.keys())
-                total_frames = len(needed_frames)
-                _pose_batch_size = int(
-                    self.params.get("INTERP_POSE_INFERENCE_BATCH_SIZE", 64)
+                interp_saved = self._run_frame_tasks_loop(
+                    frame_tasks,
+                    cap,
+                    gen,
+                    save_interpolated_outputs,
+                    _compute_native_scale,
+                    _canonical_ref_ar,
+                    _canonical_padding,
+                    _extract_canonical,
+                    pose_backend,
+                    cnn_backends,
+                    cnn_labels,
+                    apriltag_detector,
+                    headtail_analyzer,
+                    interp_saved,
+                    interp_rows,
+                    roi_rows,
+                    roi_corners,
+                    interp_pose_rows,
+                    interp_tag_rows,
+                    interp_cnn_rows,
+                    interp_headtail_rows,
+                    pose_kpt_source_names,
+                    pose_kpt_labels,
+                    profiler,
                 )
-                _pending_crops: list = []
-                _pending_entries: list = []
-                _cnn_batch_size = 64
-                _pending_cnn_crops: list = []
-                _pending_cnn_entries: list = []
-
-                from hydra_suite.utils.frame_prefetcher import (
-                    SequentialScanPrefetcher,
-                    SparseFramePrefetcher,
-                )
-
-                _frame_range = needed_frames[-1] - needed_frames[0] + 1
-                _density = total_frames / max(_frame_range, 1)
-                _use_sequential = (
-                    _density >= 0.05 or (_frame_range / max(total_frames, 1)) < 100
-                )
-                if _use_sequential:
-                    logger.info(
-                        "Interpolation: sequential scan (%d needed / %d range, "
-                        "density=%.2f%%)",
-                        total_frames,
-                        _frame_range,
-                        _density * 100,
-                    )
-                    _prefetcher = SequentialScanPrefetcher(
-                        cap, needed_frames, buffer_size=8
-                    )
-                else:
-                    logger.info(
-                        "Interpolation: sparse seek (%d needed / %d range, "
-                        "density=%.2f%%)",
-                        total_frames,
-                        _frame_range,
-                        _density * 100,
-                    )
-                    _prefetcher = SparseFramePrefetcher(
-                        cap, needed_frames, buffer_size=4
-                    )
-                _prefetcher.start()
-                for idx in range(1, total_frames + 1):
-                    if self._should_stop():
-                        _prefetcher.stop()
-                        return
-                    _pf_item = _prefetcher.read()
-                    if _pf_item is None:
-                        break
-                    f, ret, frame = _pf_item
-                    if not ret or frame is None:
-                        continue
-                    from hydra_suite.core.identity.geometry import (
-                        ellipse_to_obb_corners as _e2obb,
-                    )
-
-                    _frame_all_corners = [
-                        _e2obb(t["cx"], t["cy"], t["w"], t["h"], t["theta"])
-                        for t in frame_tasks[f]
-                    ]
-                    _frame_affines = []
-                    for _c in _frame_all_corners:
-                        try:
-                            _M, _cw, _ch, _ = _compute_native_scale(
-                                _c, _canonical_ref_ar, _canonical_padding
-                            )
-                            _frame_affines.append((_M, _cw, _ch))
-                        except (ValueError, Exception):
-                            _frame_affines.append(None)
-                    for task_idx, task in enumerate(frame_tasks[f]):
-                        filename = ""
-                        corners = _frame_all_corners[task_idx]
-                        _aff = _frame_affines[task_idx]
-                        if save_interpolated_outputs:
-                            filename = gen.save_interpolated_crop(
-                                frame=frame,
-                                frame_id=task["frame_id"],
-                                cx=task["cx"],
-                                cy=task["cy"],
-                                w=task["w"],
-                                h=task["h"],
-                                theta=task["theta"],
-                                traj_id=task["traj_id"],
-                                interp_from=task["interp_from"],
-                                interp_index=task["interp_index"],
-                                interp_total=task["interp_total"],
-                                canonical_affine=(
-                                    _aff[0] if _aff is not None else None
-                                ),
-                            )
-                        if save_interpolated_outputs and filename:
-                            interp_saved += 1
-                            interp_rows.append(
-                                {
-                                    "frame_id": int(task["frame_id"]),
-                                    "trajectory_id": int(task["traj_id"]),
-                                    "filename": filename,
-                                    "interp_from_start": int(task["interp_from"][0]),
-                                    "interp_from_end": int(task["interp_from"][1]),
-                                    "interp_index": int(task["interp_index"]),
-                                    "interp_total": int(task["interp_total"]),
-                                }
-                            )
-                            roi_rows.append(
-                                {
-                                    "frame_id": int(task["frame_id"]),
-                                    "trajectory_id": int(task["traj_id"]),
-                                    "filename": filename,
-                                    "cx": float(task["cx"]),
-                                    "cy": float(task["cy"]),
-                                    "w": float(task["w"]),
-                                    "h": float(task["h"]),
-                                    "theta": float(task["theta"]),
-                                    "interp_from_start": int(task["interp_from"][0]),
-                                    "interp_from_end": int(task["interp_from"][1]),
-                                    "interp_index": int(task["interp_index"]),
-                                    "interp_total": int(task["interp_total"]),
-                                }
-                            )
-                            roi_corners.append(corners)
-                        if pose_backend is not None:
-                            pose_crop = None
-                            pose_crop_info = None
-                            try:
-                                _other_corners = [
-                                    c
-                                    for ci, c in enumerate(_frame_all_corners)
-                                    if ci != task_idx
-                                ]
-                                if _aff is not None:
-                                    _M_pose, _cw_pose, _ch_pose = _aff
-                                    _foreign = (
-                                        _other_corners if _other_corners else None
-                                    )
-                                    pose_crop = _extract_canonical(
-                                        frame,
-                                        _M_pose,
-                                        _cw_pose,
-                                        _ch_pose,
-                                        bg_color=gen.background_color,
-                                        foreign_corners=_foreign,
-                                    )
-                                    _M_inv = cv2.invertAffineTransform(_M_pose).astype(
-                                        np.float32
-                                    )
-                                    pose_crop_info = {
-                                        "crop_size": (_cw_pose, _ch_pose),
-                                        "M_inverse": _M_inv,
-                                        "canonical": True,
-                                    }
-                                else:
-                                    pose_crop, pose_crop_info = (
-                                        gen._extract_obb_masked_crop(
-                                            frame,
-                                            corners,
-                                            frame.shape[0],
-                                            frame.shape[1],
-                                            other_corners_list=(
-                                                _other_corners
-                                                if _other_corners
-                                                else None
-                                            ),
-                                        )
-                                    )
-                            except Exception:
-                                pose_crop = None
-                                pose_crop_info = None
-                            if pose_crop is not None and pose_crop.size > 0:
-                                _pending_crops.append(pose_crop)
-                                _pending_entries.append(
-                                    {
-                                        "task": task,
-                                        "filename": filename,
-                                        "crop_info": pose_crop_info,
-                                    }
-                                )
-                            if (
-                                cnn_backends
-                                and pose_crop is not None
-                                and pose_crop.size > 0
-                            ):
-                                _pending_cnn_crops.append(pose_crop)
-                                _pending_cnn_entries.append({"task": task})
-
-                    if apriltag_detector is not None and frame_tasks[f]:
-                        self._detect_apriltags_in_frame(
-                            apriltag_detector,
-                            frame,
-                            frame_tasks[f],
-                            _frame_all_corners,
-                            self.params,
-                            interp_tag_rows,
-                        )
-
-                    if (
-                        headtail_analyzer is not None
-                        and frame_tasks[f]
-                        and _frame_all_corners
-                    ):
-                        self._detect_headtail_in_frame(
-                            headtail_analyzer,
-                            frame,
-                            frame_tasks[f],
-                            _frame_all_corners,
-                            interp_headtail_rows,
-                        )
-
-                    # Flush pose batch when full or on last frame
-                    if (
-                        pose_backend is not None
-                        and _pending_crops
-                        and (
-                            len(_pending_crops) >= _pose_batch_size
-                            or idx == total_frames
-                        )
-                    ):
-                        if self._should_stop():
-                            return
-                        self._flush_pose_batch(
-                            pose_backend,
-                            _pending_crops,
-                            _pending_entries,
-                            interp_pose_rows,
-                            pose_kpt_source_names,
-                            pose_kpt_labels,
-                            profiler,
-                        )
-
-                    # Flush CNN identity batch
-                    if (
-                        cnn_backends
-                        and _pending_cnn_crops
-                        and (
-                            len(_pending_cnn_crops) >= _cnn_batch_size
-                            or idx == total_frames
-                        )
-                    ):
-                        self._flush_cnn_batch(
-                            cnn_backends,
-                            cnn_labels,
-                            _pending_cnn_crops,
-                            _pending_cnn_entries,
-                            interp_cnn_rows,
-                            profiler,
-                        )
-
-                    if idx % 25 == 0 or idx == total_frames:
-                        progress = int((idx / total_frames) * 100)
-                        self.progress_signal.emit(
-                            progress,
-                            f"Interpolating occlusions... {idx}/{total_frames}",
-                        )
-                        del frame
-                _prefetcher.stop()
+                if interp_saved is None:
+                    return
 
             profiler.phase_end("interp_crop_extraction")
             profiler.phase_start("interp_finalize")
@@ -1117,71 +1452,16 @@ class InterpolatedCropsWorker(BaseWorker):
 
             if not self._should_stop():
                 self.finished_signal.emit(
-                    {
-                        "saved": interp_saved,
-                        "gaps": interp_gaps,
-                        "mapping_path": (
-                            str(artifact_paths["mapping_path"])
-                            if artifact_paths["mapping_path"]
-                            else None
-                        ),
-                        "roi_csv_path": (
-                            str(artifact_paths["roi_csv_path"])
-                            if artifact_paths["roi_csv_path"]
-                            else None
-                        ),
-                        "roi_npz_path": (
-                            str(artifact_paths["roi_npz_path"])
-                            if artifact_paths["roi_npz_path"]
-                            else None
-                        ),
-                        "pose_csv_path": (
-                            str(artifact_paths["pose_csv_path"])
-                            if artifact_paths["pose_csv_path"]
-                            else None
-                        ),
-                        "pose_rows": (
-                            interp_pose_rows
-                            if (interp_pose_rows and not save_interpolated_outputs)
-                            else None
-                        ),
-                        "tag_csv_path": (
-                            str(artifact_paths["tag_csv_path"])
-                            if artifact_paths["tag_csv_path"]
-                            else None
-                        ),
-                        "tag_rows": (
-                            interp_tag_rows
-                            if (interp_tag_rows and not artifact_paths["tag_csv_path"])
-                            else None
-                        ),
-                        "cnn_csv_paths": (
-                            artifact_paths["cnn_csv_paths"]
-                            if artifact_paths["cnn_csv_paths"]
-                            else None
-                        ),
-                        "cnn_rows": (
-                            interp_cnn_rows
-                            if (
-                                any(interp_cnn_rows.values())
-                                and not artifact_paths["cnn_csv_paths"]
-                            )
-                            else None
-                        ),
-                        "headtail_csv_path": (
-                            str(artifact_paths["headtail_csv_path"])
-                            if artifact_paths["headtail_csv_path"]
-                            else None
-                        ),
-                        "headtail_rows": (
-                            interp_headtail_rows
-                            if (
-                                interp_headtail_rows
-                                and not artifact_paths["headtail_csv_path"]
-                            )
-                            else None
-                        ),
-                    }
+                    self._build_finished_payload(
+                        interp_saved,
+                        interp_gaps,
+                        artifact_paths,
+                        interp_pose_rows,
+                        interp_tag_rows,
+                        interp_cnn_rows,
+                        interp_headtail_rows,
+                        save_interpolated_outputs,
+                    )
                 )
         except Exception:
             self.finished_signal.emit({"saved": 0, "gaps": 0})

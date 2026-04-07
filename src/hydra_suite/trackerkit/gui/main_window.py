@@ -38,20 +38,11 @@ from PySide6.QtWidgets import (
 from hydra_suite.core.identity.dataset.oriented_video import (
     resolve_individual_dataset_dir,
 )
-from hydra_suite.runtime.compute_runtime import (
-    CANONICAL_RUNTIMES,
-    allowed_runtimes_for_pipelines,
-    runtime_label,
-)
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.geometry import wrap_angle_degs
 
 from . import model_utils as _model_utils
-from .workers.preview_worker import (  # noqa: F401 (re-export for tests)
-    _build_preview_background_model,
-    _clear_preview_background_cache,
-)
 from .model_utils import (
     _sanitize_model_token,
     get_yolo_model_metadata,
@@ -61,6 +52,10 @@ from .model_utils import (
 )
 from .widgets.collapsible import CollapsibleGroupBox
 from .widgets.help_label import CompactHelpLabel
+from .workers.preview_worker import (  # noqa: F401 (re-export for tests)
+    _build_preview_background_model,
+    _clear_preview_background_cache,
+)
 
 try:
     from hydra_suite.posekit.gui.dialogs.utils import get_available_devices
@@ -1009,7 +1004,9 @@ class MainWindow(QMainWindow):
         self, video_path: str, cache_path: str, params: dict
     ):
         """Spin up a DetectionCacheBuilderWorker and show progress in the main window."""
-        self._config_orch._build_optimizer_detection_cache(video_path, cache_path, params)
+        self._config_orch._build_optimizer_detection_cache(
+            video_path, cache_path, params
+        )
 
     def _on_optimizer_cache_built(self, ok: bool, cache_path: str):
         """Called when DetectionCacheBuilderWorker finishes."""

@@ -9,7 +9,6 @@ import hashlib
 import json
 import logging
 import os
-import queue as _queue
 import re
 import time
 from pathlib import Path
@@ -18,8 +17,25 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
+
+from hydra_suite.core.identity.properties.export import build_pose_keypoint_labels
+from hydra_suite.runtime.compute_runtime import (
+    derive_detection_runtime_settings,
+    derive_pose_runtime_settings,
+)
+from hydra_suite.utils.pose_visualization import (
+    is_renderable_pose_keypoint,
+    normalize_pose_render_min_conf,
+)
+from hydra_suite.utils.video_artifacts import (
+    build_detection_cache_path,
+    candidate_artifact_base_dirs,
+    choose_writable_artifact_base_dir,
+    find_existing_detection_cache_path,
+)
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.config.schemas import TrackerConfig
@@ -539,7 +555,7 @@ class TrackingOrchestrator:
 
         if forward_empty or backward_empty:
             QMessageBox.warning(
-                self,
+                self._mw,
                 "No Trajectories",
                 "No forward or backward trajectories available to merge.",
             )
@@ -601,6 +617,8 @@ class TrackingOrchestrator:
                 )
             elif video_fp:
                 _merge_profile_path = str(Path(video_fp).parent / "merge_profile.json")
+
+        from hydra_suite.trackerkit.gui.workers.merge_worker import MergeWorker
 
         self._mw.merge_worker = MergeWorker(
             forward_trajs,
@@ -969,7 +987,9 @@ class TrackingOrchestrator:
         self._mw.progress_bar.setVisible(False)
         self._mw.progress_label.setVisible(False)
         QMessageBox.critical(
-            self, "Merge Error", f"Error during trajectory merging:\n{error_message}"
+            self._mw,
+            "Merge Error",
+            f"Error during trajectory merging:\n{error_message}",
         )
         logger.error(f"Trajectory merge error: {error_message}")
 
@@ -1559,7 +1579,7 @@ class TrackingOrchestrator:
                 logger.info("Preview completed.")
             else:
                 QMessageBox.warning(
-                    self,
+                    self._mw,
                     "Preview Interrupted",
                     "Preview was stopped or encountered an error.",
                 )
@@ -1618,6 +1638,7 @@ class TrackingOrchestrator:
 
                 from hydra_suite.core.post.processing import (
                     interpolate_trajectories,
+                    process_trajectories,
                     process_trajectories_from_csv,
                 )
 
@@ -1789,7 +1810,7 @@ class TrackingOrchestrator:
         else:
             logger.error("Tracking did not finish normally.")
             QMessageBox.warning(
-                self,
+                self._mw,
                 "Tracking Failed",
                 "An error occurred during tracking. Check logs for details.",
             )
@@ -1869,6 +1890,11 @@ class TrackingOrchestrator:
 
         try:
             with_pose_df = trajectories_df
+            from hydra_suite.core.identity.properties.export import (
+                augment_trajectories_with_pose_cache,
+                merge_interpolated_pose_df,
+            )
+
             if cache_available:
                 min_valid_conf = float(
                     self._panels.identity.spin_pose_min_kpt_conf_valid.value()
@@ -1999,6 +2025,12 @@ class TrackingOrchestrator:
             # Resolve anterior/posterior indices for body-length calibration
             from hydra_suite.core.identity.pose.features import (
                 resolve_pose_group_indices,
+            )
+            from hydra_suite.core.identity.pose.quality import (
+                apply_quality_to_dataframe,
+                apply_temporal_pose_postprocessing,
+                calibrate_body_length_prior,
+                calibrate_edge_length_priors,
             )
 
             kpt_names = []
@@ -2183,6 +2215,8 @@ class TrackingOrchestrator:
             if with_pose_df is not None and not with_pose_df.empty
             else base_df
         )
+        from hydra_suite.core.post.processing import relink_trajectories_with_pose
+
         relinked_with_pose = relink_trajectories_with_pose(relink_input_df, params)
         if relinked_with_pose is None or relinked_with_pose.empty:
             relinked_with_pose = relink_input_df
@@ -2403,7 +2437,7 @@ class TrackingOrchestrator:
                 # Batch complete
                 self._mw.current_batch_index = -1
                 QMessageBox.information(
-                    self,
+                    self._mw,
                     "Batch Complete",
                     f"Finished processing {len(self._mw.batch_videos)} videos.",
                 )
@@ -2414,6 +2448,10 @@ class TrackingOrchestrator:
     def _generate_interpolated_individual_crops(self, csv_path):
         """Post-pass interpolation for occluded segments in individual dataset."""
         try:
+            from hydra_suite.trackerkit.gui.workers.crops_worker import (
+                InterpolatedCropsWorker,
+            )
+
             if self._mw._stop_all_requested:
                 return False
             if not self._panels.identity.chk_individual_interpolate.isChecked():
@@ -2544,7 +2582,7 @@ class TrackingOrchestrator:
             if self._panels.setup.g_batch.isChecked():
                 if self._mw.current_batch_index < 0:
                     res = QMessageBox.question(
-                        self,
+                        self._mw,
                         "Start Batch Process",
                         f"This will process {len(self._mw.batch_videos)} videos sequentially using the CURRENT parameters.\n\n"
                         "Each video will have its own CSV and configuration file saved in its source directory.\n\n"
@@ -2575,7 +2613,9 @@ class TrackingOrchestrator:
 
         video_fp = self._panels.setup.file_line.text()
         if not video_fp:
-            QMessageBox.warning(self._mw, "No video", "Please select a video file first.")
+            QMessageBox.warning(
+                self._mw, "No video", "Please select a video file first."
+            )
             return
         if preview_mode:
             self.start_preview_on_video(video_fp)
@@ -2630,7 +2670,7 @@ class TrackingOrchestrator:
 
         if not cache_valid:
             res = QMessageBox.question(
-                self,
+                self._mw,
                 "Build Detection Cache",
                 "No detection cache found for this frame range.\n\n"
                 "Build one now for a consistent preview?\n"
@@ -2638,6 +2678,10 @@ class TrackingOrchestrator:
                 QMessageBox.Yes | QMessageBox.No,
             )
             if res == QMessageBox.Yes:
+                from hydra_suite.core.tracking.optimizer_workers import (
+                    DetectionCacheBuilderWorker,
+                )
+
                 self._mw._pending_preview_video_path = video_path
                 self._mw._cache_builder_worker = DetectionCacheBuilderWorker(
                     video_path,
@@ -2660,6 +2704,8 @@ class TrackingOrchestrator:
                 )
                 self._mw._cache_builder_worker.start()
                 return  # Will resume via _on_preview_cache_built
+
+            from hydra_suite.core.tracking import TrackingWorker
 
         self._mw.tracking_worker = TrackingWorker(
             video_path,
@@ -2756,6 +2802,8 @@ class TrackingOrchestrator:
             elif self._panels.tracking.chk_enable_backward.isChecked():
                 # Forward mode with backward tracking enabled - save as _forward.csv
                 csv_path = f"{base}_forward{ext}"
+            from hydra_suite.data.csv_writer import CSVWriterThread
+
             self._mw.csv_writer_thread = CSVWriterThread(csv_path, header=hdr)
             self._mw.csv_writer_thread.start()
 
@@ -3055,6 +3103,8 @@ class TrackingOrchestrator:
         # Do NOT delete old detection caches; keep all for reuse
         self._mw.current_detection_cache_path = detection_cache_path
 
+        from hydra_suite.core.tracking import TrackingWorker
+
         self._mw.tracking_worker = TrackingWorker(
             video_path,
             csv_writer_thread=self._mw.csv_writer_thread,
@@ -3089,6 +3139,10 @@ class TrackingOrchestrator:
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
+            from hydra_suite.trackerkit.gui.workers.dataset_worker import (
+                DatasetGenerationWorker,
+            )
+
             if self._mw._stop_all_requested:
                 return
             logger.info("Starting training dataset generation...")
@@ -3113,7 +3167,9 @@ class TrackingOrchestrator:
             video_path = self._panels.setup.file_line.text()
             if not video_path or not os.path.exists(video_path):
                 QMessageBox.warning(
-                    self, "Dataset Generation Error", "Source video file not found."
+                    self._mw,
+                    "Dataset Generation Error",
+                    "Source video file not found.",
                 )
                 return
 
@@ -3130,7 +3186,7 @@ class TrackingOrchestrator:
                     os.makedirs(output_dir, exist_ok=True)
                 except Exception as e:
                     QMessageBox.warning(
-                        self,
+                        self._mw,
                         "Dataset Generation Error",
                         f"Could not create output directory: {output_dir}\nError: {e}",
                     )
@@ -3145,7 +3201,9 @@ class TrackingOrchestrator:
 
             if not csv_path or not os.path.exists(csv_path):
                 QMessageBox.warning(
-                    self, "Dataset Generation Error", "Tracking CSV file not found."
+                    self._mw,
+                    "Dataset Generation Error",
+                    "Tracking CSV file not found.",
                 )
                 return
 
@@ -3196,7 +3254,7 @@ class TrackingOrchestrator:
         except Exception as e:
             logger.error(f"Dataset generation failed: {e}", exc_info=True)
             QMessageBox.critical(
-                self,
+                self._mw,
                 "Dataset Generation Error",
                 f"Failed to generate dataset:\n{str(e)}",
             )
@@ -3367,7 +3425,7 @@ class TrackingOrchestrator:
         )
         if self._mw.current_video_path:
             reply = QMessageBox.question(
-                self,
+                self._mw,
                 "Open RefineKit?",
                 "Tracking complete. Open in RefineKit for "
                 "interactive identity proofreading?",
