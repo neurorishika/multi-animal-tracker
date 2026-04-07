@@ -1188,7 +1188,7 @@ class ConfigOrchestrator:
             logger.warning(f"Failed to load configuration: {e}")
 
 
-    def _atomic_json_write(cfg, path):
+    def _atomic_json_write(self, cfg, path):
         """Write a JSON config atomically. Returns (success, error_message)."""
         import tempfile as _tempfile
 
@@ -2188,7 +2188,7 @@ class ConfigOrchestrator:
 
     def _populate_preset_combo(self):
         """Populate the preset combo box by auto-scanning configs folder."""
-        presets_dir = self._get_presets_dir()
+        presets_dir = self._mw._get_presets_dir()
 
         if not os.path.exists(presets_dir):
             return
@@ -2308,7 +2308,7 @@ class ConfigOrchestrator:
         description = desc_input.toPlainText().strip() or "User-defined custom preset"
 
         # Ask user for filename
-        presets_dir = self._get_presets_dir()
+        presets_dir = self._mw._get_presets_dir()
         os.makedirs(presets_dir, exist_ok=True)
 
         # Generate suggested filename from preset name
@@ -2375,7 +2375,7 @@ class ConfigOrchestrator:
 
     def _load_default_preset_on_startup(self):
         """Load default preset on application startup."""
-        presets_dir = self._get_presets_dir()
+        presets_dir = self._mw._get_presets_dir()
 
         # Try custom preset first
         custom_path = os.path.join(presets_dir, "custom.json")
@@ -3112,5 +3112,21 @@ class ConfigOrchestrator:
     # =========================================================================
 
     def _populate_compute_runtime_options(self, preferred=None):
-        """Delegate to main window to populate compute runtime options."""
-        self._mw._populate_compute_runtime_options(preferred=preferred)
+        """Populate the compute runtime combo box with valid options for the current UI state."""
+        if not hasattr(self._mw, "_setup_panel"):
+            return
+        combo = self._mw._setup_panel.combo_compute_runtime
+        selected = (
+            str(preferred or self._mw._selected_compute_runtime() or "cpu").strip().lower()
+        )
+        options = self._mw._compute_runtime_options_for_current_ui()
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)

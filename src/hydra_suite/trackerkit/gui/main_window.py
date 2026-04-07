@@ -2101,11 +2101,14 @@ class MainWindow(QMainWindow):
 
     def _is_pose_inference_enabled(self) -> bool:
         """Return whether pose inference is actively enabled for the run."""
+        if not hasattr(self, "_session_orch"):
+            return False
         return self._session_orch._is_pose_inference_enabled()
 
     def _sync_video_pose_overlay_controls(self, *_args):
         """Gate pose video overlay controls based on pose inference enable state."""
-        self._session_orch._sync_video_pose_overlay_controls(*_args)
+        if hasattr(self, "_session_orch"):
+            self._session_orch._sync_video_pose_overlay_controls(*_args)
 
     def _is_yolo_detection_mode(self) -> bool:
         """Return True when current detection mode is YOLO OBB."""
@@ -2115,6 +2118,8 @@ class MainWindow(QMainWindow):
 
     def _is_individual_pipeline_enabled(self) -> bool:
         """Return effective runtime state for individual analysis pipeline."""
+        if not hasattr(self, "_session_orch"):
+            return False
         return self._session_orch._is_individual_pipeline_enabled()
 
     def _is_identity_analysis_enabled(self) -> bool:
@@ -2137,21 +2142,20 @@ class MainWindow(QMainWindow):
 
     def _is_individual_image_save_enabled(self) -> bool:
         """Return effective runtime state for saving individual crops."""
+        if not hasattr(self, "_session_orch"):
+            return False
         return self._session_orch._is_individual_image_save_enabled()
 
     def _should_generate_oriented_track_videos(self) -> bool:
         """Return True when final per-track oriented videos should be exported."""
+        if not hasattr(self, "_session_orch"):
+            return False
         return self._session_orch._should_generate_oriented_track_videos()
 
     def _should_run_interpolated_postpass(self) -> bool:
-        """
-        Return True when interpolated post-pass should run.
-
-        We run this pass when interpolation is enabled and either:
-        - individual crop saving is enabled, or
-        - pose export is enabled (to fill occluded-frame pose rows in final CSV), or
-        - oriented track video export is enabled (to cache interpolated ROI geometry).
-        """
+        """Return True when interpolated post-pass should run."""
+        if not hasattr(self, "_session_orch"):
+            return False
         return self._session_orch._should_run_interpolated_postpass()
 
     def _sync_individual_analysis_mode_ui(self):
@@ -2388,7 +2392,8 @@ class MainWindow(QMainWindow):
 
     def _sync_batch_list_ui(self):
         """Refresh the batch list widget with markers for the keystone."""
-        self._session_orch._sync_batch_list_ui()
+        if hasattr(self, "_session_orch"):
+            self._session_orch._sync_batch_list_ui()
 
     def _on_batch_video_selected(self, *args):
         """Load a video from the batch list for preview/tuning."""
@@ -2785,7 +2790,8 @@ class MainWindow(QMainWindow):
 
     def _update_range_info(self):
         """Update the frame range info label."""
-        self._session_orch._update_range_info()
+        if hasattr(self, "_session_orch"):
+            self._session_orch._update_range_info()
 
     def _set_start_to_current(self):
         """Set start frame to current frame."""
@@ -3926,7 +3932,8 @@ class MainWindow(QMainWindow):
 
     def _update_obb_mode_warning(self) -> None:
         """Show a performance hint when device/mode is a suboptimal combination."""
-        self._session_orch._update_obb_mode_warning()
+        if hasattr(self, "_session_orch"):
+            self._session_orch._update_obb_mode_warning()
 
     def _apply_crop_obb_training_params(self):
         """Auto-configure sequential inference params from model training metadata."""
