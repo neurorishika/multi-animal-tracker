@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from multi_tracker.classkit.store.db import ClassKitDB
+from hydra_suite.classkit.core.store.db import ClassKitDB
 
 
 def _seed_model_entry(
@@ -17,7 +17,6 @@ def _seed_model_entry(
             mode=mode,
             artifact_paths=[str(artifact_path)],
             class_names=["alpha", "beta"],
-            canonicalize_mat=True,
             best_val_acc=0.91,
             num_classes=2,
             meta={"owner": "test"},

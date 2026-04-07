@@ -1,0 +1,423 @@
+"""
+Tracking pipeline profiler — collects per-frame timing data and exports a
+complete summary at the end of a tracking run.
+
+Covers every pipeline phase:
+
+* Initialization (video, detector, background model, Kalman, assigner)
+* Batched detection
+* Confidence density map
+* Unified precompute (pose, AprilTag, CNN identity, crop extraction)
+* Main tracking loop (preprocessing, detection, features, assignment, …)
+* Cleanup
+* Post-processing (resolve, interpolate, tag identity, rescale)
+
+The profiler is **disabled by default** (zero overhead).  Enable it via the
+"Enable performance profiling" checkbox in Get Started → Debug, or by passing
+``enabled=True`` to the constructor.
+
+Usage inside ``TrackingWorker.run()``:
+
+    profiler = TrackingProfiler(enabled=params.get("ENABLE_PROFILING", False))
+
+    profiler.phase_start("initialization")
+    ...
+    profiler.phase_end("initialization")
+
+    for frame in frames:
+        profiler.tick("preprocessing")
+        ...
+        profiler.tock("preprocessing")
+        profiler.end_frame()
+        profiler.log_periodic(100)
+
+    profiler.export_summary("/path/to/profile.json")
+"""
+
+import json
+import logging
+import time
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# Canonical ordering for display / export.
+CATEGORY_ORDER = [
+    # Per-frame tracking loop categories
+    "frame_read",
+    "preprocessing",
+    "detection",
+    "features",
+    "kf_predict",
+    "cost_matrix",
+    "hungarian",
+    "state_update",
+    "kf_update",
+    "csv_write",
+    "individual_dataset",
+    "visualization",
+    "video_write",
+    "gui_emit",
+    "other",
+    # InterpolatedCropsWorker categories
+    "interp_pose_inference",
+    # Batched detection diagnostic categories
+    "batched_frame_read",
+]
+
+# Canonical ordering for pipeline phases (coarse timing).
+PHASE_ORDER = [
+    "initialization",
+    "batched_detection",
+    # Sub-phases within batched_detection (engine-level)
+    "yolo_obb_inference",
+    "headtail_crop",
+    "headtail_inference",
+    "confidence_density",
+    "precompute",
+    "precompute_frame_read",
+    "precompute_cache_load",
+    "precompute_filter",
+    "precompute_crop_extraction",
+    "precompute_pose",
+    "precompute_apriltag",
+    "precompute_cnn_identity",
+    "tracking_loop",
+    "cleanup",
+    # Post-processing phases (separate profiler instance in MergeWorker)
+    "post_prepare",
+    "post_resolve",
+    "post_interpolate",
+    "post_tag_identity",
+    "post_rescale",
+    # Interpolated crops phases (separate profiler in InterpolatedCropsWorker)
+    "interp_setup",
+    "interp_gap_detection",
+    "interp_crop_extraction",
+    "interp_finalize",
+]
+
+
+class TrackingProfiler:
+    """Lightweight wall-clock profiler for the tracking pipeline.
+
+    * ``tick`` / ``tock`` bracket each per-frame section.
+    * ``phase_start`` / ``phase_end`` bracket coarse pipeline phases.
+    * ``end_frame`` records the total frame time and keeps running totals.
+    * ``log_periodic`` prints a summary to the logger every *n* frames.
+    * ``export_summary`` writes a JSON report.
+
+    When ``enabled=False`` (the default), every method is a no-op with
+    negligible overhead.
+    """
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        if not enabled:
+            return
+
+        # Running totals
+        self._totals: dict[str, float] = defaultdict(float)
+
+        # Per-frame samples (lists of per-frame durations in seconds)
+        self._samples: dict[str, list[float]] = defaultdict(list)
+
+        # Current frame accumulators
+        self._frame_totals: dict[str, float] = defaultdict(float)
+
+        # Interval accumulators (reset after each periodic log)
+        self._interval_totals: dict[str, float] = defaultdict(float)
+        self._interval_frames: int = 0
+
+        # Tick tracking
+        self._pending: dict[str, float] = {}
+
+        # Frame-level bookkeeping
+        self._frame_start: float | None = None
+        self._total_frames: int = 0
+
+        # Whole-run wall-clock
+        self._run_start: float = time.time()
+        self._run_end: float | None = None
+
+        # Phase-level timing (batched detection, post-processing, etc.)
+        self._phase_times: dict[str, float] = {}
+        self._phase_pending: dict[str, float] = {}
+
+        # Optional run configuration metadata (set by caller)
+        self._config: dict = {}
+
+    # ------------------------------------------------------------------
+    # Configuration metadata
+    # ------------------------------------------------------------------
+    def set_config(self, **kwargs) -> None:
+        """Store run configuration metadata to include in the exported summary."""
+        if not self.enabled:
+            return
+        self._config.update(kwargs)
+
+    # ------------------------------------------------------------------
+    # Section timing
+    # ------------------------------------------------------------------
+    def tick(self, category: str) -> None:
+        """Start timing *category* for the current frame."""
+        if not self.enabled:
+            return
+        self._pending[category] = time.time()
+        if self._frame_start is None:
+            self._frame_start = time.time()
+
+    def tock(self, category: str) -> None:
+        """Stop timing *category*, accumulate into frame totals."""
+        if not self.enabled:
+            return
+        start = self._pending.pop(category, None)
+        if start is None:
+            return
+        elapsed = time.time() - start
+        self._frame_totals[category] += elapsed
+
+    # ------------------------------------------------------------------
+    # Phase timing (for coarse phases: batched detection, post-processing)
+    # ------------------------------------------------------------------
+    def phase_start(self, name: str) -> None:
+        """Begin timing a coarse pipeline phase (e.g. ``batched_detection``)."""
+        if not self.enabled:
+            return
+        self._phase_pending[name] = time.time()
+
+    def phase_end(self, name: str) -> None:
+        """End timing a coarse pipeline phase."""
+        if not self.enabled:
+            return
+        start = self._phase_pending.pop(name, None)
+        if start is None:
+            return
+        self._phase_times[name] = self._phase_times.get(name, 0.0) + (
+            time.time() - start
+        )
+
+    # ------------------------------------------------------------------
+    # Frame boundary
+    # ------------------------------------------------------------------
+    def end_frame(self) -> None:
+        """Finalise timing for the current frame.
+
+        * Computes ``frame_read`` as residual if not explicitly ticked.
+        * Stores per-frame samples for percentile stats.
+        """
+        if not self.enabled:
+            return
+        # Compute frame_read as residual wall-clock gap if not explicitly timed.
+        frame_wall = (
+            (time.time() - self._frame_start) if self._frame_start is not None else 0.0
+        )
+        measured = sum(self._frame_totals.values())
+        residual = max(0.0, frame_wall - measured)
+        if "frame_read" not in self._frame_totals:
+            self._frame_totals["frame_read"] = residual
+        else:
+            # If frame_read was explicitly timed, add any unaccounted gap as "other"
+            if residual > 1e-6:
+                self._frame_totals["other"] += residual
+
+        # Flush per-frame data into running totals
+        for cat, dur in self._frame_totals.items():
+            self._totals[cat] += dur
+            self._samples[cat].append(dur)
+            self._interval_totals[cat] += dur
+
+        self._total_frames += 1
+        self._interval_frames += 1
+
+        # Reset frame accumulators
+        self._frame_totals = defaultdict(float)
+        self._frame_start = None
+
+    # ------------------------------------------------------------------
+    # Periodic console summary (replaces the old 100-frame logger block)
+    # ------------------------------------------------------------------
+    def log_periodic(self, interval: int = 100) -> None:
+        """Log a summary to the logger every *interval* frames."""
+        if not self.enabled:
+            return
+        if self._interval_frames == 0 or self._interval_frames % interval != 0:
+            return
+        total = sum(self._interval_totals.values())
+        if total <= 0:
+            return
+        logger.info("=== PROFILING SUMMARY (last %d frames) ===", self._interval_frames)
+        for cat in self._ordered_categories(self._interval_totals):
+            dur = self._interval_totals[cat]
+            pct = (dur / total) * 100
+            avg_ms = (dur / self._interval_frames) * 1000
+            logger.info("  %-22s %5.1f%%  %7.2f ms/frame", cat, pct, avg_ms)
+        logger.info(
+            "  %-22s         %7.2f ms/frame",
+            "TOTAL",
+            (total / self._interval_frames) * 1000,
+        )
+        logger.info("=" * 50)
+
+        # Reset interval accumulators
+        self._interval_totals = defaultdict(float)
+        self._interval_frames = 0
+
+    # ------------------------------------------------------------------
+    # Summary generation
+    # ------------------------------------------------------------------
+    def get_summary(self) -> dict:
+        """Return the complete profiling summary as a dictionary."""
+        if not self.enabled:
+            return {"enabled": False}
+
+        self._run_end = time.time()
+        wall_clock = (self._run_end - self._run_start) if self._run_start else 0.0
+        n = max(self._total_frames, 1)
+        total_measured = sum(self._totals.values())
+
+        # Per-category statistics
+        categories = {}
+        for cat in self._ordered_categories(self._totals):
+            dur = self._totals[cat]
+            samples = self._samples.get(cat, [])
+            arr = np.array(samples, dtype=np.float64) if samples else np.zeros(1)
+            categories[cat] = {
+                "total_s": round(dur, 4),
+                "percent": (
+                    round((dur / total_measured) * 100, 2)
+                    if total_measured > 0
+                    else 0.0
+                ),
+                "mean_ms": round((dur / n) * 1000, 3),
+                "std_ms": round(float(np.std(arr)) * 1000, 3),
+                "min_ms": round(float(np.min(arr)) * 1000, 3),
+                "max_ms": round(float(np.max(arr)) * 1000, 3),
+                "p50_ms": round(float(np.median(arr)) * 1000, 3),
+                "p95_ms": round(float(np.percentile(arr, 95)) * 1000, 3),
+                "p99_ms": round(float(np.percentile(arr, 99)) * 1000, 3),
+            }
+
+        # Phase-level timing (ordered by PHASE_ORDER, then any extras)
+        phases = {}
+        ordered_phase_names = [n for n in PHASE_ORDER if n in self._phase_times] + [
+            n for n in self._phase_times if n not in PHASE_ORDER
+        ]
+        for name in ordered_phase_names:
+            dur = self._phase_times[name]
+            phases[name] = {
+                "total_s": round(dur, 4),
+                "percent_of_wall": (
+                    round((dur / wall_clock) * 100, 2) if wall_clock > 0 else 0.0
+                ),
+            }
+
+        summary = {
+            "enabled": True,
+            "total_frames": self._total_frames,
+            "wall_clock_s": round(wall_clock, 3),
+            "measured_s": round(total_measured, 4),
+            "avg_fps": round(n / wall_clock, 2) if wall_clock > 0 else 0.0,
+            "avg_frame_ms": (
+                round((total_measured / n) * 1000, 3) if total_measured > 0 else 0.0
+            ),
+            "phases": phases,
+            "categories": categories,
+        }
+        if self._config:
+            summary["config"] = self._config
+        return summary
+
+    def export_summary(self, path: str | Path) -> str | None:
+        """Write the profiling summary as a JSON file.
+
+        Returns the path written, or ``None`` on failure.
+        """
+        if not self.enabled:
+            return None
+        summary = self.get_summary()
+        try:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as fh:
+                json.dump(summary, fh, indent=2)
+            logger.info("Profiling summary exported to %s", path)
+            return str(path)
+        except Exception:
+            logger.warning("Failed to export profiling summary", exc_info=True)
+            return None
+
+    def log_final_summary(self) -> None:
+        """Log a comprehensive final summary to the logger."""
+        if not self.enabled:
+            return
+        summary = self.get_summary()
+        n = summary["total_frames"]
+        if n == 0:
+            return
+
+        logger.info("=" * 60)
+        logger.info("  TRACKING PROFILING — FINAL SUMMARY")
+        logger.info("=" * 60)
+        logger.info(
+            "  Frames: %d | Wall-clock: %.1fs | Avg FPS: %.1f",
+            n,
+            summary["wall_clock_s"],
+            summary["avg_fps"],
+        )
+        logger.info(
+            "  Avg frame: %.2f ms",
+            summary["avg_frame_ms"],
+        )
+
+        if summary["phases"]:
+            logger.info("-" * 60)
+            logger.info("  PHASE TIMING")
+            for name, info in summary["phases"].items():
+                logger.info(
+                    "    %-30s %8.2f s  (%5.1f%%)",
+                    name,
+                    info["total_s"],
+                    info.get("percent_of_wall", 0.0),
+                )
+
+        logger.info("-" * 60)
+        logger.info(
+            "  %-22s %6s %8s %8s %8s %8s",
+            "CATEGORY",
+            "%",
+            "mean",
+            "p50",
+            "p95",
+            "max",
+        )
+        logger.info("-" * 60)
+        for cat, info in summary["categories"].items():
+            logger.info(
+                "  %-22s %5.1f%% %7.2fms %7.2fms %7.2fms %7.2fms",
+                cat,
+                info["percent"],
+                info["mean_ms"],
+                info["p50_ms"],
+                info["p95_ms"],
+                info["max_ms"],
+            )
+        logger.info("-" * 60)
+        logger.info(
+            "  %-22s        %7.2fms",
+            "TOTAL",
+            summary["avg_frame_ms"],
+        )
+        logger.info("=" * 60)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _ordered_categories(self, d: dict) -> list[str]:
+        """Return keys of *d* in canonical order, extras appended alphabetically."""
+        present = [c for c in CATEGORY_ORDER if c in d and d[c] > 0]
+        extras = sorted(c for c in d if c not in CATEGORY_ORDER and d[c] > 0)
+        return present + extras

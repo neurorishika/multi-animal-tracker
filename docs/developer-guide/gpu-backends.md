@@ -2,7 +2,7 @@
 
 ## Backend Detection
 
-`multi_tracker.utils.gpu_utils` centralizes runtime capability checks for:
+`hydra_suite.utils.gpu_utils` centralizes runtime capability checks for:
 
 - CUDA (CuPy/PyTorch)
 - MPS (PyTorch)
@@ -10,9 +10,9 @@
 
 ## Where GPU Is Used
 
-- YOLO inference paths (`multi_tracker.core.detectors.engine`)
+- YOLO inference paths (`hydra_suite.core.detectors.engine`)
 - Background operations in supported acceleration paths
-- Batch sizing heuristics (`multi_tracker.utils.batch_optimizer`)
+- Batch sizing heuristics (`hydra_suite.utils.batch_optimizer`)
 
 ## Operational Notes
 

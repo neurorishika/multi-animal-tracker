@@ -1,12 +1,12 @@
 # Compute Runtimes
 
-This page explains how global runtime selection works in MAT and PoseKit.
+This page explains how global runtime selection works in TrackerKit and PoseKit.
 
 ## One Global Runtime
 
 Runtime is selected once via `compute_runtime`.
 
-- MAT: `Get Started -> Performance -> Compute runtime`
+- TrackerKit: `Get Started -> Performance -> Compute runtime`
 - PoseKit: `Inference -> Runtime`
 
 The same runtime drives:

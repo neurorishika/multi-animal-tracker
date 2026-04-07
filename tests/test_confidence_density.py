@@ -1,7 +1,7 @@
 # tests/test_confidence_density.py
 import numpy as np
 
-from multi_tracker.afterhours.core.confidence_density import (
+from hydra_suite.core.tracking.confidence_density import (
     DensityRegion,
     accumulate_frame,
     find_regions,

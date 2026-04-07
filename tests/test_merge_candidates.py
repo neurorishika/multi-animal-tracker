@@ -1,9 +1,9 @@
-"""Tests for multi_tracker.afterhours.core.merge_candidates."""
+"""Tests for hydra_suite.refinekit.core.merge_candidates."""
 
 import numpy as np
 import pandas as pd
 
-from multi_tracker.afterhours.core.merge_candidates import (
+from hydra_suite.refinekit.core.merge_candidates import (
     SwapCandidate,
     build_candidates,
     build_swap_candidates,

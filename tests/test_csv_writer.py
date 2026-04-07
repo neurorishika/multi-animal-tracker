@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from multi_tracker.data.csv_writer import CSVWriterThread
+from hydra_suite.data.csv_writer import CSVWriterThread
 
 
 class TestCSVWriterThread:

@@ -17,11 +17,75 @@ class _FakeContour(dict):
 
 
 def _load_engine_module():
-    return load_src_module(
-        "multi_tracker/core/detectors/engine.py",
-        "detectors_engine_under_test",
-        stubs={"cv2": make_cv2_stub()},
+    """Load the detectors package components with a cv2 stub.
+
+    Now that engine.py is split into multiple modules, we load each
+    submodule and assemble a combined namespace for backward compatibility
+    with existing tests.
+    """
+    cv2_stub = make_cv2_stub()
+    stubs = {"cv2": cv2_stub}
+
+    # Load submodules in dependency order
+    utils_mod = load_src_module(
+        "hydra_suite/core/detectors/_utils.py",
+        "hydra_suite.core.detectors._utils",
+        stubs=stubs,
     )
+    # Ensure the _utils module is importable by the geometry/artifact mixins
+    sys.modules["hydra_suite.core.detectors._utils"] = utils_mod
+
+    geom_mod = load_src_module(
+        "hydra_suite/core/detectors/_obb_geometry.py",
+        "hydra_suite.core.detectors._obb_geometry",
+        stubs=stubs,
+    )
+    sys.modules["hydra_suite.core.detectors._obb_geometry"] = geom_mod
+
+    art_mod = load_src_module(
+        "hydra_suite/core/detectors/_runtime_artifacts.py",
+        "hydra_suite.core.detectors._runtime_artifacts",
+        stubs=stubs,
+    )
+    sys.modules["hydra_suite.core.detectors._runtime_artifacts"] = art_mod
+
+    bg_mod = load_src_module(
+        "hydra_suite/core/detectors/bg_detector.py",
+        "hydra_suite.core.detectors.bg_detector",
+        stubs=stubs,
+    )
+    sys.modules["hydra_suite.core.detectors.bg_detector"] = bg_mod
+
+    yolo_mod = load_src_module(
+        "hydra_suite/core/detectors/yolo_detector.py",
+        "hydra_suite.core.detectors.yolo_detector",
+        stubs=stubs,
+    )
+    sys.modules["hydra_suite.core.detectors.yolo_detector"] = yolo_mod
+
+    filter_mod = load_src_module(
+        "hydra_suite/core/detectors/detection_filter.py",
+        "hydra_suite.core.detectors.detection_filter",
+        stubs=stubs,
+    )
+    sys.modules["hydra_suite.core.detectors.detection_filter"] = filter_mod
+
+    factory_mod = load_src_module(
+        "hydra_suite/core/detectors/factory.py",
+        "hydra_suite.core.detectors.factory",
+        stubs=stubs,
+    )
+    sys.modules["hydra_suite.core.detectors.factory"] = factory_mod
+
+    # Assemble combined namespace matching what the old engine.py exported
+    mod = types.ModuleType("detectors_engine_under_test")
+    mod.ObjectDetector = bg_mod.ObjectDetector
+    mod.YOLOOBBDetector = yolo_mod.YOLOOBBDetector
+    mod.create_detector = factory_mod.create_detector
+    mod.DetectionFilter = filter_mod.DetectionFilter
+    mod._normalize_detection_ids = utils_mod._normalize_detection_ids
+    mod.Path = Path
+    return mod
 
 
 def test_object_detector_detect_objects_filters_and_limits_count() -> None:
@@ -460,50 +524,45 @@ def test_sequential_stage2_obb_runs_in_batched_crop_call() -> None:
 
 
 def test_headtail_hint_uses_batched_classify_call() -> None:
+    """Verify _compute_headtail_hints delegates to analyzer.analyze_crops."""
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
+
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
-    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6}
-    det.device = "cpu"
-    det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
-        np.zeros((12, 24, 3), dtype=np.uint8),
-        0.5,
-    )
+    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6, "INDIVIDUAL_CROP_PADDING": 0.1}
 
-    calls = {"count": 0, "source_is_list": False}
+    calls = {"count": 0}
 
-    def _predict(*, source, conf, device, verbose):
+    def _mock_analyze(frames, per_frame_obb_corners):
         calls["count"] += 1
-        calls["source_is_list"] = isinstance(source, list)
-        return [
-            types.SimpleNamespace(
-                probs=types.SimpleNamespace(top1=0, top1conf=0.95),
-                names={0: "right"},
-            )
-            for _ in source
-        ]
+        # Return (heading=0.5, conf=0.95, directed=1) for each detection
+        return [[(0.5, 0.95, 1) for _ in corners] for corners in per_frame_obb_corners]
 
-    det.headtail_model = types.SimpleNamespace(predict=_predict)
+    analyzer = HeadTailAnalyzer.__new__(HeadTailAnalyzer)
+    analyzer._backend = "yolo"
+    analyzer._model = object()
+    analyzer.analyze_crops = _mock_analyze
+    det._headtail_analyzer = analyzer
 
     obb_corners = [
         np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
         np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
     ]
-    heading_hints, directed_mask = det._compute_headtail_hints(
+    heading_hints, directed_mask, _affines = det._compute_headtail_hints(
         np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
     )
 
     assert calls["count"] == 1
-    assert calls["source_is_list"] is True
     assert directed_mask == [1, 1]
     assert np.allclose(heading_hints, [0.5, 0.5], rtol=1e-6, atol=1e-6)
 
 
 def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
-    mod = _load_engine_module()
-    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
-    normalized = det._validate_headtail_class_names(
+    normalized = HeadTailAnalyzer._validate_class_names(
         ["head_up", "head_down", "head_left", "head_right", "head_unknown"],
+        strict=True,
         source="test model",
     )
 
@@ -511,20 +570,24 @@ def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
 
 
 def test_validate_headtail_class_names_rejects_partial_schema() -> None:
-    mod = _load_engine_module()
-    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     with pytest.raises(ValueError, match="Expected exactly"):
-        det._validate_headtail_class_names(
-            ["left", "right", "unknown"], source="test model"
+        HeadTailAnalyzer._validate_class_names(
+            ["left", "right", "unknown"], strict=True, source="test model"
         )
 
 
 def test_load_headtail_yolo_model_requires_supported_schema() -> None:
+    """Loading a YOLO head-tail model populates _headtail_analyzer."""
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
+
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
     det.device = "cpu"
-    det._try_load_tiny_head_classifier = lambda _path: None
+    det.params = {}
+
+    # Mock _load_model_for_task to return a fake YOLO model
     det._load_model_for_task = lambda _path, task: (
         types.SimpleNamespace(
             names={0: "up", 1: "down", 2: "left", 3: "right", 4: "unknown"}
@@ -532,42 +595,104 @@ def test_load_headtail_yolo_model_requires_supported_schema() -> None:
         "cpu",
     )
 
-    det._load_headtail_model("headtail.pt")
+    # Monkey-patch HeadTailAnalyzer constructor to simulate tiny-load failure
+    original_init = HeadTailAnalyzer.__init__
 
-    assert det.headtail_backend == "yolo"
-    assert det.headtail_class_names == ["up", "down", "left", "right", "unknown"]
+    def _skip_init(self, *args, **kwargs):
+        self._backend = "none"
+        self._model = None
+        self._class_names = None
+        self._input_size = None
+        self._device = "cpu"
+        self._conf_threshold = 0.5
+        self._ref_ar = 2.0
+        self._canonical_margin = 1.3
+        self._padding_fraction = 0.3
+        self._predict_device = None
+
+    HeadTailAnalyzer.__init__ = _skip_init
+    try:
+        det._load_headtail_model("headtail.pt")
+    finally:
+        HeadTailAnalyzer.__init__ = original_init
+
+    assert det._headtail_analyzer is not None
+    assert det._headtail_analyzer.backend == "yolo"
+    assert det._headtail_analyzer.class_names == [
+        "up",
+        "down",
+        "left",
+        "right",
+        "unknown",
+    ]
 
 
 def test_load_headtail_model_rejects_invalid_named_schema() -> None:
+    """Strict validation rejects unsupported 3-class schema."""
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
+
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
     det.device = "cpu"
-    det._try_load_tiny_head_classifier = lambda _path: (
-        object(),
-        ["left", "right", "unknown"],
-        (128, 64),
-    )
+    det.params = {}
 
-    with pytest.raises(ValueError, match="Expected exactly"):
-        det._load_headtail_model("bad_headtail.pth")
+    # Monkey-patch HeadTailAnalyzer constructor to load with bad class names
+    original_init = HeadTailAnalyzer.__init__
+
+    def _load_with_bad_names(self, *args, **kwargs):
+        self._backend = "classkit_tiny"
+        self._model = object()
+        self._class_names = ["left", "right", "unknown"]
+        self._input_size = (128, 64)
+        self._device = "cpu"
+        self._conf_threshold = 0.5
+        self._ref_ar = 2.0
+        self._canonical_margin = 1.3
+        self._padding_fraction = 0.3
+        self._predict_device = None
+
+    HeadTailAnalyzer.__init__ = _load_with_bad_names
+    try:
+        with pytest.raises(ValueError, match="Expected exactly"):
+            det._load_headtail_model("bad_headtail.pth")
+    finally:
+        HeadTailAnalyzer.__init__ = original_init
 
 
 def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
+    """classkit_tiny backend abstains on up/down/unknown directions."""
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
+
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
-    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6}
-    det.headtail_backend = "classkit_tiny"
-    det.headtail_model = object()
-    det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
-        np.zeros((12, 24, 3), dtype=np.uint8),
-        0.5,
-    )
-    det._predict_headtail_results = lambda _crops: [
-        ("up", 0.95),
-        ("unknown", 0.99),
-        ("left", 0.92),
-        ("right", 0.91),
-    ]
+    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6, "INDIVIDUAL_CROP_PADDING": 0.1}
+
+    # Build a mock analyzer that returns canned classkit_tiny-style results
+    # simulating up/unknown/left/right predictions
+    def _mock_analyze(frames, per_frame_obb_corners):
+        results = []
+        for corners in per_frame_obb_corners:
+            frame_results = []
+            # Canned: up(abstain), unknown(abstain), left(directed), right(directed)
+            canned = [
+                (float("nan"), 0.95, 0),  # up -> abstain
+                (float("nan"), 0.99, 0),  # unknown -> abstain
+                ((0.5 + np.pi) % (2 * np.pi), 0.92, 1),  # left -> directed
+                (0.5, 0.91, 1),  # right -> directed
+            ]
+            for di in range(len(corners)):
+                if di < len(canned):
+                    frame_results.append(canned[di])
+                else:
+                    frame_results.append((float("nan"), 0.0, 0))
+            results.append(frame_results)
+        return results
+
+    analyzer = HeadTailAnalyzer.__new__(HeadTailAnalyzer)
+    analyzer._backend = "classkit_tiny"
+    analyzer._model = object()
+    analyzer.analyze_crops = _mock_analyze
+    det._headtail_analyzer = analyzer
 
     obb_corners = [
         np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
@@ -576,7 +701,7 @@ def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
         np.array([[9, 9], [11, 9], [11, 10], [9, 10]], dtype=np.float32),
     ]
 
-    heading_hints, directed_mask = det._compute_headtail_hints(
+    heading_hints, directed_mask, _affines = det._compute_headtail_hints(
         np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
     )
 
@@ -631,33 +756,30 @@ def test_filter_overlapping_uses_precise_iou_for_all_overlaps() -> None:
 
 
 def test_loads_notebook_tiny_headtail_state_dict(tmp_path: Path) -> None:
-    mod = _load_engine_module()
-    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
-    det.params = {}
-    det.device = "cpu"
+    """HeadTailAnalyzer loads a notebook-style raw state_dict checkpoint."""
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
-    # Build and save a notebook-style raw state_dict checkpoint.
-    tiny = det._build_tiny_head_classifier(input_size=(128, 64))
+    # Build and save a notebook-style raw state_dict checkpoint
+    tiny = HeadTailAnalyzer._build_tiny_classifier(input_size=(128, 64))
     ckpt_path = tmp_path / "tiny_headtail.pth"
     import torch
 
     torch.save(tiny.state_dict(), ckpt_path)
 
-    det._load_headtail_model(str(ckpt_path))
+    analyzer = HeadTailAnalyzer(
+        model_path=str(ckpt_path), device="cpu", conf_threshold=0.5
+    )
 
-    assert det.headtail_backend == "tiny"
-    assert det.headtail_model is not None
-    assert det.headtail_predict_device is None
+    assert analyzer.backend == "tiny"
+    assert analyzer.is_available
+    assert analyzer.model is not None
 
 
 def test_tiny_headtail_inference_converts_bgr_to_rgb() -> None:
-    mod = _load_engine_module()
-    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
-    det.params = {}
-    det.device = "cpu"
-    det.headtail_backend = "tiny"
-
+    """HeadTailAnalyzer._predict converts BGR crops to RGB for tiny backend."""
     import torch.nn as nn
+
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     class _Probe(nn.Module):
         # Logit uses channel0 - channel2. If RGB conversion is correct, BGR-red
@@ -666,11 +788,16 @@ def test_tiny_headtail_inference_converts_bgr_to_rgb() -> None:
             v = x[:, 0, 0, 0] - x[:, 2, 0, 0]
             return v.unsqueeze(1) * 10.0
 
-    det.headtail_model = _Probe().eval()
-    det.headtail_predict_device = None
+    analyzer = HeadTailAnalyzer.from_components(
+        model=_Probe().eval(),
+        backend="tiny",
+        class_names=None,
+        input_size=None,
+        device="cpu",
+    )
 
     bgr_red = np.array([[[0, 0, 255]]], dtype=np.uint8)
-    probs = det._predict_headtail_results([bgr_red])
+    probs = analyzer._predict([bgr_red])
 
     assert len(probs) == 1
     assert float(probs[0]) > 0.9

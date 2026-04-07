@@ -1,14 +1,15 @@
+import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
 
-from multi_tracker.core.identity.oriented_video import (
+from hydra_suite.core.identity.dataset.oriented_video import (
     OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
 )
-from multi_tracker.data.detection_cache import DetectionCache
+from hydra_suite.data.detection_cache import DetectionCache
 
 
 def _write_video(path: Path, colors: list[tuple[int, int, int]]) -> None:
@@ -180,3 +181,110 @@ def test_oriented_track_video_export_streams_from_source_video_and_caches(
         assert int(cap2.get(cv2.CAP_PROP_FRAME_COUNT)) == 1
     finally:
         cap2.release()
+
+
+def test_oriented_track_video_prefers_directed_heading_and_preserves_branch(
+    tmp_path: Path,
+):
+    dataset_dir = tmp_path / "individual_crops" / "run_20260311"
+    cache_path = tmp_path / "detections.npz"
+    interp_npz_path = tmp_path / "interpolated_rois.npz"
+    final_csv_path = tmp_path / "tracks_final.csv"
+    video_path = tmp_path / "source.mp4"
+
+    _write_video(video_path, [(0, 0, 255), (0, 255, 0)])
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=1) as cache:
+        cache.add_frame(
+            0,
+            meas=[np.array([20.0, 24.0, math.pi], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(20.0, 24.0, 6.0)],
+            detection_ids=[101],
+            heading_hints=[0.0],
+            directed_mask=[1],
+        )
+        cache.add_frame(1, [], [], [], [])
+        cache.save()
+
+    np.savez_compressed(
+        str(interp_npz_path),
+        frame_id=np.array([1], dtype=np.int64),
+        trajectory_id=np.array([1], dtype=np.int64),
+        filename=np.array([""], dtype=object),
+        cx=np.array([28.0], dtype=np.float32),
+        cy=np.array([24.0], dtype=np.float32),
+        w=np.array([12.0], dtype=np.float32),
+        h=np.array([12.0], dtype=np.float32),
+        theta=np.array([math.pi], dtype=np.float32),
+        interp_from_start=np.array([0], dtype=np.int64),
+        interp_from_end=np.array([0], dtype=np.int64),
+        interp_index=np.array([1], dtype=np.int64),
+        interp_total=np.array([1], dtype=np.int64),
+        obb_corners=np.array([_square(28.0, 24.0, 6.0)], dtype=np.float32),
+    )
+
+    pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 1,
+                "FrameID": 0,
+                "DetectionID": 101,
+                "Theta": math.pi,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 1,
+                "DetectionID": np.nan,
+                "Theta": math.pi,
+                "State": "occluded",
+            },
+        ]
+    ).to_csv(final_csv_path, index=False)
+
+    exporter = OrientedTrackVideoExporter(
+        dataset_dir,
+        final_csv_path,
+        video_path=video_path,
+        detection_cache_path=cache_path,
+        interpolated_roi_npz_path=interp_npz_path,
+        fps=5.0,
+        padding_fraction=0.0,
+    )
+
+    trajectories_df = exporter._load_final_dataframe()
+    interp_lookup = exporter._load_interpolated_roi_lookup()
+    frame_bundles, _track_sizes, missing_rows = exporter._build_frame_bundles(
+        trajectories_df,
+        interp_lookup,
+    )
+
+    assert missing_rows == 0
+    task0 = frame_bundles[0].tasks[0]
+    task1 = frame_bundles[1].tasks[0]
+    expected_affine, expected_w, expected_h = exporter._compute_affine(
+        20.0,
+        24.0,
+        12.0,
+        12.0,
+        0.0,
+    )
+    interp_expected_affine, interp_expected_w, interp_expected_h = (
+        exporter._compute_affine(
+            28.0,
+            24.0,
+            12.0,
+            12.0,
+            0.0,
+        )
+    )
+
+    assert np.allclose(task0.affine, expected_affine)
+    assert task0.out_w == expected_w
+    assert task0.out_h == expected_h
+    assert np.allclose(task1.affine, interp_expected_affine)
+    assert task1.out_w == interp_expected_w
+    assert task1.out_h == interp_expected_h

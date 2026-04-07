@@ -1,0 +1,1 @@
+"""Bundled skeleton configuration files."""

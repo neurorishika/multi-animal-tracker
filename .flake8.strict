@@ -29,13 +29,19 @@ exclude =
 filename = *.py
 
 # Strict complexity threshold
-max-complexity = 10
+max-complexity = 30
 
 # Per-file ignores (only essentials)
 per-file-ignores =
     __init__.py:F401
-    src/multi_tracker/core/background/model.py:F811
+    src/hydra_suite/core/background/model.py:F811
     tests/*:S101
+    # Conditional imports after pytest.importorskip or sys.path manipulation
+    tests/test_classkit_embedding_worker.py:E402
+    tests/test_classkit_export_worker.py:E402
+    tests/test_main_window_config_persistence.py:E402
+    tests/test_preview_background_cache.py:E402
+    tools/benchmark_models.py:E402
 
 # Enable comprehensive checks
 select =

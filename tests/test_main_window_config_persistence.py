@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from multi_tracker.gui.main_window import MainWindow
+from hydra_suite.trackerkit.gui.main_window import MainWindow
 
 
 @pytest.fixture(scope="module")
@@ -67,11 +67,11 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     tmp_path: Path,
 ) -> None:
     window = _make_main_window(monkeypatch)
-    window.combo_yolo_headtail_model_type.setCurrentText("tiny")
-    window._refresh_yolo_headtail_model_combo()
+    window._identity_panel.combo_yolo_headtail_model_type.setCurrentText("tiny")
+    window._identity_panel._refresh_yolo_headtail_model_combo()
 
     selected_model = _select_first_model_with_suffix(
-        window.combo_yolo_headtail_model,
+        window._identity_panel.combo_yolo_headtail_model,
         ".pth",
     )
     assert selected_model
@@ -85,8 +85,14 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     reloaded_window = _make_main_window(monkeypatch)
     reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
 
-    assert reloaded_window.combo_yolo_headtail_model_type.currentText() == "tiny"
-    assert reloaded_window._get_selected_yolo_headtail_model_path() == selected_model
+    assert (
+        reloaded_window._identity_panel.combo_yolo_headtail_model_type.currentText()
+        == "tiny"
+    )
+    assert (
+        reloaded_window._identity_panel._get_selected_yolo_headtail_model_path()
+        == selected_model
+    )
     reloaded_window.close()
 
 
@@ -109,11 +115,14 @@ def test_xanylabeling_env_preference_restores_and_updates(
 
     window = MainWindow()
 
-    assert window.combo_xanylabeling_env.currentText() == "x-anylabeling-beta"
+    assert (
+        window._dataset_panel.combo_xanylabeling_env.currentText()
+        == "x-anylabeling-beta"
+    )
 
-    window.combo_xanylabeling_env.setCurrentText("x-anylabeling-alpha")
+    window._dataset_panel.combo_xanylabeling_env.setCurrentText("x-anylabeling-alpha")
 
-    assert window._selected_xanylabeling_env() == "x-anylabeling-alpha"
+    assert window._dataset_panel._selected_xanylabeling_env() == "x-anylabeling-alpha"
     assert window.advanced_config["xanylabeling_env"] == "x-anylabeling-alpha"
     assert saved_preferences
     assert saved_preferences[-1]["xanylabeling_env"] == "x-anylabeling-alpha"
@@ -127,11 +136,11 @@ def test_confidence_density_toggle_roundtrip_updates_visibility(
 ) -> None:
     window = _make_main_window(monkeypatch)
 
-    assert not window.g_density.isHidden()
+    assert not window._tracking_panel.g_density.isHidden()
 
-    window.chk_enable_confidence_density_map.setChecked(False)
+    window._tracking_panel.chk_enable_confidence_density_map.setChecked(False)
 
-    assert window.g_density.isHidden()
+    assert window._tracking_panel.g_density.isHidden()
     assert window.get_parameters_dict()["ENABLE_CONFIDENCE_DENSITY_MAP"] is False
 
     config_path = tmp_path / "confidence_density_toggle.json"
@@ -143,10 +152,13 @@ def test_confidence_density_toggle_roundtrip_updates_visibility(
     reloaded_window = _make_main_window(monkeypatch)
     reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
 
-    assert reloaded_window.chk_enable_confidence_density_map.isChecked() is False
-    assert reloaded_window.g_density.isHidden()
+    assert (
+        reloaded_window._tracking_panel.chk_enable_confidence_density_map.isChecked()
+        is False
+    )
+    assert reloaded_window._tracking_panel.g_density.isHidden()
 
-    reloaded_window.chk_enable_confidence_density_map.setChecked(True)
+    reloaded_window._tracking_panel.chk_enable_confidence_density_map.setChecked(True)
 
-    assert not reloaded_window.g_density.isHidden()
+    assert not reloaded_window._tracking_panel.g_density.isHidden()
     reloaded_window.close()

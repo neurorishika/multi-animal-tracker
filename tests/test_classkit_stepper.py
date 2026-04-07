@@ -2,7 +2,7 @@
 
 import pytest
 
-from multi_tracker.classkit.config.schemas import Factor, LabelingScheme
+from hydra_suite.classkit.config.schemas import Factor, LabelingScheme
 
 
 def make_scheme(factor_labels: list[list[str]]) -> LabelingScheme:
@@ -17,7 +17,7 @@ def make_scheme(factor_labels: list[list[str]]) -> LabelingScheme:
 
 
 def test_stepper_advances_on_pick():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"], ["x", "y"]])
     state = StepperState(scheme)
@@ -34,7 +34,7 @@ def test_stepper_advances_on_pick():
 
 
 def test_stepper_back():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"], ["x", "y"]])
     state = StepperState(scheme)
@@ -45,7 +45,7 @@ def test_stepper_back():
 
 
 def test_stepper_reset():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"], ["x", "y"]])
     state = StepperState(scheme)
@@ -59,7 +59,7 @@ def test_stepper_reset():
 
 
 def test_stepper_single_factor_complete_immediately():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["young", "old"]])
     state = StepperState(scheme)
@@ -69,7 +69,7 @@ def test_stepper_single_factor_complete_immediately():
 
 
 def test_stepper_invalid_pick_raises():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"]])
     state = StepperState(scheme)
@@ -78,7 +78,7 @@ def test_stepper_invalid_pick_raises():
 
 
 def test_stepper_back_at_start_does_nothing():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"]])
     state = StepperState(scheme)
@@ -87,7 +87,7 @@ def test_stepper_back_at_start_does_nothing():
 
 
 def test_stepper_composite_label_raises_when_incomplete():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"], ["x", "y"]])
     state = StepperState(scheme)
@@ -97,7 +97,7 @@ def test_stepper_composite_label_raises_when_incomplete():
 
 
 def test_stepper_pick_when_complete_raises():
-    from multi_tracker.classkit.gui.widgets.factor_stepper import StepperState
+    from hydra_suite.classkit.gui.widgets.factor_stepper import StepperState
 
     scheme = make_scheme([["a", "b"]])
     state = StepperState(scheme)

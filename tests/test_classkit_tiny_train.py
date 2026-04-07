@@ -20,7 +20,7 @@ def _make_dummy_dataset(root: Path, classes: list[str], n_per_class: int = 4):
 
 
 def test_iter_classify_samples_general(tmp_path):
-    from multi_tracker.training.runner import _iter_classify_samples
+    from hydra_suite.training.runner import _iter_classify_samples
 
     _make_dummy_dataset(tmp_path, ["cat", "dog", "bird"])
     samples = list(_iter_classify_samples(tmp_path, "train"))
@@ -30,7 +30,7 @@ def test_iter_classify_samples_general(tmp_path):
 
 
 def test_iter_classify_samples_returns_sorted_class_order(tmp_path):
-    from multi_tracker.training.runner import _iter_classify_samples
+    from hydra_suite.training.runner import _iter_classify_samples
 
     _make_dummy_dataset(tmp_path, ["zebra", "apple", "mango"])
     samples = list(_iter_classify_samples(tmp_path, "train"))
@@ -43,7 +43,7 @@ def test_iter_classify_samples_returns_sorted_class_order(tmp_path):
 
 
 def test_iter_classify_samples_empty_split(tmp_path):
-    from multi_tracker.training.runner import _iter_classify_samples
+    from hydra_suite.training.runner import _iter_classify_samples
 
     # Non-existent split should yield nothing, not raise
     samples = list(_iter_classify_samples(tmp_path, "train"))
@@ -51,7 +51,7 @@ def test_iter_classify_samples_empty_split(tmp_path):
 
 
 def test_build_class_to_idx_is_stable_across_splits(tmp_path):
-    from multi_tracker.training.runner import _build_class_to_idx
+    from hydra_suite.training.runner import _build_class_to_idx
 
     # Train has three classes, val has only one. Mapping must remain global.
     for cls in ("ant", "bee", "cat"):
@@ -66,10 +66,7 @@ def test_iter_classify_samples_uses_shared_mapping_for_sparse_val_split(tmp_path
     import numpy as np
 
     cv2 = pytest.importorskip("cv2")
-    from multi_tracker.training.runner import (
-        _build_class_to_idx,
-        _iter_classify_samples,
-    )
+    from hydra_suite.training.runner import _build_class_to_idx, _iter_classify_samples
 
     # Train covers all classes, val includes only one class.
     for cls in ("ant", "bee", "cat"):
@@ -94,13 +91,13 @@ def test_train_tiny_classify_runs(tmp_path):
     pytest.importorskip("torch")
     pytest.importorskip("cv2")
 
-    from multi_tracker.training.contracts import (
+    from hydra_suite.training.contracts import (
         TinyHeadTailParams,
         TrainingHyperParams,
         TrainingRole,
         TrainingRunSpec,
     )
-    from multi_tracker.training.runner import run_training
+    from hydra_suite.training.runner import run_training
 
     _make_dummy_dataset(tmp_path / "dataset", ["a", "b", "c"], n_per_class=4)
 
@@ -125,13 +122,13 @@ def test_train_tiny_classify_multihead_role(tmp_path):
     pytest.importorskip("torch")
     pytest.importorskip("cv2")
 
-    from multi_tracker.training.contracts import (
+    from hydra_suite.training.contracts import (
         TinyHeadTailParams,
         TrainingHyperParams,
         TrainingRole,
         TrainingRunSpec,
     )
-    from multi_tracker.training.runner import run_training
+    from hydra_suite.training.runner import run_training
 
     _make_dummy_dataset(tmp_path / "dataset", ["x", "y"], n_per_class=4)
 
@@ -152,7 +149,7 @@ def test_train_tiny_classify_multihead_role(tmp_path):
 
 
 def test_extract_best_val_acc_from_results_csv(tmp_path):
-    from multi_tracker.training.runner import _extract_best_val_acc_from_results_csv
+    from hydra_suite.training.runner import _extract_best_val_acc_from_results_csv
 
     csv_path = tmp_path / "results.csv"
     csv_path.write_text(
@@ -172,13 +169,13 @@ def test_train_tiny_classify_rebalance_modes_smoke(tmp_path):
     pytest.importorskip("torch")
     pytest.importorskip("cv2")
 
-    from multi_tracker.training.contracts import (
+    from hydra_suite.training.contracts import (
         TinyHeadTailParams,
         TrainingHyperParams,
         TrainingRole,
         TrainingRunSpec,
     )
-    from multi_tracker.training.runner import run_training
+    from hydra_suite.training.runner import run_training
 
     _make_dummy_dataset(tmp_path / "dataset", ["maj", "min"], n_per_class=3)
 

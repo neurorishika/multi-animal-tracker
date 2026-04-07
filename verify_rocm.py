@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ROCm Verification Script for Multi-Animal-Tracker
+ROCm Verification Script for Hydra Suite
 
 This script checks if your ROCm installation is properly configured
 and if all required components are available.
@@ -235,7 +235,7 @@ def check_performance():
 
 def main():
     """Main verification routine."""
-    print_header("Multi-Animal-Tracker - ROCm Verification")
+    print_header("HYDRA Suite - ROCm Verification")
     print("This script checks your ROCm installation and Python packages.\n")
 
     # System checks
@@ -252,7 +252,7 @@ def main():
     print_header("Summary")
     if system_ok and python_ok:
         print("✓ ROCm installation appears to be working correctly!")
-        print("\nYou can now run the multi-animal tracker with ROCm acceleration.")
+        print("\nYou can now run the HYDRA Suite with ROCm acceleration.")
         print("Set in your config:")
         print('  "ENABLE_GPU_BACKGROUND": true,')
         print('  "GPU_DEVICE_ID": 0,')

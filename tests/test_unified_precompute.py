@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from multi_tracker.core.tracking.precompute import CropConfig, UnifiedPrecompute
+from hydra_suite.core.tracking.precompute import CropConfig, UnifiedPrecompute
 
 # ---------------------------------------------------------------------------
 # CropConfig
@@ -19,6 +19,7 @@ def test_crop_config_defaults():
     assert cfg.padding_fraction == 0.1
     assert cfg.suppress_foreign is True
     assert cfg.bg_color == (0, 0, 0)
+    assert cfg.reference_aspect_ratio == 2.0
 
 
 def test_crop_config_custom():
@@ -53,7 +54,7 @@ def _make_cap(frame=None):
 
 def _make_det_cache():
     dc = Mock()
-    dc.get_frame.return_value = ([], [], [], [], [], [], [], [])
+    dc.get_frame.return_value = ([], [], [], [], [], [], [], [], None)
     return dc
 
 
@@ -111,8 +112,8 @@ def test_process_frame_called_with_empty_crops_when_no_detections():
     up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 0, 1.0, None)
 
     args = p.process_frame.call_args[0]  # positional args
-    # args: (frame_idx, crops, det_ids, all_obb, crop_offsets)
-    frame_idx, crops, det_ids, all_obb, crop_offsets = args
+    # args: (frame_idx, crops, det_ids, crop_det_indices, all_obb, crop_offsets)
+    frame_idx, crops, det_ids, crop_det_indices, all_obb, crop_offsets = args
     assert frame_idx == 0
     assert crops == []
     assert det_ids == []
@@ -267,6 +268,7 @@ def test_crop_offsets_passed_to_process_frame():
         [0],
         [0.0],
         [False],
+        None,
     )
     detector = _make_detector()
     detector.filter_raw_detections.return_value = (
@@ -281,14 +283,14 @@ def test_crop_offsets_passed_to_process_frame():
     )
 
     with patch(
-        "multi_tracker.core.tracking.precompute.extract_one_crop",
+        "hydra_suite.core.tracking.precompute.extract_one_crop",
         return_value=(fake_crop, fake_offset, None),
     ):
         up = UnifiedPrecompute([p], CropConfig())
         up.run(_make_cap(), det_cache, detector, 0, 0, 1.0, None)
 
     args = p.process_frame.call_args[0]
-    frame_idx, crops, det_ids, all_obb, crop_offsets = args
+    frame_idx, crops, det_ids, crop_det_indices, all_obb, crop_offsets = args
     assert len(crop_offsets) == 1
     assert crop_offsets[0] == (5, 7)  # int tuple
 
@@ -346,8 +348,8 @@ def test_all_cache_hit_nonfatal_finalize_raises_returns_none_and_warns():
 
 def test_apriltag_phase_cache_miss_creates_detector(tmp_path):
     cache_path = tmp_path / "tags_0_9.npz"  # does not exist
-    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
-        from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+    with patch("hydra_suite.core.tracking.precompute.AprilTagDetector") as MockDet:
+        from hydra_suite.core.tracking.precompute import AprilTagPrecomputePhase
 
         phase = AprilTagPrecomputePhase(
             detector_config=Mock(),
@@ -362,11 +364,11 @@ def test_apriltag_phase_cache_miss_creates_detector(tmp_path):
 
 def test_apriltag_phase_process_frame_empty_crops_adds_empty_frame(tmp_path):
     cache_path = tmp_path / "tags_0_9.npz"
-    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+    with patch("hydra_suite.core.tracking.precompute.AprilTagDetector") as MockDet:
         mock_detector = MockDet.return_value
         mock_detector.detect_in_crops.return_value = []
 
-        from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+        from hydra_suite.core.tracking.precompute import AprilTagPrecomputePhase
 
         phase = AprilTagPrecomputePhase(
             detector_config=Mock(),
@@ -375,7 +377,7 @@ def test_apriltag_phase_process_frame_empty_crops_adds_empty_frame(tmp_path):
             end_frame=0,
             video_path="",
         )
-        phase.process_frame(0, [], [], [], [])
+        phase.process_frame(0, [], [], [], [], [])
         mock_detector.detect_in_crops.assert_not_called()
         # finalize should still succeed (empty frame was recorded)
         path = phase.finalize()
@@ -385,11 +387,11 @@ def test_apriltag_phase_process_frame_empty_crops_adds_empty_frame(tmp_path):
 def test_apriltag_phase_process_frame_calls_detect_in_crops(tmp_path):
     cache_path = tmp_path / "tags_0_0.npz"
     crop = np.zeros((20, 20, 3), dtype=np.uint8)
-    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+    with patch("hydra_suite.core.tracking.precompute.AprilTagDetector") as MockDet:
         mock_detector = MockDet.return_value
         mock_detector.detect_in_crops.return_value = []
 
-        from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+        from hydra_suite.core.tracking.precompute import AprilTagPrecomputePhase
 
         phase = AprilTagPrecomputePhase(
             detector_config=Mock(),
@@ -398,7 +400,7 @@ def test_apriltag_phase_process_frame_calls_detect_in_crops(tmp_path):
             end_frame=0,
             video_path="",
         )
-        phase.process_frame(0, [crop], [0], [], [(5, 10)])
+        phase.process_frame(0, [crop], [0], [0], [], [(5, 10)])
         mock_detector.detect_in_crops.assert_called_once_with(
             [crop], [(5, 10)], det_indices=[0]
         )
@@ -407,8 +409,8 @@ def test_apriltag_phase_process_frame_calls_detect_in_crops(tmp_path):
 
 def test_apriltag_phase_process_frame_noop_on_cache_hit(tmp_path):
     """process_frame does not call detect_in_crops when the cache was hit."""
-    from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
-    from multi_tracker.data.tag_observation_cache import TagObservationCache as TOC
+    from hydra_suite.core.tracking.precompute import AprilTagPrecomputePhase
+    from hydra_suite.data.tag_observation_cache import TagObservationCache as TOC
 
     cache_path = tmp_path / "tags_0_2.npz"
     # Write a valid compatible cache covering frames 0-2
@@ -426,7 +428,7 @@ def test_apriltag_phase_process_frame_noop_on_cache_hit(tmp_path):
     )
     writer.close()
 
-    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+    with patch("hydra_suite.core.tracking.precompute.AprilTagDetector") as MockDet:
         phase = AprilTagPrecomputePhase(
             detector_config=Mock(),
             cache_path=cache_path,
@@ -436,15 +438,15 @@ def test_apriltag_phase_process_frame_noop_on_cache_hit(tmp_path):
         )
         assert phase.has_cache_hit() is True
         crop = np.zeros((20, 20, 3), dtype=np.uint8)
-        phase.process_frame(0, [crop], [0], [], [(0, 0)])
+        phase.process_frame(0, [crop], [0], [0], [], [(0, 0)])
         # Detector was never created (cache hit) and detect_in_crops never called
         MockDet.assert_not_called()
 
 
 def test_apriltag_phase_stale_cache_triggers_miss(tmp_path):
     """Cache exists for frames 0-2 but request is for 0-9 → cache miss."""
-    from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
-    from multi_tracker.data.tag_observation_cache import TagObservationCache as TOC
+    from hydra_suite.core.tracking.precompute import AprilTagPrecomputePhase
+    from hydra_suite.data.tag_observation_cache import TagObservationCache as TOC
 
     cache_path = tmp_path / "tags_0_2.npz"
     # Write a valid cache covering only frames 0-2
@@ -462,7 +464,7 @@ def test_apriltag_phase_stale_cache_triggers_miss(tmp_path):
     )
     writer.close()
 
-    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+    with patch("hydra_suite.core.tracking.precompute.AprilTagDetector") as MockDet:
         phase = AprilTagPrecomputePhase(
             detector_config=Mock(),
             cache_path=cache_path,
@@ -475,8 +477,8 @@ def test_apriltag_phase_stale_cache_triggers_miss(tmp_path):
 
 
 def test_apriltag_phase_finalize_returns_path_on_hit(tmp_path):
-    from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
-    from multi_tracker.data.tag_observation_cache import TagObservationCache as TOC
+    from hydra_suite.core.tracking.precompute import AprilTagPrecomputePhase
+    from hydra_suite.data.tag_observation_cache import TagObservationCache as TOC
 
     cache_path = tmp_path / "tags_0_0.npz"
     writer = TOC(str(cache_path), mode="w", start_frame=0, end_frame=0)
@@ -492,7 +494,7 @@ def test_apriltag_phase_finalize_returns_path_on_hit(tmp_path):
     )
     writer.close()
 
-    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector"):
+    with patch("hydra_suite.core.tracking.precompute.AprilTagDetector"):
         phase = AprilTagPrecomputePhase(
             detector_config=Mock(),
             cache_path=cache_path,
@@ -511,11 +513,11 @@ def test_apriltag_phase_finalize_returns_path_on_hit(tmp_path):
 
 
 def test_cnn_phase_has_cache_hit_false_when_no_file(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
-    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+    from hydra_suite.core.identity.classification.cnn import CNNIdentityConfig
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn_0_9.npz"
-    with patch("multi_tracker.core.tracking.precompute.CNNIdentityBackend"):
+    with patch("hydra_suite.core.tracking.precompute.CNNIdentityBackend"):
         phase = CNNPrecomputePhase(
             config=CNNIdentityConfig(model_path="/fake/model.pth"),
             model_path="/fake/model.pth",
@@ -526,8 +528,8 @@ def test_cnn_phase_has_cache_hit_false_when_no_file(tmp_path):
 
 
 def test_cnn_phase_has_cache_hit_true_when_file_exists(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
-    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+    from hydra_suite.core.identity.classification.cnn import CNNIdentityConfig
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn.npz"
     cache_path.touch()  # create the file
@@ -541,15 +543,15 @@ def test_cnn_phase_has_cache_hit_true_when_file_exists(tmp_path):
 
 
 def test_cnn_phase_process_frame_batches_crops(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import (
+    from hydra_suite.core.identity.classification.cnn import (
         ClassPrediction,
         CNNIdentityConfig,
     )
-    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn.npz"
     with patch(
-        "multi_tracker.core.tracking.precompute.CNNIdentityBackend"
+        "hydra_suite.core.tracking.precompute.CNNIdentityBackend"
     ) as MockBackend:
         mock_backend = MockBackend.return_value
         mock_backend.predict_batch.return_value = [
@@ -566,8 +568,8 @@ def test_cnn_phase_process_frame_batches_crops(tmp_path):
 
         crop = np.zeros((20, 20, 3), dtype=np.uint8)
         # Two frames each with one crop — batch_size=2, so flush happens after frame 1
-        phase.process_frame(0, [crop], [0], [], [(0, 0)])
-        phase.process_frame(1, [crop], [0], [], [(0, 0)])
+        phase.process_frame(0, [crop], [0], [0], [], [(0, 0)])
+        phase.process_frame(1, [crop], [0], [0], [], [(0, 0)])
         # One batch of 2 should have been flushed
         assert mock_backend.predict_batch.call_count == 1
 
@@ -576,15 +578,15 @@ def test_cnn_phase_process_frame_batches_crops(tmp_path):
 
 
 def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import (
+    from hydra_suite.core.identity.classification.cnn import (
         ClassPrediction,
         CNNIdentityConfig,
     )
-    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn_partial.npz"
     with patch(
-        "multi_tracker.core.tracking.precompute.CNNIdentityBackend"
+        "hydra_suite.core.tracking.precompute.CNNIdentityBackend"
     ) as MockBackend:
         mock_backend = MockBackend.return_value
         mock_backend.predict_batch.return_value = [
@@ -600,7 +602,7 @@ def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
 
         crop = np.zeros((20, 20, 3), dtype=np.uint8)
         phase.process_frame(
-            0, [crop], [0], [], [(0, 0)]
+            0, [crop], [0], [0], [], [(0, 0)]
         )  # 1 crop, batch=10 → not flushed yet
         assert mock_backend.predict_batch.call_count == 0
 
@@ -610,12 +612,12 @@ def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
 
 
 def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
-    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+    from hydra_suite.core.identity.classification.cnn import CNNIdentityConfig
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn_empty.npz"
     with patch(
-        "multi_tracker.core.tracking.precompute.CNNIdentityBackend"
+        "hydra_suite.core.tracking.precompute.CNNIdentityBackend"
     ) as MockBackend:
         mock_backend = MockBackend.return_value
 
@@ -625,7 +627,7 @@ def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
             cache_path=cache_path,
             name="cnn_identity",
         )
-        phase.process_frame(0, [], [], [], [])
+        phase.process_frame(0, [], [], [], [], [])
         mock_backend.predict_batch.assert_not_called()
         phase.finalize()
         # cache still flushed (empty frame recorded)
@@ -633,11 +635,11 @@ def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
 
 
 def test_cnn_phase_close_is_idempotent(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
-    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+    from hydra_suite.core.identity.classification.cnn import CNNIdentityConfig
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn.npz"
-    with patch("multi_tracker.core.tracking.precompute.CNNIdentityBackend"):
+    with patch("hydra_suite.core.tracking.precompute.CNNIdentityBackend"):
         phase = CNNPrecomputePhase(
             config=CNNIdentityConfig(model_path="/fake.pth"),
             model_path="/fake.pth",
@@ -653,7 +655,7 @@ def test_cnn_phase_close_is_idempotent(tmp_path):
 
 
 def test_pose_pipeline_has_cache_hit_false_when_not_set():
-    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+    from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
     pipeline = PosePipeline(
         pose_backend=None,
@@ -666,7 +668,7 @@ def test_pose_pipeline_has_cache_hit_false_when_not_set():
 
 
 def test_pose_pipeline_has_cache_hit_true_when_set():
-    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+    from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
     pipeline = PosePipeline(
         pose_backend=None,
@@ -679,7 +681,7 @@ def test_pose_pipeline_has_cache_hit_true_when_set():
 
 
 def test_pose_pipeline_finalize_returns_cache_path_on_hit():
-    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+    from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
     pipeline = PosePipeline(
         pose_backend=None,
@@ -693,7 +695,7 @@ def test_pose_pipeline_finalize_returns_cache_path_on_hit():
 
 
 def test_pose_pipeline_process_frame_noop_on_hit():
-    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+    from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
     pipeline = PosePipeline(
         pose_backend=None,
@@ -703,11 +705,11 @@ def test_pose_pipeline_process_frame_noop_on_hit():
         finalize_metadata={},
     )
     # Should not raise even with no backend
-    pipeline.process_frame(0, [], [], [], [])
+    pipeline.process_frame(0, [], [], [], [], [])
 
 
 def test_pose_pipeline_close_idempotent():
-    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+    from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
     pipeline = PosePipeline(
         pose_backend=None,

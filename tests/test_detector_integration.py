@@ -12,7 +12,7 @@ Tests cover:
 import cv2
 import numpy as np
 
-from multi_tracker.core.detectors.engine import ObjectDetector
+from hydra_suite.core.detectors import ObjectDetector
 
 
 def create_test_foreground_mask(num_objects=2, width=320, height=240, object_size=30):

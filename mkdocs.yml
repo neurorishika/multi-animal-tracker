@@ -1,8 +1,8 @@
-site_name: Multi-Animal-Tracker Docs
-site_description: User and developer documentation for Multi-Animal-Tracker and PoseKit
-site_url: https://neurorishika.github.io/multi-animal-tracker/
-repo_url: https://github.com/neurorishika/multi-animal-tracker
-repo_name: neurorishika/multi-animal-tracker
+site_name: HYDRA Suite Docs
+site_description: User and developer documentation for HYDRA Suite
+site_url: https://neurorishika.github.io/hydra-suite/
+repo_url: https://github.com/neurorishika/hydra-suite
+repo_name: neurorishika/hydra-suite
 edit_uri: edit/main/docs/
 strict: true
 
@@ -91,7 +91,7 @@ nav:
   - Installation: getting-started/installation.md
   - Environments and Makefile: getting-started/environments.md
   - Integrations: getting-started/integrations.md
-  - Quickstart (MAT): getting-started/quickstart-mat.md
+  - Quickstart (TrackerKit): getting-started/quickstart-hydra.md
   - Quickstart (PoseKit): getting-started/quickstart-posekit.md
   - Platform Notes: getting-started/platforms.md
 - User Guide:
@@ -105,13 +105,18 @@ nav:
   - Outputs and CSV Schema: user-guide/outputs-and-csv-schema.md
   - Dataset Generation: user-guide/dataset-generation.md
   - Individual Analysis: user-guide/individual-analysis.md
-  - PoseKit Labeler: user-guide/posekit-labeler.md
+  - PoseKit: user-guide/posekit.md
+  - ClassKit: user-guide/classkit.md
+  - DetectKit: user-guide/detectkit.md
+  - FilterKit: user-guide/filterkit.md
+  - RefineKit: user-guide/refinekit.md
   - Troubleshooting: user-guide/troubleshooting.md
 - Developer Guide:
   - Architecture: developer-guide/architecture.md
   - Module Map: developer-guide/module-map.md
   - Data Flow: developer-guide/data-flow.md
   - Tracking Algorithm Deep Dive: developer-guide/tracking-algorithm-deep-dive.md
+  - Tracking Optimization: developer-guide/tracking-optimization.md
   - GPU Backends: developer-guide/gpu-backends.md
   - Runtime Integration: developer-guide/runtime-integration.md
   - CUDA Dependency Updates: developer-guide/dependency-cuda-updates.md
@@ -120,15 +125,17 @@ nav:
   - Extending Detection: developer-guide/extending-detection.md
   - Extending Identity: developer-guide/extending-identity.md
   - Code Health & Auditing: developer-guide/code-health.md
+  - Publishing: developer-guide/publishing.md
   - Contributing: developer-guide/contributing.md
 - Reference:
   - API Index: reference/api-index.md
-  - UI Components (MAT): reference/ui-components-mat.md
+  - UI Components (TrackerKit): reference/ui-components-hydra.md
   - UI Components (PoseKit): reference/ui-components-posekit.md
-  - API (App): reference/api-app.md
+  - API (Launcher): reference/api-app.md
   - API (Core): reference/api-core.md
   - API (Data): reference/api-data.md
-  - API (GUI): reference/api-gui.md
+  - API (TrackerKit GUI): reference/api-gui.md
+  - API (Widgets): reference/api-widgets.md
   - API (PoseKit): reference/api-posekit.md
   - API (Utils): reference/api-utils.md
   - CLI Reference: reference/cli-reference.md

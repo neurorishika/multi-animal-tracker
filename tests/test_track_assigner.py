@@ -5,7 +5,7 @@ import numpy as np
 from tests.helpers.module_loader import load_src_module
 
 assigner_mod = load_src_module(
-    "multi_tracker/core/assigners/hungarian.py",
+    "hydra_suite/core/assigners/hungarian.py",
     "assigner_under_test",
 )
 

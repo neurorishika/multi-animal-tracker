@@ -1,13 +1,26 @@
 # CLI Reference
 
-## Tracking App
+## HYDRA Launcher
 
-Entry: `multi_tracker.app.launcher:main`
+Entry: `hydra_suite.launcher.app:main`
 
-### Commands
+### Command
 
-- `multianimaltracker`
-- `mat`
+- `hydra`
+
+### Description
+
+Opens the HYDRA Suite launcher, which provides a central hub to select and launch individual tools.
+
+---
+
+## TrackerKit
+
+Entry: `hydra_suite.trackerkit.app:main`
+
+### Command
+
+- `trackerkit`
 
 ### Flags
 
@@ -16,14 +29,15 @@ Entry: `multi_tracker.app.launcher:main`
 - `--log-dir <path>`
 - `--version`
 
-## PoseKit Labeler
+---
 
-Entry: `multi_tracker.posekit.pose_label:main`
+## PoseKit
 
-### Commands
+Entry: `hydra_suite.posekit.gui.main:main`
 
-- `posekit-labeler`
-- `pose`
+### Command
+
+- `posekit`
 
 ### Arguments
 
@@ -32,10 +46,52 @@ Entry: `multi_tracker.posekit.pose_label:main`
 - `--project <path>`
 - `--new`
 
-## Useful Examples
+---
+
+## ClassKit
+
+Entry: `hydra_suite.classkit.app:main`
+
+### Command
+
+- `classkit`
+
+---
+
+## DetectKit
+
+Entry: `hydra_suite.detectkit.app:main`
+
+### Command
+
+- `detectkit`
+
+---
+
+## FilterKit
+
+Entry: `hydra_suite.filterkit.app:main`
+
+### Command
+
+- `filterkit`
+
+---
+
+## RefineKit
+
+Entry: `hydra_suite.refinekit.app:main`
+
+### Command
+
+- `refinekit`
+
+---
+
+## Examples
 
 ```bash
-mat --log-level DEBUG
-posekit-labeler /path/to/images --out /path/to/project
-pose /path/to/images --new
+trackerkit --log-level DEBUG
+posekit /path/to/images --out /path/to/project
+posekit /path/to/images --new
 ```

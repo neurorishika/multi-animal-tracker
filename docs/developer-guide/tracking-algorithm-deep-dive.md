@@ -4,11 +4,11 @@ This page documents the current tracking implementation as it exists in the code
 
 Primary modules:
 
-- `multi_tracker.core.tracking.worker`
-- `multi_tracker.core.filters.kalman`
-- `multi_tracker.core.assigners.hungarian`
-- `multi_tracker.core.post.processing`
-- `multi_tracker.core.identity.runtime_api`
+- `hydra_suite.core.tracking.worker`
+- `hydra_suite.core.filters.kalman`
+- `hydra_suite.core.assigners.hungarian`
+- `hydra_suite.core.post.processing`
+- `hydra_suite.core.identity.runtime_api`
 
 ## Design Goals
 
@@ -334,7 +334,7 @@ The purpose is not to generate a prettier trajectory. The purpose is to offer a 
 
 ## Post-Processing Pipeline
 
-The main post-processing functions are in `multi_tracker.core.post.processing`.
+The main post-processing functions are in `hydra_suite.core.post.processing`.
 
 ### Cleaning and break detection
 
@@ -421,11 +421,11 @@ For larger target counts, enabling spatial optimization is usually worth it.
 
 If you need to audit behavior, these files are the primary reference points:
 
-- `src/multi_tracker/core/tracking/worker.py`
-- `src/multi_tracker/core/filters/kalman.py`
-- `src/multi_tracker/core/assigners/hungarian.py`
-- `src/multi_tracker/core/post/processing.py`
-- `src/multi_tracker/core/identity/runtime_api.py`
+- `src/hydra_suite/core/tracking/worker.py`
+- `src/hydra_suite/core/filters/kalman.py`
+- `src/hydra_suite/core/assigners/hungarian.py`
+- `src/hydra_suite/core/post/processing.py`
+- `src/hydra_suite/core/identity/runtime_api.py`
 - `tests/test_tracking_pipeline_synthetic.py`
 - `tests/test_post_tracklet_relinking.py`
 

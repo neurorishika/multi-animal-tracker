@@ -1,4 +1,4 @@
-name: multi-animal-tracker-rocm
+name: hydra-rocm
 channels:
 - conda-forge
 - defaults

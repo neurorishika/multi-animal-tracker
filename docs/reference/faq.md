@@ -4,11 +4,11 @@
 
 ### Which command should I use for tracking?
 
-Use `mat` (shortcut) or `multi-animal-tracker`.
+Use `trackerkit`.
 
 ### Which command should I use for pose labeling?
 
-Use `posekit-labeler` (canonical) or `pose`.
+Use `posekit`.
 
 ## Tracking and Detection
 
@@ -27,7 +27,7 @@ Lower `resize_factor`, reduce non-essential visualization, and verify GPU backen
 
 ## PoseKit + SLEAP
 
-### MAT SLEAP works, but PoseKit falls back to native runtime. Why?
+### TrackerKit SLEAP works, but PoseKit falls back to native runtime. Why?
 
 PoseKit keeps SLEAP ONNX/TensorRT behind an explicit opt-in toggle.
 
@@ -39,7 +39,7 @@ Then rerun prediction. If disabled, PoseKit intentionally reverts to native SLEA
 
 ### Where do I set the SLEAP environment?
 
-- MAT: `Analyze Individuals -> Pose Extraction -> SLEAP env`
+- TrackerKit: `Analyze Individuals -> Pose Extraction -> SLEAP env`
 - PoseKit: `Inference -> SLEAP -> Conda environment`
 
 Use a dedicated SLEAP env (typically named with prefix `sleap`).

@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from multi_tracker.data.dataset_generation import FrameQualityScorer, export_dataset
+from hydra_suite.data.dataset_generation import FrameQualityScorer, export_dataset
 
 
 class TestFrameQualityScorer:

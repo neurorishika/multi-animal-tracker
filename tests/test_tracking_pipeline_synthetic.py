@@ -7,13 +7,13 @@ from tests.helpers.module_loader import load_src_module, make_cv2_stub
 from tests.helpers.postproc_runner import run_interpolate, run_resolve_trajectories
 
 kalman_mod = load_src_module(
-    "multi_tracker/core/filters/kalman.py",
+    "hydra_suite/core/filters/kalman.py",
     "kalman_pipeline_under_test",
     stubs={"cv2": make_cv2_stub()},
 )
 kalman_mod.NUMBA_AVAILABLE = False
 assigner_mod = load_src_module(
-    "multi_tracker/core/assigners/hungarian.py",
+    "hydra_suite/core/assigners/hungarian.py",
     "assigner_pipeline_under_test",
 )
 

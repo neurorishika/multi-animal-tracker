@@ -1,6 +1,6 @@
 # Tracking Optimization System (Auto-Tuner)
 
-This document details the architecture and implementation of the Bayesian Tracking Optimization system in the Multi-Animal-Tracker (MAT).
+This document details the architecture and implementation of the Bayesian Tracking Optimization system in TrackerKit.
 
 ## Overview
 
@@ -44,29 +44,29 @@ The system provides granular control over which aspects of the pipeline are opti
 ## Key Components
 
 ### `TrackingOptimizer` (Threaded)
-Located in `src/multi_tracker/core/tracking/optimizer.py`.
+Located in `src/hydra_suite/core/tracking/optimizer.py`.
 - Manages the Optuna `study`.
 - Orchestrates the `_run_tracking_pass_cached` loop.
 - Emits progress and results back to the UI.
 
 ### `ParameterHelperDialog`
-Located in `src/multi_tracker/gui/dialogs/parameter_helper.py`.
+Located in `src/hydra_suite/trackerkit/gui/dialogs/parameter_helper.py`.
 - Provides the selection grid for parameters.
 - Displays a ranked table of the top trials.
 - Handles the "Preview" logic.
 
 ### `TrackingPreviewWorker`
-- Allows the user to select any result from the optimization table and watch it run in the main MAT window.
+- Allows the user to select any result from the optimization table and watch it run in the main TrackerKit window.
 - This provides "human-in-the-loop" verification to ensure the mathematical optimum also looks visually stable.
 
 ## Workflow for Users
 
-1.  **Select Range:** Use the `Start Frame` and `End Frame` boxes in the main MAT UI to select a challenging slice (e.g., 200 frames with occlusions).
+1.  **Select Range:** Use the `Start Frame` and `End Frame` boxes in the main TrackerKit UI to select a challenging slice (e.g., 200 frames with occlusions).
 2.  **Open Tuner:** Click **"Auto-Tune Tracking Parameters..."** in the Tracking tab.
 3.  **Configure:** Check the parameters that seem problematic (e.g., if tracks are swapping, check `W_POSITION` and `MAX_DISTANCE`).
 4.  **Optimize:** Run the Bayesian search (usually 50 trials take ~10-20 seconds).
 5.  **Preview:** Select the top-ranked result and click **"Preview Selected"**.
-6.  **Apply:** Click **"Apply Best to MAT"** to update all main UI sliders and spin-boxes automatically.
+6.  **Apply:** Click **"Apply Best to TrackerKit"** to update all main UI sliders and spin-boxes automatically.
 
 ## Integration Details
 

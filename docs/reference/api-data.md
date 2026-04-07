@@ -1,11 +1,11 @@
 # API: Data
 
-::: multi_tracker.data
+::: hydra_suite.data
 
-::: multi_tracker.data.csv_writer
+::: hydra_suite.data.csv_writer
 
-::: multi_tracker.data.detection_cache
+::: hydra_suite.data.detection_cache
 
-::: multi_tracker.data.dataset_generation
+::: hydra_suite.data.dataset_generation
 
-::: multi_tracker.data.dataset_merge
+::: hydra_suite.data.dataset_merge

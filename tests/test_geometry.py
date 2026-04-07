@@ -9,7 +9,7 @@ Tests cover:
 
 import numpy as np
 
-from multi_tracker.utils.geometry import fit_circle_to_points, wrap_angle_degs
+from hydra_suite.utils.geometry import fit_circle_to_points, wrap_angle_degs
 
 
 class TestFitCircleToPoints:

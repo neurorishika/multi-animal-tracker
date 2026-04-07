@@ -5,7 +5,7 @@ import numpy as np
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 background_mod = load_src_module(
-    "multi_tracker/core/background/model.py",
+    "hydra_suite/core/background/model.py",
     "background_model_under_test",
     stubs={"cv2": make_cv2_stub()},
 )

@@ -12,7 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import pytest
 
-from multi_tracker.core.tracking.pose_pipeline import (
+from hydra_suite.core.tracking.pose_pipeline import (
     AsyncCacheWriter,
     PosePipeline,
     _expand_obb_to_aabb,
@@ -86,12 +86,16 @@ class _FakeCacheWriter:
     def __init__(self):
         self.frames: List[Tuple[int, list, list]] = []
         self._lock = threading.Lock()
+        self.saved_metadata = None
 
     def add_frame(self, frame_idx, detection_ids, pose_keypoints=None):
         with self._lock:
             self.frames.append(
                 (frame_idx, list(detection_ids), list(pose_keypoints or []))
             )
+
+    def save(self, metadata=None):
+        self.saved_metadata = metadata
 
 
 class _FakeDetectionCache:
@@ -102,8 +106,12 @@ class _FakeDetectionCache:
 
     def get_frame(self, frame_idx):
         if frame_idx in self._frames:
-            return self._frames[frame_idx]
-        empty = ([], [], [], [], [], [], [], [])
+            val = self._frames[frame_idx]
+            # Pad to 11 elements (raw_canonical_affines, canvas_dims, M_inverse)
+            while len(val) < 11:
+                val = val + (None,)
+            return val
+        empty = ([], [], [], [], [], [], [], [], None, None, None)
         return empty
 
 

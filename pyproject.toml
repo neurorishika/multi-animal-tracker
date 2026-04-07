@@ -1,13 +1,13 @@
-# pyproject.toml - Project configuration for multi-animal-tracker
+# pyproject.toml - Project configuration for hydra-suite (HYDRA)
 
 [build-system]
-requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "multi-animal-tracker"
+name = "hydra-suite"
 version = "1.0.0"
-description = "High-performance multi-animal tracking and pose-labeling toolkit"
+description = "HYDRA: Holistic YOLO-based Detection Recognition and Analysis Suite"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -26,24 +26,88 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "numba>=0.58",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "opencv-python-headless>=4.8",
+    "PySide6>=6.5",
+    "timm",
+    "ultralytics>=8.0",
+    "hnswlib",
+    "usearch",
+    "annoy",
+    "pupil-apriltags",
+    "platformdirs>=3.0",
+]
+
+[project.optional-dependencies]
+cuda12 = [
+    "onnxruntime-gpu>=1.24",
+    "cupy-cuda12x",
+    "tensorrt-cu12",
+    "tensorrt-cu12-libs",
+    "onnx",
+    "onnxslim",
+    "onnxscript",
+    "torchaudio",
+]
+cuda13 = [
+    "onnxruntime-gpu>=1.24",
+    "cupy-cuda13x",
+    "tensorrt-cu13",
+    "tensorrt-cu13-libs",
+    "onnx",
+    "onnxslim",
+    "onnxscript",
+    "torchaudio",
+]
+cuda = [
+    # Alias for cuda12 (most common)
+    "hydra-suite[cuda12]",
+]
+mps = [
+    "onnxruntime>=1.16",
+    "onnx",
+    "onnxslim",
+    "torchaudio",
+]
+rocm = [
+    "cupy-rocm-6-0",
+    "onnxruntime",
+    "onnx",
+    "onnxslim",
+    "torchaudio",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black>=23.0",
+    "isort>=5.12",
+    "flake8>=6.0",
+    "mypy>=1.5",
+    "vulture>=2.7",
+    "build>=1.0",
+    "twine>=5.0",
+]
 
 [project.urls]
-Homepage = "https://github.com/neurorishika/multi-animal-tracker"
-Documentation = "https://github.com/neurorishika/multi-animal-tracker/tree/main/docs"
-Repository = "https://github.com/neurorishika/multi-animal-tracker"
-Issues = "https://github.com/neurorishika/multi-animal-tracker/issues"
+Homepage = "https://github.com/neurorishika/hydra-suite"
+Documentation = "https://github.com/neurorishika/hydra-suite/tree/main/docs"
+Repository = "https://github.com/neurorishika/hydra-suite"
+Issues = "https://github.com/neurorishika/hydra-suite/issues"
 
 [project.scripts]
-multi-animal-tracker = "multi_tracker.app.launcher:main"
-mat = "multi_tracker.app.launcher:main"
-posekit-labeler = "multi_tracker.posekit.ui.main:main"
-posekit = "multi_tracker.posekit.ui.main:main"
-datasieve = "multi_tracker.tools.data_sieve.gui:main"
-sieve = "multi_tracker.tools.data_sieve.gui:main"
-classkit-labeler = "multi_tracker.classkit.app:main"
-classkit = "multi_tracker.classkit.app:main"
-mat-afterhours = "multi_tracker.afterhours.app:main"
-afterhours = "multi_tracker.afterhours.app:main"
+hydra = "hydra_suite.launcher.app:main"
+trackerkit = "hydra_suite.trackerkit.app:main"
+posekit = "hydra_suite.posekit.gui.main:main"
+filterkit = "hydra_suite.filterkit.app:main"
+classkit = "hydra_suite.classkit.app:main"
+refinekit = "hydra_suite.refinekit.app:main"
+detectkit = "hydra_suite.detectkit.app:main"
 
 # ============================================================================
 # Black - Code formatter
@@ -116,7 +180,7 @@ filterwarnings = [
 # Coverage - Code coverage
 # ============================================================================
 [tool.coverage.run]
-source = ["src/multi_tracker"]
+source = ["src/hydra_suite"]
 omit = [
     "*/tests/*",
     "*/test_*.py",
@@ -152,6 +216,19 @@ exclude = [
     "site/",
 ]
 
+[[tool.mypy.overrides]]
+module = [
+    "hydra_suite.classkit.gui.*",
+    "hydra_suite.detectkit.gui.*",
+    "hydra_suite.filterkit.gui.*",
+    "hydra_suite.posekit.gui.*",
+    "hydra_suite.refinekit.gui.*",
+    "hydra_suite.trackerkit.gui.*",
+    "hydra_suite.widgets.*",
+    "hydra_suite.utils.file_dialogs",
+]
+disable_error_code = ["attr-defined", "name-defined"]
+
 # ============================================================================
 # deadcode - Dead-code detection
 # ============================================================================
@@ -162,8 +239,75 @@ ignore-names = [
     # Convenience properties on SuspicionEvent (dataclass API surface)
     "track_a",
     "track_b",
-    # Legacy shim kept for backward compatibility in downstream callers
-    "probe_metalfaiss_backend",
-    # Backward-compatible / test-facing alias for POSE_SUMMARY_COLUMNS
-    "POSE_EXPORT_COLUMNS",
+    # Public/test-only compatibility helpers; deadcode scans src/ but not tests/
+    "apply_correction",
+    "apply_headtail_rotation",
+    "build_tag_only_trajectories",
+    "compute_crop_dimensions",
+    "detection_cache_hash",
+    "extract_and_classify_batch",
+    "get_canon_transform",
+    "MatMetadataCanonicalizer",
+    "matches_frame_range",
+    "SwapScorer",
+    "SwapSuspicionEvent",
+    "tag_detections",
+    "remove_images_by_folder",
+    "get_detection",
+    "get_video_config_path",
+    "print_paths",
+    "_clear_preview_background_cache",
+    "_should_precompute_individual_data",
+    "_collapse_obb_axis_theta",
+    # Qt/PyTorch/dispatched interfaces
+    "apply_config",
+    "clear_all",
+    "config_changed",
+    "forward",
+    "paint",
+    "paintEvent",
+    "set_cv_image",
+    "_lr_rows_widget",
+    "_on_cnn_identity_model_selected",
+    "_on_identity_method_changed",
+    "_on_individual_analysis_toggled",
+    "_proj",
+    "_select_color_tag_model",
+    "_ud_rows_widget",
+    # Dataclass/config fields retained as API surface or persisted state
+    "all_no_tag",
+    "DEFAULT_PROJECT_DIR_NAME",
+    "DEFAULT_PROJECTS_ROOT_NAME",
+    "DEFAULT_SKELETON_DIRNAME",
+    "detected_tag_id",
+    "heading_rad",
+    "last_image_index",
+    "MAX_ANALYSIS_IMAGES",
+    "min_per_class",
+    "n_profiles_run",
+    "onnx_model_path",
+    "published_models",
+    "startup_ms",
+    "tensorrt_model_path",
+    "training_space",
+    "warmup_ms",
+    "closed_ms",
+    # Exported utility kept for downstream callers
+    "extract_metadata_attr",
+]
+
+# ============================================================================
+# setuptools - Package discovery and data
+# ============================================================================
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["brand", "brand.*"]
+
+[tool.setuptools.package-data]
+"hydra_suite" = [
+    "resources/brand/*.svg",
+    "resources/brand/*.png",
+    "resources/configs/*.json",
+    "resources/configs/skeletons/*.json",
+    "py.typed",
 ]

@@ -1,5 +1,5 @@
-# API: App
+# API: Launcher and App
 
-::: multi_tracker.app
+::: hydra_suite.launcher.app
 
-::: multi_tracker.app.launcher
+::: hydra_suite.trackerkit.app

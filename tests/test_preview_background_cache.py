@@ -9,8 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from multi_tracker.core.background import model as background_model_module
-from multi_tracker.gui import main_window
+from hydra_suite.core.background import model as background_model_module
+from hydra_suite.trackerkit.gui import main_window
+from hydra_suite.trackerkit.gui.workers import preview_worker as _preview_worker_module
 
 
 class _FakeVideoCapture:
@@ -50,7 +51,7 @@ def _reset_preview_background_cache(monkeypatch: pytest.MonkeyPatch):
     _FakeVideoCapture.open_count = 0
     _FakeVideoCapture.release_count = 0
     _FakeBackgroundModel.prime_calls = 0
-    monkeypatch.setattr(main_window.cv2, "VideoCapture", _FakeVideoCapture)
+    monkeypatch.setattr(_preview_worker_module.cv2, "VideoCapture", _FakeVideoCapture)
     monkeypatch.setattr(
         background_model_module, "BackgroundModel", _FakeBackgroundModel
     )

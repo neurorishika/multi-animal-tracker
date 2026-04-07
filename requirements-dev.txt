@@ -29,3 +29,7 @@ pylint>=3.0            # pyreverse ships with pylint (text dependency map)
 
 # ── Static type checking ──────────────────────────────────────────────────────
 mypy>=1.9
+
+# ── Packaging & publishing ────────────────────────────────────────────────────
+build>=1.0             # python -m build (wheel + sdist)
+twine>=5.0             # twine upload (PyPI publishing)

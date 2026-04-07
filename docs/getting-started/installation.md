@@ -1,245 +1,322 @@
 # Installation
 
-This guide walks you through a complete installation of Multi-Animal-Tracker for CPU, NVIDIA CUDA, Apple Silicon (MPS), and AMD ROCm setups.
+There are three ways to install HYDRA Suite, depending on your situation:
 
-## Before You Start
+| Method | When to use |
+|--------|-------------|
+| [**pip install**](#pip-install-from-pypi) | You want to use the software. One command, no git needed. |
+| [**pip install from GitHub**](#pip-install-from-github) | You want the latest unreleased version, or the package isn't on PyPI yet. |
+| [**conda + pip (developer)**](#conda-pip-developer-install) | You're developing the code. Editable install, Makefile workflows. |
 
-### System requirements
-
-- Python 3.11+
-- Conda or Mamba (Mamba recommended for speed)
-- Linux/macOS/Windows supported (ROCm is Linux-only)
-
-### Recommended tooling
-
-- `mamba` for fast environment solving
-- `uv` for fast pip installs (already included in project environment files)
-
-### Clone the repository
-
-```bash
-git clone https://github.com/neurorishika/multi-animal-tracker.git
-cd multi-animal-tracker
-```
-
-## Choose Your Installation Path
-
-- **CPU-only (most portable):** `environment.yml` + `requirements.txt`
-- **NVIDIA GPU:** `environment-cuda.yml` + `requirements-cuda12.txt` or `requirements-cuda13.txt`
-- **Apple Silicon (M1/M2/M3/M4):** `environment-mps.yml` + `requirements-mps.txt`
-- **AMD GPU (ROCm):** `environment-rocm.yml` + `requirements-rocm.txt`
+All three methods support full GPU acceleration. See the [platform matrix](#platform-matrix) for what's available on each platform.
 
 ---
 
-## 1) CPU Installation (Default)
+## Platform matrix
 
-Use this if you do not need GPU acceleration.
-
-```bash
-mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
-uv pip install -v -r requirements.txt
-```
-
----
-
-## 2) NVIDIA GPU Installation (CUDA)
-
-Use this for CUDA-enabled systems.
-
-### Step A: Confirm CUDA major version
-
-```bash
-nvidia-smi
-```
-
-Pick one requirements profile:
-
-- CUDA 13.x: `requirements-cuda13.txt`
-- CUDA 12.x: `requirements-cuda12.txt`
-
-### Step B: Create and activate CUDA environment
-
-```bash
-mamba env create -f environment-cuda.yml
-conda activate multi-animal-tracker-cuda
-```
-
-### Step C: Install Python packages by CUDA version
-
-```bash
-# Optional explicit shared CUDA layer install (common deps used by both profiles)
-uv pip install -v -r requirements-cuda.txt
-
-# CUDA 13.x
-uv pip install -v -r requirements-cuda13.txt
-
-# CUDA 12.x
-# uv pip install -v -r requirements-cuda12.txt
-```
-
-Notes:
-
-- `requirements-cuda13.txt` and `requirements-cuda12.txt` already include `-r requirements-cuda.txt`.
-- Running the shared install command explicitly is optional, but can make the install flow clearer when debugging package conflicts.
-
-### Optional: Makefile helper
-
-```bash
-# CUDA 13.x
-make install-gpu CUDA_MAJOR=13
-
-# CUDA 12.x
-# make install-gpu CUDA_MAJOR=12
-```
-
-### Important ONNX Runtime note (CUDA users)
-
-`onnxruntime-gpu==1.24.1` currently expects CUDA 12 user-space runtime libraries (for example `libcublasLt.so.12`).
-
-This project handles that by:
-
-- Installing compatible CUDA 12 runtime libs in `environment-cuda.yml`
-- Configuring `LD_LIBRARY_PATH` hooks during `make install-gpu`
-- Disabling Ultralytics auto-requirement installs to avoid pulling CPU `onnxruntime`
-
-This is expected behavior even on CUDA 13 systems.
-
-### ONNX CPU option behavior in MAT
-
-When selecting ONNX CPU in MAT, the app still uses the ONNX Runtime module provided by the active environment.
-
-- You do **not** need a separate side-by-side `onnxruntime` CPU wheel in CUDA environments.
-- Auto-install is disabled to prevent accidental replacement of GPU-capable runtime behavior.
-- If ONNX CPU is selected, inference runs on CPU provider from the same ONNX Runtime install.
-
-### FAISS note (CUDA 13)
-
-- `faiss-gpu` currently has limited wheel availability for CUDA 13 + Python 3.13.
-- `requirements-cuda13.txt` uses `faiss-cpu` for reliable installation.
-- `requirements-cuda12.txt` includes `faiss-gpu` by default.
-- If you have a compatible FAISS GPU build (commonly CUDA 12-focused), install it manually.
+| Feature | CPU | MPS (Apple Silicon) | CUDA (NVIDIA) | ROCm (AMD) |
+|---------|-----|---------------------|---------------|-------------|
+| YOLO detection / pose | CPU | GPU | GPU | GPU |
+| TensorRT acceleration | No | No | Yes | No (NVIDIA only) |
+| ONNX Runtime | CPU | CPU | GPU | CPU |
+| CuPy background subtraction | No | No (NVIDIA only) | GPU | GPU (experimental) |
+| Platforms | All | macOS M1-M4 | Linux, Windows | Linux only |
+| System requirements | Python 3.11+ | Python 3.11+ | Python 3.11+ | Python 3.11+, ROCm 6.0+ |
 
 ---
 
-## 3) Apple Silicon Installation (MPS)
+## pip install from PyPI
+
+Requires only Python 3.11+. No conda, no git clone.
+
+### CPU (all platforms)
 
 ```bash
-mamba env create -f environment-mps.yml
-conda activate multi-animal-tracker-mps
-uv pip install -v -r requirements-mps.txt
+pip install hydra-suite
 ```
+
+### Apple Silicon / MPS (macOS M1-M4)
+
+```bash
+pip install torch torchvision
+pip install "hydra-suite[mps]"
+```
+
+MPS is built into the standard PyTorch macOS wheel. GPU acceleration works for YOLO inference and neural network operations.
+
+### NVIDIA GPU / CUDA (Linux, Windows)
+
+```bash
+# Step 1: Install PyTorch from PyTorch's own index
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Step 2: Install hydra-suite with CUDA extras
+pip install "hydra-suite[cuda]"
+```
+
+This installs everything: ONNX Runtime GPU, TensorRT, CuPy, ONNX export tools.
+
+**CUDA version selection:**
+
+| Your CUDA version | PyTorch `--index-url` | Package extra |
+|---|---|---|
+| 12.6 | `.../cu126` | `[cuda]` or `[cuda12]` |
+| 12.8 | `.../cu128` | `[cuda]` or `[cuda12]` |
+| 13.0 | `.../cu130` | `[cuda13]` |
+
+`[cuda]` is an alias for `[cuda12]`. For CUDA 13 systems:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+pip install "hydra-suite[cuda13]"
+```
+
+**You do not need the CUDA toolkit installed.** PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.
+
+### AMD GPU / ROCm (Linux only)
+
+Requires [ROCm 6.0+](https://rocm.docs.amd.com/) installed system-wide first.
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+pip install "hydra-suite[rocm]"
+```
+
+### Why is GPU install two commands?
+
+PyTorch GPU builds are hosted on PyTorch's own server, not PyPI. Python packaging standards (PEP 621) have no way to specify per-dependency index URLs. This is how every ML project handles it: you install torch first, then the package. The second command will **not** overwrite your existing torch.
 
 ---
 
-## 4) AMD GPU Installation (ROCm)
+## pip install from GitHub
 
-Install ROCm system packages first, then create the Python environment.
+Install the latest code directly from the repository without cloning. Useful when:
+
+- The package isn't on PyPI yet
+- You need a fix that hasn't been released
+- A collaborator wants to try the latest version
+
+### CPU
 
 ```bash
-mamba env create -f environment-rocm.yml
-conda activate multi-animal-tracker-rocm
-uv pip install -v -r requirements-rocm.txt
+pip install "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
-For ROCm system prerequisites and troubleshooting, see `ROCM_SETUP.md`.
-
----
-
-## Verify Your Installation
-
-Run these checks in the activated environment:
+### With GPU extras
 
 ```bash
-python -c "from multi_tracker.app.launcher import parse_arguments; print('✅ Core import OK')"
-python -c "from multi_tracker.utils.gpu_utils import log_device_info; log_device_info()"
+# MPS
+pip install torch torchvision
+pip install "hydra-suite[mps] @ git+https://github.com/neurorishika/hydra-suite.git"
+
+# CUDA
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install "hydra-suite[cuda] @ git+https://github.com/neurorishika/hydra-suite.git"
+
+# CUDA 13
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+pip install "hydra-suite[cuda13] @ git+https://github.com/neurorishika/hydra-suite.git"
+
+# ROCm
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+pip install "hydra-suite[rocm] @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
-For CUDA environments, also verify ONNX Runtime providers:
+### Install a specific branch or tag
 
 ```bash
-python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+# Specific branch
+pip install "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git@main"
+
+# Specific tag
+pip install "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git@v1.0.0"
 ```
 
-You should see `CUDAExecutionProvider` in the output for a working CUDA setup.
-
----
-
-## Launch the Application
+### Upgrading a GitHub install
 
 ```bash
-mat
-# or
-multianimaltracker
+pip install --upgrade --force-reinstall --no-deps \
+    "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
 ---
 
-## Makefile Workflow and Options
+## conda + pip (developer install)
 
-The Makefile provides one-command setup, install, update, and maintenance flows.
+For active development. Uses conda for system libraries (Qt, OpenGL) and pip for Python packages. Provides editable install so code changes are live immediately.
 
-### Core setup targets
-
-```bash
-make setup
-make setup-gpu
-make setup-mps
-make setup-rocm
-```
-
-### Install targets
+### Step 1: Clone
 
 ```bash
-make install
-make install-gpu CUDA_MAJOR=13
-# make install-gpu CUDA_MAJOR=12
-make install-mps
-make install-rocm
+git clone https://github.com/neurorishika/hydra-suite.git
+cd hydra-suite
 ```
 
-### Update targets
+### Step 2: Create environment and install
 
-```bash
-make env-update
-make env-update-gpu CUDA_MAJOR=13
-# make env-update-gpu CUDA_MAJOR=12
-make env-update-mps
-make env-update-rocm
-```
-
-### Useful options
-
-- `CUDA_MAJOR` selects CUDA profile for GPU install/update (`12` or `13`)
-- default `CUDA_MAJOR` is `13`
-- run `make help` for the full command catalog
-
----
-
-## Update an Existing Environment
-
-After activating the target environment:
+Pick your platform:
 
 ```bash
 # CPU
-uv pip install -v -r requirements.txt --upgrade
+make setup
+conda activate hydra-suite
+make install
 
-# CUDA 13
-uv pip install -v -r requirements-cuda.txt --upgrade
-uv pip install -v -r requirements-cuda13.txt --upgrade
+# Apple Silicon (MPS)
+make setup-mps
+conda activate hydra-suite-mps
+make install-mps
 
-# CUDA 12
-uv pip install -v -r requirements-cuda.txt --upgrade
-# uv pip install -v -r requirements-cuda12.txt --upgrade
+# NVIDIA GPU (CUDA)
+make setup-cuda
+conda activate hydra-suite-cuda
+make install-cuda CUDA_MAJOR=13     # or CUDA_MAJOR=12
+
+# AMD GPU (ROCm — requires system-wide ROCm 6.0+)
+make setup-rocm
+conda activate hydra-suite-rocm
+make install-rocm
 ```
 
-If conda dependencies changed, update environment packages too:
+### Step 3: Install dev tools (optional)
 
 ```bash
-mamba env update -f environment.yml --prune
+make install-dev
 ```
 
-Use the matching environment file for MPS/ROCm/CUDA updates.
+This adds formatting, linting, testing, and publishing tools. Run `make help` for the full command catalog.
+
+### How it works
+
+The conda environment provides system libraries and Python. The `make install-*` targets run `uv pip install -r requirements-*.txt`, which installs:
+
+1. **torch** with the correct GPU variant and index URL
+2. **`-e .`** — an editable install that pulls all `pyproject.toml` dependencies
+
+Base dependencies (numpy, scipy, PySide6, ultralytics, etc.) are declared once in `pyproject.toml`. The requirements files only add what `pyproject.toml` cannot express (torch GPU index URLs). This means there is **one source of truth** for dependencies.
+
+### Development workflow
+
+```bash
+conda activate hydra-suite-mps   # or your env
+# Edit code — changes are live immediately (editable install)
+make pytest                               # run tests
+make format && make lint                  # format and lint before committing
+```
+
+---
+
+## After installation
+
+### Verify
+
+```bash
+hydra --help
+python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| MPS:', torch.backends.mps.is_available())"
+```
+
+For CUDA, also check ONNX Runtime:
+
+```bash
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+# Should include 'CUDAExecutionProvider'
+```
+
+### Launch
+
+```bash
+hydra              # HYDRA Suite launcher
+trackerkit         # TrackerKit tracking GUI
+posekit            # PoseKit pose-labeling GUI
+classkit           # ClassKit labeler
+detectkit          # DetectKit training
+filterkit          # FilterKit tool
+refinekit          # RefineKit proofreading
+```
+
+### Data directories
+
+User data is stored in platform-appropriate locations (not inside the package):
+
+| Data | macOS | Linux | Windows |
+|------|-------|-------|---------|
+| Config / presets | `~/Library/Application Support/hydra-suite/` | `~/.config/hydra-suite/` | `%LOCALAPPDATA%\Kronauer Lab\hydra-suite\` |
+| Models | same `/models/` | same `/models/` | same `\models\` |
+| Training runs | same `/training/` | same `/training/` | same `\training\` |
+
+Default config presets and skeleton definitions are bundled with the package and seeded to your config directory on first run.
+
+### Customizing data directories
+
+Override the default locations with environment variables:
+
+| Variable | What it overrides | Default |
+|----------|------------------|---------|
+| `HYDRA_DATA_DIR` | Models, training runs | `platformdirs` user data dir |
+| `HYDRA_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs` user config dir |
+
+Examples:
+
+```bash
+# Use a shared lab network drive for models
+export HYDRA_DATA_DIR=/mnt/lab-shared/hydra-data
+hydra
+
+# Use a project-specific config
+HYDRA_CONFIG_DIR=./my-project-config mat
+
+# Check where everything currently points
+python -c "from hydra_suite.paths import print_paths; print_paths()"
+```
+
+All sub-applications (TrackerKit, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same `hydra_suite.paths` module, so they all respect these overrides and share the same data directories.
+
+### Programmatic access from other tools
+
+Scripts and notebooks can access the same paths:
+
+```python
+from hydra_suite.paths import get_models_dir, get_presets_dir, get_skeleton_dir
+
+print(get_models_dir())        # where trained models are stored
+print(get_presets_dir())       # where config presets live
+print(get_skeleton_dir())      # where skeleton definitions live
+```
+
+### Migrating from an older repo checkout
+
+If you had models in `<repo>/models/` or training data in `<repo>/training/`:
+
+```bash
+python -m hydra_suite.paths_migrate /path/to/repo --dry-run  # preview what would be copied
+python -m hydra_suite.paths_migrate /path/to/repo            # copy files
+```
+
+---
+
+## Updating
+
+### pip (PyPI)
+
+```bash
+pip install --upgrade hydra-suite
+```
+
+### pip (GitHub)
+
+```bash
+pip install --upgrade --force-reinstall --no-deps \
+    "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git"
+```
+
+### conda + pip (developer)
+
+```bash
+conda activate hydra-suite-mps  # or your env
+git pull
+mamba env update -f environment-mps.yml --prune   # if conda deps changed
+make install-mps                                  # reinstall pip packages
+```
 
 ---
 
@@ -247,40 +324,48 @@ Use the matching environment file for MPS/ROCm/CUDA updates.
 
 ### `CUDAExecutionProvider` missing from ONNX Runtime
 
-- Ensure you installed `requirements-cuda12.txt` or `requirements-cuda13.txt` (not CPU requirements)
-- Ensure you are in `multi-animal-tracker-cuda`
-- Re-run `make install-gpu CUDA_MAJOR=13` (or `12`) to refresh linker hooks
+- Ensure you installed with `[cuda]` or `[cuda13]` extra
+- Ensure PyTorch is imported before ONNX Runtime (PyTorch preloads CUDA libs)
+- Verify: `python -c "import torch; import onnxruntime as ort; print(ort.get_available_providers())"`
+- **conda path:** re-run `make install-cuda CUDA_MAJOR=13` to refresh hooks
 
-### Library error like `libcublasLt.so.12: cannot open shared object file`
+### PySide6 / Qt errors on Linux (pip only)
 
-- This indicates CUDA 12 user-space libs are not visible to the runtime
-- Re-activate the conda environment after running the install helper
-- Confirm provider list with:
+pip-installed PySide6 may need system libraries:
 
 ```bash
-python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+sudo apt install libgl1-mesa-glx libegl1 libxcb-xinerama0  # Ubuntu/Debian
 ```
 
-### Fresh reinstall (clean slate)
+The conda path handles this automatically.
+
+### CuPy-ROCm compilation fails
+
+CuPy-ROCm builds from source on first install (~5-10 minutes). If it fails, ensure ROCm dev packages are installed:
 
 ```bash
-conda env remove -n multi-animal-tracker-cuda
-mamba env create -f environment-cuda.yml
-conda activate multi-animal-tracker-cuda
-uv pip install -v -r requirements-cuda13.txt
+sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse hiprand hipfft
+```
+
+### Fresh reinstall
+
+```bash
+# pip
+pip uninstall hydra-suite
+pip install "hydra-suite[cuda]"
+
+# conda
+conda env remove -n hydra-suite-cuda
+make setup-cuda
+conda activate hydra-suite-cuda
+make install-cuda CUDA_MAJOR=13
 ```
 
 ---
 
-## Related Setup Docs
+## Related docs
 
-- Integrations: [Integrations](integrations.md)
-- Full environment matrix: `ENVIRONMENTS.md`
-- ROCm setup details: `ROCM_SETUP.md`
-
-## Docs Tooling (Optional)
-
-```bash
-uv pip install -r requirements-docs.txt
-mkdocs build --strict
-```
+- [Environments](environments.md) — conda environment matrix and Makefile reference
+- [Integrations](integrations.md) — SLEAP, X-AnyLabeling setup
+- `ROCM_SETUP.md` — ROCm system prerequisites
+- [Publishing to PyPI](../developer-guide/publishing.md) — releasing new versions

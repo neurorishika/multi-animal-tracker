@@ -2,7 +2,7 @@
 
 ## Main Extension Surface
 
-`multi_tracker.core.detectors.engine`
+`hydra_suite.core.detectors.engine`
 
 ## Recommended Pattern
 

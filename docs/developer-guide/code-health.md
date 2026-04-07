@@ -43,7 +43,7 @@ make dead-code-whitelist      # writes vulture_whitelist.py for false-positive r
 ```bash
 make dead-code-whitelist          # generates vulture_whitelist.py
 # open vulture_whitelist.py, REMOVE entries for genuinely dead code
-vulture src/multi_tracker vulture_whitelist.py   # re-run with whitelist
+vulture src/hydra_suite vulture_whitelist.py   # re-run with whitelist
 ```
 
 Commit `vulture_whitelist.py` to preserve the false-positive decisions.
@@ -55,7 +55,7 @@ Commit `vulture_whitelist.py` to preserve the false-positive decisions.
 ### Visual SVG graph
 
 ```bash
-make dep-graph        # writes multi_tracker.svg
+make dep-graph        # writes hydra_suite.svg
 ```
 
 Opens cleanly in any browser. `--max-bacon=4` limits transitive depth; increase to
@@ -64,14 +64,14 @@ Opens cleanly in any browser. `--max-bacon=4` limits transitive depth; increase 
 ### Text / DOT map
 
 ```bash
-make dep-graph-text   # writes .audit/packages_multi_tracker.dot
+make dep-graph-text   # writes .audit/packages_hydra_suite.dot
 ```
 
 Useful for diffing architecture changes in CI without requiring a display.
 Convert to PNG offline:
 
 ```bash
-dot -Tpng .audit/packages_multi_tracker.dot -o dep_map.png
+dot -Tpng .audit/packages_hydra_suite.dot -o dep_map.png
 ```
 
 ### Reading the graph
@@ -94,7 +94,7 @@ enforcement) so it integrates cleanly with the mixed-annotation codebase.
 To tighten incrementally:
 
 ```bash
-mypy src/multi_tracker/core/identity/ --strict
+mypy src/hydra_suite/core/identity/ --strict
 ```
 
 Type errors in `legacy/` are excluded via `pyproject.toml`
@@ -108,9 +108,9 @@ Type errors in `legacy/` are excluded via `pyproject.toml`
 `vulture`:
 
 ```bash
-ruff check src/multi_tracker --select F401   # unused imports
-ruff check src/multi_tracker --select F811   # redefined before use
-ruff check --fix --select F401 src/multi_tracker  # auto-remove safe ones
+ruff check src/hydra_suite --select F401   # unused imports
+ruff check src/hydra_suite --select F811   # redefined before use
+ruff check --fix --select F401 src/hydra_suite  # auto-remove safe ones
 ```
 
 This integrates with `make lint-autofix`.
@@ -141,7 +141,7 @@ make audit
 Runs: `dead-code` → `dep-graph` → `type-check` → `test-cov` in sequence. Artifacts
 are written to:
 
-- `multi_tracker.svg` — visual dependency graph
+- `hydra_suite.svg` — visual dependency graph
 - `htmlcov/index.html` — coverage report
 
 ---

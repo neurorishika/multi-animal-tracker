@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import torch
 
 
 def test_custom_cnn_params_defaults():
-    from multi_tracker.training.contracts import CustomCNNParams
+    from hydra_suite.training.contracts import CustomCNNParams
 
     p = CustomCNNParams()
     assert p.backbone == "tinyclassifier"
@@ -30,14 +32,14 @@ def test_custom_cnn_params_defaults():
 
 
 def test_new_training_roles_exist():
-    from multi_tracker.training.contracts import TrainingRole
+    from hydra_suite.training.contracts import TrainingRole
 
     assert TrainingRole.CLASSIFY_FLAT_CUSTOM.value == "classify_flat_custom"
     assert TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM.value == "classify_multihead_custom"
 
 
 def test_training_run_spec_has_custom_params():
-    from multi_tracker.training.contracts import (
+    from hydra_suite.training.contracts import (
         CustomCNNParams,
         TrainingRole,
         TrainingRunSpec,
@@ -70,7 +72,7 @@ def test_training_run_spec_has_custom_params():
 
 
 def test_build_torchvision_classifier_convnext():
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     model = build_torchvision_classifier(
         "convnext_tiny", num_classes=5, trainable_layers=0
@@ -82,7 +84,7 @@ def test_build_torchvision_classifier_convnext():
 
 
 def test_build_torchvision_classifier_efficientnet():
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     model = build_torchvision_classifier(
         "efficientnet_b0", num_classes=3, trainable_layers=0
@@ -94,7 +96,7 @@ def test_build_torchvision_classifier_efficientnet():
 
 
 def test_build_torchvision_classifier_resnet():
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     model = build_torchvision_classifier("resnet18", num_classes=4, trainable_layers=0)
     model.eval()
@@ -104,7 +106,7 @@ def test_build_torchvision_classifier_resnet():
 
 
 def test_build_torchvision_classifier_vit():
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     model = build_torchvision_classifier("vit_b_16", num_classes=6, trainable_layers=0)
     model.eval()
@@ -114,7 +116,7 @@ def test_build_torchvision_classifier_vit():
 
 
 def test_get_layer_groups_convnext_count():
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         get_layer_groups,
     )
@@ -127,7 +129,7 @@ def test_get_layer_groups_convnext_count():
 
 
 def test_get_layer_groups_resnet_count():
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         get_layer_groups,
     )
@@ -138,7 +140,7 @@ def test_get_layer_groups_resnet_count():
 
 
 def test_get_layer_groups_efficientnet_count():
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         get_layer_groups,
     )
@@ -152,7 +154,7 @@ def test_get_layer_groups_efficientnet_count():
 
 
 def test_get_layer_groups_vit_count():
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         get_layer_groups,
     )
@@ -164,7 +166,7 @@ def test_get_layer_groups_vit_count():
 
 
 def test_freeze_backbone_frozen():
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=0)
     # Head (fc) must be unfrozen
@@ -177,7 +179,7 @@ def test_freeze_backbone_frozen():
 
 
 def test_freeze_backbone_all():
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=-1)
     # All parameters must be trainable
@@ -185,7 +187,7 @@ def test_freeze_backbone_all():
 
 
 def test_freeze_backbone_partial():
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         get_layer_groups,
     )
@@ -199,7 +201,7 @@ def test_freeze_backbone_partial():
 
 
 def test_checkpoint_format_required_keys(tmp_path):
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         save_torchvision_checkpoint,
     )
@@ -235,7 +237,7 @@ def test_checkpoint_format_required_keys(tmp_path):
 
 
 def test_load_torchvision_classifier_roundtrip(tmp_path):
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         load_torchvision_classifier,
         save_torchvision_checkpoint,
@@ -268,7 +270,7 @@ def test_load_torchvision_classifier_roundtrip(tmp_path):
 
 
 def test_export_torchvision_to_onnx_smoke(tmp_path):
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         build_torchvision_classifier,
         export_torchvision_to_onnx,
         save_torchvision_checkpoint,
@@ -307,7 +309,7 @@ def test_export_torchvision_to_onnx_smoke(tmp_path):
 
 
 def test_torchvision_backbones_list_contains_expected():
-    from multi_tracker.training.torchvision_model import TORCHVISION_BACKBONES
+    from hydra_suite.training.torchvision_model import TORCHVISION_BACKBONES
 
     assert "convnext_tiny" in TORCHVISION_BACKBONES
     assert "tinyclassifier" in TORCHVISION_BACKBONES
@@ -315,7 +317,7 @@ def test_torchvision_backbones_list_contains_expected():
 
 
 def test_backbone_display_names_covers_all_backbones():
-    from multi_tracker.training.torchvision_model import (
+    from hydra_suite.training.torchvision_model import (
         BACKBONE_DISPLAY_NAMES,
         TORCHVISION_BACKBONES,
     )
@@ -327,7 +329,7 @@ def test_backbone_display_names_covers_all_backbones():
 def test_build_torchvision_classifier_raises_for_unknown_backbone():
     import pytest
 
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     with pytest.raises(ValueError, match="Unknown backbone"):
         build_torchvision_classifier(
@@ -336,8 +338,8 @@ def test_build_torchvision_classifier_raises_for_unknown_backbone():
 
 
 def test_build_torchvision_classifier_tinyclassifier():
-    from multi_tracker.training.contracts import CustomCNNParams
-    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+    from hydra_suite.training.contracts import CustomCNNParams
+    from hydra_suite.training.torchvision_model import build_torchvision_classifier
 
     params = (
         CustomCNNParams()
@@ -361,13 +363,12 @@ def test_build_torchvision_classifier_tinyclassifier():
 # ---------------------------------------------------------------------------
 # Task 3: runner dispatch tests
 # ---------------------------------------------------------------------------
-from unittest.mock import patch
 
 
 def test_runner_flat_tiny_alias_dispatches_to_custom_classify():
     """flat_tiny role should call _train_custom_classify with backbone='tinyclassifier'."""
-    from multi_tracker.training import runner
-    from multi_tracker.training.contracts import (
+    from hydra_suite.training import runner
+    from hydra_suite.training.contracts import (
         CustomCNNParams,
         TrainingRole,
         TrainingRunSpec,
@@ -392,8 +393,8 @@ def test_runner_flat_tiny_alias_dispatches_to_custom_classify():
 
 def test_runner_flat_custom_dispatches_to_custom_classify():
     """flat_custom role should call _train_custom_classify."""
-    from multi_tracker.training import runner
-    from multi_tracker.training.contracts import (
+    from hydra_suite.training import runner
+    from hydra_suite.training.contracts import (
         CustomCNNParams,
         TrainingRole,
         TrainingRunSpec,
@@ -416,7 +417,7 @@ def test_runner_flat_custom_dispatches_to_custom_classify():
 
 def test_all_presets_include_flat_custom():
     """Every single-factor preset function must include 'flat_custom' in training_modes."""
-    from multi_tracker.classkit.presets import (
+    from hydra_suite.classkit.config.presets import (
         age_preset,
         apriltag_preset,
         head_tail_preset,
@@ -429,7 +430,7 @@ def test_all_presets_include_flat_custom():
 
 def test_color_tag_preset_includes_multihead_custom():
     """Multi-factor preset must include both flat_custom and multihead_custom."""
-    from multi_tracker.classkit.presets import color_tag_preset
+    from hydra_suite.classkit.config.presets import color_tag_preset
 
     scheme = color_tag_preset(n_factors=2, colors=["red", "blue"])
     assert "flat_custom" in scheme.training_modes

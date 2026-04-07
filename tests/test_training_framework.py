@@ -7,28 +7,28 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     SourceDataset,
     SplitConfig,
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.dataset_builders import (
+from hydra_suite.training.dataset_builders import (
     derive_crop_obb_dataset_from_obb,
     derive_detect_dataset_from_obb,
     merge_obb_sources,
 )
-from multi_tracker.training.dataset_inspector import inspect_obb_or_detect_dataset
-from multi_tracker.training.model_publish import publish_trained_model
-from multi_tracker.training.registry import (
+from hydra_suite.training.dataset_inspector import inspect_obb_or_detect_dataset
+from hydra_suite.training.model_publish import publish_trained_model
+from hydra_suite.training.registry import (
     create_run_record,
     dataset_fingerprint,
     finalize_run_record,
     load_registry,
     new_run_id,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def _write_image(path: Path, value: int = 120):
@@ -214,7 +214,7 @@ def test_runner_command_per_role(tmp_path: Path):
 
 
 def test_runner_fallback_uses_ultralytics_module(tmp_path: Path, monkeypatch):
-    import multi_tracker.training.runner as runner
+    import hydra_suite.training.runner as runner
 
     monkeypatch.setattr(runner.shutil, "which", lambda _cmd: None)
     spec = TrainingRunSpec(
@@ -230,8 +230,8 @@ def test_runner_fallback_uses_ultralytics_module(tmp_path: Path, monkeypatch):
 
 
 def test_registry_and_publish_lineage(tmp_path: Path, monkeypatch):
-    import multi_tracker.training.model_publish as pub
-    import multi_tracker.training.registry as reg
+    import hydra_suite.training.model_publish as pub
+    import hydra_suite.training.registry as reg
 
     monkeypatch.setattr(reg, "_project_root", lambda: tmp_path)
     monkeypatch.setattr(pub, "_project_root", lambda: tmp_path)

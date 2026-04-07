@@ -1,6 +1,6 @@
 import numpy as np
 
-from multi_tracker.core.canonicalization import get_canon_transform
+from hydra_suite.core.canonicalization import get_canon_transform
 
 
 def test_get_canon_transform_with_annotation():

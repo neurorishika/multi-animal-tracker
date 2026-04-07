@@ -7,7 +7,7 @@ import numpy as np
 from tests.helpers.module_loader import load_src_module
 
 detection_cache_mod = load_src_module(
-    "multi_tracker/data/detection_cache.py",
+    "hydra_suite/data/detection_cache.py",
     "detection_cache_under_test",
 )
 DetectionCache = detection_cache_mod.DetectionCache
@@ -66,6 +66,9 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
             det_ids,
             heading_hints,
             directed_mask,
+            canonical_affines,
+            _canvas_dims,
+            _M_inverse,
         ) = cache.get_frame(10)
         assert len(meas) == 1 and meas[0].shape == (3,)
         assert sizes == [12.0]
@@ -75,6 +78,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
         assert det_ids == [100001]
         assert np.allclose(heading_hints, [0.1], rtol=1e-6, atol=1e-6)
         assert directed_mask == [1]
+        assert canonical_affines is None
 
         (
             meas,
@@ -85,6 +89,9 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
             det_ids,
             heading_hints,
             directed_mask,
+            canonical_affines,
+            _canvas_dims,
+            _M_inverse,
         ) = cache.get_frame(11)
         assert meas == []
         assert sizes == []

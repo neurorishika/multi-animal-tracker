@@ -104,23 +104,21 @@ class _FakeCache:
             [101],
             [1.25],
             [1],
+            None,
+            None,
+            None,
         )
 
 
 def _load_optimizer_module():
-    multi_tracker_pkg = types.ModuleType("multi_tracker")
-    multi_tracker_pkg.__path__ = []
-    core_pkg = types.ModuleType("multi_tracker.core")
+    hydra_suite_pkg = types.ModuleType("hydra_suite")
+    hydra_suite_pkg.__path__ = []
+    core_pkg = types.ModuleType("hydra_suite.core")
     core_pkg.__path__ = []
-    core_tracking = types.ModuleType("multi_tracker.core.tracking")
+    core_tracking = types.ModuleType("hydra_suite.core.tracking")
     core_tracking.__path__ = []
-    data_pkg = types.ModuleType("multi_tracker.data")
+    data_pkg = types.ModuleType("hydra_suite.data")
     data_pkg.__path__ = []
-
-    pose_features = load_src_module(
-        "multi_tracker/core/tracking/pose_features.py",
-        "pose_features_for_optimizer_test",
-    )
 
     qtcore = types.ModuleType("PySide6.QtCore")
 
@@ -151,36 +149,57 @@ def _load_optimizer_module():
     )
     optuna.create_study = lambda **_kwargs: None
 
-    assigner = types.ModuleType("multi_tracker.core.assigners.hungarian")
+    assigner = types.ModuleType("hydra_suite.core.assigners.hungarian")
     assigner.TrackAssigner = _StubTrackAssigner
 
-    detectors_engine = types.ModuleType("multi_tracker.core.detectors.engine")
-    detectors_engine.DetectionFilter = _StubDetectionFilter
+    core_detectors = types.ModuleType("hydra_suite.core.detectors")
+    core_detectors.__path__ = []
+    core_detectors.DetectionFilter = _StubDetectionFilter
 
-    kalman = types.ModuleType("multi_tracker.core.filters.kalman")
+    kalman = types.ModuleType("hydra_suite.core.filters.kalman")
     kalman.KalmanFilterManager = _StubKalmanFilterManager
 
-    detection_cache = types.ModuleType("multi_tracker.data.detection_cache")
+    detection_cache = types.ModuleType("hydra_suite.data.detection_cache")
     detection_cache.DetectionCache = object
+
+    # Identity sub-package stubs (optimizer imports from canonical locations).
+    # These are pure-Python modules; load the real implementations.
+    core_identity = types.ModuleType("hydra_suite.core.identity")
+    core_identity.__path__ = []
+
+    identity_geometry = load_src_module(
+        "hydra_suite/core/identity/geometry.py",
+        "identity_geometry_for_optimizer_test",
+    )
+
+    pose_pkg = types.ModuleType("hydra_suite.core.identity.pose")
+    pose_pkg.__path__ = []
+    pose_features = load_src_module(
+        "hydra_suite/core/identity/pose/features.py",
+        "pose_features_for_optimizer_test",
+    )
 
     stubs = {
         "cv2": make_cv2_stub(),
         "optuna": optuna,
         "PySide6": pyside,
         "PySide6.QtCore": qtcore,
-        "multi_tracker": multi_tracker_pkg,
-        "multi_tracker.core": core_pkg,
-        "multi_tracker.core.tracking": core_tracking,
-        "multi_tracker.data": data_pkg,
-        "multi_tracker.core.tracking.pose_features": pose_features,
-        "multi_tracker.core.assigners.hungarian": assigner,
-        "multi_tracker.core.detectors.engine": detectors_engine,
-        "multi_tracker.core.filters.kalman": kalman,
-        "multi_tracker.data.detection_cache": detection_cache,
+        "hydra_suite": hydra_suite_pkg,
+        "hydra_suite.core": core_pkg,
+        "hydra_suite.core.tracking": core_tracking,
+        "hydra_suite.data": data_pkg,
+        "hydra_suite.core.assigners.hungarian": assigner,
+        "hydra_suite.core.detectors": core_detectors,
+        "hydra_suite.core.filters.kalman": kalman,
+        "hydra_suite.data.detection_cache": detection_cache,
+        "hydra_suite.core.identity": core_identity,
+        "hydra_suite.core.identity.geometry": identity_geometry,
+        "hydra_suite.core.identity.pose": pose_pkg,
+        "hydra_suite.core.identity.pose.features": pose_features,
     }
 
     return load_src_module(
-        "multi_tracker/core/tracking/optimizer.py",
+        "hydra_suite/core/tracking/optimizer.py",
         "tracking_optimizer_under_test",
         stubs=stubs,
     )

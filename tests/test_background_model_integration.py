@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from multi_tracker.core.background.model import BackgroundModel
+from hydra_suite.core.background.model import BackgroundModel
 
 
 def create_test_video_for_background(

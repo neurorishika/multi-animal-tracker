@@ -1,4 +1,4 @@
-# ROCm Setup Guide for Multi-Animal-Tracker
+# ROCm Setup Guide for HYDRA suite
 
 This guide provides detailed instructions for setting up AMD GPU acceleration with ROCm.
 
@@ -133,7 +133,7 @@ Now install the tracker environment:
 ```bash
 # Create conda environment
 mamba env create -f environment-rocm.yml
-conda activate multi-animal-tracker-rocm
+conda activate hydra-rocm
 
 # Install Python packages (will take a few minutes - CuPy needs to compile)
 uv pip install -v -r requirements-rocm.txt
@@ -307,7 +307,7 @@ If you need a different ROCm version:
 
 2. **Reinstall Python packages**:
    ```bash
-   conda activate multi-animal-tracker-rocm
+   conda activate hydra-rocm
    uv pip install -v -r requirements-rocm.txt --force-reinstall
    ```
 
@@ -369,7 +369,7 @@ If you encounter issues:
 1. Check [Troubleshooting](#troubleshooting) section above
 2. Verify ROCm installation: `rocm-smi --showproductname`
 3. Test PyTorch ROCm: Run verification scripts above
-4. Check [GitHub Issues](https://github.com/neurorishika/multi-animal-tracker/issues)
+4. Check [GitHub Issues](https://github.com/neurorishika/hydra-suite/issues)
 5. Include in bug reports:
    - GPU model (`lspci | grep VGA`)
    - ROCm version (`rocm-smi --version`)

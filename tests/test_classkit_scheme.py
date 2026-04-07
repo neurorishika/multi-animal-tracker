@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from multi_tracker.classkit.config.schemas import Factor, LabelingScheme, ProjectConfig
-from multi_tracker.classkit.presets import (
+from hydra_suite.classkit.config.presets import (
     age_preset,
     color_tag_preset,
     head_tail_preset,
 )
+from hydra_suite.classkit.config.schemas import Factor, LabelingScheme, ProjectConfig
 
 
 def test_factor_has_name_and_labels():

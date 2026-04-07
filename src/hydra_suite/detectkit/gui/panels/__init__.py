@@ -1,0 +1,1 @@
+"""DetectKit GUI panel widgets."""

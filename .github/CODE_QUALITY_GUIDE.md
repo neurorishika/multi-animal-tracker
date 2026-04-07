@@ -1,6 +1,6 @@
 # Code Quality Improvement Strategy
 
-This document outlines the approach to gradually improve code quality in the Multi-Animal Tracker codebase.
+This document outlines the approach to gradually improve code quality in the HYDRA Suite codebase.
 
 ## Current Status
 
@@ -150,10 +150,10 @@ You can also lint specific files or directories:
 
 ```bash
 # Single file
-flake8 --config=.flake8.moderate src/multi_tracker/core/detection.py
+flake8 --config=.flake8.moderate src/hydra_suite/core/detection.py
 
 # Specific module
-flake8 --config=.flake8.strict src/multi_tracker/posekit/
+flake8 --config=.flake8.strict src/hydra_suite/posekit/
 
 # Exclude tests while focusing on src
 flake8 --config=.flake8.moderate src/
@@ -252,9 +252,9 @@ def process():
 
 ## Long-term Goals
 
-1. **Month 1-2**: Fix all moderate issues in `src/multi_tracker/core/`
-2. **Month 3-4**: Fix moderate issues in `src/multi_tracker/posekit/`
-3. **Month 5-6**: Fix moderate issues in `src/multi_tracker/gui/`
+1. **Month 1-2**: Fix all moderate issues in `src/hydra_suite/core/`
+2. **Month 3-4**: Fix moderate issues in `src/hydra_suite/posekit/`
+3. **Month 5-6**: Fix moderate issues in `src/hydra_suite/gui/`
 4. **Month 7+**: Switch to moderate config for pre-commit
 5. **Month 12+**: Begin strict improvements
 

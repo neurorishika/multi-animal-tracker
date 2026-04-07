@@ -2,7 +2,7 @@
 
 The repository now includes a standalone LaTeX technical reference package for the current tracking system.
 
-[Download the latest PDF](../assets/technical-reference/multi-animal-tracker-technical-reference.pdf){ .md-button .md-button--primary }
+[Download the latest PDF](../assets/technical-reference/hydra-suite-technical-reference.pdf){ .md-button .md-button--primary }
 
 Location in the repo:
 
@@ -69,7 +69,7 @@ Use the docs site for day-to-day usage and code-adjacent navigation. Use the LaT
 
 Direct links:
 
-- [Technical reference PDF](../assets/technical-reference/multi-animal-tracker-technical-reference.pdf)
+- [Technical reference PDF](../assets/technical-reference/hydra-suite-technical-reference.pdf)
 
 Related pages:
 

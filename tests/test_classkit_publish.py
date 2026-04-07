@@ -1,8 +1,8 @@
 # tests/test_classkit_publish.py
 from unittest.mock import patch
 
-from multi_tracker.training.contracts import TrainingRole
-from multi_tracker.training.model_publish import _repo_dir_for_role
+from hydra_suite.training.contracts import TrainingRole
+from hydra_suite.training.model_publish import _repo_dir_for_role
 
 
 def test_new_roles_exist():
@@ -14,7 +14,7 @@ def test_new_roles_exist():
 
 def test_repo_dir_flat_yolo(tmp_path):
     with patch(
-        "multi_tracker.training.model_publish.get_models_root", return_value=tmp_path
+        "hydra_suite.training.model_publish.get_models_root", return_value=tmp_path
     ):
         d = _repo_dir_for_role(TrainingRole.CLASSIFY_FLAT_YOLO, scheme_name="color2")
     assert d == tmp_path / "YOLO-classify" / "color2"
@@ -23,7 +23,7 @@ def test_repo_dir_flat_yolo(tmp_path):
 
 def test_repo_dir_flat_tiny(tmp_path):
     with patch(
-        "multi_tracker.training.model_publish.get_models_root", return_value=tmp_path
+        "hydra_suite.training.model_publish.get_models_root", return_value=tmp_path
     ):
         d = _repo_dir_for_role(TrainingRole.CLASSIFY_FLAT_TINY, scheme_name="age")
     assert d == tmp_path / "tiny-classify" / "age"
@@ -31,7 +31,7 @@ def test_repo_dir_flat_tiny(tmp_path):
 
 def test_repo_dir_multihead_yolo(tmp_path):
     with patch(
-        "multi_tracker.training.model_publish.get_models_root", return_value=tmp_path
+        "hydra_suite.training.model_publish.get_models_root", return_value=tmp_path
     ):
         d = _repo_dir_for_role(
             TrainingRole.CLASSIFY_MULTIHEAD_YOLO, scheme_name="color2"
@@ -41,7 +41,7 @@ def test_repo_dir_multihead_yolo(tmp_path):
 
 def test_repo_dir_multihead_tiny(tmp_path):
     with patch(
-        "multi_tracker.training.model_publish.get_models_root", return_value=tmp_path
+        "hydra_suite.training.model_publish.get_models_root", return_value=tmp_path
     ):
         d = _repo_dir_for_role(
             TrainingRole.CLASSIFY_MULTIHEAD_TINY, scheme_name="color2"
@@ -54,7 +54,7 @@ def test_publish_trained_model_includes_scheme_metadata(tmp_path):
     import json
     from unittest.mock import patch
 
-    from multi_tracker.training.model_publish import publish_trained_model
+    from hydra_suite.training.model_publish import publish_trained_model
 
     # Create a fake artifact
     artifact = tmp_path / "best.pth"
@@ -64,11 +64,11 @@ def test_publish_trained_model_includes_scheme_metadata(tmp_path):
 
     with (
         patch(
-            "multi_tracker.training.model_publish.get_models_root",
+            "hydra_suite.training.model_publish.get_models_root",
             return_value=tmp_path,
         ),
         patch(
-            "multi_tracker.training.model_publish._registry_path",
+            "hydra_suite.training.model_publish._registry_path",
             return_value=registry_path,
         ),
     ):
@@ -95,7 +95,7 @@ def test_publish_trained_model_includes_scheme_metadata(tmp_path):
 
 def test_task_usage_for_classify_roles():
     """CLASSIFY_* roles must resolve to explicit classify usage_role values."""
-    from multi_tracker.training.model_publish import _task_usage_for_role
+    from hydra_suite.training.model_publish import _task_usage_for_role
 
     assert _task_usage_for_role(TrainingRole.CLASSIFY_FLAT_YOLO) == (
         "classify",

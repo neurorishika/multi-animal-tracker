@@ -10,7 +10,7 @@ Tests cover:
 
 import numpy as np
 
-from multi_tracker.utils.image_processing import (
+from hydra_suite.utils.image_processing import (
     apply_image_adjustments,
     stabilize_lighting,
 )

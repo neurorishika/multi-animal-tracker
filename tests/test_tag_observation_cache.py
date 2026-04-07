@@ -9,7 +9,7 @@ import numpy as np
 from tests.helpers.module_loader import load_src_module
 
 mod = load_src_module(
-    "multi_tracker/data/tag_observation_cache.py",
+    "hydra_suite/data/tag_observation_cache.py",
     "tag_obs_cache_under_test",
 )
 TagObservationCache = mod.TagObservationCache

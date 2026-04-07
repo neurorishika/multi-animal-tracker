@@ -1,0 +1,1161 @@
+"""IdentityPanel — identity classification, pose analysis, and keypoint config."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from hydra_suite.trackerkit.config.schemas import TrackerConfig
+
+if TYPE_CHECKING:
+    from hydra_suite.trackerkit.gui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
+
+
+class IdentityPanel(QWidget):
+    """CNN/appearance identity assignment and pose backend configuration."""
+
+    config_changed: Signal = Signal(object)
+
+    def __init__(
+        self,
+        main_window: "MainWindow",
+        config: TrackerConfig,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._main_window = main_window
+        self._config = config
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        """Populate the panel layout."""
+        layout = self._layout
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget()
+        form = QVBoxLayout(content)
+        form.setContentsMargins(6, 6, 6, 6)
+        form.setSpacing(8)
+        self._main_window._set_compact_scroll_layout(form)
+
+        self.lbl_individual_yolo_only_notice = self._main_window._create_help_label(
+            "Individual analysis requires YOLO OBB mode.\n"
+            "Switch detection method to YOLO OBB to enable this pipeline.",
+            attach_to_title=False,
+        )
+        self.lbl_individual_yolo_only_notice.setVisible(False)
+        form.addWidget(self.lbl_individual_yolo_only_notice)
+
+        # Identity Classification Section
+        self.g_identity = QGroupBox("Enable Identity Classification")
+        self.g_identity.setCheckable(True)
+        self.g_identity.setChecked(False)
+        self.g_identity.toggled.connect(self._on_identity_analysis_toggled)
+        self._main_window._set_compact_section_widget(self.g_identity)
+        vl_identity = QVBoxLayout(self.g_identity)
+        self.identity_content = QWidget()
+        self.identity_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        identity_content_layout = QVBoxLayout(self.identity_content)
+        identity_content_layout.setContentsMargins(0, 0, 0, 0)
+        identity_content_layout.setSpacing(8)
+        self.lbl_identity_help = self._main_window._create_help_label(
+            "Classify individual identity during tracking. Extracts crops around each detection "
+            "and processes them with the selected method."
+        )
+        identity_content_layout.addWidget(self.lbl_identity_help)
+
+        # Hidden legacy widgets (referenced by model-import dialog)
+        self.line_color_tag_model = QLineEdit()
+        self.line_color_tag_model.setPlaceholderText("path/to/color_tag_model.pt")
+        self.line_color_tag_model.setVisible(False)
+        self.spin_color_tag_conf = QDoubleSpinBox()
+        self.spin_color_tag_conf.setRange(0.01, 1.0)
+        self.spin_color_tag_conf.setValue(0.5)
+        self.spin_color_tag_conf.setSingleStep(0.05)
+        self.spin_color_tag_conf.setToolTip(
+            "Minimum confidence for color tag detection"
+        )
+        self.spin_color_tag_conf.setVisible(False)
+
+        # --- Shared identity cost controls ---
+        fl_identity_cost = QFormLayout()
+        fl_identity_cost.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.spin_identity_match_bonus = QDoubleSpinBox()
+        self.spin_identity_match_bonus.setRange(0.0, 200.0)
+        self.spin_identity_match_bonus.setSingleStep(5.0)
+        self.spin_identity_match_bonus.setValue(20.0)
+        self.spin_identity_match_bonus.setToolTip(
+            "Cost bonus (subtracted) when an identity observation matches the track.\n"
+            "Divided equally across all active identity sources (AprilTags + each CNN)."
+        )
+        fl_identity_cost.addRow("Identity match bonus", self.spin_identity_match_bonus)
+        self.spin_identity_mismatch_penalty = QDoubleSpinBox()
+        self.spin_identity_mismatch_penalty.setRange(0.0, 500.0)
+        self.spin_identity_mismatch_penalty.setSingleStep(5.0)
+        self.spin_identity_mismatch_penalty.setValue(50.0)
+        self.spin_identity_mismatch_penalty.setToolTip(
+            "Cost penalty (added) when an identity observation conflicts with the track.\n"
+            "Divided equally across all active identity sources (AprilTags + each CNN)."
+        )
+        fl_identity_cost.addRow(
+            "Identity mismatch penalty", self.spin_identity_mismatch_penalty
+        )
+        identity_content_layout.addLayout(fl_identity_cost)
+
+        # --- AprilTags group ---
+        self.g_apriltags = QGroupBox("AprilTags")
+        self.g_apriltags.setCheckable(True)
+        self.g_apriltags.setChecked(False)
+        self.g_apriltags.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        vl_apriltags_outer = QVBoxLayout(self.g_apriltags)
+        vl_apriltags_outer.setContentsMargins(0, 0, 0, 0)
+        self.apriltag_settings_widget = QWidget()
+        self.apriltag_settings_widget.setVisible(False)
+        fl_apriltags = QFormLayout(self.apriltag_settings_widget)
+        fl_apriltags.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.combo_apriltag_family = QComboBox()
+        self.combo_apriltag_family.addItems(self._get_apriltag_families())
+        self.combo_apriltag_family.setToolTip(
+            "AprilTag family to detect.\n"
+            "The list is populated from your installed apriltag library."
+        )
+        fl_apriltags.addRow("AprilTag family", self.combo_apriltag_family)
+        self.spin_apriltag_decimate = QDoubleSpinBox()
+        self.spin_apriltag_decimate.setRange(1.0, 4.0)
+        self.spin_apriltag_decimate.setValue(1.0)
+        self.spin_apriltag_decimate.setSingleStep(0.5)
+        self.spin_apriltag_decimate.setToolTip(
+            "Decimation factor for faster detection (higher = faster but less accurate)"
+        )
+        fl_apriltags.addRow("AprilTag downsampling", self.spin_apriltag_decimate)
+        vl_apriltags_outer.addWidget(self.apriltag_settings_widget)
+        self.g_apriltags.toggled.connect(self.apriltag_settings_widget.setVisible)
+        identity_content_layout.addWidget(self.g_apriltags)
+
+        # --- CNN Classifiers group ---
+        self.g_cnn_classifiers = QGroupBox("CNN Classifiers")
+        self._main_window._set_compact_section_widget(self.g_cnn_classifiers)
+        vl_cnn = QVBoxLayout(self.g_cnn_classifiers)
+        vl_cnn.setSpacing(4)
+        self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
+        self.btn_add_cnn_classifier.clicked.connect(self._add_cnn_classifier_row)
+        vl_cnn.addWidget(self.btn_add_cnn_classifier)
+        self.cnn_scroll_area = QScrollArea()
+        self.cnn_scroll_area.setWidgetResizable(True)
+        self.cnn_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.cnn_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.cnn_scroll_area.setMinimumHeight(0)
+        self.cnn_scroll_area.setMaximumHeight(200)
+        self.cnn_scroll_area.setVisible(False)
+        cnn_scroll_widget = QWidget()
+        cnn_scroll_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.cnn_rows_layout = QVBoxLayout(cnn_scroll_widget)
+        self.cnn_rows_layout.setSpacing(6)
+        self.cnn_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.cnn_scroll_area.setWidget(cnn_scroll_widget)
+        vl_cnn.addWidget(self.cnn_scroll_area)
+        identity_content_layout.addWidget(self.g_cnn_classifiers)
+
+        # Hidden sentinel combo for model import dialog (reused by CNNClassifierRow)
+        self.combo_cnn_identity_model = QComboBox()
+        self.combo_cnn_identity_model.setVisible(False)
+        # Note: combo will be populated post-construction via _refresh_cnn_identity_model_combo
+        # Hidden verification labels (may be queried by model import dialog)
+        self.lbl_cnn_arch = QLabel("—")
+        self.lbl_cnn_num_classes = QLabel("—")
+        self.lbl_cnn_class_names = QLabel("—")
+        self.lbl_cnn_input_size = QLabel("—")
+        self.lbl_cnn_label = QLabel("—")
+        self.spin_cnn_confidence = QDoubleSpinBox()
+        self.spin_cnn_confidence.setRange(0.0, 1.0)
+        self.spin_cnn_confidence.setSingleStep(0.05)
+        self.spin_cnn_confidence.setValue(0.5)
+        self.spin_cnn_window = QSpinBox()
+        self.spin_cnn_window.setRange(1, 100)
+        self.spin_cnn_window.setValue(10)
+        vl_identity.addWidget(self.identity_content)
+
+        self.g_individual_pipeline_common = QGroupBox(
+            "Individual Analysis Pipeline Settings"
+        )
+        self._main_window._set_compact_section_widget(self.g_individual_pipeline_common)
+        fl_common = QFormLayout(self.g_individual_pipeline_common)
+
+        self.chk_individual_interpolate = QCheckBox(
+            "Interpolate Occluded Frames After Tracking"
+        )
+        self.chk_individual_interpolate.setChecked(True)
+        self.chk_individual_interpolate.setToolTip(
+            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
+            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
+        )
+        fl_common.addRow("Interpolate occluded frames", self.chk_individual_interpolate)
+
+        self.spin_individual_padding = QDoubleSpinBox()
+        self.spin_individual_padding.setRange(0.0, 0.5)
+        self.spin_individual_padding.setValue(0.1)
+        self.spin_individual_padding.setSingleStep(0.05)
+        self.spin_individual_padding.setDecimals(2)
+        self.spin_individual_padding.setToolTip(
+            "Padding around OBB bounding box as fraction of size.\n"
+            "0.1 = 10% padding on each side.\n"
+            "Applies to all precompute phases: pose, AprilTag, and CNN identity."
+        )
+        fl_common.addRow(
+            "Crop padding fraction (all phases)", self.spin_individual_padding
+        )
+
+        bg_color_layout = QHBoxLayout()
+        self.btn_background_color = QPushButton()
+        self.btn_background_color.setMaximumWidth(60)
+        self.btn_background_color.setMinimumHeight(30)
+        self.btn_background_color.setToolTip("Click to choose background color")
+        self.btn_background_color.clicked.connect(
+            self._main_window._select_individual_background_color
+        )
+        self._background_color = (0, 0, 0)  # BGR
+        bg_color_layout.addWidget(self.btn_background_color)
+
+        self.btn_median_color = QPushButton("Use Median from Frame")
+        self.btn_median_color.setToolTip(
+            "Compute median color from the preview frame and use as background"
+        )
+        self.btn_median_color.clicked.connect(
+            self._main_window._compute_median_background_color
+        )
+        bg_color_layout.addWidget(self.btn_median_color)
+
+        self.lbl_background_color = QLabel("(0, 0, 0)")
+        self.lbl_background_color.setToolTip("Current background color in BGR format")
+        bg_color_layout.addWidget(self.lbl_background_color)
+        # Note: background color button will be updated post-construction
+        fl_common.addRow("Crop background color", bg_color_layout)
+
+        self.chk_suppress_foreign_obb = QCheckBox("Suppress foreign animal regions")
+        self.chk_suppress_foreign_obb.setChecked(True)
+        self.chk_suppress_foreign_obb.setToolTip(
+            "Fill overlapping animals' OBB areas with the background color before\n"
+            "pose inference, and zero out any keypoints that fall inside another\n"
+            "animal's bounding box after inference.\n"
+            "\n"
+            "Prevents pose contamination when animals are close or overlapping.\n"
+            "Disable only if you observe incorrect masking of valid keypoints."
+        )
+        fl_common.addRow(
+            "Pose contamination suppression", self.chk_suppress_foreign_obb
+        )
+
+        # Head-tail orientation classifier
+        self.combo_yolo_headtail_model_type = QComboBox()
+        self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
+        self.combo_yolo_headtail_model_type.setFixedHeight(30)
+        self.combo_yolo_headtail_model_type.setToolTip(
+            "Architecture family of the head-tail classifier.\n"
+            "YOLO → models/classification/orientation/YOLO/\n"
+            "tiny → models/classification/orientation/tiny/"
+        )
+        self.combo_yolo_headtail_model_type.currentIndexChanged.connect(
+            self._main_window._on_headtail_model_type_changed
+        )
+
+        self.combo_yolo_headtail_model = QComboBox()
+        # Note: combo_yolo_headtail_model will be populated post-construction
+        self.combo_yolo_headtail_model.activated.connect(
+            self._main_window.on_yolo_headtail_model_changed
+        )
+        self.combo_yolo_headtail_model.setFixedHeight(30)
+        self.combo_yolo_headtail_model.setToolTip(
+            "Optional classifier to resolve head vs. tail orientation along the OBB major axis.\n"
+            "Runs during tracking and post-hoc individual analysis."
+        )
+
+        self.headtail_model_row_widget = QWidget()
+        _headtail_row = QHBoxLayout(self.headtail_model_row_widget)
+        _headtail_row.setContentsMargins(0, 0, 0, 0)
+        _headtail_row.setSpacing(4)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
+        fl_common.addRow("Head-tail model", self.headtail_model_row_widget)
+
+        self.spin_yolo_headtail_conf = QDoubleSpinBox()
+        self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
+        self.spin_yolo_headtail_conf.setSingleStep(0.01)
+        self.spin_yolo_headtail_conf.setValue(0.50)
+        self.spin_yolo_headtail_conf.setFixedHeight(30)
+        self.spin_yolo_headtail_conf.setToolTip(
+            "Minimum classifier confidence for a head-tail assignment to be accepted (0–1).\n"
+            "Lower = more assignments accepted; higher = fewer but more reliable."
+        )
+        fl_common.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
+
+        self.chk_pose_overrides_headtail = QCheckBox(
+            "Pose orientation overrides head-tail"
+        )
+        self.chk_pose_overrides_headtail.setChecked(True)
+        self.chk_pose_overrides_headtail.setToolTip(
+            "When enabled, valid pose heading takes precedence over head-tail heading."
+        )
+        fl_common.addRow("", self.chk_pose_overrides_headtail)
+
+        form.addWidget(self.g_individual_pipeline_common)
+        form.addWidget(self.g_identity)
+
+        self.g_pose_runtime = QGroupBox("Enable Pose Extraction")
+        self.g_pose_runtime.setCheckable(True)
+        self.g_pose_runtime.setChecked(False)
+        self.g_pose_runtime.toggled.connect(self._on_pose_analysis_toggled)
+        self.g_pose_runtime.toggled.connect(
+            self._main_window._sync_video_pose_overlay_controls
+        )
+        self.g_pose_runtime.toggled.connect(
+            self._main_window._on_runtime_context_changed
+        )
+        # Cross-panel connection wired in MainWindow.init_ui() after both panels exist
+        self.chk_enable_pose_extractor = self.g_pose_runtime
+        self._main_window._set_compact_section_widget(self.g_pose_runtime)
+        vl_pose = QVBoxLayout(self.g_pose_runtime)
+        self.pose_runtime_content = QWidget()
+        self.pose_runtime_content.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Maximum
+        )
+        pose_runtime_content_layout = QVBoxLayout(self.pose_runtime_content)
+        pose_runtime_content_layout.setContentsMargins(0, 0, 0, 0)
+        pose_runtime_content_layout.setSpacing(8)
+        self.lbl_pose_runtime_help = self._main_window._create_help_label(
+            "Minimum runtime pose settings used by the individual-analysis pipeline."
+        )
+        pose_runtime_content_layout.addWidget(self.lbl_pose_runtime_help)
+        fl_pose = QFormLayout(None)
+        fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.form_pose_runtime = fl_pose
+
+        self.combo_pose_model_type = QComboBox()
+        self.combo_pose_model_type.addItems(["YOLO", "SLEAP", "ViTPose"])
+        self.combo_pose_model_type.setToolTip("Pose backend for individual analysis.")
+        self.combo_pose_model_type.currentIndexChanged.connect(
+            self._main_window._sync_pose_backend_ui
+        )
+        fl_pose.addRow("Pose model type", self.combo_pose_model_type)
+
+        self.combo_pose_runtime_flavor = QComboBox()
+        self.combo_pose_runtime_flavor.setToolTip(
+            "Pose runtime implementation.\n"
+            "Auto/Native uses default backend runtime.\n"
+            "ONNX/TensorRT artifacts are exported and reused automatically."
+        )
+        # Note: combo_pose_runtime_flavor will be populated post-construction
+        self.combo_pose_runtime_flavor.currentIndexChanged.connect(
+            self._main_window._sync_pose_backend_ui
+        )
+        fl_pose.addRow("Pose runtime", self.combo_pose_runtime_flavor)
+        self._main_window._set_form_row_visible(
+            fl_pose, self.combo_pose_runtime_flavor, False
+        )
+
+        self.combo_pose_model = QComboBox()
+        self.combo_pose_model.setToolTip(
+            "Pose model for individual analysis.\n"
+            "Choose an imported model or select '＋ Add New Model…' to browse and import."
+        )
+        self.combo_pose_model.currentIndexChanged.connect(
+            self._main_window.on_pose_model_changed
+        )
+        # Note: combo_pose_model will be populated post-construction
+        fl_pose.addRow("Pose model", self.combo_pose_model)
+
+        self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
+        self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
+        self.spin_pose_min_kpt_conf_valid.setSingleStep(0.05)
+        self.spin_pose_min_kpt_conf_valid.setDecimals(2)
+        self.spin_pose_min_kpt_conf_valid.setValue(0.2)
+        self.spin_pose_min_kpt_conf_valid.setToolTip(
+            "Minimum per-keypoint confidence to consider a keypoint valid."
+        )
+        fl_pose.addRow("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid)
+
+        self.spin_pose_batch = QSpinBox()
+        self.spin_pose_batch.setRange(1, 256)
+        self.spin_pose_batch.setValue(
+            int(self._main_window.advanced_config.get("pose_batch_size", 4))
+        )
+        self.spin_pose_batch.setToolTip(
+            "Shared batch size for pose inference across YOLO and SLEAP backends."
+        )
+        fl_pose.addRow("Pose batch size", self.spin_pose_batch)
+
+        h_pose_skeleton = QHBoxLayout()
+        self.line_pose_skeleton_file = QLineEdit()
+        self.line_pose_skeleton_file.setPlaceholderText(
+            "Select skeleton JSON (keypoint_names + skeleton_edges)..."
+        )
+        default_skeleton = str(
+            self._main_window.advanced_config.get("pose_skeleton_file", "")
+        ).strip()
+        if not default_skeleton:
+            from hydra_suite.paths import get_skeleton_dir
+
+            candidate = get_skeleton_dir() / "ooceraea_biroi.json"
+            if candidate.exists():
+                default_skeleton = str(candidate)
+        if default_skeleton:
+            self.line_pose_skeleton_file.setText(default_skeleton)
+        self.btn_browse_pose_skeleton_file = QPushButton("Browse...")
+        self.btn_browse_pose_skeleton_file.clicked.connect(
+            self._main_window._select_pose_skeleton_file
+        )
+        self.line_pose_skeleton_file.textChanged.connect(
+            self._refresh_pose_direction_keypoint_lists
+        )
+        h_pose_skeleton.addWidget(self.line_pose_skeleton_file)
+        h_pose_skeleton.addWidget(self.btn_browse_pose_skeleton_file)
+        fl_pose.addRow("Skeleton file", h_pose_skeleton)
+
+        self.list_pose_ignore_keypoints = QListWidget()
+        self.list_pose_ignore_keypoints.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_ignore_keypoints.setMinimumHeight(96)
+        self.list_pose_ignore_keypoints.setMaximumHeight(120)
+        self.list_pose_ignore_keypoints.setToolTip(
+            "Select keypoints to ignore in pose export and orientation logic."
+        )
+
+        self.list_pose_direction_anterior = QListWidget()
+        self.list_pose_direction_anterior.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_direction_anterior.setMinimumHeight(96)
+        self.list_pose_direction_anterior.setMaximumHeight(120)
+        self.list_pose_direction_anterior.setToolTip(
+            "Select anterior keypoints from skeleton keypoint list."
+        )
+
+        self.list_pose_direction_posterior = QListWidget()
+        self.list_pose_direction_posterior.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_direction_posterior.setMinimumHeight(96)
+        self.list_pose_direction_posterior.setMaximumHeight(120)
+        self.list_pose_direction_posterior.setToolTip(
+            "Select posterior keypoints from skeleton keypoint list."
+        )
+
+        pose_kpt_groups_widget = QWidget()
+        pose_kpt_groups_layout = QHBoxLayout(pose_kpt_groups_widget)
+        pose_kpt_groups_layout.setContentsMargins(0, 0, 0, 0)
+        pose_kpt_groups_layout.setSpacing(8)
+
+        ignore_col = QVBoxLayout()
+        ignore_label = QLabel("Ignore")
+        ignore_label.setStyleSheet("font-weight: bold;")
+        ignore_col.addWidget(ignore_label)
+        ignore_col.addWidget(self.list_pose_ignore_keypoints)
+        pose_kpt_groups_layout.addLayout(ignore_col, 1)
+
+        anterior_col = QVBoxLayout()
+        anterior_label = QLabel("Anterior")
+        anterior_label.setStyleSheet("font-weight: bold;")
+        anterior_col.addWidget(anterior_label)
+        anterior_col.addWidget(self.list_pose_direction_anterior)
+        pose_kpt_groups_layout.addLayout(anterior_col, 1)
+
+        posterior_col = QVBoxLayout()
+        posterior_label = QLabel("Posterior")
+        posterior_label.setStyleSheet("font-weight: bold;")
+        posterior_col.addWidget(posterior_label)
+        posterior_col.addWidget(self.list_pose_direction_posterior)
+        pose_kpt_groups_layout.addLayout(posterior_col, 1)
+
+        fl_pose.addRow("Keypoint groups", pose_kpt_groups_widget)
+        self.list_pose_ignore_keypoints.itemSelectionChanged.connect(
+            lambda: self._main_window._on_pose_keypoint_group_changed("ignore")
+        )
+        self.list_pose_direction_anterior.itemSelectionChanged.connect(
+            lambda: self._main_window._on_pose_keypoint_group_changed("anterior")
+        )
+        self.list_pose_direction_posterior.itemSelectionChanged.connect(
+            lambda: self._main_window._on_pose_keypoint_group_changed("posterior")
+        )
+
+        h_sleap_env = QHBoxLayout()
+        self.combo_pose_sleap_env = QComboBox()
+        self.combo_pose_sleap_env.setToolTip(
+            "Conda environment name must start with 'sleap'."
+        )
+        h_sleap_env.addWidget(self.combo_pose_sleap_env, 1)
+        self.btn_refresh_pose_sleap_envs = QPushButton("Refresh")
+        self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
+        self.btn_refresh_pose_sleap_envs.clicked.connect(self._refresh_pose_sleap_envs)
+        h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
+        self.pose_sleap_env_row_widget = QWidget()
+        self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
+        fl_pose.addRow("SLEAP env", self.pose_sleap_env_row_widget)
+
+        self.chk_sleap_experimental_features = QCheckBox("Allow experimental features")
+        self.chk_sleap_experimental_features.setChecked(False)
+        self.chk_sleap_experimental_features.setToolTip(
+            "Enable experimental SLEAP features (ONNX/TensorRT runtimes).\n"
+            "When disabled, ONNX/TensorRT runtime selections will revert to native runtime.\n"
+            "Experimental features may have stability or accuracy issues."
+        )
+        self.chk_sleap_experimental_features.stateChanged.connect(
+            self._main_window._on_sleap_experimental_toggled
+        )
+        self.pose_sleap_experimental_row_widget = QWidget()
+        sleap_exp_layout = QHBoxLayout()
+        sleap_exp_layout.setContentsMargins(0, 0, 0, 0)
+        sleap_exp_layout.addWidget(self.chk_sleap_experimental_features)
+        self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
+        fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
+
+        pose_runtime_content_layout.addLayout(fl_pose)
+        vl_pose.addWidget(self.pose_runtime_content)
+        form.addWidget(self.g_pose_runtime)
+
+        # Note: pose_sleap_envs and pose_runtime_flavor will be populated post-construction
+        self._main_window._set_form_row_visible(
+            fl_pose, self.pose_sleap_experimental_row_widget, False
+        )
+
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+        # Initially disable all controls (sync will show/hide based on state)
+        self.g_identity.setVisible(False)
+        self.g_identity.setEnabled(False)
+        self.g_individual_pipeline_common.setVisible(False)
+        self.g_individual_pipeline_common.setEnabled(False)
+        self.g_pose_runtime.setVisible(False)
+        self.g_pose_runtime.setEnabled(False)
+        # Note: _refresh_pose_direction_keypoint_lists and _sync_pose_backend_ui
+        # are called post-construction from main_window
+
+    def apply_config(self, config: TrackerConfig) -> None:
+        """Update panel widgets to reflect a new config object."""
+        self._config = config
+
+    # ------------------------------------------------------------------
+    # Handler methods (migrated from MainWindow)
+    # ------------------------------------------------------------------
+
+    def _on_individual_analysis_toggled(self, state):
+        """Enable/disable individual analysis controls."""
+        self._main_window._sync_individual_analysis_mode_ui()
+
+    def _on_identity_method_changed(self, index):
+        """Update identity configuration stack when method changes."""
+        self._sync_identity_method_ui()
+
+    def _on_identity_analysis_toggled(self, state):
+        """Enable/disable identity-method controls inside individual analysis."""
+        self._sync_identity_method_ui()
+
+    def _on_pose_analysis_toggled(self, state):
+        """Enable/disable pose-extraction controls inside individual analysis."""
+        self._sync_pose_analysis_ui()
+
+    @staticmethod
+    def _get_apriltag_families() -> list:
+        """Return list of tag families supported by installed apriltag library."""
+        _FALLBACK = [
+            "tag36h11",
+            "tag25h9",
+            "tag16h5",
+            "tagCircle21h7",
+            "tagCircle49h12",
+            "tagStandard41h12",
+            "tagStandard52h13",
+            "tagCustom48h12",
+        ]
+        try:
+            import apriltag as _at  # type: ignore[import-untyped]
+        except ImportError:
+            return _FALLBACK
+        try:
+            _at.apriltag("__probe__")
+        except Exception as exc:
+            import re
+
+            families = re.findall(r"^\s+(\S+)$", str(exc), re.MULTILINE)
+            if families:
+                return sorted(families)
+        return _FALLBACK
+
+    def _select_color_tag_model(self):
+        """Browse for color tag YOLO model."""
+        from hydra_suite.trackerkit.gui.main_window import (
+            get_models_directory,
+            resolve_model_path,
+        )
+
+        start_dir = get_models_directory()
+        if self.line_color_tag_model.text():
+            current_path = resolve_model_path(self.line_color_tag_model.text())
+            if os.path.exists(current_path):
+                start_dir = os.path.dirname(current_path)
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Color Tag YOLO Model", start_dir, "YOLO Models (*.pt *.onnx)"
+        )
+        if filepath:
+            models_dir = get_models_directory()
+            try:
+                rel_path = os.path.relpath(filepath, models_dir)
+                is_in_archive = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_archive = False
+            if not is_in_archive:
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Model to Archive?",
+                    f"The selected model is outside the local model archive.\n\n"
+                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
+                    f"This makes presets portable across devices.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Yes:
+                    filename = os.path.basename(filepath)
+                    dest_path = os.path.join(models_dir, filename)
+                    if os.path.exists(dest_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(
+                                models_dir, f"{base}_{counter}{ext}"
+                            )
+                            counter += 1
+                    try:
+                        shutil.copy2(filepath, dest_path)
+                        filepath = dest_path
+                        logger.info(f"Copied color tag model to archive: {dest_path}")
+                        QMessageBox.information(
+                            self,
+                            "Model Copied",
+                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy model: {e}")
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
+                        )
+            self.line_color_tag_model.setText(filepath)
+
+    class CNNClassifierRow(QWidget):
+        """Self-contained widget for one CNN classifier configuration row."""
+
+        remove_requested = Signal(object)
+
+        def __init__(self, main_window, parent=None) -> None:
+            super().__init__(parent)
+            self._main_window = main_window
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(4, 4, 4, 4)
+            outer.setSpacing(4)
+            header_row = QHBoxLayout()
+            self.combo_model = QComboBox()
+            self.combo_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self._populate_model_combo()
+            self.combo_model.activated.connect(self._on_model_selected)
+            header_row.addWidget(self.combo_model)
+            self.btn_remove = QPushButton("\u2715")
+            self.btn_remove.setMaximumWidth(28)
+            self.btn_remove.setToolTip("Remove this CNN classifier")
+            self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
+            header_row.addWidget(self.btn_remove)
+            outer.addLayout(header_row)
+            form = QFormLayout()
+            form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+            self.lbl_arch = QLabel("\u2014")
+            self.lbl_num_classes = QLabel("\u2014")
+            self.lbl_class_names = QLabel("\u2014")
+            self.lbl_input_size = QLabel("\u2014")
+            self.lbl_label = QLabel("\u2014")
+            form.addRow("Architecture", self.lbl_arch)
+            form.addRow("Num classes", self.lbl_num_classes)
+            form.addRow("Class names", self.lbl_class_names)
+            form.addRow("Input size", self.lbl_input_size)
+            form.addRow("Classification label", self.lbl_label)
+            self.spin_confidence = QDoubleSpinBox()
+            self.spin_confidence.setRange(0.0, 1.0)
+            self.spin_confidence.setSingleStep(0.05)
+            self.spin_confidence.setValue(0.5)
+            form.addRow("Confidence threshold", self.spin_confidence)
+            self.spin_window = QSpinBox()
+            self.spin_window.setRange(1, 100)
+            self.spin_window.setValue(10)
+            form.addRow("History window", self.spin_window)
+            outer.addLayout(form)
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            outer.addWidget(line)
+
+        def _populate_model_combo(self):
+            """Populate combo from model_registry.json (usage_role == 'cnn_identity')."""
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_yolo_model_registry_path,
+            )
+
+            registry_path = get_yolo_model_registry_path()
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except (FileNotFoundError, ValueError):
+                registry = {}
+            self.combo_model.blockSignals(True)
+            current = self.combo_model.currentData()
+            self.combo_model.clear()
+            self.combo_model.addItem("\u2014 select model \u2014", "")
+            for rel_path, meta in registry.items():
+                if meta.get("usage_role") != "cnn_identity":
+                    continue
+                arch = meta.get("arch", "?")
+                label = meta.get("classification_label", "")
+                n_cls = meta.get("num_classes", "?")
+                display = f"{arch} | {n_cls} cls"
+                if label:
+                    display += f" | {label}"
+                self.combo_model.addItem(display, rel_path)
+            self.combo_model.addItem("\uff0b Add New Model\u2026", "__add_new__")
+            idx = self.combo_model.findData(current)
+            if idx >= 0:
+                self.combo_model.setCurrentIndex(idx)
+            self.combo_model.blockSignals(False)
+
+        def _on_model_selected(self, index: int):
+            rel_path = self.combo_model.itemData(index)
+            if rel_path == "__add_new__":
+                self._main_window._handle_add_new_cnn_identity_model()
+                self._populate_model_combo()
+                return
+            self._update_verification_labels(rel_path)
+
+        def _update_verification_labels(self, rel_path: str):
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_yolo_model_registry_path,
+            )
+
+            try:
+                with open(get_yolo_model_registry_path()) as f:
+                    registry = json.load(f)
+            except Exception:
+                return
+            meta = registry.get(rel_path or "", {})
+            self.lbl_arch.setText(str(meta.get("arch", "\u2014")))
+            self.lbl_num_classes.setText(str(meta.get("num_classes", "\u2014")))
+            class_names = meta.get("class_names", [])
+            preview = ", ".join(class_names[:12])
+            if len(class_names) > 12:
+                preview += f", \u2026 ({len(class_names)} total)"
+            self.lbl_class_names.setText(preview or "\u2014")
+            self.lbl_input_size.setText(str(meta.get("input_size", "\u2014")))
+            self.lbl_label.setText(str(meta.get("classification_label", "\u2014")))
+
+        def to_config(self):
+            """Return config dict or None if no model selected."""
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_models_root_directory,
+                get_yolo_model_registry_path,
+            )
+
+            rel_path = self.combo_model.currentData()
+            if not rel_path or rel_path == "__add_new__":
+                return None
+            registry_path = get_yolo_model_registry_path()
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except Exception:
+                registry = {}
+            meta = registry.get(rel_path, {})
+            models_root = get_models_root_directory()
+            abs_path = os.path.join(models_root, rel_path)
+            label = str(meta.get("classification_label", "") or "cnn_identity")
+            return {
+                "model_path": abs_path,
+                "label": label,
+                "confidence": self.spin_confidence.value(),
+                "window": self.spin_window.value(),
+                "batch_size": 64,
+                "rel_path": rel_path,
+            }
+
+        def load_from_config(self, cfg: dict):
+            """Populate from a config dict entry."""
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_models_root_directory,
+                get_yolo_model_registry_path,
+            )
+
+            rel_path = cfg.get("rel_path", "")
+            if not rel_path:
+                abs_path = cfg.get("model_path", "")
+                models_root = get_models_root_directory()
+                try:
+                    with open(get_yolo_model_registry_path()) as f:
+                        registry = json.load(f)
+                    for rp, meta in registry.items():
+                        if os.path.normpath(
+                            os.path.join(models_root, rp)
+                        ) == os.path.normpath(abs_path):
+                            rel_path = rp
+                            break
+                except Exception:
+                    pass
+            if rel_path:
+                self._populate_model_combo()
+                idx = self.combo_model.findData(rel_path)
+                if idx >= 0:
+                    self.combo_model.setCurrentIndex(idx)
+                    self._update_verification_labels(rel_path)
+            if "confidence" in cfg:
+                self.spin_confidence.setValue(float(cfg["confidence"]))
+            if "window" in cfg:
+                self.spin_window.setValue(int(cfg["window"]))
+
+    def _add_cnn_classifier_row(self) -> "IdentityPanel.CNNClassifierRow":
+        """Add a new CNN classifier row and return it."""
+        row = self.CNNClassifierRow(self)
+        row.remove_requested.connect(self._remove_cnn_classifier_row)
+        self.cnn_rows_layout.addWidget(row)
+        self.cnn_scroll_area.setVisible(True)
+        return row
+
+    def _remove_cnn_classifier_row(self, row: "IdentityPanel.CNNClassifierRow"):
+        """Remove a CNN classifier row."""
+        self.cnn_rows_layout.removeWidget(row)
+        row.setParent(None)
+        row.deleteLater()
+        self.cnn_scroll_area.setVisible(bool(self._cnn_classifier_rows()))
+
+    def _cnn_classifier_rows(self) -> list:
+        """Return list of all CNNClassifierRow instances."""
+        rows = []
+        for i in range(self.cnn_rows_layout.count()):
+            item = self.cnn_rows_layout.itemAt(i)
+            if item and isinstance(item.widget(), self.CNNClassifierRow):
+                rows.append(item.widget())
+        return rows
+
+    def _refresh_cnn_identity_model_combo(self) -> None:
+        """Populate the CNN identity model combo from model_registry.json."""
+        from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+
+        registry_path = get_yolo_model_registry_path()
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            registry = {}
+        self.combo_cnn_identity_model.blockSignals(True)
+        current_path = self.combo_cnn_identity_model.currentData()
+        self.combo_cnn_identity_model.clear()
+        self.combo_cnn_identity_model.addItem("— select model —", "")
+        for rel_path, meta in registry.items():
+            if meta.get("usage_role") != "cnn_identity":
+                continue
+            arch = meta.get("arch", "?")
+            label = meta.get("classification_label", "")
+            species = meta.get("species", "")
+            n_cls = meta.get("num_classes", "?")
+            display = f"{arch} | {n_cls} cls"
+            if species:
+                display += f" | {species}"
+            if label:
+                display += f" | {label}"
+            self.combo_cnn_identity_model.addItem(display, rel_path)
+        self.combo_cnn_identity_model.addItem(
+            "\uff0b Add New Model\u2026", "__add_new__"
+        )
+        idx = self.combo_cnn_identity_model.findData(current_path)
+        if idx >= 0:
+            self.combo_cnn_identity_model.setCurrentIndex(idx)
+        self.combo_cnn_identity_model.blockSignals(False)
+
+    def _on_cnn_identity_model_selected(self, index: int) -> None:
+        """Handle combo activation — sentinel triggers import dialog."""
+        rel_path = self.combo_cnn_identity_model.itemData(index)
+        if rel_path == "__add_new__":
+            self._handle_add_new_cnn_identity_model()
+            return
+        self._update_cnn_identity_verification_panel(rel_path)
+
+    def _update_cnn_identity_verification_panel(self, rel_path: str) -> None:
+        """Populate the read-only verification labels from the registry entry."""
+        from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+
+        registry_path = get_yolo_model_registry_path()
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+        except Exception:
+            return
+        meta = registry.get(rel_path or "", {})
+        self.lbl_cnn_arch.setText(str(meta.get("arch", "\u2014")))
+        self.lbl_cnn_num_classes.setText(str(meta.get("num_classes", "\u2014")))
+        class_names = meta.get("class_names", [])
+        preview = ", ".join(class_names[:12])
+        if len(class_names) > 12:
+            preview += f", \u2026 ({len(class_names)} total)"
+        self.lbl_cnn_class_names.setText(preview or "\u2014")
+        raw_size = meta.get("input_size", "\u2014")
+        self.lbl_cnn_input_size.setText(str(raw_size))
+        self.lbl_cnn_label.setText(str(meta.get("classification_label", "\u2014")))
+
+    def _handle_add_new_cnn_identity_model(self) -> None:
+        """Import a ClassKit-trained .pth or YOLO .pt model for CNN identity."""
+        from hydra_suite.trackerkit.gui.main_window import (
+            get_models_root_directory,
+            get_yolo_model_registry_path,
+        )
+
+        prev_data = self.combo_cnn_identity_model.currentData()
+        src_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import ClassKit Model for CNN Identity",
+            os.path.join(get_models_root_directory(), "classification", "identity"),
+            "ClassKit Model Files (*.pth *.pt);;All Files (*)",
+        )
+        if not src_path:
+            idx = self.combo_cnn_identity_model.findData(prev_data)
+            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            return
+        meta: dict = {}
+        try:
+            if src_path.endswith(".pth"):
+                import torch
+
+                ckpt = torch.load(src_path, map_location="cpu", weights_only=False)
+                meta["arch"] = ckpt.get("arch", "tinyclassifier")
+                meta["class_names"] = ckpt.get("class_names", [])
+                meta["factor_names"] = ckpt.get("factor_names", [])
+                raw_size = ckpt.get("input_size", (224, 224))
+                meta["input_size"] = (
+                    list(raw_size)
+                    if isinstance(raw_size, (list, tuple))
+                    else [raw_size, raw_size]
+                )
+                meta["num_classes"] = ckpt.get("num_classes", len(meta["class_names"]))
+            else:
+                from ultralytics import YOLO as _YOLO
+
+                yolo = _YOLO(src_path)
+                names = yolo.names
+                meta["arch"] = "yolo"
+                meta["class_names"] = [names[i] for i in sorted(names.keys())]
+                meta["factor_names"] = []
+                meta["input_size"] = [224, 224]
+                meta["num_classes"] = len(meta["class_names"])
+                del yolo
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Import Error",
+                f"Could not read checkpoint metadata:\n{exc}",
+            )
+            idx = self.combo_cnn_identity_model.findData(prev_data)
+            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            return
+        from hydra_suite.trackerkit.gui.dialogs import CNNIdentityImportDialog
+
+        dlg = CNNIdentityImportDialog(meta, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            idx = self.combo_cnn_identity_model.findData(prev_data)
+            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            return
+        species = dlg.species()
+        classification_label = dlg.classification_label()
+        dest_dir = os.path.join(
+            get_models_root_directory(), "classification", "identity"
+        )
+        os.makedirs(dest_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        ext = Path(src_path).suffix
+        label_part = f"_{classification_label}" if classification_label else ""
+        filename = f"{timestamp}_{meta['arch']}_{species}{label_part}{ext}"
+        dest_path = os.path.join(dest_dir, filename)
+        shutil.copy2(src_path, dest_path)
+        rel_path = os.path.relpath(dest_path, get_models_root_directory())
+        registry_path = get_yolo_model_registry_path()
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            registry = {}
+        registry[rel_path] = {
+            "arch": meta["arch"],
+            "num_classes": meta["num_classes"],
+            "class_names": meta["class_names"],
+            "factor_names": meta["factor_names"],
+            "input_size": meta["input_size"],
+            "species": species,
+            "classification_label": classification_label,
+            "added_at": datetime.now().isoformat(),
+            "task_family": "classify",
+            "usage_role": "cnn_identity",
+        }
+        with open(registry_path, "w") as f:
+            json.dump(registry, f, indent=2)
+        self._refresh_cnn_identity_model_combo()
+        idx = self.combo_cnn_identity_model.findData(rel_path)
+        if idx >= 0:
+            self.combo_cnn_identity_model.setCurrentIndex(idx)
+            self._update_cnn_identity_verification_panel(rel_path)
+
+    def _sync_identity_method_ui(self):
+        """Show the active identity configuration only when enabled."""
+        identity_enabled = self._main_window._is_identity_analysis_enabled()
+        self.identity_content.setVisible(identity_enabled)
+        self.identity_content.setEnabled(identity_enabled)
+
+    def _sync_pose_analysis_ui(self):
+        """Show pose controls only when pose extraction is enabled."""
+        pose_enabled = self._main_window._is_pose_inference_enabled()
+        self.pose_runtime_content.setVisible(pose_enabled)
+        self.pose_runtime_content.setEnabled(pose_enabled)
+
+    def _refresh_pose_direction_keypoint_lists(self):
+        """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
+        prev_ignore = self._main_window._selected_pose_group_keypoints(
+            self.list_pose_ignore_keypoints
+        )
+        prev_anterior = self._main_window._selected_pose_group_keypoints(
+            self.list_pose_direction_anterior
+        )
+        prev_posterior = self._main_window._selected_pose_group_keypoints(
+            self.list_pose_direction_posterior
+        )
+        names = self._main_window._load_pose_skeleton_keypoint_names()
+        self.list_pose_ignore_keypoints.blockSignals(True)
+        self.list_pose_direction_anterior.blockSignals(True)
+        self.list_pose_direction_posterior.blockSignals(True)
+        self.list_pose_ignore_keypoints.clear()
+        self.list_pose_direction_anterior.clear()
+        self.list_pose_direction_posterior.clear()
+        self.list_pose_ignore_keypoints.addItems(names)
+        self.list_pose_direction_anterior.addItems(names)
+        self.list_pose_direction_posterior.addItems(names)
+        self._main_window._set_pose_group_selection(
+            self.list_pose_ignore_keypoints, prev_ignore
+        )
+        self._main_window._set_pose_group_selection(
+            self.list_pose_direction_anterior, prev_anterior
+        )
+        self._main_window._set_pose_group_selection(
+            self.list_pose_direction_posterior, prev_posterior
+        )
+        enabled = len(names) > 0
+        self.list_pose_ignore_keypoints.setEnabled(enabled)
+        self.list_pose_direction_anterior.setEnabled(enabled)
+        self.list_pose_direction_posterior.setEnabled(enabled)
+        self.list_pose_ignore_keypoints.blockSignals(False)
+        self.list_pose_direction_anterior.blockSignals(False)
+        self.list_pose_direction_posterior.blockSignals(False)
+        self._main_window._apply_pose_keypoint_selection_constraints("ignore")
+
+    def _refresh_pose_sleap_envs(self):
+        """Refresh conda environments starting with 'sleap'."""
+        self.combo_pose_sleap_env.clear()
+        self.combo_pose_sleap_env.setEnabled(True)
+        envs = []
+        preferred = str(
+            self._main_window.advanced_config.get("pose_sleap_env", "sleap")
+        ).strip()
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    name = parts[0].strip()
+                    if name.lower().startswith("sleap"):
+                        envs.append(name)
+        except Exception:
+            envs = []
+        if not envs:
+            self.combo_pose_sleap_env.addItem("No sleap envs found")
+            self.combo_pose_sleap_env.setEnabled(False)
+            return
+        self.combo_pose_sleap_env.addItems(envs)
+        if preferred and preferred in envs:
+            self.combo_pose_sleap_env.setCurrentText(preferred)
+
+    def _refresh_yolo_headtail_model_combo(self, preferred_model_path: object = None):
+        """Refresh the head-tail model combo for the current type (YOLO or tiny)."""
+        from hydra_suite.trackerkit.gui.main_window import (
+            get_yolo_model_repository_directory,
+        )
+
+        ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+        subdir = ht_type.currentText() if ht_type else "YOLO"
+        repo_dir = os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+            subdir,
+        )
+        os.makedirs(repo_dir, exist_ok=True)
+        self._main_window._populate_yolo_model_combo(
+            self.combo_yolo_headtail_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="classify",
+            usage_role="headtail",
+            repository_dir=repo_dir,
+        )
+
+    def _get_selected_yolo_headtail_model_path(self) -> object:
+        """Return currently selected head-tail model path."""
+        return self._main_window._get_selected_model_path_from_selector(
+            self.combo_yolo_headtail_model,
+            default_path="",
+        )

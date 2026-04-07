@@ -13,7 +13,7 @@ def _load_processing_module():
     processing_path = (
         Path(__file__).resolve().parents[2]
         / "src"
-        / "multi_tracker"
+        / "hydra_suite"
         / "core"
         / "post"
         / "processing.py"
