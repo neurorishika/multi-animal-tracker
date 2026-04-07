@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -16,6 +24,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -28,6 +37,8 @@ from hydra_suite.trackerkit.config.schemas import TrackerConfig
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.gui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
 
 
 class IdentityPanel(QWidget):
@@ -74,7 +85,7 @@ class IdentityPanel(QWidget):
         self.g_identity = QGroupBox("Enable Identity Classification")
         self.g_identity.setCheckable(True)
         self.g_identity.setChecked(False)
-        self.g_identity.toggled.connect(self._main_window._on_identity_analysis_toggled)
+        self.g_identity.toggled.connect(self._on_identity_analysis_toggled)
         self._main_window._set_compact_section_widget(self.g_identity)
         vl_identity = QVBoxLayout(self.g_identity)
         self.identity_content = QWidget()
@@ -138,7 +149,7 @@ class IdentityPanel(QWidget):
         fl_apriltags = QFormLayout(self.apriltag_settings_widget)
         fl_apriltags.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.combo_apriltag_family = QComboBox()
-        self.combo_apriltag_family.addItems(self._main_window._get_apriltag_families())
+        self.combo_apriltag_family.addItems(self._get_apriltag_families())
         self.combo_apriltag_family.setToolTip(
             "AprilTag family to detect.\n"
             "The list is populated from your installed apriltag library."
@@ -163,7 +174,7 @@ class IdentityPanel(QWidget):
         vl_cnn.setSpacing(4)
         self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
         self.btn_add_cnn_classifier.clicked.connect(
-            self._main_window._add_cnn_classifier_row
+            self._add_cnn_classifier_row
         )
         vl_cnn.addWidget(self.btn_add_cnn_classifier)
         self.cnn_scroll_area = QScrollArea()
@@ -329,7 +340,7 @@ class IdentityPanel(QWidget):
         self.g_pose_runtime = QGroupBox("Enable Pose Extraction")
         self.g_pose_runtime.setCheckable(True)
         self.g_pose_runtime.setChecked(False)
-        self.g_pose_runtime.toggled.connect(self._main_window._on_pose_analysis_toggled)
+        self.g_pose_runtime.toggled.connect(self._on_pose_analysis_toggled)
         self.g_pose_runtime.toggled.connect(
             self._main_window._sync_video_pose_overlay_controls
         )
@@ -430,7 +441,7 @@ class IdentityPanel(QWidget):
             self._main_window._select_pose_skeleton_file
         )
         self.line_pose_skeleton_file.textChanged.connect(
-            self._main_window._refresh_pose_direction_keypoint_lists
+            self._refresh_pose_direction_keypoint_lists
         )
         h_pose_skeleton.addWidget(self.line_pose_skeleton_file)
         h_pose_skeleton.addWidget(self.btn_browse_pose_skeleton_file)
@@ -512,7 +523,7 @@ class IdentityPanel(QWidget):
         self.btn_refresh_pose_sleap_envs = QPushButton("Refresh")
         self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
         self.btn_refresh_pose_sleap_envs.clicked.connect(
-            self._main_window._refresh_pose_sleap_envs
+            self._refresh_pose_sleap_envs
         )
         h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
         self.pose_sleap_env_row_widget = QWidget()
@@ -561,3 +572,576 @@ class IdentityPanel(QWidget):
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
         self._config = config
+
+    # ------------------------------------------------------------------
+    # Handler methods (migrated from MainWindow)
+    # ------------------------------------------------------------------
+
+    def _on_individual_analysis_toggled(self, state):
+        """Enable/disable individual analysis controls."""
+        self._main_window._sync_individual_analysis_mode_ui()
+
+    def _on_identity_method_changed(self, index):
+        """Update identity configuration stack when method changes."""
+        self._sync_identity_method_ui()
+
+    def _on_identity_analysis_toggled(self, state):
+        """Enable/disable identity-method controls inside individual analysis."""
+        self._sync_identity_method_ui()
+
+    def _on_pose_analysis_toggled(self, state):
+        """Enable/disable pose-extraction controls inside individual analysis."""
+        self._sync_pose_analysis_ui()
+
+    @staticmethod
+    def _get_apriltag_families() -> list:
+        """Return list of tag families supported by installed apriltag library."""
+        _FALLBACK = [
+            "tag36h11",
+            "tag25h9",
+            "tag16h5",
+            "tagCircle21h7",
+            "tagCircle49h12",
+            "tagStandard41h12",
+            "tagStandard52h13",
+            "tagCustom48h12",
+        ]
+        try:
+            import apriltag as _at  # type: ignore[import-untyped]
+        except ImportError:
+            return _FALLBACK
+        try:
+            _at.apriltag("__probe__")
+        except Exception as exc:
+            import re
+            families = re.findall(r"^\s+(\S+)$", str(exc), re.MULTILINE)
+            if families:
+                return sorted(families)
+        return _FALLBACK
+
+    def _select_color_tag_model(self):
+        """Browse for color tag YOLO model."""
+        from hydra_suite.trackerkit.gui.main_window import (
+            get_models_directory,
+            resolve_model_path,
+        )
+        start_dir = get_models_directory()
+        if self.line_color_tag_model.text():
+            current_path = resolve_model_path(self.line_color_tag_model.text())
+            if os.path.exists(current_path):
+                start_dir = os.path.dirname(current_path)
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Color Tag YOLO Model", start_dir, "YOLO Models (*.pt *.onnx)"
+        )
+        if filepath:
+            models_dir = get_models_directory()
+            try:
+                rel_path = os.path.relpath(filepath, models_dir)
+                is_in_archive = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_archive = False
+            if not is_in_archive:
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Model to Archive?",
+                    f"The selected model is outside the local model archive.\n\n"
+                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
+                    f"This makes presets portable across devices.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Yes:
+                    filename = os.path.basename(filepath)
+                    dest_path = os.path.join(models_dir, filename)
+                    if os.path.exists(dest_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(
+                                models_dir, f"{base}_{counter}{ext}"
+                            )
+                            counter += 1
+                    try:
+                        shutil.copy2(filepath, dest_path)
+                        filepath = dest_path
+                        logger.info(f"Copied color tag model to archive: {dest_path}")
+                        QMessageBox.information(
+                            self,
+                            "Model Copied",
+                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy model: {e}")
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
+                        )
+            self.line_color_tag_model.setText(filepath)
+
+    class CNNClassifierRow(QWidget):
+        """Self-contained widget for one CNN classifier configuration row."""
+
+        remove_requested = Signal(object)
+
+        def __init__(self, main_window, parent=None):
+            super().__init__(parent)
+            self._main_window = main_window
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(4, 4, 4, 4)
+            outer.setSpacing(4)
+            header_row = QHBoxLayout()
+            self.combo_model = QComboBox()
+            self.combo_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self._populate_model_combo()
+            self.combo_model.activated.connect(self._on_model_selected)
+            header_row.addWidget(self.combo_model)
+            self.btn_remove = QPushButton("\u2715")
+            self.btn_remove.setMaximumWidth(28)
+            self.btn_remove.setToolTip("Remove this CNN classifier")
+            self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
+            header_row.addWidget(self.btn_remove)
+            outer.addLayout(header_row)
+            form = QFormLayout()
+            form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+            self.lbl_arch = QLabel("\u2014")
+            self.lbl_num_classes = QLabel("\u2014")
+            self.lbl_class_names = QLabel("\u2014")
+            self.lbl_input_size = QLabel("\u2014")
+            self.lbl_label = QLabel("\u2014")
+            form.addRow("Architecture", self.lbl_arch)
+            form.addRow("Num classes", self.lbl_num_classes)
+            form.addRow("Class names", self.lbl_class_names)
+            form.addRow("Input size", self.lbl_input_size)
+            form.addRow("Classification label", self.lbl_label)
+            self.spin_confidence = QDoubleSpinBox()
+            self.spin_confidence.setRange(0.0, 1.0)
+            self.spin_confidence.setSingleStep(0.05)
+            self.spin_confidence.setValue(0.5)
+            form.addRow("Confidence threshold", self.spin_confidence)
+            self.spin_window = QSpinBox()
+            self.spin_window.setRange(1, 100)
+            self.spin_window.setValue(10)
+            form.addRow("History window", self.spin_window)
+            outer.addLayout(form)
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            outer.addWidget(line)
+
+        def _populate_model_combo(self):
+            """Populate combo from model_registry.json (usage_role == 'cnn_identity')."""
+            from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+            registry_path = get_yolo_model_registry_path()
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except (FileNotFoundError, ValueError):
+                registry = {}
+            self.combo_model.blockSignals(True)
+            current = self.combo_model.currentData()
+            self.combo_model.clear()
+            self.combo_model.addItem("\u2014 select model \u2014", "")
+            for rel_path, meta in registry.items():
+                if meta.get("usage_role") != "cnn_identity":
+                    continue
+                arch = meta.get("arch", "?")
+                label = meta.get("classification_label", "")
+                n_cls = meta.get("num_classes", "?")
+                display = f"{arch} | {n_cls} cls"
+                if label:
+                    display += f" | {label}"
+                self.combo_model.addItem(display, rel_path)
+            self.combo_model.addItem("\uff0b Add New Model\u2026", "__add_new__")
+            idx = self.combo_model.findData(current)
+            if idx >= 0:
+                self.combo_model.setCurrentIndex(idx)
+            self.combo_model.blockSignals(False)
+
+        def _on_model_selected(self, index: int):
+            rel_path = self.combo_model.itemData(index)
+            if rel_path == "__add_new__":
+                self._main_window._handle_add_new_cnn_identity_model()
+                self._populate_model_combo()
+                return
+            self._update_verification_labels(rel_path)
+
+        def _update_verification_labels(self, rel_path: str):
+            from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+            try:
+                with open(get_yolo_model_registry_path()) as f:
+                    registry = json.load(f)
+            except Exception:
+                return
+            meta = registry.get(rel_path or "", {})
+            self.lbl_arch.setText(str(meta.get("arch", "\u2014")))
+            self.lbl_num_classes.setText(str(meta.get("num_classes", "\u2014")))
+            class_names = meta.get("class_names", [])
+            preview = ", ".join(class_names[:12])
+            if len(class_names) > 12:
+                preview += f", \u2026 ({len(class_names)} total)"
+            self.lbl_class_names.setText(preview or "\u2014")
+            self.lbl_input_size.setText(str(meta.get("input_size", "\u2014")))
+            self.lbl_label.setText(str(meta.get("classification_label", "\u2014")))
+
+        def to_config(self):
+            """Return config dict or None if no model selected."""
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_yolo_model_registry_path,
+                get_models_root_directory,
+            )
+            rel_path = self.combo_model.currentData()
+            if not rel_path or rel_path == "__add_new__":
+                return None
+            registry_path = get_yolo_model_registry_path()
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except Exception:
+                registry = {}
+            meta = registry.get(rel_path, {})
+            models_root = get_models_root_directory()
+            abs_path = os.path.join(models_root, rel_path)
+            label = str(meta.get("classification_label", "") or "cnn_identity")
+            return {
+                "model_path": abs_path,
+                "label": label,
+                "confidence": self.spin_confidence.value(),
+                "window": self.spin_window.value(),
+                "batch_size": 64,
+                "rel_path": rel_path,
+            }
+
+        def load_from_config(self, cfg: dict):
+            """Populate from a config dict entry."""
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_yolo_model_registry_path,
+                get_models_root_directory,
+            )
+            rel_path = cfg.get("rel_path", "")
+            if not rel_path:
+                abs_path = cfg.get("model_path", "")
+                models_root = get_models_root_directory()
+                try:
+                    with open(get_yolo_model_registry_path()) as f:
+                        registry = json.load(f)
+                    for rp, meta in registry.items():
+                        if os.path.normpath(
+                            os.path.join(models_root, rp)
+                        ) == os.path.normpath(abs_path):
+                            rel_path = rp
+                            break
+                except Exception:
+                    pass
+            if rel_path:
+                self._populate_model_combo()
+                idx = self.combo_model.findData(rel_path)
+                if idx >= 0:
+                    self.combo_model.setCurrentIndex(idx)
+                    self._update_verification_labels(rel_path)
+            if "confidence" in cfg:
+                self.spin_confidence.setValue(float(cfg["confidence"]))
+            if "window" in cfg:
+                self.spin_window.setValue(int(cfg["window"]))
+
+    def _add_cnn_classifier_row(self) -> "IdentityPanel.CNNClassifierRow":
+        """Add a new CNN classifier row and return it."""
+        row = self.CNNClassifierRow(self)
+        row.remove_requested.connect(self._remove_cnn_classifier_row)
+        self.cnn_rows_layout.addWidget(row)
+        self.cnn_scroll_area.setVisible(True)
+        return row
+
+    def _remove_cnn_classifier_row(self, row: "IdentityPanel.CNNClassifierRow"):
+        """Remove a CNN classifier row."""
+        self.cnn_rows_layout.removeWidget(row)
+        row.setParent(None)
+        row.deleteLater()
+        self.cnn_scroll_area.setVisible(bool(self._cnn_classifier_rows()))
+
+    def _cnn_classifier_rows(self) -> list:
+        """Return list of all CNNClassifierRow instances."""
+        rows = []
+        for i in range(self.cnn_rows_layout.count()):
+            item = self.cnn_rows_layout.itemAt(i)
+            if item and isinstance(item.widget(), self.CNNClassifierRow):
+                rows.append(item.widget())
+        return rows
+
+    def _refresh_cnn_identity_model_combo(self) -> None:
+        """Populate the CNN identity model combo from model_registry.json."""
+        from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+        registry_path = get_yolo_model_registry_path()
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            registry = {}
+        self.combo_cnn_identity_model.blockSignals(True)
+        current_path = self.combo_cnn_identity_model.currentData()
+        self.combo_cnn_identity_model.clear()
+        self.combo_cnn_identity_model.addItem("— select model —", "")
+        for rel_path, meta in registry.items():
+            if meta.get("usage_role") != "cnn_identity":
+                continue
+            arch = meta.get("arch", "?")
+            label = meta.get("classification_label", "")
+            species = meta.get("species", "")
+            n_cls = meta.get("num_classes", "?")
+            display = f"{arch} | {n_cls} cls"
+            if species:
+                display += f" | {species}"
+            if label:
+                display += f" | {label}"
+            self.combo_cnn_identity_model.addItem(display, rel_path)
+        self.combo_cnn_identity_model.addItem(
+            "\uff0b Add New Model\u2026", "__add_new__"
+        )
+        idx = self.combo_cnn_identity_model.findData(current_path)
+        if idx >= 0:
+            self.combo_cnn_identity_model.setCurrentIndex(idx)
+        self.combo_cnn_identity_model.blockSignals(False)
+
+    def _on_cnn_identity_model_selected(self, index: int) -> None:
+        """Handle combo activation — sentinel triggers import dialog."""
+        rel_path = self.combo_cnn_identity_model.itemData(index)
+        if rel_path == "__add_new__":
+            self._handle_add_new_cnn_identity_model()
+            return
+        self._update_cnn_identity_verification_panel(rel_path)
+
+    def _update_cnn_identity_verification_panel(self, rel_path: str) -> None:
+        """Populate the read-only verification labels from the registry entry."""
+        from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+        registry_path = get_yolo_model_registry_path()
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+        except Exception:
+            return
+        meta = registry.get(rel_path or "", {})
+        self.lbl_cnn_arch.setText(str(meta.get("arch", "\u2014")))
+        self.lbl_cnn_num_classes.setText(str(meta.get("num_classes", "\u2014")))
+        class_names = meta.get("class_names", [])
+        preview = ", ".join(class_names[:12])
+        if len(class_names) > 12:
+            preview += f", \u2026 ({len(class_names)} total)"
+        self.lbl_cnn_class_names.setText(preview or "\u2014")
+        raw_size = meta.get("input_size", "\u2014")
+        self.lbl_cnn_input_size.setText(str(raw_size))
+        self.lbl_cnn_label.setText(str(meta.get("classification_label", "\u2014")))
+
+    def _handle_add_new_cnn_identity_model(self) -> None:
+        """Import a ClassKit-trained .pth or YOLO .pt model for CNN identity."""
+        from hydra_suite.trackerkit.gui.main_window import (
+            get_models_root_directory,
+            get_yolo_model_registry_path,
+        )
+        prev_data = self.combo_cnn_identity_model.currentData()
+        src_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import ClassKit Model for CNN Identity",
+            os.path.join(get_models_root_directory(), "classification", "identity"),
+            "ClassKit Model Files (*.pth *.pt);;All Files (*)",
+        )
+        if not src_path:
+            idx = self.combo_cnn_identity_model.findData(prev_data)
+            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            return
+        meta: dict = {}
+        try:
+            if src_path.endswith(".pth"):
+                import torch
+                ckpt = torch.load(src_path, map_location="cpu", weights_only=False)
+                meta["arch"] = ckpt.get("arch", "tinyclassifier")
+                meta["class_names"] = ckpt.get("class_names", [])
+                meta["factor_names"] = ckpt.get("factor_names", [])
+                raw_size = ckpt.get("input_size", (224, 224))
+                meta["input_size"] = (
+                    list(raw_size)
+                    if isinstance(raw_size, (list, tuple))
+                    else [raw_size, raw_size]
+                )
+                meta["num_classes"] = ckpt.get("num_classes", len(meta["class_names"]))
+            else:
+                from ultralytics import YOLO as _YOLO
+                yolo = _YOLO(src_path)
+                names = yolo.names
+                meta["arch"] = "yolo"
+                meta["class_names"] = [names[i] for i in sorted(names.keys())]
+                meta["factor_names"] = []
+                meta["input_size"] = [224, 224]
+                meta["num_classes"] = len(meta["class_names"])
+                del yolo
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Import Error",
+                f"Could not read checkpoint metadata:\n{exc}",
+            )
+            idx = self.combo_cnn_identity_model.findData(prev_data)
+            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            return
+        from hydra_suite.trackerkit.gui.dialogs import CNNIdentityImportDialog
+        dlg = CNNIdentityImportDialog(meta, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            idx = self.combo_cnn_identity_model.findData(prev_data)
+            self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
+            return
+        species = dlg.species()
+        classification_label = dlg.classification_label()
+        dest_dir = os.path.join(
+            get_models_root_directory(), "classification", "identity"
+        )
+        os.makedirs(dest_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        ext = Path(src_path).suffix
+        label_part = f"_{classification_label}" if classification_label else ""
+        filename = f"{timestamp}_{meta['arch']}_{species}{label_part}{ext}"
+        dest_path = os.path.join(dest_dir, filename)
+        shutil.copy2(src_path, dest_path)
+        rel_path = os.path.relpath(dest_path, get_models_root_directory())
+        registry_path = get_yolo_model_registry_path()
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            registry = {}
+        registry[rel_path] = {
+            "arch": meta["arch"],
+            "num_classes": meta["num_classes"],
+            "class_names": meta["class_names"],
+            "factor_names": meta["factor_names"],
+            "input_size": meta["input_size"],
+            "species": species,
+            "classification_label": classification_label,
+            "added_at": datetime.now().isoformat(),
+            "task_family": "classify",
+            "usage_role": "cnn_identity",
+        }
+        with open(registry_path, "w") as f:
+            json.dump(registry, f, indent=2)
+        self._refresh_cnn_identity_model_combo()
+        idx = self.combo_cnn_identity_model.findData(rel_path)
+        if idx >= 0:
+            self.combo_cnn_identity_model.setCurrentIndex(idx)
+            self._update_cnn_identity_verification_panel(rel_path)
+
+    def _sync_identity_method_ui(self):
+        """Show the active identity configuration only when enabled."""
+        identity_enabled = self._main_window._is_identity_analysis_enabled()
+        self.identity_content.setVisible(identity_enabled)
+        self.identity_content.setEnabled(identity_enabled)
+
+    def _sync_pose_analysis_ui(self):
+        """Show pose controls only when pose extraction is enabled."""
+        pose_enabled = self._main_window._is_pose_inference_enabled()
+        self.pose_runtime_content.setVisible(pose_enabled)
+        self.pose_runtime_content.setEnabled(pose_enabled)
+
+    def _refresh_pose_direction_keypoint_lists(self):
+        """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
+        prev_ignore = self._main_window._selected_pose_group_keypoints(
+            self.list_pose_ignore_keypoints
+        )
+        prev_anterior = self._main_window._selected_pose_group_keypoints(
+            self.list_pose_direction_anterior
+        )
+        prev_posterior = self._main_window._selected_pose_group_keypoints(
+            self.list_pose_direction_posterior
+        )
+        names = self._main_window._load_pose_skeleton_keypoint_names()
+        self.list_pose_ignore_keypoints.blockSignals(True)
+        self.list_pose_direction_anterior.blockSignals(True)
+        self.list_pose_direction_posterior.blockSignals(True)
+        self.list_pose_ignore_keypoints.clear()
+        self.list_pose_direction_anterior.clear()
+        self.list_pose_direction_posterior.clear()
+        self.list_pose_ignore_keypoints.addItems(names)
+        self.list_pose_direction_anterior.addItems(names)
+        self.list_pose_direction_posterior.addItems(names)
+        self._main_window._set_pose_group_selection(
+            self.list_pose_ignore_keypoints, prev_ignore
+        )
+        self._main_window._set_pose_group_selection(
+            self.list_pose_direction_anterior, prev_anterior
+        )
+        self._main_window._set_pose_group_selection(
+            self.list_pose_direction_posterior, prev_posterior
+        )
+        enabled = len(names) > 0
+        self.list_pose_ignore_keypoints.setEnabled(enabled)
+        self.list_pose_direction_anterior.setEnabled(enabled)
+        self.list_pose_direction_posterior.setEnabled(enabled)
+        self.list_pose_ignore_keypoints.blockSignals(False)
+        self.list_pose_direction_anterior.blockSignals(False)
+        self.list_pose_direction_posterior.blockSignals(False)
+        self._main_window._apply_pose_keypoint_selection_constraints("ignore")
+
+    def _refresh_pose_sleap_envs(self):
+        """Refresh conda environments starting with 'sleap'."""
+        self.combo_pose_sleap_env.clear()
+        self.combo_pose_sleap_env.setEnabled(True)
+        envs = []
+        preferred = str(
+            self._main_window.advanced_config.get("pose_sleap_env", "sleap")
+        ).strip()
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    name = parts[0].strip()
+                    if name.lower().startswith("sleap"):
+                        envs.append(name)
+        except Exception:
+            envs = []
+        if not envs:
+            self.combo_pose_sleap_env.addItem("No sleap envs found")
+            self.combo_pose_sleap_env.setEnabled(False)
+            return
+        self.combo_pose_sleap_env.addItems(envs)
+        if preferred and preferred in envs:
+            self.combo_pose_sleap_env.setCurrentText(preferred)
+
+    def _refresh_yolo_headtail_model_combo(self, preferred_model_path: object = None):
+        """Refresh the head-tail model combo for the current type (YOLO or tiny)."""
+        from hydra_suite.trackerkit.gui.main_window import (
+            get_yolo_model_repository_directory,
+        )
+        ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+        subdir = ht_type.currentText() if ht_type else "YOLO"
+        repo_dir = os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+            subdir,
+        )
+        os.makedirs(repo_dir, exist_ok=True)
+        self._main_window._populate_yolo_model_combo(
+            self.combo_yolo_headtail_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="classify",
+            usage_role="headtail",
+            repository_dir=repo_dir,
+        )
+
+    def _get_selected_yolo_headtail_model_path(self) -> object:
+        """Return currently selected head-tail model path."""
+        return self._main_window._get_selected_model_path_from_selector(
+            self.combo_yolo_headtail_model,
+            default_path="",
+        )

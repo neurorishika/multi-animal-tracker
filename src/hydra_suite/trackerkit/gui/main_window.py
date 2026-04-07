@@ -1103,8 +1103,8 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self._identity_panel, "Analyze Individuals")
         # Post-construction bootstrap calls now that _identity_panel is assigned
-        self._refresh_cnn_identity_model_combo()
-        self._refresh_yolo_headtail_model_combo()
+        self._identity_panel._refresh_cnn_identity_model_combo()
+        self._identity_panel._refresh_yolo_headtail_model_combo()
         self._update_background_color_button()
         self._populate_pose_runtime_flavor_options(backend="yolo")
         self._set_form_row_visible(
@@ -1113,8 +1113,8 @@ class MainWindow(QMainWindow):
             False,
         )
         self._refresh_pose_model_combo()
-        self._refresh_pose_sleap_envs()
-        self._refresh_pose_direction_keypoint_lists()
+        self._identity_panel._refresh_pose_sleap_envs()
+        self._identity_panel._refresh_pose_direction_keypoint_lists()
         self._sync_pose_backend_ui()
         self._sync_individual_analysis_mode_ui()
 
@@ -1618,490 +1618,6 @@ class MainWindow(QMainWindow):
                 "Use 'Preview Detection' to verify the results.",
             )
 
-    def _on_individual_analysis_toggled(self, state):
-        """Enable/disable individual analysis controls."""
-        self._sync_individual_analysis_mode_ui()
-
-    def _on_identity_method_changed(self, index):
-        """Update identity configuration stack when method changes."""
-        self._sync_identity_method_ui()
-
-    def _on_identity_analysis_toggled(self, state):
-        """Enable/disable identity-method controls inside individual analysis."""
-        self._sync_identity_method_ui()
-
-    def _on_pose_analysis_toggled(self, state):
-        """Enable/disable pose-extraction controls inside individual analysis."""
-        self._sync_pose_analysis_ui()
-
-    @staticmethod
-    def _get_apriltag_families() -> list:
-        """Return the list of tag families supported by the installed apriltag library.
-
-        Probes the library by passing an intentionally invalid family name and
-        parsing the error message, which always lists every known family.  Falls
-        back to a static list if the library is not installed.
-        """
-        _FALLBACK = [
-            "tag36h11",
-            "tag25h9",
-            "tag16h5",
-            "tagCircle21h7",
-            "tagCircle49h12",
-            "tagStandard41h12",
-            "tagStandard52h13",
-            "tagCustom48h12",
-        ]
-        try:
-            import apriltag as _at  # type: ignore[import-untyped]
-        except ImportError:
-            return _FALLBACK
-        try:
-            _at.apriltag("__probe__")
-        except Exception as exc:
-            import re
-
-            families = re.findall(r"^\s+(\S+)$", str(exc), re.MULTILINE)
-            if families:
-                return sorted(families)
-        return _FALLBACK
-
-    def _select_color_tag_model(self):
-        """Browse for color tag YOLO model."""
-        # Default to models directory
-        start_dir = get_models_directory()
-        if self._identity_panel.line_color_tag_model.text():
-            current_path = resolve_model_path(
-                self._identity_panel.line_color_tag_model.text()
-            )
-            if os.path.exists(current_path):
-                start_dir = os.path.dirname(current_path)
-
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Select Color Tag YOLO Model", start_dir, "YOLO Models (*.pt *.onnx)"
-        )
-        if filepath:
-            # Check if model is outside the archive
-            models_dir = get_models_directory()
-            try:
-                rel_path = os.path.relpath(filepath, models_dir)
-                is_in_archive = not rel_path.startswith("..")
-            except (ValueError, TypeError):
-                is_in_archive = False
-
-            if not is_in_archive:
-                # Ask user if they want to copy to archive
-                reply = QMessageBox.question(
-                    self,
-                    "Copy Model to Archive?",
-                    f"The selected model is outside the local model archive.\n\n"
-                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
-                    f"This makes presets portable across devices.",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-
-                if reply == QMessageBox.Yes:
-                    import shutil
-
-                    filename = os.path.basename(filepath)
-                    dest_path = os.path.join(models_dir, filename)
-
-                    # Handle duplicate filenames
-                    if os.path.exists(dest_path):
-                        base, ext = os.path.splitext(filename)
-                        counter = 1
-                        while os.path.exists(dest_path):
-                            dest_path = os.path.join(
-                                models_dir, f"{base}_{counter}{ext}"
-                            )
-                            counter += 1
-
-                    try:
-                        shutil.copy2(filepath, dest_path)
-                        filepath = dest_path
-                        logger.info(f"Copied color tag model to archive: {dest_path}")
-                        QMessageBox.information(
-                            self,
-                            "Model Copied",
-                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to copy model: {e}")
-                        QMessageBox.warning(
-                            self,
-                            "Copy Failed",
-                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
-                        )
-
-            self._identity_panel.line_color_tag_model.setText(filepath)
-
-    class CNNClassifierRow(QWidget):
-        """Self-contained widget for one CNN classifier configuration row."""
-
-        remove_requested = Signal(object)
-
-        def __init__(self, main_window, parent=None):
-            super().__init__(parent)
-            self._main_window = main_window
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-            outer = QVBoxLayout(self)
-            outer.setContentsMargins(4, 4, 4, 4)
-            outer.setSpacing(4)
-
-            # Header row: model combo + remove button
-            header_row = QHBoxLayout()
-            self.combo_model = QComboBox()
-            self.combo_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self._populate_model_combo()
-            self.combo_model.activated.connect(self._on_model_selected)
-            header_row.addWidget(self.combo_model)
-            self.btn_remove = QPushButton("\u2715")
-            self.btn_remove.setMaximumWidth(28)
-            self.btn_remove.setToolTip("Remove this CNN classifier")
-            self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
-            header_row.addWidget(self.btn_remove)
-            outer.addLayout(header_row)
-
-            # Verification labels
-            form = QFormLayout()
-            form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-            self.lbl_arch = QLabel("\u2014")
-            self.lbl_num_classes = QLabel("\u2014")
-            self.lbl_class_names = QLabel("\u2014")
-            self.lbl_input_size = QLabel("\u2014")
-            self.lbl_label = QLabel("\u2014")
-            form.addRow("Architecture", self.lbl_arch)
-            form.addRow("Num classes", self.lbl_num_classes)
-            form.addRow("Class names", self.lbl_class_names)
-            form.addRow("Input size", self.lbl_input_size)
-            form.addRow("Classification label", self.lbl_label)
-
-            # Inference settings
-            self.spin_confidence = QDoubleSpinBox()
-            self.spin_confidence.setRange(0.0, 1.0)
-            self.spin_confidence.setSingleStep(0.05)
-            self.spin_confidence.setValue(0.5)
-            form.addRow("Confidence threshold", self.spin_confidence)
-
-            self.spin_window = QSpinBox()
-            self.spin_window.setRange(1, 100)
-            self.spin_window.setValue(10)
-            form.addRow("History window", self.spin_window)
-
-            outer.addLayout(form)
-
-            # Separator line
-            line = QFrame()
-            line.setFrameShape(QFrame.HLine)
-            line.setFrameShadow(QFrame.Sunken)
-            outer.addWidget(line)
-
-        def _populate_model_combo(self):
-            """Populate combo from model_registry.json (usage_role == 'cnn_identity')."""
-            registry_path = get_yolo_model_registry_path()
-            try:
-                with open(registry_path) as f:
-                    registry = json.load(f)
-            except (FileNotFoundError, ValueError):
-                registry = {}
-            self.combo_model.blockSignals(True)
-            current = self.combo_model.currentData()
-            self.combo_model.clear()
-            self.combo_model.addItem("\u2014 select model \u2014", "")
-            for rel_path, meta in registry.items():
-                if meta.get("usage_role") != "cnn_identity":
-                    continue
-                arch = meta.get("arch", "?")
-                label = meta.get("classification_label", "")
-                n_cls = meta.get("num_classes", "?")
-                display = f"{arch} | {n_cls} cls"
-                if label:
-                    display += f" | {label}"
-                self.combo_model.addItem(display, rel_path)
-            self.combo_model.addItem("\uff0b Add New Model\u2026", "__add_new__")
-            idx = self.combo_model.findData(current)
-            if idx >= 0:
-                self.combo_model.setCurrentIndex(idx)
-            self.combo_model.blockSignals(False)
-
-        def _on_model_selected(self, index: int):
-            rel_path = self.combo_model.itemData(index)
-            if rel_path == "__add_new__":
-                self._main_window._handle_add_new_cnn_identity_model()
-                self._populate_model_combo()
-                return
-            self._update_verification_labels(rel_path)
-
-        def _update_verification_labels(self, rel_path: str):
-            try:
-                with open(get_yolo_model_registry_path()) as f:
-                    registry = json.load(f)
-            except Exception:
-                return
-            meta = registry.get(rel_path or "", {})
-            self.lbl_arch.setText(str(meta.get("arch", "\u2014")))
-            self.lbl_num_classes.setText(str(meta.get("num_classes", "\u2014")))
-            class_names = meta.get("class_names", [])
-            preview = ", ".join(class_names[:12])
-            if len(class_names) > 12:
-                preview += f", \u2026 ({len(class_names)} total)"
-            self.lbl_class_names.setText(preview or "\u2014")
-            self.lbl_input_size.setText(str(meta.get("input_size", "\u2014")))
-            self.lbl_label.setText(str(meta.get("classification_label", "\u2014")))
-
-        def to_config(self):
-            """Return config dict or None if no model selected."""
-            rel_path = self.combo_model.currentData()
-            if not rel_path or rel_path == "__add_new__":
-                return None
-            registry_path = get_yolo_model_registry_path()
-            try:
-                with open(registry_path) as f:
-                    registry = json.load(f)
-            except Exception:
-                registry = {}
-            meta = registry.get(rel_path, {})
-            models_root = get_models_root_directory()
-            abs_path = os.path.join(models_root, rel_path)
-            label = str(meta.get("classification_label", "") or "cnn_identity")
-            return {
-                "model_path": abs_path,
-                "label": label,
-                "confidence": self.spin_confidence.value(),
-                "window": self.spin_window.value(),
-                "batch_size": 64,
-                "rel_path": rel_path,  # for config save/load roundtrip
-            }
-
-        def load_from_config(self, cfg: dict):
-            """Populate from a config dict entry."""
-            rel_path = cfg.get("rel_path", "")
-            if not rel_path:
-                # Try to find by abs model_path
-                abs_path = cfg.get("model_path", "")
-                models_root = get_models_root_directory()
-                try:
-                    with open(get_yolo_model_registry_path()) as f:
-                        registry = json.load(f)
-                    for rp, meta in registry.items():
-                        if os.path.normpath(
-                            os.path.join(models_root, rp)
-                        ) == os.path.normpath(abs_path):
-                            rel_path = rp
-                            break
-                except Exception:
-                    pass
-            if rel_path:
-                self._populate_model_combo()
-                idx = self.combo_model.findData(rel_path)
-                if idx >= 0:
-                    self.combo_model.setCurrentIndex(idx)
-                    self._update_verification_labels(rel_path)
-            if "confidence" in cfg:
-                self.spin_confidence.setValue(float(cfg["confidence"]))
-            if "window" in cfg:
-                self.spin_window.setValue(int(cfg["window"]))
-
-    def _add_cnn_classifier_row(self) -> "CNNClassifierRow":
-        """Add a new CNN classifier row and return it."""
-        row = self.CNNClassifierRow(self)
-        row.remove_requested.connect(self._remove_cnn_classifier_row)
-        self._identity_panel.cnn_rows_layout.addWidget(row)
-        self._identity_panel.cnn_scroll_area.setVisible(True)
-        return row
-
-    def _remove_cnn_classifier_row(self, row: "CNNClassifierRow"):
-        """Remove a CNN classifier row."""
-        self._identity_panel.cnn_rows_layout.removeWidget(row)
-        row.setParent(None)
-        row.deleteLater()
-        self._identity_panel.cnn_scroll_area.setVisible(
-            bool(self._cnn_classifier_rows())
-        )
-
-    def _cnn_classifier_rows(self) -> list:
-        """Return list of all CNNClassifierRow instances."""
-        rows = []
-        for i in range(self._identity_panel.cnn_rows_layout.count()):
-            item = self._identity_panel.cnn_rows_layout.itemAt(i)
-            if item and isinstance(item.widget(), self.CNNClassifierRow):
-                rows.append(item.widget())
-        return rows
-
-    def _refresh_cnn_identity_model_combo(self) -> None:
-        """Populate the CNN identity model combo from model_registry.json."""
-        if not hasattr(self, "_identity_panel"):
-            return
-        registry_path = get_yolo_model_registry_path()
-        try:
-            with open(registry_path) as f:
-                registry = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            registry = {}
-
-        self._identity_panel.combo_cnn_identity_model.blockSignals(True)
-        current_path = self._identity_panel.combo_cnn_identity_model.currentData()
-        self._identity_panel.combo_cnn_identity_model.clear()
-        self._identity_panel.combo_cnn_identity_model.addItem("— select model —", "")
-        for rel_path, meta in registry.items():
-            if meta.get("usage_role") != "cnn_identity":
-                continue
-            arch = meta.get("arch", "?")
-            label = meta.get("classification_label", "")
-            species = meta.get("species", "")
-            n_cls = meta.get("num_classes", "?")
-            display = f"{arch} | {n_cls} cls"
-            if species:
-                display += f" | {species}"
-            if label:
-                display += f" | {label}"
-            self._identity_panel.combo_cnn_identity_model.addItem(display, rel_path)
-        self._identity_panel.combo_cnn_identity_model.addItem(
-            "\uff0b Add New Model\u2026", "__add_new__"
-        )
-
-        idx = self._identity_panel.combo_cnn_identity_model.findData(current_path)
-        if idx >= 0:
-            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(idx)
-        self._identity_panel.combo_cnn_identity_model.blockSignals(False)
-
-    def _on_cnn_identity_model_selected(self, index: int) -> None:
-        """Handle combo activation — sentinel triggers import dialog."""
-        rel_path = self._identity_panel.combo_cnn_identity_model.itemData(index)
-        if rel_path == "__add_new__":
-            self._handle_add_new_cnn_identity_model()
-            return
-        self._update_cnn_identity_verification_panel(rel_path)
-
-    def _update_cnn_identity_verification_panel(self, rel_path: str) -> None:
-        """Populate the read-only verification labels from the registry entry."""
-        registry_path = get_yolo_model_registry_path()
-        try:
-            with open(registry_path) as f:
-                registry = json.load(f)
-        except Exception:
-            return
-        meta = registry.get(rel_path or "", {})
-        self._identity_panel.lbl_cnn_arch.setText(str(meta.get("arch", "\u2014")))
-        self._identity_panel.lbl_cnn_num_classes.setText(
-            str(meta.get("num_classes", "\u2014"))
-        )
-        class_names = meta.get("class_names", [])
-        preview = ", ".join(class_names[:12])
-        if len(class_names) > 12:
-            preview += f", \u2026 ({len(class_names)} total)"
-        self._identity_panel.lbl_cnn_class_names.setText(preview or "\u2014")
-        raw_size = meta.get("input_size", "\u2014")
-        self._identity_panel.lbl_cnn_input_size.setText(str(raw_size))
-        self._identity_panel.lbl_cnn_label.setText(
-            str(meta.get("classification_label", "\u2014"))
-        )
-
-    def _handle_add_new_cnn_identity_model(self) -> None:
-        """Import a ClassKit-trained .pth or YOLO .pt model for CNN identity."""
-        prev_data = self._identity_panel.combo_cnn_identity_model.currentData()
-
-        src_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import ClassKit Model for CNN Identity",
-            os.path.join(get_models_root_directory(), "classification", "identity"),
-            "ClassKit Model Files (*.pth *.pt);;All Files (*)",
-        )
-        if not src_path:
-            idx = self._identity_panel.combo_cnn_identity_model.findData(prev_data)
-            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
-            return
-
-        # Read checkpoint metadata
-        meta: dict = {}
-        try:
-            if src_path.endswith(".pth"):
-                import torch
-
-                ckpt = torch.load(src_path, map_location="cpu", weights_only=False)
-                meta["arch"] = ckpt.get("arch", "tinyclassifier")
-                meta["class_names"] = ckpt.get("class_names", [])
-                meta["factor_names"] = ckpt.get("factor_names", [])
-                raw_size = ckpt.get("input_size", (224, 224))
-                meta["input_size"] = (
-                    list(raw_size)
-                    if isinstance(raw_size, (list, tuple))
-                    else [raw_size, raw_size]
-                )
-                meta["num_classes"] = ckpt.get("num_classes", len(meta["class_names"]))
-            else:  # .pt (YOLO)
-                from ultralytics import YOLO as _YOLO
-
-                yolo = _YOLO(src_path)
-                names = yolo.names
-                meta["arch"] = "yolo"
-                meta["class_names"] = [names[i] for i in sorted(names.keys())]
-                meta["factor_names"] = []
-                meta["input_size"] = [224, 224]
-                meta["num_classes"] = len(meta["class_names"])
-                del yolo  # explicitly release; YOLO may hold GPU tensors
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Import Error",
-                f"Could not read checkpoint metadata:\n{exc}",
-            )
-            idx = self._identity_panel.combo_cnn_identity_model.findData(prev_data)
-            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
-            return
-
-        from hydra_suite.trackerkit.gui.dialogs import CNNIdentityImportDialog
-
-        dlg = CNNIdentityImportDialog(meta, parent=self)
-        if dlg.exec() != QDialog.Accepted:
-            idx = self._identity_panel.combo_cnn_identity_model.findData(prev_data)
-            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
-            return
-
-        species = dlg.species()
-        classification_label = dlg.classification_label()
-
-        dest_dir = os.path.join(
-            get_models_root_directory(), "classification", "identity"
-        )
-        os.makedirs(dest_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        ext = Path(src_path).suffix
-        label_part = f"_{classification_label}" if classification_label else ""
-        filename = f"{timestamp}_{meta['arch']}_{species}{label_part}{ext}"
-        dest_path = os.path.join(dest_dir, filename)
-        shutil.copy2(src_path, dest_path)
-
-        rel_path = os.path.relpath(dest_path, get_models_root_directory())
-        registry_path = get_yolo_model_registry_path()
-        try:
-            with open(registry_path) as f:
-                registry = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            registry = {}
-
-        registry[rel_path] = {
-            "arch": meta["arch"],
-            "num_classes": meta["num_classes"],
-            "class_names": meta["class_names"],
-            "factor_names": meta["factor_names"],
-            "input_size": meta["input_size"],
-            "species": species,
-            "classification_label": classification_label,
-            "added_at": datetime.now().isoformat(),
-            "task_family": "classify",
-            "usage_role": "cnn_identity",
-        }
-        with open(registry_path, "w") as f:
-            json.dump(registry, f, indent=2)
-
-        self._refresh_cnn_identity_model_combo()
-        idx = self._identity_panel.combo_cnn_identity_model.findData(rel_path)
-        if idx >= 0:
-            self._identity_panel.combo_cnn_identity_model.setCurrentIndex(idx)
-            self._update_cnn_identity_verification_panel(rel_path)
-
     def _ensure_pose_model_path_store(self):
         if not hasattr(self, "_pose_model_path_by_backend"):
             self._pose_model_path_by_backend = {"yolo": "", "sleap": "", "vitpose": ""}
@@ -2519,49 +2035,6 @@ class MainWindow(QMainWindow):
         """Handle keypoint group updates and keep list constraints synchronized."""
         self._apply_pose_keypoint_selection_constraints(changed_group)
 
-    def _refresh_pose_direction_keypoint_lists(self):
-        """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
-        if not hasattr(self, "_identity_panel"):
-            return
-
-        prev_ignore = self._selected_pose_group_keypoints(
-            self._identity_panel.list_pose_ignore_keypoints
-        )
-        prev_anterior = self._selected_pose_group_keypoints(
-            self._identity_panel.list_pose_direction_anterior
-        )
-        prev_posterior = self._selected_pose_group_keypoints(
-            self._identity_panel.list_pose_direction_posterior
-        )
-        names = self._load_pose_skeleton_keypoint_names()
-
-        self._identity_panel.list_pose_ignore_keypoints.blockSignals(True)
-        self._identity_panel.list_pose_direction_anterior.blockSignals(True)
-        self._identity_panel.list_pose_direction_posterior.blockSignals(True)
-        self._identity_panel.list_pose_ignore_keypoints.clear()
-        self._identity_panel.list_pose_direction_anterior.clear()
-        self._identity_panel.list_pose_direction_posterior.clear()
-        self._identity_panel.list_pose_ignore_keypoints.addItems(names)
-        self._identity_panel.list_pose_direction_anterior.addItems(names)
-        self._identity_panel.list_pose_direction_posterior.addItems(names)
-        self._set_pose_group_selection(
-            self._identity_panel.list_pose_ignore_keypoints, prev_ignore
-        )
-        self._set_pose_group_selection(
-            self._identity_panel.list_pose_direction_anterior, prev_anterior
-        )
-        self._set_pose_group_selection(
-            self._identity_panel.list_pose_direction_posterior, prev_posterior
-        )
-        enabled = len(names) > 0
-        self._identity_panel.list_pose_ignore_keypoints.setEnabled(enabled)
-        self._identity_panel.list_pose_direction_anterior.setEnabled(enabled)
-        self._identity_panel.list_pose_direction_posterior.setEnabled(enabled)
-        self._identity_panel.list_pose_ignore_keypoints.blockSignals(False)
-        self._identity_panel.list_pose_direction_anterior.blockSignals(False)
-        self._identity_panel.list_pose_direction_posterior.blockSignals(False)
-        self._apply_pose_keypoint_selection_constraints("ignore")
-
     def _parse_pose_keypoint_tokens(self, raw):
         """Parse comma-separated keypoint names and/or indices."""
         if not raw:
@@ -2607,46 +2080,6 @@ class MainWindow(QMainWindow):
         return self._selected_pose_group_keypoints(
             getattr(self, "list_pose_direction_posterior", None)
         )
-
-    def _refresh_pose_sleap_envs(self):
-        """Refresh conda environments starting with 'sleap'."""
-        if not hasattr(self, "_identity_panel"):
-            return
-
-        self._identity_panel.combo_pose_sleap_env.clear()
-        self._identity_panel.combo_pose_sleap_env.setEnabled(True)
-        envs = []
-        preferred = str(self.advanced_config.get("pose_sleap_env", "sleap")).strip()
-        try:
-            import subprocess
-
-            res = subprocess.run(
-                ["conda", "env", "list"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split()
-                    if not parts:
-                        continue
-                    name = parts[0].strip()
-                    if name.lower().startswith("sleap"):
-                        envs.append(name)
-        except Exception:
-            envs = []
-
-        if not envs:
-            self._identity_panel.combo_pose_sleap_env.addItem("No sleap envs found")
-            self._identity_panel.combo_pose_sleap_env.setEnabled(False)
-            return
-
-        self._identity_panel.combo_pose_sleap_env.addItems(envs)
-        if preferred and preferred in envs:
-            self._identity_panel.combo_pose_sleap_env.setCurrentText(preferred)
 
     def _selected_pose_sleap_env(self):
         """Return valid selected SLEAP env name or default."""
@@ -3018,8 +2451,8 @@ class MainWindow(QMainWindow):
             else 50.0
         )
         cnn_classifiers = []
-        if hasattr(self, "_cnn_classifier_rows"):
-            for row in self._cnn_classifier_rows():
+        if hasattr(self, "_identity_panel"):
+            for row in self._identity_panel._cnn_classifier_rows():
                 cfg = row.to_config()
                 if cfg is not None:
                     cfg["match_bonus"] = match_bonus
@@ -3031,20 +2464,6 @@ class MainWindow(QMainWindow):
             "match_bonus": match_bonus,
             "mismatch_penalty": mismatch_penalty,
         }
-
-    def _sync_identity_method_ui(self):
-        """Show the active identity configuration only when enabled."""
-        identity_enabled = self._is_identity_analysis_enabled()
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel.identity_content.setVisible(identity_enabled)
-            self._identity_panel.identity_content.setEnabled(identity_enabled)
-
-    def _sync_pose_analysis_ui(self):
-        """Show pose controls only when pose extraction is enabled."""
-        pose_enabled = self._is_pose_inference_enabled()
-        if hasattr(self, "_identity_panel"):
-            self._identity_panel.pose_runtime_content.setVisible(pose_enabled)
-            self._identity_panel.pose_runtime_content.setEnabled(pose_enabled)
 
     def _is_individual_image_save_enabled(self) -> bool:
         """Return effective runtime state for saving individual crops."""
@@ -3128,8 +2547,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_dataset_panel"):
             self._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
             self._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
-        self._sync_identity_method_ui()
-        self._sync_pose_analysis_ui()
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel._sync_identity_method_ui()
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel._sync_pose_analysis_ui()
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
@@ -3148,7 +2569,7 @@ class MainWindow(QMainWindow):
                 pipeline_enabled
             )
             has_headtail = bool(
-                str(self._get_selected_yolo_headtail_model_path() or "").strip()
+                str(self._identity_panel._get_selected_yolo_headtail_model_path() or "").strip()
             )
             oriented_enabled = pipeline_enabled and has_headtail
             self._dataset_panel.chk_generate_individual_track_videos.setEnabled(
@@ -4334,7 +3755,7 @@ class MainWindow(QMainWindow):
             "yolo_obb_direct_model_path": self._get_selected_yolo_model_path(),
             "yolo_detect_model_path": self._get_selected_yolo_detect_model_path(),
             "yolo_crop_obb_model_path": self._get_selected_yolo_crop_obb_model_path(),
-            "yolo_headtail_model_path": self._get_selected_yolo_headtail_model_path(),
+            "yolo_headtail_model_path": self._identity_panel._get_selected_yolo_headtail_model_path(),
             "pose_overrides_headtail": self._identity_panel.chk_pose_overrides_headtail.isChecked(),
             "yolo_seq_crop_pad_ratio": self._detection_panel.spin_yolo_seq_crop_pad.value(),
             "yolo_seq_min_crop_size_px": self._detection_panel.spin_yolo_seq_min_crop_px.value(),
@@ -5411,26 +4832,6 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def _refresh_yolo_headtail_model_combo(self, preferred_model_path: object = None):
-        ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
-        subdir = ht_type.currentText() if ht_type else "YOLO"
-        repo_dir = os.path.join(
-            get_yolo_model_repository_directory(
-                task_family="classify", usage_role="headtail"
-            ),
-            subdir,
-        )
-        os.makedirs(repo_dir, exist_ok=True)
-        self._populate_yolo_model_combo(
-            self._identity_panel.combo_yolo_headtail_model,
-            preferred_model_path=preferred_model_path,
-            default_path="",
-            include_none=True,
-            task_family="classify",
-            usage_role="headtail",
-            repository_dir=repo_dir,
-        )
-
     @staticmethod
     def _infer_yolo_headtail_model_type(model_path: object) -> str:
         """Infer the head-tail model family from its stored path."""
@@ -5535,12 +4936,6 @@ class MainWindow(QMainWindow):
             default_path="",
         )
 
-    def _get_selected_yolo_headtail_model_path(self) -> object:
-        return self._get_selected_model_path_from_selector(
-            self._identity_panel.combo_yolo_headtail_model,
-            default_path="",
-        )
-
     def _set_yolo_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
             self._detection_panel.combo_yolo_model,
@@ -5631,13 +5026,14 @@ class MainWindow(QMainWindow):
         _set_row_visible(getattr(self, "chk_pose_overrides_headtail", None), True)
         if hasattr(self, "_identity_panel"):
             self._identity_panel.spin_yolo_headtail_conf.setEnabled(
-                bool(self._get_selected_yolo_headtail_model_path().strip())
+                bool(self._identity_panel._get_selected_yolo_headtail_model_path().strip())
             )
         self._update_obb_mode_warning()
 
     def _on_headtail_model_type_changed(self, _index: object = None) -> None:
         """Refresh the head-tail model combo when the user switches YOLO ↔ tiny."""
-        self._refresh_yolo_headtail_model_combo()
+        if hasattr(self, "_identity_panel"):
+            self._identity_panel._refresh_yolo_headtail_model_combo()
 
     def _update_obb_mode_warning(self) -> None:
         """Show a performance hint when device/mode is a suboptimal combination."""
@@ -5755,7 +5151,7 @@ class MainWindow(QMainWindow):
             self._identity_panel.combo_yolo_headtail_model.itemData(index, Qt.UserRole)
             == "__add_new__"
         ):
-            ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+            ht_type = getattr(self._identity_panel, "combo_yolo_headtail_model_type", None)
             subdir = ht_type.currentText() if ht_type else "YOLO"
             repo_dir = os.path.join(
                 get_yolo_model_repository_directory(
@@ -5766,7 +5162,7 @@ class MainWindow(QMainWindow):
             os.makedirs(repo_dir, exist_ok=True)
             self._handle_add_new_yolo_model(
                 combo=self._identity_panel.combo_yolo_headtail_model,
-                refresh_callback=self._refresh_yolo_headtail_model_combo,
+                refresh_callback=self._identity_panel._refresh_yolo_headtail_model_combo,
                 selection_callback=self._set_yolo_headtail_model_selection,
                 task_family="classify",
                 usage_role="headtail",
@@ -9384,7 +8780,7 @@ class MainWindow(QMainWindow):
             self._get_selected_yolo_crop_obb_model_path() or ""
         )
         yolo_headtail_path = resolve_model_path(
-            self._get_selected_yolo_headtail_model_path() or ""
+            self._identity_panel._get_selected_yolo_headtail_model_path() or ""
         )
         yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
 
@@ -9782,7 +9178,7 @@ class MainWindow(QMainWindow):
             "GENERATE_ORIENTED_TRACK_VIDEOS": self._should_generate_oriented_track_videos(),
             "INDIVIDUAL_DATASET_NAME": (
                 ""
-                if str(self._get_selected_yolo_headtail_model_path() or "").strip()
+                if str(self._identity_panel._get_selected_yolo_headtail_model_path() or "").strip()
                 else "unoriented"
             ),
             "INDIVIDUAL_DATASET_OUTPUT_DIR": (
@@ -10131,7 +9527,7 @@ class MainWindow(QMainWindow):
                 self._identity_panel.combo_yolo_headtail_model_type.setCurrentIndex(
                     headtail_type_idx
                 )
-            self._refresh_yolo_headtail_model_combo(
+            self._identity_panel._refresh_yolo_headtail_model_combo(
                 preferred_model_path=yolo_headtail_model
             )
             self._set_yolo_headtail_model_selection(resolved_yolo_headtail)
@@ -10723,7 +10119,7 @@ class MainWindow(QMainWindow):
                     bool(get_cfg("use_apriltags", default=False))
                 )
                 for entry in _new_cnn_classifiers or []:
-                    row = self._add_cnn_classifier_row()
+                    row = self._identity_panel._add_cnn_classifier_row()
                     row.load_from_config(entry)
             else:
                 # Old single-method config: migrate
@@ -10732,7 +10128,7 @@ class MainWindow(QMainWindow):
                 elif old_method in ("cnn_classifier",):
                     cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
                     if cnn_model_rel:
-                        row = self._add_cnn_classifier_row()
+                        row = self._identity_panel._add_cnn_classifier_row()
                         row.load_from_config(
                             {
                                 "rel_path": cnn_model_rel,
@@ -10846,7 +10242,7 @@ class MainWindow(QMainWindow):
             self._identity_panel.line_pose_skeleton_file.setText(
                 get_cfg("pose_skeleton_file", default="")
             )
-            self._refresh_pose_direction_keypoint_lists()
+            self._identity_panel._refresh_pose_direction_keypoint_lists()
             ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
             self._set_pose_group_selection(
                 self._identity_panel.list_pose_ignore_keypoints, ignore_kpts
@@ -10863,7 +10259,7 @@ class MainWindow(QMainWindow):
             self.advanced_config["pose_sleap_env"] = str(
                 get_cfg("pose_sleap_env", default="sleap")
             )
-            self._refresh_pose_sleap_envs()
+            self._identity_panel._refresh_pose_sleap_envs()
             if hasattr(self, "_identity_panel"):
                 self._identity_panel.chk_sleap_experimental_features.setChecked(
                     get_cfg("pose_sleap_experimental_features", default=False)
@@ -11041,7 +10437,7 @@ class MainWindow(QMainWindow):
         yolo_direct_path = self._get_selected_yolo_model_path()
         yolo_detect_path = self._get_selected_yolo_detect_model_path()
         yolo_crop_obb_path = self._get_selected_yolo_crop_obb_model_path()
-        yolo_headtail_path = self._get_selected_yolo_headtail_model_path()
+        yolo_headtail_path = self._identity_panel._get_selected_yolo_headtail_model_path()
         yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
         yolo_cls = (
             [
