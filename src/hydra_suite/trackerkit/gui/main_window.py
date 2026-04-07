@@ -5,42 +5,22 @@ Main application window for the HYDRA.
 Refactored for improved UX with Tabbed interface and logical grouping.
 """
 
-import csv
-import gc
-import hashlib
 import json
 import logging
 import math
 import os
-import re
-import shutil
-import time
-from datetime import datetime
 from pathlib import Path
 
 import cv2
-import numpy as np
-import pandas as pd
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QAbstractButton,
-    QApplication,
-    QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLayout,
-    QLineEdit,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -48,105 +28,39 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QSplitter,
     QStackedWidget,
-    QStyle,
-    QStyleOptionGroupBox,
     QTabWidget,
-    QToolButton,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
-from hydra_suite.core.identity.dataset.generator import IndividualDatasetGenerator
 from hydra_suite.core.identity.dataset.oriented_video import (
-    OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
 )
-from hydra_suite.core.identity.pose.quality import (
-    apply_quality_to_dataframe,
-    apply_temporal_pose_postprocessing,
-    calibrate_body_length_prior,
-    calibrate_edge_length_priors,
-)
-from hydra_suite.core.identity.properties.export import (
-    POSE_SUMMARY_COLUMNS,
-    augment_trajectories_with_pose_cache,
-    build_pose_keypoint_labels,
-    flatten_pose_keypoints_row,
-    merge_interpolated_pose_df,
-    pose_wide_columns_for_labels,
-)
-from hydra_suite.core.post.processing import (
-    interpolate_trajectories,
-    process_trajectories,
-    relink_trajectories_with_pose,
-    resolve_trajectories,
-)
-from hydra_suite.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
-from hydra_suite.core.tracking.worker import TrackingWorker
-from hydra_suite.data.csv_writer import CSVWriterThread
-from hydra_suite.data.detection_cache import DetectionCache
 from hydra_suite.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,
     allowed_runtimes_for_pipelines,
-    derive_detection_runtime_settings,
-    derive_pose_runtime_settings,
-    infer_compute_runtime_from_legacy,
     runtime_label,
 )
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
-from hydra_suite.utils.geometry import fit_circle_to_points, wrap_angle_degs
-from hydra_suite.utils.pose_visualization import (
-    is_renderable_pose_keypoint,
-    normalize_pose_render_min_conf,
-)
-from hydra_suite.utils.video_artifacts import (
-    build_detection_cache_path,
-    build_optimizer_detection_cache_path,
-    build_tracking_session_log_path,
-    candidate_artifact_base_dirs,
-    choose_writable_artifact_base_dir,
-    find_existing_detection_cache_path,
-    iter_detection_cache_candidates,
-)
-from hydra_suite.widgets.workers import BaseWorker
+from hydra_suite.utils.geometry import wrap_angle_degs
 
-from .workers.merge_worker import MergeWorker, _write_csv_artifact, _write_roi_npz
-from .workers.crops_worker import InterpolatedCropsWorker
-from .workers.video_worker import OrientedTrackVideoWorker
-from .workers.dataset_worker import DatasetGenerationWorker
-from .workers.preview_worker import (
-    PreviewDetectionWorker,
+from . import model_utils as _model_utils
+from .workers.preview_worker import (  # noqa: F401 (re-export for tests)
     _build_preview_background_model,
     _clear_preview_background_cache,
-    _run_preview_detection_job,
 )
-from .dialogs.bg_parameter_helper import BgParameterHelperDialog
-from .dialogs.parameter_helper import ParameterHelperDialog
-from .widgets.collapsible import AccordionContainer, CollapsibleGroupBox
-from .widgets.help_label import CompactHelpLabel
-from .widgets.stacked_page import CurrentPageStackedWidget
-from .widgets.tooltip_button import ImmediateTooltipButton
 from .model_utils import (
     _sanitize_model_token,
-    get_models_directory,
-    get_models_root_directory,
-    get_pose_models_directory,
     get_yolo_model_metadata,
-    get_yolo_model_registry_path,
     get_yolo_model_repository_directory,
-    load_yolo_model_registry,
-    make_model_path_relative,
     make_pose_model_path_relative,
-    register_yolo_model,
-    resolve_model_path,
     resolve_pose_model_path,
-    save_yolo_model_registry,
 )
+from .widgets.collapsible import CollapsibleGroupBox
+from .widgets.help_label import CompactHelpLabel
 
 try:
     from hydra_suite.posekit.gui.dialogs.utils import get_available_devices
@@ -160,6 +74,18 @@ except ImportError:
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
 
 
+# Preserve the legacy helper import surface while panels/orchestrators are mid-migration.
+get_models_root_directory = _model_utils.get_models_root_directory
+get_models_directory = _model_utils.get_models_directory
+get_pose_models_directory = _model_utils.get_pose_models_directory
+resolve_model_path = _model_utils.resolve_model_path
+make_model_path_relative = _model_utils.make_model_path_relative
+get_yolo_model_registry_path = _model_utils.get_yolo_model_registry_path
+load_yolo_model_registry = _model_utils.load_yolo_model_registry
+save_yolo_model_registry = _model_utils.save_yolo_model_registry
+register_yolo_model = _model_utils.register_yolo_model
+
+
 def get_video_config_path(video_path: object) -> object:
     """Get the config file path for a given video file."""
     if not video_path:
@@ -167,8 +93,6 @@ def get_video_config_path(video_path: object) -> object:
     video_dir = os.path.dirname(video_path)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(video_dir, f"{video_name}_config.json")
-
-
 
 
 logger = logging.getLogger(__name__)
@@ -193,7 +117,7 @@ class MainWindow(QMainWindow):
             QMainWindow, QWidget {
                 background-color: #1e1e1e;
                 color: #e0e0e0;
-                font-family: "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+                font-family: "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
                 font-size: 11px;
             }
 
@@ -755,7 +679,11 @@ class MainWindow(QMainWindow):
         self.slider_zoom.setTickPosition(QSlider.TicksBelow)
         self.slider_zoom.setTickInterval(50)
         self.slider_zoom.valueChanged.connect(
-            lambda v: self._detection_panel._on_zoom_changed(v) if hasattr(self, "_detection_panel") else None
+            lambda v: (
+                self._detection_panel._on_zoom_changed(v)
+                if hasattr(self, "_detection_panel")
+                else None
+            )
         )
 
         self.label_zoom_val = QLabel("1.00x")
@@ -777,7 +705,11 @@ class MainWindow(QMainWindow):
 
         self.btn_test_detection = QPushButton("Test Detection on Preview")
         self.btn_test_detection.clicked.connect(
-            lambda: self._detection_panel._test_detection_on_preview() if hasattr(self, "_detection_panel") else None
+            lambda: (
+                self._detection_panel._test_detection_on_preview()
+                if hasattr(self, "_detection_panel")
+                else None
+            )
         )
         self.btn_test_detection.setEnabled(False)
         self.btn_test_detection.setStyleSheet(
@@ -938,7 +870,9 @@ class MainWindow(QMainWindow):
         # =====================================================================
         # INITIALIZE ORCHESTRATORS
         # =====================================================================
-        from hydra_suite.trackerkit.gui.orchestrators.tracking import TrackingOrchestrator
+        from hydra_suite.trackerkit.gui.orchestrators.tracking import (
+            TrackingOrchestrator,
+        )
 
         self._tracking_orch = TrackingOrchestrator(
             main_window=self,
@@ -1066,27 +1000,16 @@ class MainWindow(QMainWindow):
     def _find_or_plan_optimizer_cache_path(
         self, video_path: str, params: dict, start_frame: int, end_frame: int
     ) -> tuple:
-        """
-        Return (cache_path, already_valid) where:
-          - cache_path  : best path to use (existing covering cache, or new build target)
-          - already_valid: True when that path exists AND covers start_frame..end_frame
-
-        Search order:
-          1. current_detection_cache_path (set by the last tracking run in this session)
-             — only if it was produced by the *same* detection method.
-          2. Any compatible detection cache in the video's dedicated cache directory
-             whose filename matches the current detection method, with legacy flat
-             files still considered as a fallback.
-          3. A freshly-computed optimizer-specific path in the dedicated cache directory
-             (name encodes the detection method so different methods never collide).
-        """
-        return self._config_orch._find_or_plan_optimizer_cache_path()
+        """Return (cache_path, already_valid) for the optimizer cache."""
+        return self._config_orch._find_or_plan_optimizer_cache_path(
+            video_path, params, start_frame, end_frame
+        )
 
     def _build_optimizer_detection_cache(
         self, video_path: str, cache_path: str, params: dict
     ):
         """Spin up a DetectionCacheBuilderWorker and show progress in the main window."""
-        self._config_orch._build_optimizer_detection_cache()
+        self._config_orch._build_optimizer_detection_cache(video_path, cache_path, params)
 
     def _on_optimizer_cache_built(self, ok: bool, cache_path: str):
         """Called when DetectionCacheBuilderWorker finishes."""
@@ -1195,7 +1118,9 @@ class MainWindow(QMainWindow):
 
     def _import_pose_model_to_repository(self, source_path, backend="yolo"):
         """Copy a selected pose model into models/pose/{YOLO|SLEAP|ViTPose} and return relative path."""
-        return self._config_orch._import_pose_model_to_repository(source_path, backend=backend)
+        return self._config_orch._import_pose_model_to_repository(
+            source_path, backend=backend
+        )
 
     def _select_pose_skeleton_file(self):
         """Select pose skeleton JSON file."""
@@ -1421,63 +1346,28 @@ class MainWindow(QMainWindow):
         """Return active pipeline keys for runtime intersection."""
         if hasattr(self, "_session_orch"):
             return self._session_orch._runtime_pipelines_for_current_ui()
-        # Fallback during early init
-        pipelines = []
-        if self._is_yolo_detection_mode():
-            pipelines.append("yolo_obb_detection")
-        return pipelines
+        return []
 
     def _compute_runtime_options_for_current_ui(self):
         """Return (label, value) pairs for the compute runtime combo."""
         if hasattr(self, "_session_orch"):
             return self._session_orch._compute_runtime_options_for_current_ui()
-        # Fallback during early init
-        allowed = allowed_runtimes_for_pipelines(self._runtime_pipelines_for_current_ui())
-        if not allowed:
-            allowed = ["cpu"]
-        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+        return []
 
     def _populate_compute_runtime_options(self, preferred=None):
-        if hasattr(self, "_config_orch"):
-            self._config_orch._populate_compute_runtime_options(preferred=preferred)
-            return
-        # Fallback during early init before orchestrators exist
-        if not hasattr(self, "_setup_panel"):
-            return
-        combo = self._setup_panel.combo_compute_runtime
-        selected = str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
-        options = self._compute_runtime_options_for_current_ui()
-        values = [value for _label, value in options]
-        if selected not in values:
-            selected = values[0] if values else "cpu"
-        combo.blockSignals(True)
-        combo.clear()
-        for label, value in options:
-            combo.addItem(label, value)
-        idx = combo.findData(selected)
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.blockSignals(False)
+        self._config_orch._populate_compute_runtime_options(preferred=preferred)
 
     def _selected_compute_runtime(self) -> str:
         """Return the currently selected compute runtime key."""
         if hasattr(self, "_session_orch"):
             return self._session_orch._selected_compute_runtime()
-        if not hasattr(self, "_setup_panel"):
-            return "cpu"
-        data = self._setup_panel.combo_compute_runtime.currentData()
-        if data:
-            return str(data).strip().lower()
-        txt = self._setup_panel.combo_compute_runtime.currentText().strip().lower()
-        if txt in CANONICAL_RUNTIMES:
-            return txt
         return "cpu"
 
     def _runtime_requires_fixed_yolo_batch(self, runtime=None) -> bool:
         """Return True when runtime mandates a fixed YOLO batch size."""
         if hasattr(self, "_session_orch"):
             return self._session_orch._runtime_requires_fixed_yolo_batch(runtime)
-        rt = str(runtime or self._selected_compute_runtime() or "").strip().lower()
-        return rt == "tensorrt" or rt.startswith("onnx")
+        return False
 
     @staticmethod
     def _preview_safe_runtime(runtime: str) -> str:
@@ -1505,7 +1395,9 @@ class MainWindow(QMainWindow):
     def _populate_pose_runtime_flavor_options(self, backend: str, preferred=None):
         """Populate the pose runtime flavor combo."""
         if hasattr(self, "_session_orch"):
-            self._session_orch._populate_pose_runtime_flavor_options(backend, preferred=preferred)
+            self._session_orch._populate_pose_runtime_flavor_options(
+                backend, preferred=preferred
+            )
 
     def _selected_pose_runtime_flavor(self) -> str:
         """Return the currently selected pose runtime flavor key."""
@@ -1529,35 +1421,11 @@ class MainWindow(QMainWindow):
         """Show/hide backend-specific pose controls."""
         if hasattr(self, "_session_orch"):
             self._session_orch._sync_pose_backend_ui()
-            return
-        # Fallback during early init before orchestrators exist
-        if not hasattr(self, "_identity_panel"):
-            return
-        backend = (
-            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
-        )
-        self._populate_pose_runtime_flavor_options(backend=backend)
-        is_sleap = backend == "sleap"
-        if hasattr(self, "_identity_panel") and hasattr(
-            self._identity_panel, "pose_sleap_env_row_widget"
-        ):
-            self._set_form_row_visible(
-                self._identity_panel.form_pose_runtime,
-                self._identity_panel.pose_sleap_env_row_widget,
-                is_sleap,
-            )
-        if hasattr(self, "_identity_panel") and hasattr(
-            self._identity_panel, "pose_sleap_experimental_row_widget"
-        ):
-            self._set_form_row_visible(
-                self._identity_panel.form_pose_runtime,
-                self._identity_panel.pose_sleap_experimental_row_widget,
-                is_sleap,
-            )
-        self._refresh_pose_model_combo(
-            preferred_model_path=self._pose_model_path_for_backend(backend)
-        )
-        self._on_runtime_context_changed()
+
+    def _on_confidence_density_map_toggled(self, state):
+        """Compatibility wrapper for tracking density toggle handling."""
+        if hasattr(self, "_tracking_panel"):
+            self._tracking_panel._on_confidence_density_map_toggled(state)
 
     def _is_pose_inference_enabled(self) -> bool:
         """Return whether pose inference is actively enabled for the run."""
@@ -2121,10 +1989,14 @@ class MainWindow(QMainWindow):
         )
 
     def _set_model_selection_for_selector(self, combo, model_path, default_path=""):
-        self._config_orch._set_model_selection_for_selector(combo, model_path, default_path)
+        self._config_orch._set_model_selection_for_selector(
+            combo, model_path, default_path
+        )
 
     def _get_selected_model_path_from_selector(self, combo, default_path=""):
-        return self._config_orch._get_selected_model_path_from_selector(combo, default_path)
+        return self._config_orch._get_selected_model_path_from_selector(
+            combo, default_path
+        )
 
     def _import_yolo_model_to_repository(
         self, source_path, task_family=None, usage_role=None, repository_dir=None
@@ -2264,7 +2136,9 @@ class MainWindow(QMainWindow):
             self._identity_panel.combo_yolo_headtail_model.itemData(index, Qt.UserRole)
             == "__add_new__"
         ):
-            ht_type = getattr(self._identity_panel, "combo_yolo_headtail_model_type", None)
+            ht_type = getattr(
+                self._identity_panel, "combo_yolo_headtail_model_type", None
+            )
             subdir = ht_type.currentText() if ht_type else "YOLO"
             repo_dir = os.path.join(
                 get_yolo_model_repository_directory(
@@ -2343,8 +2217,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Stop a QThread cooperatively, then force terminate if needed."""
         self._tracking_orch._request_qthread_stop(
-                    worker, worker_name, timeout_ms=timeout_ms, force_terminate=force_terminate
-                )
+            worker, worker_name, timeout_ms=timeout_ms, force_terminate=force_terminate
+        )
 
     def _stop_csv_writer(self, timeout_sec: float = 2.0) -> None:
         """Stop background CSV writer thread safely without indefinite blocking."""
@@ -2372,7 +2246,10 @@ class MainWindow(QMainWindow):
         remember_state: bool = True,
     ):
         self._session_orch._set_interactive_widgets_enabled(
-            enabled, allowlist=allowlist, blocklist=blocklist, remember_state=remember_state
+            enabled,
+            allowlist=allowlist,
+            blocklist=blocklist,
+            remember_state=remember_state,
         )
 
     def _set_video_interaction_enabled(self, enabled: bool):
@@ -2440,7 +2317,9 @@ class MainWindow(QMainWindow):
 
     def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):
         """Scale trajectory coordinates from resized space back to original video space."""
-        return self._tracking_orch._scale_trajectories_to_original_space(trajectories_df, resize_factor)
+        return self._tracking_orch._scale_trajectories_to_original_space(
+            trajectories_df, resize_factor
+        )
 
     def save_trajectories_to_csv(
         self: object, trajectories: object, output_path: object
@@ -2475,7 +2354,9 @@ class MainWindow(QMainWindow):
 
     def _store_interpolated_headtail_result(self, headtail_csv_path, headtail_rows):
         """Store interpolated head-tail results from CSV path or in-memory rows."""
-        self._tracking_orch._store_interpolated_headtail_result(headtail_csv_path, headtail_rows)
+        self._tracking_orch._store_interpolated_headtail_result(
+            headtail_csv_path, headtail_rows
+        )
 
     def _on_interpolated_crops_finished(self, result):
         self._tracking_orch._on_interpolated_crops_finished(result)
@@ -2517,7 +2398,9 @@ class MainWindow(QMainWindow):
 
     def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
         """Start optional oriented track video export and hold the finish pipeline."""
-        return self._tracking_orch._start_pending_oriented_track_video_export(final_csv_path)
+        return self._tracking_orch._start_pending_oriented_track_video_export(
+            final_csv_path
+        )
 
     def _on_oriented_track_video_worker_thread_finished(self):
         """Release completed oriented track video worker safely."""
@@ -2550,7 +2433,9 @@ class MainWindow(QMainWindow):
             csv_path: Path to the CSV file (optional, for logging)
             finalize_on_complete: If True, continue full finish pipeline after render.
         """
-        self._tracking_orch._generate_video_from_trajectories(trajectories_df, csv_path, finalize_on_complete)
+        self._tracking_orch._generate_video_from_trajectories(
+            trajectories_df, csv_path, finalize_on_complete
+        )
 
     def on_tracking_finished(
         self: object, finished_normally: object, fps_list: object, full_traj: object
@@ -2560,10 +2445,10 @@ class MainWindow(QMainWindow):
 
     def _is_pose_export_enabled(self) -> bool:
         """Return True when pose extraction export should be produced."""
-        if not hasattr(self, '_detection_panel'):
+        if not hasattr(self, "_detection_panel"):
             return False
         return self._detection_panel._is_yolo_detection_mode() and bool(
-            hasattr(self, '_identity_panel')
+            hasattr(self, "_identity_panel")
             and self._identity_panel.chk_enable_pose_extractor.isChecked()
         )
 
@@ -2619,7 +2504,9 @@ class MainWindow(QMainWindow):
         self: object, preview_mode: bool, backward_mode: bool = False
     ) -> object:
         """start_tracking method documentation."""
-        self._tracking_orch.start_tracking(preview_mode=preview_mode, backward_mode=backward_mode)
+        self._tracking_orch.start_tracking(
+            preview_mode=preview_mode, backward_mode=backward_mode
+        )
 
     def start_preview_on_video(self: object, video_path: object) -> object:
         """start_preview_on_video method documentation."""
@@ -2629,7 +2516,9 @@ class MainWindow(QMainWindow):
         self: object, video_path: object, backward_mode: object = False
     ) -> object:
         """start_tracking_on_video method documentation."""
-        self._tracking_orch.start_tracking_on_video(video_path, backward_mode=backward_mode)
+        self._tracking_orch.start_tracking_on_video(
+            video_path, backward_mode=backward_mode
+        )
 
     def get_parameters_dict(self: object) -> object:
         """get_parameters_dict method documentation."""
@@ -2688,14 +2577,18 @@ class MainWindow(QMainWindow):
         )
 
     def _setup_session_logging(self, video_path, backward_mode=False):
-        self._session_orch._setup_session_logging(video_path, backward_mode=backward_mode)
+        self._session_orch._setup_session_logging(
+            video_path, backward_mode=backward_mode
+        )
 
     def _cleanup_session_logging(self):
         self._session_orch._cleanup_session_logging()
 
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
-        self._tracking_orch._generate_training_dataset(override_csv_path=override_csv_path)
+        self._tracking_orch._generate_training_dataset(
+            override_csv_path=override_csv_path
+        )
 
     def on_dataset_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during dataset generation."""
@@ -2776,50 +2669,7 @@ class MainWindow(QMainWindow):
 
     def _populate_preset_combo(self):
         """Populate the preset combo box by auto-scanning configs folder."""
-        if hasattr(self, "_config_orch"):
-            self._config_orch._populate_preset_combo()
-            return
-        # Fallback during early init before orchestrators exist
-        presets_dir = self._get_presets_dir()
-
-        if not os.path.exists(presets_dir):
-            return
-
-        presets = []
-        custom_preset = None
-
-        # Scan all JSON files in configs directory
-        for filename in sorted(os.listdir(presets_dir)):
-            if not filename.endswith(".json"):
-                continue
-
-            filepath = os.path.join(presets_dir, filename)
-
-            try:
-                with open(filepath, "r") as f:
-                    cfg = json.load(f)
-
-                # Get preset name from file, fallback to filename
-                preset_name = cfg.get(
-                    "preset_name",
-                    filename.replace(".json", "").replace("_", " ").title(),
-                )
-
-                # Custom preset gets special treatment (star marker, shown first)
-                if filename == "custom.json":
-                    custom_preset = (f"{preset_name} ★", filepath)
-                else:
-                    presets.append((preset_name, filepath))
-            except Exception as e:
-                logger.warning(f"Failed to load preset {filename}: {e}")
-                continue
-
-        # Populate combo box (custom first, then others alphabetically)
-        self._setup_panel.combo_presets.clear()
-        if custom_preset:
-            self._setup_panel.combo_presets.addItem(custom_preset[0], custom_preset[1])
-        for name, filepath in presets:
-            self._setup_panel.combo_presets.addItem(name, filepath)
+        self._config_orch._populate_preset_combo()
 
     def _load_selected_preset(self):
         """Load the currently selected preset."""
@@ -2925,7 +2775,9 @@ class MainWindow(QMainWindow):
 
     def _handle_crop_success(self, output_path, orig_w, orig_h, crop_w, crop_h):
         """Handle a successful crop completion."""
-        self._config_orch._handle_crop_success(output_path, orig_w, orig_h, crop_w, crop_h)
+        self._config_orch._handle_crop_success(
+            output_path, orig_w, orig_h, crop_w, crop_h
+        )
 
     def _handle_crop_failure(self, return_code):
         """Handle a failed crop completion."""

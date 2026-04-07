@@ -184,9 +184,7 @@ class DetectionPanel(QWidget):
         self.slider_brightness.setValue(0)
         self.slider_brightness.setTickPosition(QSlider.TicksBelow)
         self.slider_brightness.setTickInterval(50)
-        self.slider_brightness.valueChanged.connect(
-            self._on_brightness_changed
-        )
+        self.slider_brightness.valueChanged.connect(self._on_brightness_changed)
         self.slider_brightness.setToolTip(
             "Adjust overall image brightness.\n"
             "Positive = lighter, Negative = darker.\n"
@@ -210,9 +208,7 @@ class DetectionPanel(QWidget):
         self.slider_contrast.setValue(100)  # 1.0
         self.slider_contrast.setTickPosition(QSlider.TicksBelow)
         self.slider_contrast.setTickInterval(50)
-        self.slider_contrast.valueChanged.connect(
-            self._on_contrast_changed
-        )
+        self.slider_contrast.valueChanged.connect(self._on_contrast_changed)
         self.slider_contrast.setToolTip(
             "Adjust image contrast (difference between light and dark).\n"
             "1.0 = original, >1.0 = more contrast, <1.0 = less contrast.\n"
@@ -577,9 +573,7 @@ class DetectionPanel(QWidget):
         self.combo_yolo_obb_mode = QComboBox()
         self.combo_yolo_obb_mode.addItems(["Direct", "Sequential (Faster)"])
         self.combo_yolo_obb_mode.setFixedHeight(30)
-        self.combo_yolo_obb_mode.currentIndexChanged.connect(
-            self._on_yolo_mode_changed
-        )
+        self.combo_yolo_obb_mode.currentIndexChanged.connect(self._on_yolo_mode_changed)
         self.combo_yolo_obb_mode.setToolTip(
             "Direct: run OBB on full frame.\n"
             "Sequential: run detect model first, crop detections, then run OBB on crops."
@@ -752,9 +746,7 @@ class DetectionPanel(QWidget):
             )
 
         self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
-        self.chk_enable_tensorrt.stateChanged.connect(
-            self._on_tensorrt_toggled
-        )
+        self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
 
         self.spin_tensorrt_batch = QSpinBox()
         self.spin_tensorrt_batch.setRange(1, 64)
@@ -942,9 +934,7 @@ class DetectionPanel(QWidget):
             "Reference animal body diameter in pixels (at resize=1.0).\n"
             "All distance/size parameters are scaled relative to this value."
         )
-        self.spin_reference_body_size.valueChanged.connect(
-            self._update_body_size_info
-        )
+        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
         fl_ref.addRow("Reference body size (px)", self.spin_reference_body_size)
 
         self.label_body_size_info = QLabel()
@@ -1140,7 +1130,9 @@ class DetectionPanel(QWidget):
             return {"use_apriltags": False, "cnn_classifiers": []}
         ip = getattr(self._main_window, "_identity_panel", None)
         use_apriltags = ip is not None and ip.g_apriltags.isChecked()
-        match_bonus = float(ip.spin_identity_match_bonus.value() if ip is not None else 20.0)
+        match_bonus = float(
+            ip.spin_identity_match_bonus.value() if ip is not None else 20.0
+        )
         mismatch_penalty = float(
             ip.spin_identity_mismatch_penalty.value() if ip is not None else 50.0
         )
@@ -1262,9 +1254,8 @@ class DetectionPanel(QWidget):
         self._main_window.label_zoom_val.setText(f"{zoom_val:.2f}x")
         if self._main_window.detection_test_result is not None:
             self._redisplay_detection_test()
-        elif (
-            getattr(self._main_window, "roi_base_frame", None) is not None
-            and getattr(self._main_window, "roi_shapes", None)
+        elif getattr(self._main_window, "roi_base_frame", None) is not None and getattr(
+            self._main_window, "roi_shapes", None
         ):
             self._main_window._display_roi_with_zoom()
         else:
@@ -1385,8 +1376,12 @@ class DetectionPanel(QWidget):
         from hydra_suite.utils.image_processing import apply_image_adjustments
 
         if is_background_subtraction:
-            gray = cv2.cvtColor(self._main_window.preview_frame_original, cv2.COLOR_RGB2GRAY)
-            adjusted = apply_image_adjustments(gray, brightness, contrast, gamma, use_gpu=False)
+            gray = cv2.cvtColor(
+                self._main_window.preview_frame_original, cv2.COLOR_RGB2GRAY
+            )
+            adjusted = apply_image_adjustments(
+                gray, brightness, contrast, gamma, use_gpu=False
+            )
             adjusted_rgb = cv2.cvtColor(adjusted, cv2.COLOR_GRAY2RGB)
         else:
             adjusted_rgb = self._main_window.preview_frame_original
@@ -1402,7 +1397,9 @@ class DetectionPanel(QWidget):
         if zoom_val != 1.0:
             scaled_w = int(w * zoom_val)
             scaled_h = int(h * zoom_val)
-            qimg = qimg.scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation
+            )
 
         pixmap = QPixmap.fromImage(qimg)
         self._main_window.video_label.setPixmap(pixmap)
@@ -1423,7 +1420,9 @@ class DetectionPanel(QWidget):
             orig_h, orig_w = self._main_window.preview_frame_original.shape[:2]
             scaled_w = int(orig_w * effective_scale)
             scaled_h = int(orig_h * effective_scale)
-            qimg = qimg.scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation
+            )
 
         pixmap = QPixmap.fromImage(qimg)
         self._main_window.video_label.setPixmap(pixmap)
@@ -1434,7 +1433,9 @@ class DetectionPanel(QWidget):
 
     def _test_detection_on_preview(self):
         """Test detection algorithm on the current preview frame."""
-        from hydra_suite.trackerkit.gui.workers.preview_worker import PreviewDetectionWorker
+        from hydra_suite.trackerkit.gui.workers.preview_worker import (
+            PreviewDetectionWorker,
+        )
 
         if self._main_window.preview_frame_original is None:
             logger.warning("No preview frame loaded")
@@ -1458,7 +1459,7 @@ class DetectionPanel(QWidget):
             msg.setWindowTitle("Detection Filter Options")
             msg.setText("Detection filters are currently enabled!")
             msg.setInformativeText(
-                "For accurate size estimation, it\'s recommended to run detection\n"
+                "For accurate size estimation, it's recommended to run detection\n"
                 "WITHOUT detection constraints. However, you can test with constraints\n"
                 "if you want to see how filtering affects the results.\n\n"
                 "This includes both size and aspect-ratio filtering.\n\n"
@@ -1486,7 +1487,8 @@ class DetectionPanel(QWidget):
         context = self._collect_preview_detection_context()
         if (
             int(context.get("detection_method", 0)) == 1
-            and str(context.get("yolo_obb_mode", "direct")).strip().lower() == "sequential"
+            and str(context.get("yolo_obb_mode", "direct")).strip().lower()
+            == "sequential"
         ):
             detect_model = str(context.get("yolo_detect_model_path", "")).strip()
             crop_obb_model = str(context.get("yolo_crop_obb_model_path", "")).strip()
@@ -1617,11 +1619,17 @@ class DetectionPanel(QWidget):
             "conservative_erode_iterations": self.spin_conservative_erode.value(),
             "use_apriltags": identity_cfg.get("use_apriltags", False),
             "cnn_classifiers": identity_cfg.get("cnn_classifiers", []),
-            "apriltag_family": ip.combo_apriltag_family.currentText() if ip is not None else "tag36h11",
-            "apriltag_decimate": ip.spin_apriltag_decimate.value() if ip is not None else 1.0,
+            "apriltag_family": (
+                ip.combo_apriltag_family.currentText() if ip is not None else "tag36h11"
+            ),
+            "apriltag_decimate": (
+                ip.spin_apriltag_decimate.value() if ip is not None else 1.0
+            ),
             "enable_pose_extractor": self._main_window._is_pose_inference_enabled(),
             "pose_model_type": pose_backend_family,
-            "pose_model_dir": self._main_window._get_resolved_pose_model_dir(pose_backend_family),
+            "pose_model_dir": self._main_window._get_resolved_pose_model_dir(
+                pose_backend_family
+            ),
             "pose_runtime_flavor": runtime_pose["pose_runtime_flavor"],
             "pose_min_kpt_conf_valid": (
                 ip.spin_pose_min_kpt_conf_valid.value() if ip is not None else 0.5
@@ -1663,11 +1671,16 @@ class DetectionPanel(QWidget):
         qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
         zoom_val = max(self._main_window.slider_zoom.value() / 100.0, 0.1)
         effective_scale = zoom_val * resize_f
-        if effective_scale != 1.0 and self._main_window.preview_frame_original is not None:
+        if (
+            effective_scale != 1.0
+            and self._main_window.preview_frame_original is not None
+        ):
             orig_h, orig_w = self._main_window.preview_frame_original.shape[:2]
             scaled_w = int(orig_w * effective_scale)
             scaled_h = int(orig_h * effective_scale)
-            qimg = qimg.scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
         self._main_window.video_label.setPixmap(QPixmap.fromImage(qimg))
         self._main_window._fit_image_to_screen()
         logger.info("Detection test completed on preview frame")

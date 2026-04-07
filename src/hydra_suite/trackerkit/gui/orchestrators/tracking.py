@@ -8,11 +8,9 @@ import glob as _glob
 import hashlib
 import json
 import logging
-import math
 import os
 import queue as _queue
 import re
-import threading as _threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,7 +18,7 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 if TYPE_CHECKING:
@@ -33,7 +31,9 @@ logger = logging.getLogger(__name__)
 class TrackingOrchestrator:
     """Owns the tracking lifecycle: start, stop, merge, export, finalize."""
 
-    def __init__(self, main_window: "MainWindow", config: "TrackerConfig", panels) -> None:
+    def __init__(
+        self, main_window: "MainWindow", config: "TrackerConfig", panels
+    ) -> None:
         self._mw = main_window
         self._config = config
         self._panels = panels
@@ -51,7 +51,9 @@ class TrackingOrchestrator:
             self._mw._setup_session_logging(video_path, backward_mode=False)
             from datetime import datetime
 
-            self._mw._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._mw._individual_dataset_run_id = datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            )
             self._mw.current_detection_cache_path = None
             self._mw.current_individual_properties_cache_path = None
             self._mw.current_interpolated_roi_npz_path = None
@@ -69,9 +71,6 @@ class TrackingOrchestrator:
             self._mw._pending_finish_after_track_videos = False
 
         self.start_tracking(preview_mode=False)
-
-
-
 
     def _request_qthread_stop(
         self,
@@ -131,9 +130,6 @@ class TrackingOrchestrator:
         except Exception:
             pass
 
-
-
-
     def _stop_csv_writer(self, timeout_sec: float = 2.0) -> None:
         """Stop background CSV writer thread safely without indefinite blocking."""
         writer = self._mw.csv_writer_thread
@@ -153,9 +149,6 @@ class TrackingOrchestrator:
         finally:
             self._mw.csv_writer_thread = None
 
-
-
-
     def _cleanup_thread_reference(self, attr_name: str) -> None:
         """Delete finished QThread references safely."""
         worker = getattr(self._mw, attr_name, None)
@@ -172,9 +165,6 @@ class TrackingOrchestrator:
                 pass
             setattr(self._mw, attr_name, None)
 
-
-
-
     def stop_tracking(self):
         """stop_tracking method documentation."""
         self._mw._stop_all_requested = True
@@ -186,7 +176,8 @@ class TrackingOrchestrator:
 
         # Stop all active workers and subprocess-like threads.
         self._request_qthread_stop(
-            getattr(self._mw, "_cache_builder_worker", None), "DetectionCacheBuilderWorker"
+            getattr(self._mw, "_cache_builder_worker", None),
+            "DetectionCacheBuilderWorker",
         )
         self._request_qthread_stop(
             getattr(self._mw, "merge_worker", None), "MergeWorker", timeout_ms=1200
@@ -245,20 +236,12 @@ class TrackingOrchestrator:
         self._mw._tracking_frame_size = None
         self._mw._cleanup_session_logging()
 
-
-
-
-    def on_progress_update(
-        self: object, percentage, status_text
-    ):
+    def on_progress_update(self: object, percentage, status_text):
         """on_progress_update method documentation."""
         if self._mw._stop_all_requested:
             return
         self._mw.progress_bar.setValue(percentage)
         self._mw.progress_label.setText(status_text)
-
-
-
 
     def on_pose_exported_model_resolved(self, artifact_path: str) -> None:
         """Update pose exported-model UI/config when runtime resolves an artifact path."""
@@ -277,17 +260,11 @@ class TrackingOrchestrator:
                 exc_info=True,
             )
 
-
-
-
     def on_tracking_warning(self, title, message):
         """Display tracking warnings in the UI."""
         if self._mw._stop_all_requested:
             return
-        QMessageBox.information(self, title, message)
-
-
-
+        QMessageBox.information(self._mw, title, message)
 
     def show_gpu_info(self):
         """Display GPU and acceleration information dialog."""
@@ -342,15 +319,12 @@ class TrackingOrchestrator:
         message = "<br>".join(lines)
 
         # Create message box with rich text
-        msg_box = QMessageBox(self)
+        msg_box = QMessageBox(self._mw)
         msg_box.setWindowTitle("GPU & Acceleration Info")
         msg_box.setTextFormat(Qt.RichText)
         msg_box.setText(message)
         msg_box.setIcon(QMessageBox.Information)
         msg_box.exec()
-
-
-
 
     def on_stats_update(self, stats):
         """Update real-time tracking statistics."""
@@ -362,7 +336,9 @@ class TrackingOrchestrator:
         # Update FPS
         if "fps" in stats:
             if is_precompute:
-                self._mw.label_current_fps.setText(f"Precompute Rate: {stats['fps']:.1f}/s")
+                self._mw.label_current_fps.setText(
+                    f"Precompute Rate: {stats['fps']:.1f}/s"
+                )
             else:
                 self._mw.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
             self._mw.label_current_fps.setVisible(True)
@@ -378,7 +354,9 @@ class TrackingOrchestrator:
             else:
                 elapsed_str = f"{minutes:02d}:{seconds:02d}"
             if is_precompute:
-                self._mw.label_elapsed_time.setText(f"Precompute Elapsed: {elapsed_str}")
+                self._mw.label_elapsed_time.setText(
+                    f"Precompute Elapsed: {elapsed_str}"
+                )
             else:
                 self._mw.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
             self._mw.label_elapsed_time.setVisible(True)
@@ -405,9 +383,6 @@ class TrackingOrchestrator:
                     self._mw.label_eta.setText("ETA: calculating...")
             self._mw.label_eta.setVisible(True)
 
-
-
-
     def on_new_frame(self, rgb):
         """on_new_frame method documentation."""
         z = max(self._mw.slider_zoom.value() / 100.0, 0.1)
@@ -431,9 +406,6 @@ class TrackingOrchestrator:
             from PySide6.QtCore import QTimer
 
             QTimer.singleShot(50, self._mw._fit_image_to_screen)
-
-
-
 
     def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):
         """Scale trajectory coordinates from resized space back to original video space."""
@@ -464,12 +436,7 @@ class TrackingOrchestrator:
         )
         return result_df
 
-
-
-
-    def save_trajectories_to_csv(
-        self: object, trajectories, output_path
-    ):
+    def save_trajectories_to_csv(self: object, trajectories, output_path):
         """Save processed trajectories to CSV.
 
         Args:
@@ -546,9 +513,6 @@ class TrackingOrchestrator:
         except Exception as e:
             logger.error(f"Failed to save processed trajectories to {output_path}: {e}")
             return False
-
-
-
 
     def merge_and_save_trajectories(self):
         """merge_and_save_trajectories method documentation."""
@@ -656,9 +620,6 @@ class TrackingOrchestrator:
         self._mw.merge_worker.error_signal.connect(self.on_merge_error)
         self._mw.merge_worker.start()
 
-
-
-
     def on_merge_progress(self, value, message):
         """Update progress bar during merge."""
         if self._mw._stop_all_requested:
@@ -677,9 +638,6 @@ class TrackingOrchestrator:
         self._mw.progress_bar.setValue(value)
         self._mw.progress_label.setText(message)
 
-
-
-
     def _store_interpolated_pose_result(self, pose_csv_path, pose_rows):
         """Store interpolated pose results from CSV path or in-memory rows."""
         if pose_csv_path:
@@ -697,9 +655,6 @@ class TrackingOrchestrator:
             except Exception:
                 self._mw.current_interpolated_pose_df = None
 
-
-
-
     def _store_interpolated_tag_result(self, tag_csv_path, tag_rows):
         """Store interpolated AprilTag results from CSV path or in-memory rows."""
         if tag_csv_path:
@@ -712,9 +667,6 @@ class TrackingOrchestrator:
                 self._mw.current_interpolated_tag_csv_path = None
             except Exception:
                 self._mw.current_interpolated_tag_df = None
-
-
-
 
     def _store_interpolated_cnn_result(self, cnn_csv_paths, cnn_rows):
         """Store interpolated CNN identity results from CSV paths or in-memory rows."""
@@ -733,9 +685,6 @@ class TrackingOrchestrator:
             except Exception:
                 self._mw.current_interpolated_cnn_dfs = {}
 
-
-
-
     def _store_interpolated_headtail_result(self, headtail_csv_path, headtail_rows):
         """Store interpolated head-tail results from CSV path or in-memory rows."""
         if headtail_csv_path:
@@ -748,9 +697,6 @@ class TrackingOrchestrator:
                 self._mw.current_interpolated_headtail_csv_path = None
             except Exception:
                 self._mw.current_interpolated_headtail_df = None
-
-
-
 
     def _on_interpolated_crops_finished(self, result):
         sender = None
@@ -810,7 +756,9 @@ class TrackingOrchestrator:
         self._mw._refresh_progress_visibility()
 
         if self._mw._pending_pose_export_csv_path:
-            self._relink_final_pose_augmented_csv(self._mw._pending_pose_export_csv_path)
+            self._relink_final_pose_augmented_csv(
+                self._mw._pending_pose_export_csv_path
+            )
 
         if self._mw._pending_finish_after_interp:
             self._mw._pending_finish_after_interp = False
@@ -820,12 +768,11 @@ class TrackingOrchestrator:
                 return
             self._run_pending_video_generation_or_finalize()
 
-
-
-
     def _generate_oriented_track_videos(self, final_csv_path):
         """Export orientation-fixed videos for final trajectories."""
-        from hydra_suite.trackerkit.gui.workers.video_worker import OrientedTrackVideoWorker
+        from hydra_suite.trackerkit.gui.workers.video_worker import (
+            OrientedTrackVideoWorker,
+        )
 
         try:
             if self._mw._stop_all_requested:
@@ -885,7 +832,9 @@ class TrackingOrchestrator:
                 tuple(int(c) for c in self._panels.identity._background_color),
                 bool(self._panels.dataset.chk_suppress_foreign_obb_dataset.isChecked()),
             )
-            self._mw.oriented_video_worker.progress_signal.connect(self._mw.on_progress_update)
+            self._mw.oriented_video_worker.progress_signal.connect(
+                self._mw.on_progress_update
+            )
             self._mw.oriented_video_worker.finished_signal.connect(
                 self._mw._on_oriented_track_videos_finished
             )
@@ -908,9 +857,6 @@ class TrackingOrchestrator:
             self._mw._pending_finish_after_track_videos = True
         return started
 
-
-
-
     def _on_oriented_track_video_worker_thread_finished(self):
         """Release completed oriented track video worker safely."""
         sender = None
@@ -926,9 +872,6 @@ class TrackingOrchestrator:
             return
         self._cleanup_thread_reference("oriented_video_worker")
         self._mw._refresh_progress_visibility()
-
-
-
 
     def _on_oriented_track_videos_finished(self, result):
         """Handle completion of oriented track video export."""
@@ -986,9 +929,6 @@ class TrackingOrchestrator:
             self._mw._pending_finish_after_track_videos = False
             self._run_pending_video_generation_or_finalize()
 
-
-
-
     def _on_oriented_track_videos_error(self, error_message):
         """Handle oriented track video export errors without aborting the session."""
         sender = None
@@ -1008,9 +948,6 @@ class TrackingOrchestrator:
         if self._mw._pending_finish_after_track_videos:
             self._mw._pending_finish_after_track_videos = False
             self._run_pending_video_generation_or_finalize()
-
-
-
 
     def on_merge_error(self, error_message):
         """Handle merge errors."""
@@ -1035,9 +972,6 @@ class TrackingOrchestrator:
             self, "Merge Error", f"Error during trajectory merging:\n{error_message}"
         )
         logger.error(f"Trajectory merge error: {error_message}")
-
-
-
 
     def on_merge_finished(self, resolved_trajectories):
         """Handle completion of trajectory merging."""
@@ -1075,9 +1009,6 @@ class TrackingOrchestrator:
         # Complete session pipeline. Video generation is deferred to the very end
         # after pose export and interpolated individual analysis complete.
         self._finish_tracking_session(final_csv_path=merged_csv_path)
-
-
-
 
     def _generate_video_from_trajectories(
         self, trajectories_df, csv_path=None, finalize_on_complete=True
@@ -1578,12 +1509,7 @@ class TrackingOrchestrator:
 
         _complete_after_video()
 
-
-
-
-    def on_tracking_finished(
-        self: object, finished_normally, fps_list, full_traj
-    ):
+    def on_tracking_finished(self: object, finished_normally, fps_list, full_traj):
         """on_tracking_finished method documentation."""
         sender = None
         if (
@@ -1626,7 +1552,9 @@ class TrackingOrchestrator:
             self._mw.btn_start.setChecked(False)
             self._mw.btn_start.blockSignals(False)
             self._mw.btn_start.setText("Start Full Tracking")
-            self._mw._apply_ui_state("idle" if self._mw.current_video_path else "no_video")
+            self._mw._apply_ui_state(
+                "idle" if self._mw.current_video_path else "no_video"
+            )
             if finished_normally:
                 logger.info("Preview completed.")
             else:
@@ -1641,7 +1569,9 @@ class TrackingOrchestrator:
         worker_props_path = ""
         if self._mw.tracking_worker is not None:
             worker_props_path = str(
-                getattr(self._mw.tracking_worker, "individual_properties_cache_path", "")
+                getattr(
+                    self._mw.tracking_worker, "individual_properties_cache_path", ""
+                )
                 or ""
             ).strip()
         if worker_props_path:
@@ -1868,9 +1798,6 @@ class TrackingOrchestrator:
                 logger.info("Batch mode aborted due to error.")
             self._finish_tracking_session(final_csv_path=None)
 
-
-
-
     def _build_pose_augmented_dataframe(self, final_csv_path):
         """Load final CSV and merge available cached/interpolated pose columns."""
         if not final_csv_path or not os.path.exists(final_csv_path):
@@ -1904,9 +1831,13 @@ class TrackingOrchestrator:
         if not self._mw._is_pose_export_enabled() and not _has_other_analyses:
             return None
 
-        cache_path = str(self._mw.current_individual_properties_cache_path or "").strip()
+        cache_path = str(
+            self._mw.current_individual_properties_cache_path or ""
+        ).strip()
         cache_available = bool(cache_path and os.path.exists(cache_path))
-        interp_pose_path = str(self._mw.current_interpolated_pose_csv_path or "").strip()
+        interp_pose_path = str(
+            self._mw.current_interpolated_pose_csv_path or ""
+        ).strip()
         interp_available = bool(interp_pose_path and os.path.exists(interp_pose_path))
         interp_pose_df_mem = getattr(self._mw, "current_interpolated_pose_df", None)
         interp_mem_available = (
@@ -1992,7 +1923,9 @@ class TrackingOrchestrator:
             _interp_cnn_paths = (
                 getattr(self._mw, "current_interpolated_cnn_csv_paths", {}) or {}
             )
-            _interp_cnn_dfs = getattr(self._mw, "current_interpolated_cnn_dfs", {}) or {}
+            _interp_cnn_dfs = (
+                getattr(self._mw, "current_interpolated_cnn_dfs", {}) or {}
+            )
             try:
                 from hydra_suite.core.identity.properties.export import (
                     merge_interpolated_cnn_df,
@@ -2212,9 +2145,6 @@ class TrackingOrchestrator:
 
         return with_pose_df
 
-
-
-
     def _export_pose_augmented_csv(self, final_csv_path):
         """Write a pose-augmented trajectories CSV next to the final CSV."""
         with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
@@ -2231,9 +2161,6 @@ class TrackingOrchestrator:
 
         logger.info("Pose-augmented trajectories saved to: %s", with_pose_path)
         return with_pose_path
-
-
-
 
     def _relink_final_pose_augmented_csv(self, final_csv_path):
         """Rewrite final CSV IDs after pose-aware relinking and regenerate _with_pose.csv."""
@@ -2309,9 +2236,6 @@ class TrackingOrchestrator:
             return with_pose_path
         return final_csv_path
 
-
-
-
     def _load_video_trajectories(self, final_csv_path):
         """Load best available trajectories for video generation (prefers pose-augmented CSV)."""
         if not final_csv_path:
@@ -2326,9 +2250,6 @@ class TrackingOrchestrator:
         except Exception:
             logger.exception("Failed to load video trajectories from: %s", candidate)
             return None, None
-
-
-
 
     def _run_pending_video_generation_or_finalize(self):
         """Run video generation if queued; otherwise finalize UI/session cleanup."""
@@ -2362,9 +2283,6 @@ class TrackingOrchestrator:
             return
 
         self._finalize_tracking_session_ui()
-
-
-
 
     def _finish_tracking_session(self, final_csv_path=None):
         """Complete tracking session cleanup and UI updates."""
@@ -2409,9 +2327,6 @@ class TrackingOrchestrator:
 
         self._run_pending_video_generation_or_finalize()
 
-
-
-
     def _finalize_tracking_session_ui(self):
         """Finalize session cleanup and return UI to idle state."""
         self._mw._pending_pose_export_csv_path = None
@@ -2447,14 +2362,16 @@ class TrackingOrchestrator:
             self._mw.btn_start.setChecked(False)
             self._mw.btn_start.blockSignals(False)
             self._mw.btn_start.setText("Start Full Tracking")
-            self._mw._apply_ui_state("idle" if self._mw.current_video_path else "no_video")
+            self._mw._apply_ui_state(
+                "idle" if self._mw.current_video_path else "no_video"
+            )
             logger.info("✓ Tracking session complete.")
 
             # Show end-of-session summary. If the dataset worker is still running,
             # defer the summary until it finishes so we can include its result.
-            if getattr(self._mw, "_dataset_was_started", False) and self._mw._is_worker_running(
-                self._mw.dataset_worker
-            ):
+            if getattr(
+                self._mw, "_dataset_was_started", False
+            ) and self._mw._is_worker_running(self._mw.dataset_worker):
                 self._mw._show_summary_on_dataset_done = True
             else:
                 self._show_session_summary()
@@ -2493,9 +2410,6 @@ class TrackingOrchestrator:
         else:
             # Ensure reset if batch mode is disabled mid-run or not used
             self._mw.current_batch_index = -1
-
-
-
 
     def _generate_interpolated_individual_crops(self, csv_path):
         """Post-pass interpolation for occluded segments in individual dataset."""
@@ -2543,12 +2457,18 @@ class TrackingOrchestrator:
             self._mw.progress_bar.setValue(0)
             self._mw.progress_label.setText("Interpolating occluded crops...")
 
-            if self._mw.interp_worker is not None and self._mw.interp_worker.isRunning():
+            if (
+                self._mw.interp_worker is not None
+                and self._mw.interp_worker.isRunning()
+            ):
                 logger.warning(
                     "Interpolated crop generation already in progress; skipping duplicate request."
                 )
                 return True
-            if self._mw.interp_worker is not None and not self._mw.interp_worker.isRunning():
+            if (
+                self._mw.interp_worker is not None
+                and not self._mw.interp_worker.isRunning()
+            ):
                 self._mw.interp_worker.deleteLater()
                 self._mw.interp_worker = None
 
@@ -2593,9 +2513,6 @@ class TrackingOrchestrator:
             logger.warning(f"Interpolated individual crops failed: {e}")
             return False
 
-
-
-
     def start_backward_tracking(self):
         """start_backward_tracking method documentation."""
         if self._mw._stop_all_requested:
@@ -2620,12 +2537,7 @@ class TrackingOrchestrator:
         # Start backward tracking directly on original video with cached detections
         self.start_tracking_on_video(video_fp, backward_mode=True)
 
-
-
-
-    def start_tracking(
-        self: object, preview_mode: bool, backward_mode: bool = False
-    ):
+    def start_tracking(self: object, preview_mode: bool, backward_mode: bool = False):
         """start_tracking method documentation."""
         if not preview_mode:
             # If batch mode group is checked, initialize batch processing
@@ -2663,15 +2575,12 @@ class TrackingOrchestrator:
 
         video_fp = self._panels.setup.file_line.text()
         if not video_fp:
-            QMessageBox.warning(self, "No video", "Please select a video file first.")
+            QMessageBox.warning(self._mw, "No video", "Please select a video file first.")
             return
         if preview_mode:
             self.start_preview_on_video(video_fp)
         else:
             self.start_tracking_on_video(video_fp, backward_mode=False)
-
-
-
 
     def start_preview_on_video(self, video_path):
         """start_preview_on_video method documentation."""
@@ -2746,7 +2655,9 @@ class TrackingOrchestrator:
                 self._mw.progress_bar.setVisible(True)
                 self._mw.progress_label.setVisible(True)
                 self._mw.progress_bar.setValue(0)
-                self._mw.progress_label.setText("Building detection cache for preview...")
+                self._mw.progress_label.setText(
+                    "Building detection cache for preview..."
+                )
                 self._mw._cache_builder_worker.start()
                 return  # Will resume via _on_preview_cache_built
 
@@ -2778,12 +2689,7 @@ class TrackingOrchestrator:
         self._mw._apply_ui_state("preview")
         self._mw.tracking_worker.start()
 
-
-
-
-    def start_tracking_on_video(
-        self: object, video_path, backward_mode = False
-    ):
+    def start_tracking_on_video(self: object, video_path, backward_mode=False):
         """start_tracking_on_video method documentation."""
         if self._mw.tracking_worker and self._mw.tracking_worker.isRunning():
             return
@@ -2912,9 +2818,7 @@ class TrackingOrchestrator:
             def extract_hash_params(keys: object):
                 return {k: normalize_for_hash(params.get(k)) for k in keys}
 
-            def build_cache_id(
-                prefix: str, cache_params, model_stem: str = ""
-            ) -> str:
+            def build_cache_id(prefix: str, cache_params, model_stem: str = "") -> str:
                 digest = hashlib.md5(
                     json.dumps(cache_params, sort_keys=True).encode("utf-8")
                 ).hexdigest()[:12]
@@ -2923,7 +2827,10 @@ class TrackingOrchestrator:
                 return f"{prefix}_{resize_str}_{digest}"
 
             def get_model_fingerprint(model_path: object):
-                from hydra_suite.trackerkit.gui.main_window import resolve_model_path as _resolve_model_path
+                from hydra_suite.trackerkit.gui.main_window import (
+                    resolve_model_path as _resolve_model_path,
+                )
+
                 configured = str(model_path or "")
                 resolved = str(_resolve_model_path(configured))
                 fingerprint = {
@@ -3179,9 +3086,6 @@ class TrackingOrchestrator:
         self._mw._apply_ui_state("tracking")
         self._mw.tracking_worker.start()
 
-
-
-
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
@@ -3191,12 +3095,18 @@ class TrackingOrchestrator:
 
             # Prevent launching overlapping dataset threads; this can lead to
             # QThread destruction while still running if references are replaced.
-            if self._mw.dataset_worker is not None and self._mw.dataset_worker.isRunning():
+            if (
+                self._mw.dataset_worker is not None
+                and self._mw.dataset_worker.isRunning()
+            ):
                 logger.warning(
                     "Dataset generation already in progress; skipping duplicate request."
                 )
                 return
-            if self._mw.dataset_worker is not None and not self._mw.dataset_worker.isRunning():
+            if (
+                self._mw.dataset_worker is not None
+                and not self._mw.dataset_worker.isRunning()
+            ):
                 self._mw.dataset_worker.deleteLater()
                 self._mw.dataset_worker = None
 
@@ -3242,7 +3152,9 @@ class TrackingOrchestrator:
             # Get parameters
             params = self._mw.get_parameters_dict()
             max_frames = self._panels.dataset.spin_dataset_max_frames.value()
-            diversity_window = self._panels.dataset.spin_dataset_diversity_window.value()
+            diversity_window = (
+                self._panels.dataset.spin_dataset_diversity_window.value()
+            )
             include_context = (
                 self._panels.dataset.chk_dataset_include_context.isChecked()
             )
@@ -3289,9 +3201,6 @@ class TrackingOrchestrator:
                 f"Failed to generate dataset:\n{str(e)}",
             )
 
-
-
-
     def on_dataset_progress(self, value, message):
         """Update progress bar during dataset generation."""
         sender = None
@@ -3310,12 +3219,7 @@ class TrackingOrchestrator:
         self._mw.progress_bar.setValue(value)
         self._mw.progress_label.setText(message)
 
-
-
-
-    def on_dataset_finished(
-        self: object, dataset_dir, num_frames
-    ):
+    def on_dataset_finished(self: object, dataset_dir, num_frames):
         """Handle dataset generation completion."""
         sender = None
         if (
@@ -3350,9 +3254,6 @@ class TrackingOrchestrator:
             self._mw._show_summary_on_dataset_done = False
             self._show_session_summary()
 
-
-
-
     def on_dataset_error(self, error_message):
         """Handle dataset generation errors."""
         sender = None
@@ -3383,9 +3284,6 @@ class TrackingOrchestrator:
             self._mw._show_summary_on_dataset_done = False
             self._show_session_summary()
 
-
-
-
     def _show_session_summary(self):
         """Show a single end-of-session summary dialog listing completed processes."""
         lines = []
@@ -3412,7 +3310,9 @@ class TrackingOrchestrator:
         video_path = self._panels.setup.file_line.text()
         if video_path:
             lines.append(f"Video: {os.path.basename(video_path)}")
-        csv_path = self._mw._session_final_csv_path or self._panels.setup.csv_line.text()
+        csv_path = (
+            self._mw._session_final_csv_path or self._panels.setup.csv_line.text()
+        )
         if csv_path:
             lines.append(f"Output CSV: {os.path.basename(csv_path)}")
 
@@ -3459,7 +3359,7 @@ class TrackingOrchestrator:
         self._mw._dataset_was_started = False
         self._mw._show_summary_on_dataset_done = False
 
-        QMessageBox.information(self, "Tracking Complete", "\n".join(lines))
+        QMessageBox.information(self._mw, "Tracking Complete", "\n".join(lines))
 
         # Offer to open RefineKit for interactive proofreading
         self._panels.postprocess._btn_open_refinekit.setEnabled(
@@ -3477,9 +3377,6 @@ class TrackingOrchestrator:
             if reply == QMessageBox.Yes:
                 self._mw._open_refinekit()
 
-
-
-
     def _on_dataset_worker_thread_finished(self):
         """Release completed dataset worker safely."""
         sender = None
@@ -3495,10 +3392,6 @@ class TrackingOrchestrator:
             return
         self._cleanup_thread_reference("dataset_worker")
         self._mw._refresh_progress_visibility()
-
-
-
-
 
     def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
         """Validate YOLO mode-specific model requirements before starting runs."""
@@ -3523,8 +3416,9 @@ class TrackingOrchestrator:
 
     def _get_detection_size(self, detection_cache, frame_id, detection_id, params):
         """Get physical size (w, h) of a detection from cache."""
-        import numpy as _np
         import math as _math
+
+        import numpy as _np
         import pandas as _pd
 
         if detection_cache is None or detection_id is None or _pd.isna(detection_id):

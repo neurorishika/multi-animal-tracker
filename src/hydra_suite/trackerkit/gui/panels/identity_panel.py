@@ -173,9 +173,7 @@ class IdentityPanel(QWidget):
         vl_cnn = QVBoxLayout(self.g_cnn_classifiers)
         vl_cnn.setSpacing(4)
         self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
-        self.btn_add_cnn_classifier.clicked.connect(
-            self._add_cnn_classifier_row
-        )
+        self.btn_add_cnn_classifier.clicked.connect(self._add_cnn_classifier_row)
         vl_cnn.addWidget(self.btn_add_cnn_classifier)
         self.cnn_scroll_area = QScrollArea()
         self.cnn_scroll_area.setWidgetResizable(True)
@@ -522,9 +520,7 @@ class IdentityPanel(QWidget):
         h_sleap_env.addWidget(self.combo_pose_sleap_env, 1)
         self.btn_refresh_pose_sleap_envs = QPushButton("Refresh")
         self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
-        self.btn_refresh_pose_sleap_envs.clicked.connect(
-            self._refresh_pose_sleap_envs
-        )
+        self.btn_refresh_pose_sleap_envs.clicked.connect(self._refresh_pose_sleap_envs)
         h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
         self.pose_sleap_env_row_widget = QWidget()
         self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
@@ -614,6 +610,7 @@ class IdentityPanel(QWidget):
             _at.apriltag("__probe__")
         except Exception as exc:
             import re
+
             families = re.findall(r"^\s+(\S+)$", str(exc), re.MULTILINE)
             if families:
                 return sorted(families)
@@ -625,6 +622,7 @@ class IdentityPanel(QWidget):
             get_models_directory,
             resolve_model_path,
         )
+
         start_dir = get_models_directory()
         if self.line_color_tag_model.text():
             current_path = resolve_model_path(self.line_color_tag_model.text())
@@ -732,7 +730,10 @@ class IdentityPanel(QWidget):
 
         def _populate_model_combo(self):
             """Populate combo from model_registry.json (usage_role == 'cnn_identity')."""
-            from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_yolo_model_registry_path,
+            )
+
             registry_path = get_yolo_model_registry_path()
             try:
                 with open(registry_path) as f:
@@ -768,7 +769,10 @@ class IdentityPanel(QWidget):
             self._update_verification_labels(rel_path)
 
         def _update_verification_labels(self, rel_path: str):
-            from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+            from hydra_suite.trackerkit.gui.main_window import (
+                get_yolo_model_registry_path,
+            )
+
             try:
                 with open(get_yolo_model_registry_path()) as f:
                     registry = json.load(f)
@@ -788,9 +792,10 @@ class IdentityPanel(QWidget):
         def to_config(self):
             """Return config dict or None if no model selected."""
             from hydra_suite.trackerkit.gui.main_window import (
-                get_yolo_model_registry_path,
                 get_models_root_directory,
+                get_yolo_model_registry_path,
             )
+
             rel_path = self.combo_model.currentData()
             if not rel_path or rel_path == "__add_new__":
                 return None
@@ -816,9 +821,10 @@ class IdentityPanel(QWidget):
         def load_from_config(self, cfg: dict):
             """Populate from a config dict entry."""
             from hydra_suite.trackerkit.gui.main_window import (
-                get_yolo_model_registry_path,
                 get_models_root_directory,
+                get_yolo_model_registry_path,
             )
+
             rel_path = cfg.get("rel_path", "")
             if not rel_path:
                 abs_path = cfg.get("model_path", "")
@@ -872,6 +878,7 @@ class IdentityPanel(QWidget):
     def _refresh_cnn_identity_model_combo(self) -> None:
         """Populate the CNN identity model combo from model_registry.json."""
         from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+
         registry_path = get_yolo_model_registry_path()
         try:
             with open(registry_path) as f:
@@ -914,6 +921,7 @@ class IdentityPanel(QWidget):
     def _update_cnn_identity_verification_panel(self, rel_path: str) -> None:
         """Populate the read-only verification labels from the registry entry."""
         from hydra_suite.trackerkit.gui.main_window import get_yolo_model_registry_path
+
         registry_path = get_yolo_model_registry_path()
         try:
             with open(registry_path) as f:
@@ -938,6 +946,7 @@ class IdentityPanel(QWidget):
             get_models_root_directory,
             get_yolo_model_registry_path,
         )
+
         prev_data = self.combo_cnn_identity_model.currentData()
         src_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -953,6 +962,7 @@ class IdentityPanel(QWidget):
         try:
             if src_path.endswith(".pth"):
                 import torch
+
                 ckpt = torch.load(src_path, map_location="cpu", weights_only=False)
                 meta["arch"] = ckpt.get("arch", "tinyclassifier")
                 meta["class_names"] = ckpt.get("class_names", [])
@@ -966,6 +976,7 @@ class IdentityPanel(QWidget):
                 meta["num_classes"] = ckpt.get("num_classes", len(meta["class_names"]))
             else:
                 from ultralytics import YOLO as _YOLO
+
                 yolo = _YOLO(src_path)
                 names = yolo.names
                 meta["arch"] = "yolo"
@@ -984,6 +995,7 @@ class IdentityPanel(QWidget):
             self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
         from hydra_suite.trackerkit.gui.dialogs import CNNIdentityImportDialog
+
         dlg = CNNIdentityImportDialog(meta, parent=self)
         if dlg.exec() != QDialog.Accepted:
             idx = self.combo_cnn_identity_model.findData(prev_data)
@@ -1089,6 +1101,7 @@ class IdentityPanel(QWidget):
         ).strip()
         try:
             import subprocess
+
             res = subprocess.run(
                 ["conda", "env", "list"],
                 capture_output=True,
@@ -1120,6 +1133,7 @@ class IdentityPanel(QWidget):
         from hydra_suite.trackerkit.gui.main_window import (
             get_yolo_model_repository_directory,
         )
+
         ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
         subdir = ht_type.currentText() if ht_type else "YOLO"
         repo_dir = os.path.join(

@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -127,9 +126,7 @@ class _TestWorker(BaseWorker):
                 logger.warning("Could not read image: %s", img_path)
                 continue
 
-            result = detector.detect_objects(
-                frame, frame_count=idx, return_raw=True
-            )
+            result = detector.detect_objects(frame, frame_count=idx, return_raw=True)
             # result when return_raw=True:
             #   (meas, sizes, shapes, yolo_results, confidences,
             #    obb_corners, heading_hints, directed_mask, canonical_affines)

@@ -1,7 +1,11 @@
 from pathlib import Path
 
+from hydra_suite.classkit.config.presets import (
+    age_preset,
+    color_tag_preset,
+    head_tail_preset,
+)
 from hydra_suite.classkit.config.schemas import Factor, LabelingScheme, ProjectConfig
-from hydra_suite.classkit.config.presets import age_preset, color_tag_preset, head_tail_preset
 
 
 def test_factor_has_name_and_labels():

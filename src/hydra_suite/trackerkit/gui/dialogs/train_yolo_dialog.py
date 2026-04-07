@@ -35,8 +35,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.widgets.dialogs import BaseDialog
-
 from hydra_suite.trackerkit.gui.widgets.loss_plot_widget import LossPlotWidget
 from hydra_suite.training import (
     AugmentationProfile,
@@ -51,6 +49,7 @@ from hydra_suite.training import (
 from hydra_suite.training.validation import format_validation_report
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.gpu_utils import get_device_info
+from hydra_suite.widgets.dialogs import BaseDialog
 from hydra_suite.widgets.workers import BaseWorker
 
 logger = logging.getLogger(__name__)

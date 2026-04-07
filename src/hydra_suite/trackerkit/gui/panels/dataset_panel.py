@@ -89,9 +89,7 @@ class DatasetPanel(QWidget):
             "Enable Dataset Generation for Active Learning"
         )
         self.chk_enable_dataset_gen.setChecked(False)
-        self.chk_enable_dataset_gen.toggled.connect(
-            self._on_dataset_generation_toggled
-        )
+        self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
         vl_active.addWidget(self.chk_enable_dataset_gen)
 
         # Content container for all configuration options
@@ -263,9 +261,7 @@ class DatasetPanel(QWidget):
         self.btn_refresh_envs = QPushButton("🔄")
         self.btn_refresh_envs.setMaximumWidth(40)
         self.btn_refresh_envs.setToolTip("Refresh conda environments list")
-        self.btn_refresh_envs.clicked.connect(
-            self._refresh_xanylabeling_envs
-        )
+        self.btn_refresh_envs.clicked.connect(self._refresh_xanylabeling_envs)
         h_env.addWidget(self.btn_refresh_envs)
         vl_xany.addLayout(h_env)
 
@@ -277,9 +273,7 @@ class DatasetPanel(QWidget):
             "Browse for a dataset directory and open it in X-AnyLabeling.\n"
             "Directory must contain: classes.txt, images/, and labels/"
         )
-        self.btn_open_xanylabeling.clicked.connect(
-            self._open_in_xanylabeling
-        )
+        self.btn_open_xanylabeling.clicked.connect(self._open_in_xanylabeling)
         self.btn_open_xanylabeling.setEnabled(False)
         vl_xany.addWidget(self.btn_open_xanylabeling)
 
@@ -452,7 +446,9 @@ class DatasetPanel(QWidget):
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
         self.combo_xanylabeling_env.clear()
-        preferred = str(self._main_window.advanced_config.get("xanylabeling_env", "")).strip()
+        preferred = str(
+            self._main_window.advanced_config.get("xanylabeling_env", "")
+        ).strip()
 
         try:
             import subprocess
@@ -482,9 +478,7 @@ class DatasetPanel(QWidget):
                     self.btn_open_xanylabeling.setEnabled(True)
                     logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
                 else:
-                    self.combo_xanylabeling_env.addItem(
-                        "No X-AnyLabeling envs found"
-                    )
+                    self.combo_xanylabeling_env.addItem("No X-AnyLabeling envs found")
                     self.btn_open_xanylabeling.setEnabled(False)
                     logger.warning(
                         "No conda environments starting with 'x-anylabeling-' found. "

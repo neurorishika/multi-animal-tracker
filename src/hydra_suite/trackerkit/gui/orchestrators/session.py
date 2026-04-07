@@ -12,8 +12,6 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QMessageBox
 
-from hydra_suite.utils.geometry import fit_circle_to_points
-
 from hydra_suite.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,
     allowed_runtimes_for_pipelines,
@@ -21,6 +19,7 @@ from hydra_suite.runtime.compute_runtime import (
     derive_pose_runtime_settings,
     runtime_label,
 )
+from hydra_suite.utils.geometry import fit_circle_to_points
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.config.schemas import TrackerConfig
@@ -32,7 +31,9 @@ logger = logging.getLogger(__name__)
 class SessionOrchestrator:
     """Manages session logging, progress display, and UI state transitions."""
 
-    def __init__(self, main_window: "MainWindow", config: "TrackerConfig", panels) -> None:
+    def __init__(
+        self, main_window: "MainWindow", config: "TrackerConfig", panels
+    ) -> None:
         self._mw = main_window
         self._config = config
         self._panels = panels
@@ -455,7 +456,9 @@ class SessionOrchestrator:
         from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
 
         # Find all QSpinBox and QDoubleSpinBox widgets
-        spinboxes = self._mw.findChildren(QSpinBox) + self._mw.findChildren(QDoubleSpinBox)
+        spinboxes = self._mw.findChildren(QSpinBox) + self._mw.findChildren(
+            QDoubleSpinBox
+        )
         for spinbox in spinboxes:
             spinbox.wheelEvent = lambda event: None
 
@@ -632,22 +635,30 @@ class SessionOrchestrator:
         self._mw._postprocess_panel.lbl_video_pose_point_radius.setVisible(show_pose)
         self._mw._postprocess_panel.spin_video_pose_point_radius.setVisible(show_pose)
         self._mw._postprocess_panel.lbl_video_pose_point_thickness.setVisible(show_pose)
-        self._mw._postprocess_panel.spin_video_pose_point_thickness.setVisible(show_pose)
+        self._mw._postprocess_panel.spin_video_pose_point_thickness.setVisible(
+            show_pose
+        )
         self._mw._postprocess_panel.lbl_video_pose_line_thickness.setVisible(show_pose)
         self._mw._postprocess_panel.spin_video_pose_line_thickness.setVisible(show_pose)
 
         show_fixed_color = bool(show_pose and fixed_color_mode)
-        self._mw._postprocess_panel.lbl_video_pose_color_label.setVisible(show_fixed_color)
+        self._mw._postprocess_panel.lbl_video_pose_color_label.setVisible(
+            show_fixed_color
+        )
         self._mw._postprocess_panel.btn_video_pose_color.setVisible(show_fixed_color)
         self._mw._postprocess_panel.lbl_video_pose_color.setVisible(show_fixed_color)
 
         self._mw._postprocess_panel.combo_video_pose_color_mode.setEnabled(show_pose)
         self._mw._postprocess_panel.spin_video_pose_point_radius.setEnabled(show_pose)
-        self._mw._postprocess_panel.spin_video_pose_point_thickness.setEnabled(show_pose)
+        self._mw._postprocess_panel.spin_video_pose_point_thickness.setEnabled(
+            show_pose
+        )
         self._mw._postprocess_panel.spin_video_pose_line_thickness.setEnabled(show_pose)
         self._mw._postprocess_panel.btn_video_pose_color.setEnabled(show_fixed_color)
 
-        self._mw._postprocess_panel.lbl_video_pose_disabled_hint.setVisible(video_visible)
+        self._mw._postprocess_panel.lbl_video_pose_disabled_hint.setVisible(
+            video_visible
+        )
         if enabled:
             self._mw._postprocess_panel.lbl_video_pose_disabled_hint.setText(
                 "Pose overlay will use keypoints from pose-augmented tracking output."
@@ -693,7 +704,9 @@ class SessionOrchestrator:
         if not hasattr(self._mw, "_detection_panel"):
             return
         runtime = (
-            self._mw._selected_compute_runtime() if hasattr(self._mw, "_setup_panel") else ""
+            self._mw._selected_compute_runtime()
+            if hasattr(self._mw, "_setup_panel")
+            else ""
         )
         sequential = (
             hasattr(self._mw, "_detection_panel")
@@ -795,7 +808,9 @@ class SessionOrchestrator:
             pipelines.append("yolo_obb_detection")
         if self._is_pose_inference_enabled():
             backend = (
-                self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
+                self._mw._identity_panel.combo_pose_model_type.currentText()
+                .strip()
+                .lower()
             )
             if backend == "sleap":
                 pipelines.append("sleap_pose")
@@ -954,7 +969,10 @@ class SessionOrchestrator:
         if hasattr(self._mw, "tabs") and hasattr(self._mw, "_identity_panel"):
             tab_index = self._mw.tabs.indexOf(self._mw._identity_panel)
             if tab_index >= 0:
-                if not is_yolo and self._mw.tabs.currentWidget() is self._mw._identity_panel:
+                if (
+                    not is_yolo
+                    and self._mw.tabs.currentWidget() is self._mw._identity_panel
+                ):
                     fallback_index = self._mw.tabs.indexOf(
                         getattr(self._mw, "_detection_panel", self._mw._setup_panel)
                     )
@@ -971,13 +989,19 @@ class SessionOrchestrator:
         pipeline_enabled = self._is_individual_pipeline_enabled()
 
         if hasattr(self._mw, "_identity_panel"):
-            self._mw._identity_panel.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
+            self._mw._identity_panel.lbl_individual_yolo_only_notice.setVisible(
+                not is_yolo
+            )
             self._mw._identity_panel.g_identity.setVisible(pipeline_enabled)
             self._mw._identity_panel.g_identity.setEnabled(pipeline_enabled)
             self._mw._identity_panel.g_pose_runtime.setVisible(pipeline_enabled)
             self._mw._identity_panel.g_pose_runtime.setEnabled(pipeline_enabled)
-            self._mw._identity_panel.g_individual_pipeline_common.setVisible(pipeline_enabled)
-            self._mw._identity_panel.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+            self._mw._identity_panel.g_individual_pipeline_common.setVisible(
+                pipeline_enabled
+            )
+            self._mw._identity_panel.g_individual_pipeline_common.setEnabled(
+                pipeline_enabled
+            )
             self._mw._identity_panel._sync_identity_method_ui()
             self._mw._identity_panel._sync_pose_analysis_ui()
         if hasattr(self._mw, "_dataset_panel"):
@@ -986,21 +1010,32 @@ class SessionOrchestrator:
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
-            self._mw._dataset_panel.chk_enable_individual_dataset.setEnabled(pipeline_enabled)
+            self._mw._dataset_panel.chk_enable_individual_dataset.setEnabled(
+                pipeline_enabled
+            )
 
         save_enabled = self._is_individual_image_save_enabled()
         if hasattr(self._mw, "_dataset_panel"):
             self._mw._dataset_panel.ind_output_group.setVisible(save_enabled)
             self._mw._dataset_panel.ind_output_group.setEnabled(save_enabled)
             self._mw._dataset_panel.lbl_individual_info.setVisible(save_enabled)
-            self._mw._dataset_panel.chk_generate_individual_track_videos.setVisible(pipeline_enabled)
+            self._mw._dataset_panel.chk_generate_individual_track_videos.setVisible(
+                pipeline_enabled
+            )
             has_headtail = bool(
-                str(self._mw._identity_panel._get_selected_yolo_headtail_model_path() or "").strip()
+                str(
+                    self._mw._identity_panel._get_selected_yolo_headtail_model_path()
+                    or ""
+                ).strip()
             )
             oriented_enabled = pipeline_enabled and has_headtail
-            self._mw._dataset_panel.chk_generate_individual_track_videos.setEnabled(oriented_enabled)
+            self._mw._dataset_panel.chk_generate_individual_track_videos.setEnabled(
+                oriented_enabled
+            )
             if not oriented_enabled:
-                self._mw._dataset_panel.chk_generate_individual_track_videos.setChecked(False)
+                self._mw._dataset_panel.chk_generate_individual_track_videos.setChecked(
+                    False
+                )
                 self._mw._dataset_panel.chk_generate_individual_track_videos.setToolTip(
                     "Requires a head-tail model to be configured."
                 )
@@ -1020,7 +1055,9 @@ class SessionOrchestrator:
 
         b, g, r = self._mw._identity_panel._background_color
         initial_color = QColor(r, g, b)
-        color = QColorDialog.getColor(initial_color, self._mw, "Choose Background Color")
+        color = QColorDialog.getColor(
+            initial_color, self._mw, "Choose Background Color"
+        )
         if color.isValid():
             self._mw._identity_panel._background_color = (
                 color.blue(),
@@ -1058,15 +1095,21 @@ class SessionOrchestrator:
 
         if frame is None:
             QMessageBox.warning(
-                self._mw, "No Frame", "Please load a video first to compute median color."
+                self._mw,
+                "No Frame",
+                "Please load a video first to compute median color.",
             )
             return
 
         try:
-            from hydra_suite.utils.image_processing import compute_median_color_from_frame
+            from hydra_suite.utils.image_processing import (
+                compute_median_color_from_frame,
+            )
 
             median_color = compute_median_color_from_frame(frame)
-            self._mw._identity_panel._background_color = tuple(int(c) for c in median_color)
+            self._mw._identity_panel._background_color = tuple(
+                int(c) for c in median_color
+            )
             self._mw._update_background_color_button()
             QMessageBox.information(
                 self._mw,
@@ -1075,7 +1118,9 @@ class SessionOrchestrator:
             )
         except Exception as e:
             logger.error(f"Failed to compute median color: {e}")
-            QMessageBox.warning(self._mw, "Error", f"Failed to compute median color:\n{e}")
+            QMessageBox.warning(
+                self._mw, "Error", f"Failed to compute median color:\n{e}"
+            )
 
     # =========================================================================
     # VIDEO PLAYER
@@ -1083,7 +1128,6 @@ class SessionOrchestrator:
 
     def _init_video_player(self, video_path):
         """Initialize video player with the loaded video."""
-        from PySide6.QtCore import QTimer
 
         if self._mw.video_cap is not None:
             self._mw.video_cap.release()
@@ -1097,7 +1141,9 @@ class SessionOrchestrator:
             logger.error(f"Failed to open video: {video_path}")
             return
 
-        self._mw.video_total_frames = int(self._mw.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._mw.video_total_frames = int(
+            self._mw.video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        )
         fps = self._mw.video_cap.get(cv2.CAP_PROP_FPS)
         width = int(self._mw.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self._mw.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -1134,7 +1180,9 @@ class SessionOrchestrator:
         if self._mw.video_cap is None:
             return
         if self._mw.last_read_frame_idx != self._mw.video_current_frame_idx - 1:
-            self._mw.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self._mw.video_current_frame_idx)
+            self._mw.video_cap.set(
+                cv2.CAP_PROP_POS_FRAMES, self._mw.video_current_frame_idx
+            )
         ret, frame = self._mw.video_cap.read()
         if not ret:
             return
@@ -1152,7 +1200,10 @@ class SessionOrchestrator:
 
     def _on_timeline_changed(self, value):
         """Handle timeline slider change."""
-        if self._mw.is_playing and not self._panels.setup.slider_timeline.signalsBlocked():
+        if (
+            self._mw.is_playing
+            and not self._panels.setup.slider_timeline.signalsBlocked()
+        ):
             self._mw._stop_playback()
         self._mw.video_current_frame_idx = value
         self._mw._display_current_frame()
@@ -1171,7 +1222,9 @@ class SessionOrchestrator:
             self._mw._stop_playback()
         if self._mw.video_current_frame_idx > 0:
             self._mw.video_current_frame_idx -= 1
-            self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+            self._panels.setup.slider_timeline.setValue(
+                self._mw.video_current_frame_idx
+            )
             self._mw._display_current_frame()
 
     def _goto_next_frame(self):
@@ -1180,7 +1233,9 @@ class SessionOrchestrator:
             self._mw._stop_playback()
         if self._mw.video_current_frame_idx < self._mw.video_total_frames - 1:
             self._mw.video_current_frame_idx += 1
-            self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
+            self._panels.setup.slider_timeline.setValue(
+                self._mw.video_current_frame_idx
+            )
             self._mw._display_current_frame()
 
     def _goto_last_frame(self):
@@ -1194,11 +1249,14 @@ class SessionOrchestrator:
     def _goto_random_frame(self):
         """Jump to a random frame."""
         import numpy as np
+
         if self._mw.is_playing:
             self._mw._stop_playback()
         if self._mw.video_total_frames <= 0:
             return
-        self._mw.video_current_frame_idx = np.random.randint(0, self._mw.video_total_frames)
+        self._mw.video_current_frame_idx = np.random.randint(
+            0, self._mw.video_total_frames
+        )
         self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
         self._mw._display_current_frame()
 
@@ -1246,6 +1304,7 @@ class SessionOrchestrator:
             self._mw.video_current_frame_idx += 1
             self._mw._display_current_frame()
             from PySide6.QtWidgets import QApplication
+
             QApplication.processEvents()
             if self._mw.is_playing and self._mw.playback_timer:
                 speed_text = self._panels.setup.combo_playback_speed.currentText()
@@ -1286,7 +1345,9 @@ class SessionOrchestrator:
         """Update the FPS info label with time per frame."""
         fps = self._panels.setup.spin_fps.value()
         time_per_frame = 1000.0 / fps
-        self._panels.setup.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
+        self._panels.setup.label_fps_info.setText(
+            f"= {time_per_frame:.2f} ms per frame"
+        )
 
     # =========================================================================
     # ROI SELECTION AND VIDEO INTERACTION
@@ -1308,7 +1369,9 @@ class SessionOrchestrator:
         self._mw._set_interactive_widgets_enabled(True, remember_state=True)
         self._mw._set_video_interaction_enabled(True)
         self._mw.btn_test_detection.setText("Test Detection on Preview")
-        self._mw.btn_test_detection.setEnabled(self._mw.preview_frame_original is not None)
+        self._mw.btn_test_detection.setEnabled(
+            self._mw.preview_frame_original is not None
+        )
         self._mw.progress_bar.setRange(0, 100)
         self._mw._refresh_progress_visibility()
 
@@ -1451,7 +1514,8 @@ class SessionOrchestrator:
     def _fit_image_to_screen(self):
         """Fit the image to the available screen space."""
         tracking_active = (
-            self._mw.tracking_worker is not None and self._mw.tracking_worker.isRunning()
+            self._mw.tracking_worker is not None
+            and self._mw.tracking_worker.isRunning()
         )
         if tracking_active and self._mw._tracking_frame_size is not None:
             effective_width, effective_height = self._mw._tracking_frame_size
@@ -1498,7 +1562,9 @@ class SessionOrchestrator:
         pos = evt.position().toPoint()
         x, y = pos.x(), pos.y()
         if self._mw.roi_current_mode == "polygon" and len(self._mw.roi_points) >= 3:
-            if hasattr(self._mw, "_last_click_pos") and hasattr(self._mw, "_last_click_time"):
+            if hasattr(self._mw, "_last_click_pos") and hasattr(
+                self._mw, "_last_click_time"
+            ):
                 import time
 
                 current_time = time.time()
@@ -1551,7 +1617,9 @@ class SessionOrchestrator:
 
         can_finish = False
         preview_color = (
-            Qt.green if self._mw.roi_current_zone_type == "include" else QColor(255, 165, 0)
+            Qt.green
+            if self._mw.roi_current_zone_type == "include"
+            else QColor(255, 165, 0)
         )
 
         if self._mw.roi_current_mode == "circle" and len(self._mw.roi_points) >= 3:
@@ -1566,7 +1634,9 @@ class SessionOrchestrator:
                 painter.setPen(QPen(Qt.blue, 8))
                 painter.drawPoint(int(cx), int(cy))
                 zone_type = (
-                    "Include" if self._mw.roi_current_zone_type == "include" else "Exclude"
+                    "Include"
+                    if self._mw.roi_current_zone_type == "include"
+                    else "Exclude"
                 )
                 self._mw.roi_status_label.setText(
                     f"Preview {zone_type} Circle: R={radius:.1f}px"
@@ -1600,7 +1670,9 @@ class SessionOrchestrator:
     def start_roi_selection(self):
         """Start an ROI shape selection session."""
         if not self._panels.setup.file_line.text():
-            QMessageBox.warning(self._mw, "No Video", "Please select a video file first.")
+            QMessageBox.warning(
+                self._mw, "No Video", "Please select a video file first."
+            )
             return
         if self._mw.roi_base_frame is None:
             cap = cv2.VideoCapture(self._panels.setup.file_line.text())
@@ -1639,7 +1711,9 @@ class SessionOrchestrator:
                 f"{zone_type} Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
             )
         else:
-            self._mw.roi_status_label.setText(f"Click {zone_type.lower()} polygon vertices")
+            self._mw.roi_status_label.setText(
+                f"Click {zone_type.lower()} polygon vertices"
+            )
             self._mw.roi_instructions.setText(
                 f"{zone_type} Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
             )
@@ -1653,7 +1727,9 @@ class SessionOrchestrator:
 
         if self._mw.roi_current_mode == "circle":
             if not self._mw.roi_fitted_circle:
-                QMessageBox.warning(self._mw, "No ROI", "No valid circle fit available.")
+                QMessageBox.warning(
+                    self._mw, "No ROI", "No valid circle fit available."
+                )
                 return
             cx, cy, radius = self._mw.roi_fitted_circle
             self._mw.roi_shapes.append(
@@ -1664,7 +1740,9 @@ class SessionOrchestrator:
                 }
             )
             zone_type = (
-                "inclusion" if self._mw.roi_current_zone_type == "include" else "exclusion"
+                "inclusion"
+                if self._mw.roi_current_zone_type == "include"
+                else "exclusion"
             )
             logger.info(
                 f"Added circle {zone_type} zone: center=({cx:.1f}, {cy:.1f}), radius={radius:.1f}"
@@ -1683,7 +1761,9 @@ class SessionOrchestrator:
                 }
             )
             zone_type = (
-                "inclusion" if self._mw.roi_current_zone_type == "include" else "exclusion"
+                "inclusion"
+                if self._mw.roi_current_zone_type == "include"
+                else "exclusion"
             )
             logger.info(
                 f"Added polygon {zone_type} zone with {len(self._mw.roi_points)} vertices"
@@ -1745,7 +1825,9 @@ class SessionOrchestrator:
                     pts = np.array(shape["params"], dtype=np.int32)
                     cv2.fillPoly(combined_mask, [pts], 0)
         self._mw.roi_mask = combined_mask
-        logger.info(f"Generated combined ROI mask from {len(self._mw.roi_shapes)} shape(s)")
+        logger.info(
+            f"Generated combined ROI mask from {len(self._mw.roi_shapes)} shape(s)"
+        )
         self._mw._invalidate_roi_cache()
 
     def undo_last_roi_shape(self):
@@ -1772,7 +1854,9 @@ class SessionOrchestrator:
         else:
             self._mw.roi_status_label.setText("No ROI")
             if self._mw.roi_base_frame:
-                self._mw.video_label.setPixmap(QPixmap.fromImage(self._mw.roi_base_frame))
+                self._mw.video_label.setPixmap(
+                    QPixmap.fromImage(self._mw.roi_base_frame)
+                )
         self._mw.update_roi_preview()
 
     def clear_roi(self):

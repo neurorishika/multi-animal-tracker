@@ -188,9 +188,7 @@ class SetupPanel(QWidget):
         acquisition_row.addWidget(self.spin_fps)
 
         self.btn_detect_fps = QPushButton("Detect")
-        self.btn_detect_fps.clicked.connect(
-            self._detect_fps_from_current_video
-        )
+        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
         self.btn_detect_fps.setEnabled(False)
         self.btn_detect_fps.setObjectName("SecondaryBtn")
         self.btn_detect_fps.setFixedHeight(30)

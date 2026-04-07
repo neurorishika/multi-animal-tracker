@@ -5559,10 +5559,10 @@ class MainWindow(QMainWindow):
 
     def _run_apriltag_autolabel(self) -> None:
         """Open the AprilTag auto-label dialog and start the background worker."""
+        from ..core.store.db import ClassKitDB
         from ..gui.dialogs import AprilTagAutoLabelDialog
         from ..jobs.task_workers import AprilTagAutoLabelWorker
         from ..presets import apriltag_preset
-        from ..core.store.db import ClassKitDB
 
         if self.project_path is None:
             return

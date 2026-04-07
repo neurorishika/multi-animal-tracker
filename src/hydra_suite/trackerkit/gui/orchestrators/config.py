@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import shutil
 from datetime import datetime
@@ -26,6 +25,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from hydra_suite.runtime.compute_runtime import (
+    derive_detection_runtime_settings,
+    derive_pose_runtime_settings,
+    infer_compute_runtime_from_legacy,
+)
 from hydra_suite.trackerkit.gui.model_utils import (
     _sanitize_model_token,
     get_pose_models_directory,
@@ -36,15 +40,8 @@ from hydra_suite.trackerkit.gui.model_utils import (
     register_yolo_model,
 )
 
-from hydra_suite.runtime.compute_runtime import (
-    derive_detection_runtime_settings,
-    derive_pose_runtime_settings,
-    infer_compute_runtime_from_legacy,
-)
-
 if TYPE_CHECKING:
-    from hydra_suite.trackerkit.config.schemas import TrackerConfig
-    from hydra_suite.trackerkit.gui.main_window import MainWindow
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +72,7 @@ class ConfigOrchestrator:
     def load_config(self: object) -> object:
         """Manually load config from file dialog."""
         config_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Configuration", "", "JSON Files (*.json)"
+            self._mw, "Load Configuration", "", "JSON Files (*.json)"
         )
         if config_path:
             self._load_config_from_file(config_path)
@@ -87,7 +84,6 @@ class ConfigOrchestrator:
                 "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
             logger.info(f"Configuration loaded from {config_path}")
-
 
     def _load_config_from_file(self, config_path, preset_mode=False):
         """Internal method to load config from a specific file path.
@@ -327,11 +323,14 @@ class ConfigOrchestrator:
             yolo_headtail_model_type = str(
                 get_cfg(
                     "yolo_headtail_model_type",
-                    default=self._mw._infer_yolo_headtail_model_type(yolo_headtail_model),
+                    default=self._mw._infer_yolo_headtail_model_type(
+                        yolo_headtail_model
+                    ),
                 )
             ).strip()
 
             from hydra_suite.trackerkit.gui.main_window import resolve_model_path
+
             resolved_yolo_direct = resolve_model_path(yolo_direct_model)
             resolved_yolo_detect = resolve_model_path(yolo_detect_model)
             resolved_yolo_crop_obb = resolve_model_path(yolo_crop_obb_model)
@@ -365,7 +364,9 @@ class ConfigOrchestrator:
                         model_resolved,
                     )
 
-            self._panels.detection._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
+            self._panels.detection._refresh_yolo_model_combo(
+                preferred_model_path=yolo_direct_model
+            )
             self._mw._set_yolo_model_selection(resolved_yolo_direct)
             self._panels.detection._refresh_yolo_detect_model_combo(
                 preferred_model_path=yolo_detect_model
@@ -470,16 +471,16 @@ class ConfigOrchestrator:
             )
             self._panels.detection.spin_tensorrt_batch.setEnabled(
                 bool(
-                    derive_detection_runtime_settings(self._mw._selected_compute_runtime())[
-                        "enable_tensorrt"
-                    ]
+                    derive_detection_runtime_settings(
+                        self._mw._selected_compute_runtime()
+                    )["enable_tensorrt"]
                 )
             )
             self._panels.detection.lbl_tensorrt_batch.setEnabled(
                 bool(
-                    derive_detection_runtime_settings(self._mw._selected_compute_runtime())[
-                        "enable_tensorrt"
-                    ]
+                    derive_detection_runtime_settings(
+                        self._mw._selected_compute_runtime()
+                    )["enable_tensorrt"]
                 )
             )
 
@@ -832,7 +833,9 @@ class ConfigOrchestrator:
             pose_color_mode = str(
                 get_cfg(
                     "video_pose_color_mode",
-                    default=self._mw.advanced_config.get("video_pose_color_mode", "track"),
+                    default=self._mw.advanced_config.get(
+                        "video_pose_color_mode", "track"
+                    ),
                 )
             ).strip()
             self._panels.postprocess.combo_video_pose_color_mode.setCurrentIndex(
@@ -842,7 +845,9 @@ class ConfigOrchestrator:
                 int(
                     get_cfg(
                         "video_pose_point_radius",
-                        default=self._mw.advanced_config.get("video_pose_point_radius", 3),
+                        default=self._mw.advanced_config.get(
+                            "video_pose_point_radius", 3
+                        ),
                     )
                 )
             )
@@ -868,7 +873,9 @@ class ConfigOrchestrator:
             )
             pose_color = get_cfg(
                 "video_pose_color",
-                default=self._mw.advanced_config.get("video_pose_color", [255, 255, 255]),
+                default=self._mw.advanced_config.get(
+                    "video_pose_color", [255, 255, 255]
+                ),
             )
             if isinstance(pose_color, (list, tuple)) and len(pose_color) == 3:
                 self._panels.postprocess._video_pose_color = tuple(
@@ -914,7 +921,9 @@ class ConfigOrchestrator:
             self._panels.setup.chk_enable_profiling.setChecked(
                 get_cfg("enable_profiling", default=False)
             )
-            self._mw.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
+            self._mw.slider_zoom.setValue(
+                int(get_cfg("zoom_factor", default=1.0) * 100)
+            )
 
             # === DATASET GENERATION ===
             self._panels.dataset.chk_enable_dataset_gen.setChecked(
@@ -1076,10 +1085,14 @@ class ConfigOrchestrator:
             self._mw._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
             self._mw._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
             active_backend = (
-                self._panels.identity.combo_pose_model_type.currentText().strip().lower()
+                self._panels.identity.combo_pose_model_type.currentText()
+                .strip()
+                .lower()
             )
             self._mw._refresh_pose_model_combo(
-                preferred_model_path=self._mw._pose_model_path_for_backend(active_backend)
+                preferred_model_path=self._mw._pose_model_path_for_backend(
+                    active_backend
+                )
             )
             pose_runtime_flavor = derive_pose_runtime_settings(
                 self._mw._selected_compute_runtime(),
@@ -1202,7 +1215,6 @@ class ConfigOrchestrator:
         except Exception as e:
             logger.warning(f"Failed to load configuration: {e}")
 
-
     def _atomic_json_write(self, cfg, path):
         """Write a JSON config atomically. Returns (success, error_message)."""
         import tempfile as _tempfile
@@ -1226,7 +1238,6 @@ class ConfigOrchestrator:
                 except OSError:
                     pass
             return False, str(e)
-
 
     def _resolve_config_save_path(self, prompt_if_exists):
         """Determine the config file save path, prompting the user if needed."""
@@ -1267,7 +1278,6 @@ class ConfigOrchestrator:
         )
         return path or None
 
-
     def save_config(
         self: object,
         preset_mode: object = False,
@@ -1293,6 +1303,7 @@ class ConfigOrchestrator:
             make_model_path_relative,
             make_pose_model_path_relative,
         )
+
         yolo_mode = (
             "sequential"
             if self._panels.detection.combo_yolo_obb_mode.currentIndex() == 1
@@ -1301,7 +1312,9 @@ class ConfigOrchestrator:
         yolo_direct_path = self._mw._get_selected_yolo_model_path()
         yolo_detect_path = self._mw._get_selected_yolo_detect_model_path()
         yolo_crop_obb_path = self._mw._get_selected_yolo_crop_obb_model_path()
-        yolo_headtail_path = self._panels.identity._get_selected_yolo_headtail_model_path()
+        yolo_headtail_path = (
+            self._panels.identity._get_selected_yolo_headtail_model_path()
+        )
         yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
         yolo_cls = (
             [
@@ -1632,8 +1645,12 @@ class ConfigOrchestrator:
                 "enable_identity_analysis": self._mw._is_individual_pipeline_enabled(),
                 "enable_individual_pipeline": self._mw._is_individual_pipeline_enabled(),
                 "identity_method": self._mw._selected_identity_method(),
-                "use_apriltags": self._mw._identity_config().get("use_apriltags", False),
-                "cnn_classifiers": self._mw._identity_config().get("cnn_classifiers", []),
+                "use_apriltags": self._mw._identity_config().get(
+                    "use_apriltags", False
+                ),
+                "cnn_classifiers": self._mw._identity_config().get(
+                    "cnn_classifiers", []
+                ),
                 # Legacy CNN Classifier settings (for backward compat on load)
                 "cnn_classifier_confidence": self._panels.identity.spin_cnn_confidence.value(),
                 "identity_match_bonus": self._panels.identity.spin_identity_match_bonus.value(),
@@ -1712,7 +1729,9 @@ class ConfigOrchestrator:
                 logger.info(f"Saved preset to {preset_path}")
                 return True
             logger.error(f"Failed to save preset: {err}")
-            QMessageBox.critical(self._mw, "Save Error", f"Failed to save preset:\n{err}")
+            QMessageBox.critical(
+                self._mw, "Save Error", f"Failed to save preset:\n{err}"
+            )
             return False
 
         config_path = self._resolve_config_save_path(prompt_if_exists)
@@ -1725,7 +1744,6 @@ class ConfigOrchestrator:
             return True
         logger.warning(f"Failed to save configuration: {err}")
         return False
-
 
     # =========================================================================
     # PARAMETERS DICT
@@ -1748,7 +1766,11 @@ class ConfigOrchestrator:
             if self._panels.detection.combo_yolo_obb_mode.currentIndex() == 1
             else "direct"
         )
-        from hydra_suite.trackerkit.gui.main_window import resolve_model_path, resolve_pose_model_path
+        from hydra_suite.trackerkit.gui.main_window import (
+            resolve_model_path,
+            resolve_pose_model_path,
+        )
+
         yolo_direct_path = resolve_model_path(
             self._mw._get_selected_yolo_model_path() or ""
         )
@@ -1897,7 +1919,9 @@ class ConfigOrchestrator:
         individual_image_save_enabled = self._mw._is_individual_image_save_enabled()
         pose_extractor_enabled = self._mw._is_pose_inference_enabled()
         identity_cfg = self._mw._identity_config()
-        identity_method = self._mw._selected_identity_method()  # kept for backward compat
+        identity_method = (
+            self._mw._selected_identity_method()
+        )  # kept for backward compat
         compute_runtime = self._mw._selected_compute_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
@@ -2157,7 +2181,9 @@ class ConfigOrchestrator:
             "GENERATE_ORIENTED_TRACK_VIDEOS": self._mw._should_generate_oriented_track_videos(),
             "INDIVIDUAL_DATASET_NAME": (
                 ""
-                if str(self._panels.identity._get_selected_yolo_headtail_model_path() or "").strip()
+                if str(
+                    self._panels.identity._get_selected_yolo_headtail_model_path() or ""
+                ).strip()
                 else "unoriented"
             ),
             "INDIVIDUAL_DATASET_OUTPUT_DIR": (
@@ -2195,7 +2221,6 @@ class ConfigOrchestrator:
             p["CNN_CLASSIFIER_MODEL_PATH"] = p.get("COLOR_TAG_MODEL_PATH", "")
 
         return p
-
 
     # =========================================================================
     # PRESET MANAGEMENT
@@ -2244,7 +2269,6 @@ class ConfigOrchestrator:
         for name, filepath in presets:
             self._panels.setup.combo_presets.addItem(name, filepath)
 
-
     def _load_selected_preset(self):
         """Load the currently selected preset."""
         filepath = self._panels.setup.combo_presets.currentData()
@@ -2277,7 +2301,6 @@ class ConfigOrchestrator:
             )
             self._panels.setup.preset_status_label.setVisible(True)
             logger.info(f"Loaded preset: {preset_name} from {filepath}")
-
 
     def _save_custom_preset(self):
         """Save current settings as custom preset with user-defined name and description."""
@@ -2387,7 +2410,6 @@ class ConfigOrchestrator:
                 ),
             )
 
-
     def _load_default_preset_on_startup(self):
         """Load default preset on application startup."""
         presets_dir = self._mw._get_presets_dir()
@@ -2411,7 +2433,6 @@ class ConfigOrchestrator:
     # =========================================================================
     # ROI OPTIMIZATION AND VIDEO CROPPING
     # =========================================================================
-
 
     # =========================================================================
     # ADVANCED CONFIG
@@ -2465,7 +2486,6 @@ class ConfigOrchestrator:
 
         return default_config
 
-
     def _save_advanced_config(self):
         """Save advanced configuration."""
         from hydra_suite.paths import get_advanced_config_path
@@ -2486,7 +2506,6 @@ class ConfigOrchestrator:
             logger.info(f"Saved advanced config to {config_path}")
         except Exception as e:
             logger.error(f"Could not save advanced config: {e}")
-
 
     # =========================================================================
     # VIDEO SETUP
@@ -2559,7 +2578,6 @@ class ConfigOrchestrator:
             self._mw._recents_store.add(fp)
         self._mw._show_workspace()
 
-
     # =========================================================================
     # ROI UTILITIES
     # =========================================================================
@@ -2571,7 +2589,6 @@ class ConfigOrchestrator:
     # =========================================================================
     # PRESET MANAGEMENT
     # =========================================================================
-
 
     def _calculate_roi_bounding_box(self, padding=None):
         """Calculate the bounding box of the current ROI mask with optional padding.
@@ -2614,7 +2631,6 @@ class ConfigOrchestrator:
 
         return (x, y, w, h)
 
-
     def _estimate_roi_efficiency(self):
         """Estimate the efficiency gain from cropping to ROI.
 
@@ -2640,7 +2656,6 @@ class ConfigOrchestrator:
 
         return (roi_coverage * 100, potential_speedup)
 
-
     def _update_roi_optimization_info(self):
         """Update the ROI optimization label with efficiency information."""
         coverage, speedup = self._estimate_roi_efficiency()
@@ -2650,7 +2665,9 @@ class ConfigOrchestrator:
                 self._mw.roi_optimization_label.setText("")
             return
 
-        threshold = self._mw.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
+        threshold = (
+            self._mw.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
+        )
 
         if coverage < threshold and hasattr(self, "roi_optimization_label"):
             self._mw.roi_optimization_label.setText(
@@ -2659,11 +2676,12 @@ class ConfigOrchestrator:
         elif hasattr(self, "roi_optimization_label"):
             self._mw.roi_optimization_label.setText("")
 
-
     def crop_video_to_roi(self: object) -> object:
         """Crop the video to the ROI bounding box and save as new file."""
         if self._mw.roi_mask is None:
-            QMessageBox.warning(self._mw, "No ROI", "Please define an ROI before cropping.")
+            QMessageBox.warning(
+                self._mw, "No ROI", "Please define an ROI before cropping."
+            )
             return
 
         video_path = self._panels.setup.file_line.text()
@@ -2672,7 +2690,9 @@ class ConfigOrchestrator:
             return
 
         # Get padding fraction from advanced config (default 5% of min dimension)
-        padding_fraction = self._mw.advanced_config.get("roi_crop_padding_fraction", 0.05)
+        padding_fraction = self._mw.advanced_config.get(
+            "roi_crop_padding_fraction", 0.05
+        )
 
         bbox = self._calculate_roi_bounding_box(padding=padding_fraction)
         if bbox is None:
@@ -3080,12 +3100,14 @@ class ConfigOrchestrator:
         )
         return str(new_path), False
 
-
     def _build_optimizer_detection_cache(
         self, video_path: str, cache_path: str, params: dict
     ):
         """Spin up a DetectionCacheBuilderWorker and show progress in the main window."""
-        from hydra_suite.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
+        from hydra_suite.core.tracking.optimizer_workers import (
+            DetectionCacheBuilderWorker,
+        )
+
         self._mw._cache_builder_worker = DetectionCacheBuilderWorker(
             video_path,
             cache_path,
@@ -3102,7 +3124,6 @@ class ConfigOrchestrator:
         self._mw.progress_bar.setValue(0)
         self._mw.progress_label.setText("Building detection cache for optimizer...")
         self._mw._cache_builder_worker.start()
-
 
     def _apply_optimized_params(self, new_params):
         """Apply optimized parameter values from the helper dialog to UI widgets."""
@@ -3144,10 +3165,12 @@ class ConfigOrchestrator:
                 new_params["LOST_THRESHOLD_FRAMES"] / _opt_fps
             )
 
-
     def _open_parameter_helper(self):
         """Open the tracking parameter selection helper dialog."""
-        from hydra_suite.trackerkit.gui.dialogs.parameter_helper import ParameterHelperDialog
+        from hydra_suite.trackerkit.gui.dialogs.parameter_helper import (
+            ParameterHelperDialog,
+        )
+
         video_path = self._panels.setup.file_line.text().strip()
         if not video_path or not os.path.exists(video_path):
             QMessageBox.warning(self._mw, "No Video", "Please load a video first.")
@@ -3203,10 +3226,12 @@ class ConfigOrchestrator:
 
     # ── BG-subtraction auto-tuner ─────────────────────────────────────────
 
-
     def _open_bg_parameter_helper(self):
         """Open the BG-subtraction parameter auto-tuner dialog."""
-        from hydra_suite.trackerkit.gui.dialogs.bg_parameter_helper import BgParameterHelperDialog
+        from hydra_suite.trackerkit.gui.dialogs.bg_parameter_helper import (
+            BgParameterHelperDialog,
+        )
+
         video_path = self._panels.setup.file_line.text().strip()
         if not video_path or not os.path.exists(video_path):
             QMessageBox.warning(self._mw, "No Video", "Please load a video first.")
@@ -3261,7 +3286,6 @@ class ConfigOrchestrator:
                 "Use 'Preview Detection' to verify the results.",
             )
 
-
     # =========================================================================
     # COMPUTE RUNTIME (DELEGATE)
     # =========================================================================
@@ -3272,7 +3296,9 @@ class ConfigOrchestrator:
             return
         combo = self._mw._setup_panel.combo_compute_runtime
         selected = (
-            str(preferred or self._mw._selected_compute_runtime() or "cpu").strip().lower()
+            str(preferred or self._mw._selected_compute_runtime() or "cpu")
+            .strip()
+            .lower()
         )
         options = self._mw._compute_runtime_options_for_current_ui()
         values = [value for _label, value in options]
@@ -3320,9 +3346,7 @@ class ConfigOrchestrator:
         return filename
 
     @staticmethod
-    def _yolo_model_matches_filter(
-        metadata, task_family=None, usage_role=None
-    ):
+    def _yolo_model_matches_filter(metadata, task_family=None, usage_role=None):
         if not isinstance(metadata, dict):
             return True
         meta_task = str(metadata.get("task_family", "")).strip().lower()
@@ -3786,8 +3810,8 @@ class ConfigOrchestrator:
 
     def _import_pose_model_to_repository(self, source_path, backend="yolo"):
         """Copy a selected pose model into models/pose/{YOLO|SLEAP|ViTPose} and return relative path."""
-        from pathlib import Path as _Path
         import shutil as _shutil
+        from pathlib import Path as _Path
 
         from hydra_suite.trackerkit.gui.model_utils import (
             get_pose_models_directory,
@@ -3810,7 +3834,9 @@ class ConfigOrchestrator:
             src_path = _Path(src)
 
         try:
-            rel_existing = os.path.relpath(str(src_path), str(_Path(dest_dir).resolve()))
+            rel_existing = os.path.relpath(
+                str(src_path), str(_Path(dest_dir).resolve())
+            )
             if not rel_existing.startswith(".."):
                 return make_pose_model_path_relative(str(src_path))
         except Exception:
@@ -3881,9 +3907,7 @@ class ConfigOrchestrator:
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d-%H%M%S")
         if backend_key == "sleap":
-            model_type = (
-                _sanitize_model_token(type_line.text()) if type_line else ""
-            )
+            model_type = _sanitize_model_token(type_line.text()) if type_line else ""
             if not model_type:
                 QMessageBox.warning(
                     self._mw,

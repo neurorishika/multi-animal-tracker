@@ -8,8 +8,8 @@ import pytest
 pytest.importorskip("PySide6")
 
 from hydra_suite.classkit.core.embed import embedder as embedder_module
-from hydra_suite.classkit.jobs.task_workers import EmbeddingWorker
 from hydra_suite.classkit.core.store.db import ClassKitDB
+from hydra_suite.classkit.jobs.task_workers import EmbeddingWorker
 
 
 def test_embedding_worker_force_recompute_still_saves_embeddings(

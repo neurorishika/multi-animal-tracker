@@ -80,9 +80,7 @@ class PostProcessPanel(QWidget):
             "Uses velocity and distance thresholds to detect anomalies.\n"
             "Recommended: Enable for cleaner data output."
         )
-        self.enable_postprocessing.stateChanged.connect(
-            self._on_cleaning_toggled
-        )
+        self.enable_postprocessing.stateChanged.connect(self._on_cleaning_toggled)
         f_pp.addRow(self.enable_postprocessing)
 
         self.spin_min_trajectory_length = QDoubleSpinBox()
@@ -401,9 +399,7 @@ class PostProcessPanel(QWidget):
 
         self.check_video_output = QCheckBox("Export trajectory video")
         self.check_video_output.setChecked(False)
-        self.check_video_output.toggled.connect(
-            self._on_video_output_toggled
-        )
+        self.check_video_output.toggled.connect(self._on_video_output_toggled)
         self.check_video_output.setToolTip(
             "Generate annotated video showing post-processed trajectories.\n"
             "Video is created from merged/interpolated tracks, not raw tracking.\n"
@@ -535,9 +531,7 @@ class PostProcessPanel(QWidget):
         self.btn_video_pose_color = QPushButton()
         self.btn_video_pose_color.setMaximumWidth(60)
         self.btn_video_pose_color.setMinimumHeight(28)
-        self.btn_video_pose_color.clicked.connect(
-            self._select_video_pose_color
-        )
+        self.btn_video_pose_color.clicked.connect(self._select_video_pose_color)
         self.lbl_video_pose_color = QLabel("")
         pose_color_row.addWidget(self.btn_video_pose_color)
         pose_color_row.addWidget(self.lbl_video_pose_color)

@@ -37,8 +37,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.widgets.dialogs import BaseDialog
-
 from hydra_suite.core.tracking.optimizer import (
     _PARAM_RANGES,
     OptimizationResult,
@@ -46,6 +44,7 @@ from hydra_suite.core.tracking.optimizer import (
 )
 from hydra_suite.core.tracking.optimizer_workers import TrackingPreviewWorker
 from hydra_suite.utils.video_artifacts import build_autotune_state_path
+from hydra_suite.widgets.dialogs import BaseDialog
 
 logger = logging.getLogger(__name__)
 

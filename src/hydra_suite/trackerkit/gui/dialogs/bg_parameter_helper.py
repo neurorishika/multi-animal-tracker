@@ -41,13 +41,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.widgets.dialogs import BaseDialog
-
 from hydra_suite.core.detectors.bg_optimizer import (
     BgDetectionPreviewWorker,
     BgOptimizationResult,
     BgSubtractionOptimizer,
 )
+from hydra_suite.widgets.dialogs import BaseDialog
 
 logger = logging.getLogger(__name__)
 

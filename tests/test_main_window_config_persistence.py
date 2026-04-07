@@ -89,7 +89,10 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
         reloaded_window._identity_panel.combo_yolo_headtail_model_type.currentText()
         == "tiny"
     )
-    assert reloaded_window._identity_panel._get_selected_yolo_headtail_model_path() == selected_model
+    assert (
+        reloaded_window._identity_panel._get_selected_yolo_headtail_model_path()
+        == selected_model
+    )
     reloaded_window.close()
 
 
