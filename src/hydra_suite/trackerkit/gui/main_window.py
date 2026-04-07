@@ -773,62 +773,10 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_ui_state(self) -> None:
-        """Apply persisted HYDRA UI layout preferences after construction."""
-        settings = self._ui_settings or {}
-
-        detection_index = settings.get("detection_method_index")
-        if isinstance(detection_index, int) and hasattr(self, "_detection_panel"):
-            self._detection_panel.combo_detection_method.setCurrentIndex(
-                max(
-                    0,
-                    min(
-                        detection_index,
-                        self._detection_panel.combo_detection_method.count() - 1,
-                    ),
-                )
-            )
-
-        tab_index = settings.get("active_tab_index")
-        if isinstance(tab_index, int) and hasattr(self, "tabs"):
-            tab_index = max(0, min(tab_index, self.tabs.count() - 1))
-            if self.tabs.isTabEnabled(tab_index):
-                self.tabs.setCurrentIndex(tab_index)
-
-        splitter_sizes = settings.get("splitter_sizes")
-        if (
-            isinstance(splitter_sizes, list)
-            and len(splitter_sizes) == 2
-            and all(isinstance(size, int) and size > 0 for size in splitter_sizes)
-            and hasattr(self, "splitter")
-        ):
-            self.splitter.setSizes(splitter_sizes)
+        self._session_orch._restore_ui_state()
 
     def _save_ui_settings(self) -> None:
-        """Persist HYDRA UI layout preferences without touching tracking configs."""
-        if not hasattr(self, "tabs") or not hasattr(self, "splitter"):
-            return
-
-        collapsed_sections = {
-            key: widget.isExpanded()
-            for key, widget in self._collapsible_state_widgets.items()
-        }
-        settings = {
-            "active_tab_index": int(self.tabs.currentIndex()),
-            "splitter_sizes": [int(size) for size in self.splitter.sizes()],
-            "detection_method_index": (
-                int(self._detection_panel.combo_detection_method.currentIndex())
-                if hasattr(self, "_detection_panel")
-                else 0
-            ),
-            "collapsed_sections": collapsed_sections,
-        }
-
-        path = self._get_ui_settings_path()
-        try:
-            path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-            self._ui_settings = settings
-        except Exception:
-            logger.debug("Failed to save HYDRA UI settings", exc_info=True)
+        self._session_orch._save_ui_settings()
 
     def _set_compact_scroll_layout(self, layout: QLayout) -> None:
         """Prevent scroll-area content layouts from stretching sparse sections vertically."""
@@ -4830,39 +4778,10 @@ class MainWindow(QMainWindow):
         self._cleanup_session_logging()
 
     def _set_ui_controls_enabled(self, enabled: bool):
-        if enabled:
-            if self.current_video_path:
-                self._apply_ui_state("idle")
-            else:
-                self._apply_ui_state("no_video")
-            return
-
-        # Disabled state - choose mode based on tracking/preview status
-        if self.tracking_worker and self.tracking_worker.isRunning():
-            if self.btn_preview.isChecked():
-                self._apply_ui_state("preview")
-            else:
-                self._apply_ui_state("tracking")
-        else:
-            self._apply_ui_state("locked")
+        self._session_orch._set_ui_controls_enabled(enabled)
 
     def _collect_preview_controls(self):
-        return [
-            self.btn_test_detection,
-            self._setup_panel.slider_timeline,
-            self._setup_panel.btn_first_frame,
-            self._setup_panel.btn_prev_frame,
-            self._setup_panel.btn_play_pause,
-            self._setup_panel.btn_next_frame,
-            self._setup_panel.btn_last_frame,
-            self._setup_panel.btn_random_seek,
-            self._setup_panel.combo_playback_speed,
-            self._setup_panel.spin_start_frame,
-            self._setup_panel.spin_end_frame,
-            self._setup_panel.btn_set_start_current,
-            self._setup_panel.btn_set_end_current,
-            self._setup_panel.btn_reset_range,
-        ]
+        return self._session_orch._collect_preview_controls()
 
     def _set_interactive_widgets_enabled(
         self,
@@ -4871,119 +4790,22 @@ class MainWindow(QMainWindow):
         blocklist=None,
         remember_state: bool = True,
     ):
-        allow = set(allowlist or [])
-        block = set(blocklist or [])
-        interactive_types = (
-            QAbstractButton,
-            QLineEdit,
-            QComboBox,
-            QSpinBox,
-            QDoubleSpinBox,
-            QSlider,
+        self._session_orch._set_interactive_widgets_enabled(
+            enabled, allowlist=allowlist, blocklist=blocklist, remember_state=remember_state
         )
-        # Exclude welcome-page widgets — they are managed by WelcomePage itself
-        welcome = getattr(self, "_welcome_page", None)
-        widgets = []
-        for widget_type in interactive_types:
-            for w in self.findChildren(widget_type):
-                if welcome is not None and welcome.isAncestorOf(w):
-                    continue
-                widgets.append(w)
-
-        if enabled and remember_state and self._saved_widget_enabled_states:
-            for widget in widgets:
-                if widget in block:
-                    widget.setEnabled(False)
-                elif widget in allow:
-                    widget.setEnabled(True)
-                elif widget in self._saved_widget_enabled_states:
-                    widget.setEnabled(self._saved_widget_enabled_states[widget])
-            self._saved_widget_enabled_states = {}
-            return
-
-        if not enabled and remember_state:
-            for widget in widgets:
-                if widget in block or widget in allow:
-                    continue
-                self._saved_widget_enabled_states[widget] = widget.isEnabled()
-
-        for widget in widgets:
-            if widget in block:
-                widget.setEnabled(False)
-            elif widget in allow:
-                widget.setEnabled(True)
-            else:
-                widget.setEnabled(enabled)
 
     def _set_video_interaction_enabled(self, enabled: bool):
-        self._video_interactions_enabled = enabled
-        self.slider_zoom.setEnabled(enabled)
-        # Keep the viewport enabled so placeholder/logo rendering is not dimmed
-        # by disabled-widget styling (notably on macOS).
-        self.scroll.setEnabled(True)
-        if not enabled:
-            self.video_label.unsetCursor()
+        self._session_orch._set_video_interaction_enabled(enabled)
 
     def _prepare_tracking_display(self):
-        """Clear any stale frame before tracking starts."""
-        self.video_label.clear()
-        if self._is_visualization_enabled():
-            self.video_label.setText("")
-            self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
-        else:
-            self.video_label.setText(
-                "Visualization Disabled\n\n"
-                "Maximum speed processing mode active.\n"
-                "Real-time stats displayed below."
-            )
-            self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
+        self._session_orch._prepare_tracking_display()
 
     def _show_video_logo_placeholder(self):
         """Show HYDRA logo in the video panel when no video is loaded."""
-        try:
-            from PySide6.QtCore import QByteArray
-
-            from hydra_suite.paths import get_brand_icon_bytes
-
-            logo_data = get_brand_icon_bytes("trackerkit.svg")
-            vw = max(640, self.scroll.viewport().width())
-            vh = max(420, self.scroll.viewport().height())
-            canvas = QPixmap(vw, vh)
-            canvas.fill(QColor(0, 0, 0, 0))
-
-            renderer = (
-                QSvgRenderer(QByteArray(logo_data)) if logo_data else QSvgRenderer()
-            )
-            if renderer.isValid():
-                view_box = renderer.viewBoxF()
-                if view_box.isEmpty():
-                    default_size = renderer.defaultSize()
-                    view_box = QRectF(
-                        0,
-                        0,
-                        max(1, default_size.width()),
-                        max(1, default_size.height()),
-                    )
-
-                # Preserve source aspect ratio and size it prominently.
-                max_w = max(1, int(vw * 0.9))
-                max_h = max(1, int(vh * 0.8))
-                scale = min(max_w / view_box.width(), max_h / view_box.height())
-                logo_w = max(1, int(view_box.width() * scale))
-                logo_h = max(1, int(view_box.height() * scale))
-                x = (vw - logo_w) // 2
-                y = (vh - logo_h) // 2
-
-                painter = QPainter(canvas)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                renderer.render(painter, QRectF(x, y, logo_w, logo_h))
-                painter.end()
-                self.video_label.setPixmap(canvas)
-                self.video_label.setText("")
-                return
-        except Exception:
-            pass
+        if hasattr(self, "_session_orch"):
+            self._session_orch._show_video_logo_placeholder()
+            return
+        # Fallback during early init before orchestrators exist
         self.video_label.setPixmap(QPixmap())
         self.video_label.setText("HYDRA\n\nLoad a video to begin...")
 
@@ -4995,78 +4817,10 @@ class MainWindow(QMainWindow):
         )
 
     def _sync_contextual_controls(self):
-        # ROI
-        self.btn_finish_roi.setEnabled(self.roi_selection_active)
-        self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
-        self.btn_clear_roi.setEnabled(
-            len(self.roi_shapes) > 0 or self.roi_selection_active
-        )
-
-        # Crop video only if ROI exists and video loaded
-        if hasattr(self, "btn_crop_video"):
-            self.btn_crop_video.setEnabled(
-                bool(self.roi_shapes) and bool(self.current_video_path)
-            )
+        self._session_orch._sync_contextual_controls()
 
     def _apply_ui_state(self, state: str):
-        if state == "no_video":
-            extra_allowed = [
-                self._dataset_panel.combo_xanylabeling_env,
-                self._dataset_panel.btn_refresh_envs,
-                self._dataset_panel.btn_open_xanylabeling,
-                self._dataset_panel.btn_open_pose_label,
-            ]
-            self._set_interactive_widgets_enabled(
-                False,
-                allowlist=[
-                    self._setup_panel.btn_file,
-                    self._setup_panel.btn_load_config,
-                ]
-                + extra_allowed,
-                remember_state=False,
-            )
-            self.btn_start.setEnabled(False)
-            self.btn_preview.setEnabled(False)
-            if hasattr(self, "_tracking_panel"):
-                self._tracking_panel.btn_param_helper.setEnabled(False)
-            self._set_video_interaction_enabled(False)
-            self._setup_panel.g_video_player.setVisible(False)
-            self._show_video_logo_placeholder()
-            return
-
-        if state == "idle":
-            self._set_interactive_widgets_enabled(True)
-            self.btn_start.setEnabled(True)
-            self.btn_preview.setEnabled(True)
-            if hasattr(self, "_tracking_panel"):
-                self._tracking_panel.btn_param_helper.setEnabled(True)
-            self._set_video_interaction_enabled(True)
-            self._sync_contextual_controls()
-            return
-
-        if state == "tracking":
-            allow = [self.btn_start]
-            if self._is_visualization_enabled():
-                allow.append(self.slider_zoom)
-            self._set_interactive_widgets_enabled(False, allowlist=allow)
-            self.btn_start.setEnabled(True)
-            self._set_video_interaction_enabled(self._is_visualization_enabled())
-            return
-
-        if state == "preview":
-            allow = [self.btn_preview] + list(self._preview_controls)
-            if self._is_visualization_enabled():
-                allow.append(self.slider_zoom)
-            self._set_interactive_widgets_enabled(False, allowlist=allow)
-            self.btn_preview.setEnabled(True)
-            self._set_video_interaction_enabled(self._is_visualization_enabled())
-            return
-
-        # Locked (non-tracking) state: disable all interactive widgets
-        if state == "locked":
-            self._set_interactive_widgets_enabled(False)
-            self._set_video_interaction_enabled(False)
-            return
+        self._session_orch._apply_ui_state(state)
 
     def _draw_roi_overlay(self, qimage):
         """Draw ROI shapes overlay on a QImage."""
@@ -10148,68 +9902,10 @@ class MainWindow(QMainWindow):
         return False
 
     def _setup_session_logging(self, video_path, backward_mode=False):
-        """Set up comprehensive logging for the entire tracking session."""
-        from datetime import datetime
-        from pathlib import Path
-
-        # Close existing session log if any
-        self._cleanup_session_logging()
-
-        # Only set up logging if not already set up
-        if self.session_log_handler is not None:
-            logger.info("=" * 80)
-            logger.info("Session log already active, continuing...")
-            logger.info("=" * 80)
-            return
-
-        # Create a session log in the video's dedicated log directory.
-        video_path = Path(video_path)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_dir = (
-            os.path.dirname(self._setup_panel.csv_line.text())
-            if self._setup_panel.csv_line.text()
-            else ""
-        )
-        artifact_base_dir = choose_writable_artifact_base_dir(
-            video_path,
-            preferred_base_dirs=[csv_dir],
-        )
-        log_path = build_tracking_session_log_path(
-            video_path,
-            timestamp,
-            artifact_base_dir=artifact_base_dir,
-            create_dir=True,
-        )
-
-        # Create file handler for session
-        self.session_log_handler = logging.FileHandler(log_path, mode="w")
-        self.session_log_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        self.session_log_handler.setFormatter(formatter)
-
-        # Add to root logger to capture everything
-        root_logger = logging.getLogger()
-        root_logger.addHandler(self.session_log_handler)
-
-        logger.info("=" * 80)
-        logger.info("TRACKING SESSION STARTED")
-        logger.info(f"Session log: {log_path}")
-        logger.info(f"Video: {video_path}")
-        logger.info("=" * 80)
+        self._session_orch._setup_session_logging(video_path, backward_mode=backward_mode)
 
     def _cleanup_session_logging(self):
-        """Remove session log handler from root logger."""
-        if self.session_log_handler:
-            logger.info("=" * 80)
-            logger.info("Tracking session completed")
-            logger.info("=" * 80)
-
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(self.session_log_handler)
-            self.session_log_handler.close()
-            self.session_log_handler = None
+        self._session_orch._cleanup_session_logging()
 
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
@@ -10528,102 +10224,22 @@ class MainWindow(QMainWindow):
         self._refresh_progress_visibility()
 
     def _is_worker_running(self, worker):
-        """Safely check whether a worker thread-like object is running."""
-        if worker is None:
-            return False
-        try:
-            return bool(worker.isRunning())
-        except Exception:
-            return False
+        return self._session_orch._is_worker_running(worker)
 
     def _has_active_progress_task(self) -> bool:
-        """Return True if any async task that owns progress UI is still active."""
-        return any(
-            [
-                self._is_worker_running(self.tracking_worker),
-                self._is_worker_running(getattr(self, "merge_worker", None)),
-                self._is_worker_running(self.dataset_worker),
-                self._is_worker_running(self.interp_worker),
-                self._is_worker_running(self.oriented_video_worker),
-            ]
-        )
+        return self._session_orch._has_active_progress_task()
 
     def _refresh_progress_visibility(self):
-        """Keep progress UI visible while any async tracking task is still running."""
-        has_active_task = self._has_active_progress_task()
-        self.progress_bar.setVisible(has_active_task)
-        self.progress_label.setVisible(has_active_task)
+        self._session_orch._refresh_progress_visibility()
 
     def _cleanup_temporary_files(self):
-        """Remove temporary files if cleanup is enabled."""
-        if not self._postprocess_panel.chk_cleanup_temp_files.isChecked():
-            logger.info("Temporary file cleanup disabled, keeping intermediate files.")
-            return
-
-        if not self.temporary_files:
-            logger.info("No temporary files to clean up.")
-            return
-
-        cleaned = []
-        failed = []
-        for temp_file in self.temporary_files:
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                    cleaned.append(os.path.basename(temp_file))
-                    logger.info(f"Removed temporary file: {temp_file}")
-                except Exception as e:
-                    failed.append(os.path.basename(temp_file))
-                    logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
-
-        # Clear the list after cleanup attempt
-        self.temporary_files.clear()
-
-        # Also clean up posekit directories if they exist
-        params = self.get_parameters_dict()
-        output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
-        if output_dir and os.path.exists(output_dir):
-            posekit_dir = os.path.join(output_dir, "posekit")
-            if os.path.exists(posekit_dir) and os.path.isdir(posekit_dir):
-                try:
-                    import shutil
-
-                    shutil.rmtree(posekit_dir)
-                    logger.info(f"Removed posekit directory: {posekit_dir}")
-                    cleaned.append("posekit/")
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to remove posekit directory {posekit_dir}: {e}"
-                    )
-                    failed.append("posekit/")
-
-        if cleaned:
-            logger.info(
-                f"Cleaned up {len(cleaned)} temporary file(s): {', '.join(cleaned)}"
-            )
-        if failed:
-            logger.warning(
-                f"Failed to clean {len(failed)} file(s): {', '.join(failed)}"
-            )
+        self._session_orch._cleanup_temporary_files()
 
     def _disable_spinbox_wheel_events(self):
-        """Disable wheel events on all spinboxes to prevent accidental value changes."""
-        # Find all QSpinBox and QDoubleSpinBox widgets
-        spinboxes = self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox)
-        for spinbox in spinboxes:
-            spinbox.wheelEvent = lambda event: None
+        self._session_orch._disable_spinbox_wheel_events()
 
     def _connect_parameter_signals(self):
-        widgets_to_connect = (
-            self.findChildren(QSpinBox)
-            + self.findChildren(QDoubleSpinBox)
-            + self.findChildren(QCheckBox)
-        )
-        for widget in widgets_to_connect:
-            if hasattr(widget, "valueChanged"):
-                widget.valueChanged.connect(self._on_parameter_changed)
-            elif hasattr(widget, "stateChanged"):
-                widget.stateChanged.connect(self._on_parameter_changed)
+        self._session_orch._connect_parameter_signals()
 
     @Slot()
     def _on_parameter_changed(self):
