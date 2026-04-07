@@ -1231,6 +1231,19 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.splitter)
 
         # =====================================================================
+        # INITIALIZE ORCHESTRATORS
+        # =====================================================================
+        from hydra_suite.trackerkit.gui.orchestrators.tracking import TrackingOrchestrator
+
+        self._tracking_orch = TrackingOrchestrator(
+            main_window=self,
+            config=self.config,
+            panels=self._panels_bundle(),
+        )
+        self._config_orch = None  # placeholder until Task 18
+        self._session_orch = None  # placeholder until Task 19
+
+        # =====================================================================
         # INITIALIZE PRESETS
         # =====================================================================
         # Populate preset combo box with available presets
@@ -1238,6 +1251,19 @@ class MainWindow(QMainWindow):
 
         # Load default preset (custom if available, otherwise default.json)
         self._load_default_preset_on_startup()
+
+    def _panels_bundle(self):
+        """Return a namespace of all panels for orchestrator access."""
+        import types
+
+        ns = types.SimpleNamespace()
+        ns.setup = self._setup_panel
+        ns.detection = self._detection_panel
+        ns.tracking = self._tracking_panel
+        ns.postprocess = self._postprocess_panel
+        ns.dataset = self._dataset_panel
+        ns.identity = self._identity_panel
+        return ns
 
     def _make_welcome_page(self):
         """Create startup splash page with primary HYDRA session actions."""

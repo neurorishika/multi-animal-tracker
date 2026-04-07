@@ -1,0 +1,3422 @@
+"""TrackingOrchestrator — run→merge→export→finalize lifecycle."""
+
+from __future__ import annotations
+
+import csv
+import gc
+import glob as _glob
+import hashlib
+import json
+import logging
+import math
+import os
+import queue as _queue
+import re
+import threading as _threading
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import cv2
+import numpy as np
+import pandas as pd
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+if TYPE_CHECKING:
+    from hydra_suite.trackerkit.config.schemas import TrackerConfig
+    from hydra_suite.trackerkit.gui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
+
+
+class TrackingOrchestrator:
+    """Owns the tracking lifecycle: start, stop, merge, export, finalize."""
+
+    def __init__(self, main_window: "MainWindow", config: "TrackerConfig", panels) -> None:
+        self._mw = main_window
+        self._config = config
+        self._panels = panels
+
+    def start_full(self):
+        """start_full method documentation."""
+        if self._mw.btn_preview.isChecked():
+            self._mw.btn_preview.setChecked(False)
+            self._mw.btn_preview.setText("Preview Mode")
+            self.stop_tracking()
+
+        # Set up comprehensive session logging once for entire tracking session
+        video_path = self._panels.setup.file_line.text()
+        if video_path:
+            self._mw._setup_session_logging(video_path, backward_mode=False)
+            from datetime import datetime
+
+            self._mw._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._mw.current_detection_cache_path = None
+            self._mw.current_individual_properties_cache_path = None
+            self._mw.current_interpolated_roi_npz_path = None
+            self._mw.current_interpolated_pose_csv_path = None
+            self._mw.current_interpolated_pose_df = None
+            self._mw.current_interpolated_tag_csv_path = None
+            self._mw.current_interpolated_tag_df = None
+            self._mw.current_interpolated_cnn_csv_paths = {}
+            self._mw.current_interpolated_cnn_dfs = {}
+            self._mw.current_interpolated_headtail_csv_path = None
+            self._mw.current_interpolated_headtail_df = None
+            self._mw._pending_pose_export_csv_path = None
+            self._mw._pending_video_csv_path = None
+            self._mw._pending_video_generation = False
+            self._mw._pending_finish_after_track_videos = False
+
+        self.start_tracking(preview_mode=False)
+
+
+
+
+    def _request_qthread_stop(
+        self,
+        worker,
+        worker_name: str,
+        *,
+        timeout_ms: int = 1500,
+        force_terminate: bool = True,
+    ) -> None:
+        """Stop a QThread cooperatively, then force terminate if needed."""
+        if worker is None:
+            return
+        try:
+            if not worker.isRunning():
+                return
+        except Exception:
+            return
+
+        try:
+            if hasattr(worker, "stop"):
+                worker.stop()
+        except Exception:
+            logger.debug("Failed to call stop() on %s", worker_name, exc_info=True)
+
+        try:
+            worker.requestInterruption()
+        except Exception:
+            pass
+
+        stopped = False
+        try:
+            stopped = bool(worker.wait(int(timeout_ms)))
+        except Exception:
+            stopped = False
+
+        if stopped:
+            logger.info("%s stopped.", worker_name)
+            return
+
+        if not force_terminate:
+            logger.warning(
+                "%s did not stop within %d ms (cooperative stop only).",
+                worker_name,
+                int(timeout_ms),
+            )
+            return
+
+        logger.warning(
+            "%s did not stop cooperatively; forcing terminate().", worker_name
+        )
+        try:
+            worker.terminate()
+        except Exception:
+            logger.debug("terminate() failed for %s", worker_name, exc_info=True)
+        try:
+            worker.wait(max(500, int(timeout_ms)))
+        except Exception:
+            pass
+
+
+
+
+    def _stop_csv_writer(self, timeout_sec: float = 2.0) -> None:
+        """Stop background CSV writer thread safely without indefinite blocking."""
+        writer = self._mw.csv_writer_thread
+        if writer is None:
+            return
+        try:
+            writer.stop()
+        except Exception:
+            logger.debug("Failed to request CSV writer stop.", exc_info=True)
+        try:
+            if writer.is_alive():
+                writer.join(timeout=timeout_sec)
+                if writer.is_alive():
+                    logger.warning("CSV writer did not stop within %.1fs.", timeout_sec)
+        except Exception:
+            logger.debug("Failed to join CSV writer thread.", exc_info=True)
+        finally:
+            self._mw.csv_writer_thread = None
+
+
+
+
+    def _cleanup_thread_reference(self, attr_name: str) -> None:
+        """Delete finished QThread references safely."""
+        worker = getattr(self._mw, attr_name, None)
+        if worker is None:
+            return
+        try:
+            running = bool(worker.isRunning())
+        except Exception:
+            running = False
+        if not running:
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+            setattr(self._mw, attr_name, None)
+
+
+
+
+    def stop_tracking(self):
+        """stop_tracking method documentation."""
+        self._mw._stop_all_requested = True
+        self._mw._pending_finish_after_interp = False
+        self._mw._pending_finish_after_track_videos = False
+        self._mw._pending_pose_export_csv_path = None
+        self._mw._pending_video_csv_path = None
+        self._mw._pending_video_generation = False
+
+        # Stop all active workers and subprocess-like threads.
+        self._request_qthread_stop(
+            getattr(self._mw, "_cache_builder_worker", None), "DetectionCacheBuilderWorker"
+        )
+        self._request_qthread_stop(
+            getattr(self._mw, "merge_worker", None), "MergeWorker", timeout_ms=1200
+        )
+        self._request_qthread_stop(self._mw.dataset_worker, "DatasetGenerationWorker")
+        self._request_qthread_stop(self._mw.interp_worker, "InterpolatedCropsWorker")
+        self._request_qthread_stop(
+            self._mw.oriented_video_worker, "OrientedTrackVideoWorker"
+        )
+        self._request_qthread_stop(self._mw.tracking_worker, "TrackingWorker")
+        self._stop_csv_writer()
+
+        self._cleanup_thread_reference("_cache_builder_worker")
+        self._cleanup_thread_reference("merge_worker")
+        self._cleanup_thread_reference("dataset_worker")
+        self._cleanup_thread_reference("interp_worker")
+        self._cleanup_thread_reference("oriented_video_worker")
+
+        self._mw.progress_bar.setVisible(False)
+        self._mw.progress_label.setVisible(False)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText("Ready")
+        self._mw._set_ui_controls_enabled(True)
+        # Ensure UI state is restored after stopping
+        if self._mw.current_video_path:
+            self._mw._apply_ui_state("idle")
+        else:
+            self._mw._apply_ui_state("no_video")
+        self._mw.btn_preview.setChecked(False)
+        self._mw.btn_preview.setText("Preview Mode")
+        self._mw.btn_start.blockSignals(True)
+        self._mw.btn_start.setChecked(False)
+        self._mw.btn_start.blockSignals(False)
+        self._mw.btn_start.setText("Start Full Tracking")
+        self._mw.btn_start.setEnabled(True)
+        self._mw.btn_preview.setEnabled(True)
+        self._mw._individual_dataset_run_id = None
+        self._mw.current_detection_cache_path = None
+        self._mw.current_individual_properties_cache_path = None
+        self._mw.current_interpolated_roi_npz_path = None
+        self._mw.current_interpolated_pose_csv_path = None
+        self._mw.current_interpolated_pose_df = None
+        self._mw.current_interpolated_tag_csv_path = None
+        self._mw.current_interpolated_tag_df = None
+        self._mw.current_interpolated_cnn_csv_paths = {}
+        self._mw.current_interpolated_cnn_dfs = {}
+        self._mw.current_interpolated_headtail_csv_path = None
+        self._mw.current_interpolated_headtail_df = None
+
+        # Hide stats labels when tracking stops
+        self._mw.label_current_fps.setVisible(False)
+        self._mw.label_elapsed_time.setVisible(False)
+        self._mw.label_eta.setVisible(False)
+
+        # Reset tracking frame size
+        self._mw._tracking_frame_size = None
+        self._mw._cleanup_session_logging()
+
+
+
+
+    def on_progress_update(
+        self: object, percentage, status_text
+    ):
+        """on_progress_update method documentation."""
+        if self._mw._stop_all_requested:
+            return
+        self._mw.progress_bar.setValue(percentage)
+        self._mw.progress_label.setText(status_text)
+
+
+
+
+    def on_pose_exported_model_resolved(self, artifact_path: str) -> None:
+        """Update pose exported-model UI/config when runtime resolves an artifact path."""
+        if self._mw._stop_all_requested:
+            return
+        path = str(artifact_path or "").strip()
+        if not path:
+            return
+        logger.info("Pose runtime resolved exported model artifact: %s", path)
+        try:
+            # Persist run metadata immediately.
+            self._mw.save_config(prompt_if_exists=False)
+        except Exception:
+            logger.debug(
+                "Failed to persist resolved pose runtime artifact metadata.",
+                exc_info=True,
+            )
+
+
+
+
+    def on_tracking_warning(self, title, message):
+        """Display tracking warnings in the UI."""
+        if self._mw._stop_all_requested:
+            return
+        QMessageBox.information(self, title, message)
+
+
+
+
+    def show_gpu_info(self):
+        """Display GPU and acceleration information dialog."""
+        from hydra_suite.utils.gpu_utils import get_device_info
+
+        info = get_device_info()
+
+        # Build formatted message
+        lines = ["<b>GPU & Acceleration Status</b><br>"]
+
+        # CUDA
+        cuda_status = "✓ Available" if info["cuda_available"] else "✗ Not Available"
+        lines.append(f"<br><b>NVIDIA CUDA:</b> {cuda_status}")
+        if info["cuda_available"] and info.get("cuda_device_count", 0) > 0:
+            lines.append(f"&nbsp;&nbsp;• Devices: {info['cuda_device_count']}")
+            if "cupy_version" in info:
+                lines.append(f"&nbsp;&nbsp;• CuPy: {info['cupy_version']}")
+
+        # TensorRT
+        tensorrt_status = (
+            "✓ Available"
+            if info.get("tensorrt_available", False)
+            else "✗ Not Available"
+        )
+        lines.append(f"<br><b>NVIDIA TensorRT:</b> {tensorrt_status}")
+        if info.get("tensorrt_available", False):
+            lines.append("&nbsp;&nbsp;• 2-5× faster YOLO inference")
+
+        # MPS (Apple Silicon)
+        mps_status = "✓ Available" if info["mps_available"] else "✗ Not Available"
+        lines.append(f"<br><b>Apple MPS:</b> {mps_status}")
+        if info.get("torch_available", False) and "torch_version" in info:
+            lines.append(f"&nbsp;&nbsp;• PyTorch: {info['torch_version']}")
+
+        # CPU Acceleration
+        numba_status = "✓ Available" if info["numba_available"] else "✗ Not Available"
+        lines.append(f"<br><b>CPU JIT (Numba):</b> {numba_status}")
+        if info["numba_available"] and "numba_version" in info:
+            lines.append(f"&nbsp;&nbsp;• Version: {info['numba_version']}")
+
+        # Overall status
+        lines.append("<br><b>Overall Status:</b>")
+        if info["cuda_available"]:
+            lines.append("&nbsp;&nbsp;• Using NVIDIA GPU acceleration")
+        elif info["mps_available"]:
+            lines.append("&nbsp;&nbsp;• Using Apple Silicon GPU acceleration")
+        elif info["numba_available"]:
+            lines.append("&nbsp;&nbsp;• Using CPU JIT compilation")
+        else:
+            lines.append("&nbsp;&nbsp;• Using NumPy (no acceleration)")
+
+        message = "<br>".join(lines)
+
+        # Create message box with rich text
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("GPU & Acceleration Info")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.exec()
+
+
+
+
+    def on_stats_update(self, stats):
+        """Update real-time tracking statistics."""
+        if self._mw._stop_all_requested:
+            return
+        phase = str(stats.get("phase", "tracking"))
+        is_precompute = phase == "individual_precompute"
+
+        # Update FPS
+        if "fps" in stats:
+            if is_precompute:
+                self._mw.label_current_fps.setText(f"Precompute Rate: {stats['fps']:.1f}/s")
+            else:
+                self._mw.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
+            self._mw.label_current_fps.setVisible(True)
+
+        # Update elapsed time
+        if "elapsed" in stats:
+            elapsed_sec = stats["elapsed"]
+            hours = int(elapsed_sec // 3600)
+            minutes = int((elapsed_sec % 3600) // 60)
+            seconds = int(elapsed_sec % 60)
+            if hours > 0:
+                elapsed_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                elapsed_str = f"{minutes:02d}:{seconds:02d}"
+            if is_precompute:
+                self._mw.label_elapsed_time.setText(f"Precompute Elapsed: {elapsed_str}")
+            else:
+                self._mw.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
+            self._mw.label_elapsed_time.setVisible(True)
+
+        # Update ETA
+        if "eta" in stats:
+            eta_sec = stats["eta"]
+            if eta_sec > 0:
+                hours = int(eta_sec // 3600)
+                minutes = int((eta_sec % 3600) // 60)
+                seconds = int(eta_sec % 60)
+                if hours > 0:
+                    eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    eta_str = f"{minutes:02d}:{seconds:02d}"
+                if is_precompute:
+                    self._mw.label_eta.setText(f"Precompute ETA: {eta_str}")
+                else:
+                    self._mw.label_eta.setText(f"ETA: {eta_str}")
+            else:
+                if is_precompute:
+                    self._mw.label_eta.setText("Precompute ETA: calculating...")
+                else:
+                    self._mw.label_eta.setText("ETA: calculating...")
+            self._mw.label_eta.setVisible(True)
+
+
+
+
+    def on_new_frame(self, rgb):
+        """on_new_frame method documentation."""
+        z = max(self._mw.slider_zoom.value() / 100.0, 0.1)
+        h, w, _ = rgb.shape
+
+        # Store tracking frame size for fit-to-screen calculation
+        self._mw._tracking_frame_size = (w, h)
+
+        qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
+
+        # ROI masking is now done in tracking worker - no need to duplicate here
+        scaled = qimg.scaled(
+            int(w * z), int(h * z), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self._mw.video_label.setPixmap(QPixmap.fromImage(scaled))
+
+        # Auto-fit to screen on first frame of tracking
+        if self._mw._tracking_first_frame:
+            self._mw._tracking_first_frame = False
+            # Use QTimer to ensure frame is displayed first
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(50, self._mw._fit_image_to_screen)
+
+
+
+
+    def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):
+        """Scale trajectory coordinates from resized space back to original video space."""
+        if trajectories_df is None or trajectories_df.empty:
+            return trajectories_df
+
+        if resize_factor == 1.0:
+            return trajectories_df  # No scaling needed
+
+        # Scale factor to go from resized -> original is 1/resize_factor
+        scale_factor = 1.0 / resize_factor
+
+        logger.info(
+            f"Scaling trajectories to original video space (resize_factor={resize_factor:.3f}, scale_factor={scale_factor:.3f})"
+        )
+
+        result_df = trajectories_df.copy()
+
+        # Scale X, Y coordinates
+        result_df["X"] = result_df["X"] * scale_factor
+        result_df["Y"] = result_df["Y"] * scale_factor
+
+        # Theta doesn't need scaling (it's an angle)
+        # FrameID doesn't need scaling
+
+        logger.info(
+            f"Scaled {len(result_df)} trajectory points to original video coordinates"
+        )
+        return result_df
+
+
+
+
+    def save_trajectories_to_csv(
+        self: object, trajectories, output_path
+    ):
+        """Save processed trajectories to CSV.
+
+        Args:
+            trajectories: Either list of tuples (old format) or pandas DataFrame (new format with confidence)
+            output_path: Path to save CSV file
+        """
+        if trajectories is None:
+            logger.warning("No post-processed trajectories to save (None).")
+            return False
+
+        # Check if input is a DataFrame (new format with confidence)
+        if isinstance(trajectories, pd.DataFrame):
+            if trajectories.empty:
+                logger.warning(
+                    "No post-processed trajectories to save (empty DataFrame)."
+                )
+                return False
+            try:
+                # DataFrame already has all columns including confidence metrics
+                # Convert X and Y to integers where possible (non-NaN values)
+                df_to_save = trajectories.copy()
+                for col in ["X", "Y", "FrameID"]:
+                    if col in df_to_save.columns:
+                        # Convert to float first to handle any issues, then to Int64 (nullable integer)
+                        df_to_save[col] = pd.to_numeric(
+                            df_to_save[col], errors="coerce"
+                        )
+                        # Use Int64 dtype which supports NaN values
+                        df_to_save[col] = df_to_save[col].round().astype("Int64")
+
+                # Drop unwanted columns from raw tracking data
+                unwanted_cols = ["TrackID", "Index"]
+                df_to_save = df_to_save.drop(
+                    columns=[col for col in unwanted_cols if col in df_to_save.columns],
+                    errors="ignore",
+                )
+
+                # Reorder columns to put basic trajectory info first
+                base_cols = ["TrajectoryID", "X", "Y", "Theta", "FrameID"]
+                other_cols = [col for col in df_to_save.columns if col not in base_cols]
+                ordered_cols = base_cols + other_cols
+                df_to_save[ordered_cols].to_csv(output_path, index=False)
+                logger.info(
+                    f"Successfully saved {df_to_save['TrajectoryID'].nunique()} post-processed trajectories "
+                    f"({len(df_to_save)} rows) with {len(ordered_cols)} columns to {output_path}"
+                )
+                return True
+            except Exception as e:
+                logger.error(
+                    f"Failed to save processed trajectories to {output_path}: {e}"
+                )
+                return False
+
+        # Old format (list of tuples) - for backward compatibility
+        if not trajectories:
+            logger.warning("No post-processed trajectories to save.")
+            return False
+        header = ["TrajectoryID", "X", "Y", "Theta", "FrameID"]
+        try:
+            with open(output_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for trajectory_id, segment in enumerate(trajectories):
+                    for x, y, theta, frame_id in segment:
+                        # Handle NaN values - write as empty string or keep as float
+                        x_val = int(x) if not np.isnan(x) else ""
+                        y_val = int(y) if not np.isnan(y) else ""
+                        frame_val = int(frame_id) if not np.isnan(frame_id) else ""
+                        writer.writerow([trajectory_id, x_val, y_val, theta, frame_val])
+            logger.info(
+                f"Successfully saved {len(trajectories)} post-processed trajectories to {output_path}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save processed trajectories to {output_path}: {e}")
+            return False
+
+
+
+
+    def merge_and_save_trajectories(self):
+        """merge_and_save_trajectories method documentation."""
+        if self._mw._stop_all_requested:
+            return
+        logger.info("=" * 80)
+        logger.info("Starting trajectory merging process...")
+        logger.info("=" * 80)
+
+        forward_trajs = getattr(self._mw, "forward_processed_trajs", None)
+        backward_trajs = getattr(self._mw, "backward_processed_trajs", None)
+
+        # Check if trajectories exist and are not empty (handle both DataFrame and list)
+        forward_empty = (
+            forward_trajs is None
+            or (isinstance(forward_trajs, pd.DataFrame) and forward_trajs.empty)
+            or (isinstance(forward_trajs, list) and len(forward_trajs) == 0)
+        )
+        backward_empty = (
+            backward_trajs is None
+            or (isinstance(backward_trajs, pd.DataFrame) and backward_trajs.empty)
+            or (isinstance(backward_trajs, list) and len(backward_trajs) == 0)
+        )
+
+        if forward_empty or backward_empty:
+            QMessageBox.warning(
+                self,
+                "No Trajectories",
+                "No forward or backward trajectories available to merge.",
+            )
+            return
+
+        video_fp = self._panels.setup.file_line.text()
+        if not video_fp:
+            return
+        cap = cv2.VideoCapture(video_fp)
+        if not cap.isOpened():
+            return
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+
+        current_params = self._mw.get_parameters_dict()
+        resize_factor = self._panels.setup.spin_resize.value()
+        interp_method = (
+            self._panels.postprocess.combo_interpolation_method.currentText().lower()
+        )
+        max_gap = max(
+            1,
+            round(
+                self._panels.postprocess.spin_interpolation_max_gap.value()
+                * self._panels.setup.spin_fps.value()
+            ),
+        )
+        heading_flip_max_burst = (
+            self._panels.postprocess.spin_heading_flip_max_burst.value()
+        )
+
+        # Show progress bar
+        self._mw.progress_bar.setVisible(True)
+        self._mw.progress_label.setVisible(True)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText("Merging trajectories...")
+
+        # Create and start merge worker thread
+        # Discover tag observation cache for AprilTag identity resolution
+        _tag_cache_path = None
+        if (
+            bool(current_params.get("USE_APRILTAGS", False))
+            or str(current_params.get("IDENTITY_METHOD", "")).lower() == "apriltags"
+        ):
+            _det_cache = getattr(self._mw, "current_detection_cache_path", None)
+            if _det_cache and os.path.exists(str(_det_cache)):
+                _pattern = str(_det_cache).replace(".npz", "") + "_tags_*.npz"
+                _candidates = sorted(_glob.glob(_pattern))
+                if _candidates:
+                    _tag_cache_path = _candidates[-1]
+
+        # Determine profiling settings for MergeWorker
+        _enable_profiling = current_params.get("ENABLE_PROFILING", False)
+        _merge_profile_path = None
+        if _enable_profiling:
+            _det_cache = getattr(self._mw, "current_detection_cache_path", None)
+            if _det_cache:
+                _merge_profile_path = str(
+                    Path(_det_cache).parent / "merge_profile.json"
+                )
+            elif video_fp:
+                _merge_profile_path = str(Path(video_fp).parent / "merge_profile.json")
+
+        self._mw.merge_worker = MergeWorker(
+            forward_trajs,
+            backward_trajs,
+            total_frames,
+            current_params,
+            resize_factor,
+            interp_method,
+            max_gap,
+            tag_cache_path=_tag_cache_path,
+            heading_flip_max_burst=heading_flip_max_burst,
+            enable_profiling=_enable_profiling,
+            profile_export_path=_merge_profile_path,
+        )
+        self._mw.merge_worker.progress_signal.connect(self.on_merge_progress)
+        self._mw.merge_worker.finished_signal.connect(self.on_merge_finished)
+        self._mw.merge_worker.error_signal.connect(self.on_merge_error)
+        self._mw.merge_worker.start()
+
+
+
+
+    def on_merge_progress(self, value, message):
+        """Update progress bar during merge."""
+        if self._mw._stop_all_requested:
+            return
+        sender = None
+        if (
+            sender is not None
+            and self._mw.merge_worker is not None
+            and sender is not self._mw.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._mw.progress_bar.setValue(value)
+        self._mw.progress_label.setText(message)
+
+
+
+
+    def _store_interpolated_pose_result(self, pose_csv_path, pose_rows):
+        """Store interpolated pose results from CSV path or in-memory rows."""
+        if pose_csv_path:
+            self._mw.current_interpolated_pose_csv_path = pose_csv_path
+            self._mw.current_interpolated_pose_df = None
+            logger.info(f"Interpolated pose CSV saved: {pose_csv_path}")
+        elif pose_rows:
+            try:
+                self._mw.current_interpolated_pose_df = pd.DataFrame(pose_rows)
+                self._mw.current_interpolated_pose_csv_path = None
+                logger.info(
+                    "Interpolated pose rows kept in-memory: %d",
+                    len(self._mw.current_interpolated_pose_df),
+                )
+            except Exception:
+                self._mw.current_interpolated_pose_df = None
+
+
+
+
+    def _store_interpolated_tag_result(self, tag_csv_path, tag_rows):
+        """Store interpolated AprilTag results from CSV path or in-memory rows."""
+        if tag_csv_path:
+            self._mw.current_interpolated_tag_csv_path = tag_csv_path
+            self._mw.current_interpolated_tag_df = None
+            logger.info(f"Interpolated tag CSV saved: {tag_csv_path}")
+        elif tag_rows:
+            try:
+                self._mw.current_interpolated_tag_df = pd.DataFrame(tag_rows)
+                self._mw.current_interpolated_tag_csv_path = None
+            except Exception:
+                self._mw.current_interpolated_tag_df = None
+
+
+
+
+    def _store_interpolated_cnn_result(self, cnn_csv_paths, cnn_rows):
+        """Store interpolated CNN identity results from CSV paths or in-memory rows."""
+        if cnn_csv_paths:
+            self._mw.current_interpolated_cnn_csv_paths = cnn_csv_paths
+            self._mw.current_interpolated_cnn_dfs = {}
+            logger.info(f"Interpolated CNN CSVs: {cnn_csv_paths}")
+        elif cnn_rows:
+            try:
+                self._mw.current_interpolated_cnn_dfs = {
+                    label: pd.DataFrame(rows)
+                    for label, rows in cnn_rows.items()
+                    if rows
+                }
+                self._mw.current_interpolated_cnn_csv_paths = {}
+            except Exception:
+                self._mw.current_interpolated_cnn_dfs = {}
+
+
+
+
+    def _store_interpolated_headtail_result(self, headtail_csv_path, headtail_rows):
+        """Store interpolated head-tail results from CSV path or in-memory rows."""
+        if headtail_csv_path:
+            self._mw.current_interpolated_headtail_csv_path = headtail_csv_path
+            self._mw.current_interpolated_headtail_df = None
+            logger.info(f"Interpolated head-tail CSV saved: {headtail_csv_path}")
+        elif headtail_rows:
+            try:
+                self._mw.current_interpolated_headtail_df = pd.DataFrame(headtail_rows)
+                self._mw.current_interpolated_headtail_csv_path = None
+            except Exception:
+                self._mw.current_interpolated_headtail_df = None
+
+
+
+
+    def _on_interpolated_crops_finished(self, result):
+        sender = None
+        if (
+            sender is not None
+            and self._mw.interp_worker is not None
+            and sender is not self._mw.interp_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._mw._stop_all_requested:
+            self._cleanup_thread_reference("interp_worker")
+            self._mw._refresh_progress_visibility()
+            return
+
+        saved = 0
+        gaps = 0
+        try:
+            saved = int(result.get("saved", 0))
+            gaps = int(result.get("gaps", 0))
+        except Exception:
+            pass
+
+        self._mw._refresh_progress_visibility()
+        logger.info(f"Interpolated individual crops saved: {saved} (gaps: {gaps})")
+
+        mapping_path = result.get("mapping_path")
+        if mapping_path:
+            logger.info(f"Interpolated mapping saved: {mapping_path}")
+
+        roi_csv_path = result.get("roi_csv_path")
+        if roi_csv_path:
+            logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
+
+        roi_npz_path = result.get("roi_npz_path")
+        if roi_npz_path:
+            self._mw.current_interpolated_roi_npz_path = roi_npz_path
+            logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
+
+        self._store_interpolated_pose_result(
+            result.get("pose_csv_path"), result.get("pose_rows")
+        )
+        self._store_interpolated_tag_result(
+            result.get("tag_csv_path"), result.get("tag_rows")
+        )
+        self._store_interpolated_cnn_result(
+            result.get("cnn_csv_paths"), result.get("cnn_rows")
+        )
+        self._store_interpolated_headtail_result(
+            result.get("headtail_csv_path"), result.get("headtail_rows")
+        )
+
+        self._cleanup_thread_reference("interp_worker")
+        self._mw._refresh_progress_visibility()
+
+        if self._mw._pending_pose_export_csv_path:
+            self._relink_final_pose_augmented_csv(self._mw._pending_pose_export_csv_path)
+
+        if self._mw._pending_finish_after_interp:
+            self._mw._pending_finish_after_interp = False
+            if self._start_pending_oriented_track_video_export(
+                self._mw._session_final_csv_path
+            ):
+                return
+            self._run_pending_video_generation_or_finalize()
+
+
+
+
+    def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
+        """Start optional oriented track video export and hold the finish pipeline."""
+        started = self._mw._generate_oriented_track_videos(final_csv_path)
+        if started:
+            self._mw._pending_finish_after_track_videos = True
+        return started
+
+
+
+
+    def _on_oriented_track_video_worker_thread_finished(self):
+        """Release completed oriented track video worker safely."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.oriented_video_worker is not None
+            and sender is not self._mw.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._mw._refresh_progress_visibility()
+
+
+
+
+    def _on_oriented_track_videos_finished(self, result):
+        """Handle completion of oriented track video export."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.oriented_video_worker is not None
+            and sender is not self._mw.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._mw._stop_all_requested:
+            self._cleanup_thread_reference("oriented_video_worker")
+            self._mw._refresh_progress_visibility()
+            return
+
+        try:
+            exported_videos = int(result.get("exported_videos", 0))
+            exported_frames = int(result.get("exported_frames", 0))
+            exported_tracks = int(result.get("exported_tracks", 0))
+            missing_rows = int(result.get("missing_rows", 0))
+            output_dir = str(result.get("output_dir", "")).strip()
+        except Exception:
+            exported_videos = 0
+            exported_frames = 0
+            exported_tracks = 0
+            missing_rows = 0
+            output_dir = ""
+
+        if output_dir:
+            logger.info(
+                "Oriented track videos exported to %s (%d/%d tracks, %d frames, missing rows=%d)",
+                output_dir,
+                exported_videos,
+                exported_tracks,
+                exported_frames,
+                missing_rows,
+            )
+        else:
+            logger.info(
+                "Oriented track video export complete (%d/%d tracks, %d frames, missing rows=%d)",
+                exported_videos,
+                exported_tracks,
+                exported_frames,
+                missing_rows,
+            )
+
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._mw._refresh_progress_visibility()
+
+        if self._mw._pending_finish_after_track_videos:
+            self._mw._pending_finish_after_track_videos = False
+            self._run_pending_video_generation_or_finalize()
+
+
+
+
+    def _on_oriented_track_videos_error(self, error_message):
+        """Handle oriented track video export errors without aborting the session."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.oriented_video_worker is not None
+            and sender is not self._mw.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        logger.warning("Oriented track video export failed: %s", error_message)
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._mw._refresh_progress_visibility()
+        if self._mw._pending_finish_after_track_videos:
+            self._mw._pending_finish_after_track_videos = False
+            self._run_pending_video_generation_or_finalize()
+
+
+
+
+    def on_merge_error(self, error_message):
+        """Handle merge errors."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.merge_worker is not None
+            and sender is not self._mw.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("merge_worker")
+        if self._mw._stop_all_requested:
+            self._mw._refresh_progress_visibility()
+            return
+        self._mw.progress_bar.setVisible(False)
+        self._mw.progress_label.setVisible(False)
+        QMessageBox.critical(
+            self, "Merge Error", f"Error during trajectory merging:\n{error_message}"
+        )
+        logger.error(f"Trajectory merge error: {error_message}")
+
+
+
+
+    def on_merge_finished(self, resolved_trajectories):
+        """Handle completion of trajectory merging."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.merge_worker is not None
+            and sender is not self._mw.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("merge_worker")
+        if self._mw._stop_all_requested:
+            self._mw._refresh_progress_visibility()
+            return
+        self._mw.progress_label.setText("Saving merged trajectories...")
+
+        raw_csv_path = self._panels.setup.csv_line.text()
+        merged_csv_path = None
+        if raw_csv_path:
+            base, ext = os.path.splitext(raw_csv_path)
+            merged_csv_path = f"{base}_final.csv"
+            if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
+                # Track initial tracking CSV as temporary (only if cleanup enabled)
+                if (
+                    self._panels.postprocess.chk_cleanup_temp_files.isChecked()
+                    and raw_csv_path not in self._mw.temporary_files
+                ):
+                    self._mw.temporary_files.append(raw_csv_path)
+                logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
+
+        # Complete session pipeline. Video generation is deferred to the very end
+        # after pose export and interpolated individual analysis complete.
+        self._finish_tracking_session(final_csv_path=merged_csv_path)
+
+
+
+
+    def _generate_video_from_trajectories(
+        self, trajectories_df, csv_path=None, finalize_on_complete=True
+    ):
+        """
+        Generate annotated video from post-processed trajectories.
+
+        Args:
+            trajectories_df: DataFrame with merged/interpolated trajectories
+            csv_path: Path to the CSV file (optional, for logging)
+            finalize_on_complete: If True, continue full finish pipeline after render.
+        """
+        logger.info("=" * 80)
+        logger.info("Generating video from post-processed trajectories...")
+        logger.info("=" * 80)
+
+        # Ensure progress UI is visible for video generation
+        self._mw.progress_bar.setVisible(True)
+        self._mw.progress_label.setVisible(True)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText("Generating video...")
+        QApplication.processEvents()
+
+        video_path = self._panels.setup.file_line.text()
+        output_path = self._panels.postprocess.video_out_line.text()
+
+        def _complete_after_video():
+            if finalize_on_complete:
+                self._finish_tracking_session(final_csv_path=csv_path)
+            else:
+                self._finalize_tracking_session_ui()
+
+        if not video_path or not output_path:
+            logger.error("Video input or output path not specified")
+            _complete_after_video()
+            return
+
+        # Open video
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            _complete_after_video()
+            return
+
+        # Get video properties
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+
+        if not out.isOpened():
+            logger.error(f"Failed to create output video: {output_path}")
+            cap.release()
+            _complete_after_video()
+            return
+
+        logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
+
+        # Get visualization parameters
+        params = self._mw.get_parameters_dict()
+        start_frame = int(params.get("START_FRAME", 0) or 0)
+        end_frame = params.get("END_FRAME", None)
+        if end_frame is None:
+            end_frame = total_video_frames - 1 if total_video_frames > 0 else 0
+        end_frame = int(end_frame)
+
+        # Clamp to video bounds and export only the tracked subset.
+        if total_video_frames > 0:
+            start_frame = max(0, min(start_frame, total_video_frames - 1))
+            end_frame = max(start_frame, min(end_frame, total_video_frames - 1))
+        total_frames = max(0, end_frame - start_frame + 1)
+        logger.info(
+            f"Exporting tracked frame range: {start_frame}-{end_frame} ({total_frames} frames)"
+        )
+
+        if total_frames <= 0:
+            logger.error("Invalid frame range for video generation.")
+            cap.release()
+            out.release()
+            _complete_after_video()
+            return
+
+        # Seek once to the tracked start frame so we don't write unrelated frames.
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        colors = params.get("TRAJECTORY_COLORS", [])
+        reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
+
+        # Get video visualization settings
+        show_labels = self._panels.postprocess.check_show_labels.isChecked()
+        show_orientation = self._panels.postprocess.check_show_orientation.isChecked()
+        show_trails = self._panels.postprocess.check_show_trails.isChecked()
+        trail_duration_sec = self._panels.postprocess.spin_trail_duration.value()
+        trail_duration_frames = int(
+            trail_duration_sec * fps
+        )  # Convert seconds to frames
+        marker_size = self._panels.postprocess.spin_marker_size.value()
+        text_scale = self._panels.postprocess.spin_text_scale.value()
+        arrow_length = self._panels.postprocess.spin_arrow_length.value()
+        advanced_config = params.get("ADVANCED_CONFIG", {})
+
+        # NOTE: Trajectories in merged CSV are already scaled to original coordinates
+        # (see MergeWorker line ~173: coordinates divided by resize_factor)
+        # So we use them directly without additional scaling
+
+        # Scale drawing parameters by body size
+        # reference_body_size is in original (unresized) coordinates
+        # Video is at original resolution, so use body size directly
+        marker_radius = int(marker_size * reference_body_size)
+        arrow_len = int(arrow_length * reference_body_size)
+        text_size = 0.5 * text_scale
+        marker_thickness = max(2, int(0.15 * reference_body_size))
+        pose_point_radius = int(
+            max(
+                1,
+                advanced_config.get(
+                    "video_pose_point_radius", max(2, marker_radius // 3)
+                ),
+            )
+        )
+        pose_point_thickness = int(
+            advanced_config.get("video_pose_point_thickness", -1)
+        )
+        pose_line_thickness = int(
+            max(1, advanced_config.get("video_pose_line_thickness", 2))
+        )
+        pose_color_mode = (
+            str(advanced_config.get("video_pose_color_mode", "track")).strip().lower()
+        )
+        pose_fixed_color_raw = advanced_config.get("video_pose_color", [255, 255, 255])
+        if (
+            isinstance(pose_fixed_color_raw, (list, tuple))
+            and len(pose_fixed_color_raw) == 3
+        ):
+            try:
+                pose_fixed_color = tuple(
+                    int(max(0, min(255, float(v)))) for v in pose_fixed_color_raw
+                )
+            except Exception:
+                pose_fixed_color = (255, 255, 255)
+        else:
+            pose_fixed_color = (255, 255, 255)
+        pose_min_conf = normalize_pose_render_min_conf(
+            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+        )
+        pose_edges = []
+        pose_column_triplets = []
+        show_pose = bool(advanced_config.get("video_show_pose", True))
+        pose_col_pattern = re.compile(r"^PoseKpt_(.+)_(X|Y|Conf)$")
+        pose_labels_available = {}
+        for col in trajectories_df.columns:
+            m = pose_col_pattern.match(str(col))
+            if m is None:
+                continue
+            label = m.group(1)
+            axis = m.group(2)
+            pose_labels_available.setdefault(label, set()).add(axis)
+        if not pose_labels_available:
+            show_pose = False
+        if show_pose:
+            skeleton_names = []
+            skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
+            if skeleton_file and os.path.exists(skeleton_file):
+                try:
+                    with open(skeleton_file, "r", encoding="utf-8") as f:
+                        skeleton_data = json.load(f)
+                    names_raw = skeleton_data.get(
+                        "keypoint_names", skeleton_data.get("keypoints", [])
+                    )
+                    skeleton_names = [str(n) for n in names_raw]
+                    raw_edges = skeleton_data.get(
+                        "skeleton_edges", skeleton_data.get("edges", [])
+                    )
+                    for edge in raw_edges:
+                        if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                            try:
+                                pose_edges.append((int(edge[0]), int(edge[1])))
+                            except Exception:
+                                continue
+                except Exception:
+                    pose_edges = []
+            ordered_labels = build_pose_keypoint_labels(
+                skeleton_names, len(skeleton_names)
+            )
+            # Add any extra labels present in CSV but absent from skeleton.
+            extras = sorted(
+                [
+                    lbl
+                    for lbl in pose_labels_available.keys()
+                    if lbl not in ordered_labels
+                ]
+            )
+            ordered_labels.extend(extras)
+            for label in ordered_labels:
+                axes = pose_labels_available.get(label, set())
+                if {"X", "Y", "Conf"}.issubset(axes):
+                    pose_column_triplets.append(
+                        (
+                            f"PoseKpt_{label}_X",
+                            f"PoseKpt_{label}_Y",
+                            f"PoseKpt_{label}_Conf",
+                        )
+                    )
+            if not pose_column_triplets:
+                show_pose = False
+
+        # ── Pre-extract trajectory arrays for O(1)/O(log N) lookups ─────────────
+        _frame_ids = trajectories_df["FrameID"].to_numpy(dtype=np.int32)
+        _track_ids = trajectories_df["TrajectoryID"].to_numpy(dtype=np.int32)
+        _xs = trajectories_df["X"].to_numpy(dtype=np.float64)
+        _ys = trajectories_df["Y"].to_numpy(dtype=np.float64)
+        _thetas = (
+            trajectories_df["Theta"].to_numpy(dtype=np.float64)
+            if "Theta" in trajectories_df.columns
+            else np.full(len(trajectories_df), np.nan)
+        )
+
+        # Pose arrays: shape (K, N, 3) extracted once to avoid per-row pandas overhead
+        _pose_kpts = None
+        if show_pose and pose_column_triplets:
+            _K = len(pose_column_triplets)
+            _N = len(trajectories_df)
+            _pose_kpts = np.full((_K, _N, 3), np.nan, dtype=np.float32)
+            for _k, (_x_col, _y_col, _c_col) in enumerate(pose_column_triplets):
+                if _x_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 0] = trajectories_df[_x_col].to_numpy(
+                        dtype=np.float32
+                    )
+                if _y_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 1] = trajectories_df[_y_col].to_numpy(
+                        dtype=np.float32
+                    )
+                if _c_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 2] = trajectories_df[_c_col].to_numpy(
+                        dtype=np.float32
+                    )
+
+        # Frame → row-index list (replaces slow iterrows + pandas Series access)
+        traj_indices_by_frame: dict = {}
+        for _i in range(len(_frame_ids)):
+            _fid = int(_frame_ids[_i])
+            if _fid not in traj_indices_by_frame:
+                traj_indices_by_frame[_fid] = []
+            traj_indices_by_frame[_fid].append(_i)
+
+        # Per-track sorted arrays for O(log N) trail window lookup via binary search
+        _track_sorted_row_indices: dict = {}
+        _track_sorted_frame_vals: dict = {}
+        if show_trails:
+            _tmp_track: dict = {}
+            for _i in range(len(_track_ids)):
+                _tid = int(_track_ids[_i])
+                if _tid not in _tmp_track:
+                    _tmp_track[_tid] = []
+                _tmp_track[_tid].append(_i)
+            for _tid, _idxs in _tmp_track.items():
+                _idx_arr = np.asarray(_idxs, dtype=np.int32)
+                _order = np.argsort(_frame_ids[_idx_arr])
+                _track_sorted_row_indices[_tid] = _idx_arr[_order]
+                _track_sorted_frame_vals[_tid] = _frame_ids[_idx_arr[_order]]
+
+        # Pre-compute palette and one color per track ID (avoid rebuilding every frame)
+        _category20_colors = [
+            (127, 127, 31),
+            (188, 189, 34),
+            (140, 86, 75),
+            (255, 127, 14),
+            (214, 39, 40),
+            (255, 152, 150),
+            (197, 176, 213),
+            (148, 103, 189),
+            (196, 156, 148),
+            (227, 119, 194),
+            (199, 199, 199),
+            (140, 140, 140),
+            (23, 190, 207),
+            (158, 218, 229),
+            (57, 59, 121),
+            (82, 84, 163),
+            (107, 110, 207),
+            (156, 158, 222),
+            (99, 121, 57),
+            (140, 162, 82),
+        ]
+        _n_cat = len(_category20_colors)
+        _max_track = int(_track_ids.max()) if len(_track_ids) > 0 else 0
+        _precomputed_colors = [
+            (
+                colors[_tid]
+                if colors and _tid < len(colors)
+                else _category20_colors[_tid % _n_cat]
+            )
+            for _tid in range(_max_track + 1)
+        ]
+
+        # Threaded writer: overlaps disk I/O with CPU rendering.
+        # maxsize=4 caps in-flight frames so fast rendering on Linux cannot
+        # exhaust memory before the writer thread drains the queue.
+        import queue as _queue
+        import threading as _threading
+
+        _write_q: _queue.Queue = _queue.Queue(maxsize=4)
+
+        def _writer_thread():
+            while True:
+                _item = _write_q.get()
+                if _item is None:
+                    break
+                out.write(_item)
+
+        _writer = _threading.Thread(target=_writer_thread, daemon=True)
+        _writer.start()
+
+        # Process only the tracked frame range.
+        for rel_idx in range(total_frames):
+            frame_idx = start_frame + rel_idx
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Get row indices for this frame
+            frame_row_indices = traj_indices_by_frame.get(frame_idx, [])
+
+            # Draw trails first (underneath current positions)
+            if show_trails:
+                for row_i in frame_row_indices:
+                    track_id = int(_track_ids[row_i])
+                    color = (
+                        _precomputed_colors[track_id]
+                        if track_id < len(_precomputed_colors)
+                        else _category20_colors[track_id % _n_cat]
+                    )
+                    # Binary-search trail window: O(log N) instead of O(N) per frame
+                    if track_id in _track_sorted_frame_vals:
+                        _sfv = _track_sorted_frame_vals[track_id]
+                        _sri = _track_sorted_row_indices[track_id]
+                        _lo = int(
+                            np.searchsorted(
+                                _sfv, frame_idx - trail_duration_frames, side="left"
+                            )
+                        )
+                        _hi = int(np.searchsorted(_sfv, frame_idx, side="left"))
+                        if _hi - _lo >= 2:
+                            _trail_xs = _xs[_sri[_lo:_hi]]
+                            _trail_ys = _ys[_sri[_lo:_hi]]
+                            _trail_fs = _sfv[_lo:_hi]
+                            _trail_lw = max(1, marker_thickness // 2)
+                            for _seg in range(_hi - _lo - 1):
+                                _px1, _py1 = _trail_xs[_seg], _trail_ys[_seg]
+                                _px2, _py2 = _trail_xs[_seg + 1], _trail_ys[_seg + 1]
+                                if (
+                                    np.isnan(_px1)
+                                    or np.isnan(_py1)
+                                    or np.isnan(_px2)
+                                    or np.isnan(_py2)
+                                ):
+                                    continue
+                                _age = frame_idx - int(_trail_fs[_seg])
+                                _alpha = 1.0 - (_age / trail_duration_frames)
+                                cv2.line(
+                                    frame,
+                                    (int(_px1), int(_py1)),
+                                    (int(_px2), int(_py2)),
+                                    (
+                                        int(color[0] * _alpha),
+                                        int(color[1] * _alpha),
+                                        int(color[2] * _alpha),
+                                    ),
+                                    _trail_lw,
+                                )
+
+            # Draw current positions
+            for row_i in frame_row_indices:
+                track_id = int(_track_ids[row_i])
+                cx_f, cy_f = _xs[row_i], _ys[row_i]
+
+                # Skip if NaN
+                if np.isnan(cx_f) or np.isnan(cy_f):
+                    continue
+
+                cx, cy = int(cx_f), int(cy_f)
+                color = (
+                    _precomputed_colors[track_id]
+                    if track_id < len(_precomputed_colors)
+                    else _category20_colors[track_id % _n_cat]
+                )
+
+                # Draw circle at position
+                cv2.circle(frame, (cx, cy), marker_radius, color, marker_thickness)
+
+                # Draw label
+                if show_labels:
+                    label_offset = int(marker_radius + 5)
+                    cv2.putText(
+                        frame,
+                        f"ID{track_id}",
+                        (cx + label_offset, cy - label_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        text_size,
+                        color,
+                        max(1, int(text_scale * 2)),
+                    )
+
+                # Draw orientation if available
+                if show_orientation:
+                    _theta = _thetas[row_i]
+                    if not np.isnan(_theta):
+                        cv2.arrowedLine(
+                            frame,
+                            (cx, cy),
+                            (
+                                int(cx + arrow_len * np.cos(_theta)),
+                                int(cy + arrow_len * np.sin(_theta)),
+                            ),
+                            color,
+                            marker_thickness,
+                            tipLength=0.3,
+                        )
+
+                # Draw pose keypoints/skeleton (uses pre-extracted numpy slice)
+                if show_pose and _pose_kpts is not None:
+                    kpts_arr = _pose_kpts[:, row_i, :]  # shape (K, 3) — zero-copy view
+                    if np.any(np.isfinite(kpts_arr[:, 2])):
+                        pose_color = (
+                            color if pose_color_mode == "track" else pose_fixed_color
+                        )
+                        if pose_edges:
+                            for e0, e1 in pose_edges:
+                                if (
+                                    e0 < 0
+                                    or e1 < 0
+                                    or e0 >= len(kpts_arr)
+                                    or e1 >= len(kpts_arr)
+                                ):
+                                    continue
+                                if not is_renderable_pose_keypoint(
+                                    kpts_arr[e0, 0],
+                                    kpts_arr[e0, 1],
+                                    kpts_arr[e0, 2],
+                                    pose_min_conf,
+                                ) or not is_renderable_pose_keypoint(
+                                    kpts_arr[e1, 0],
+                                    kpts_arr[e1, 1],
+                                    kpts_arr[e1, 2],
+                                    pose_min_conf,
+                                ):
+                                    continue
+                                cv2.line(
+                                    frame,
+                                    (
+                                        int(round(float(kpts_arr[e0, 0]))),
+                                        int(round(float(kpts_arr[e0, 1]))),
+                                    ),
+                                    (
+                                        int(round(float(kpts_arr[e1, 0]))),
+                                        int(round(float(kpts_arr[e1, 1]))),
+                                    ),
+                                    pose_color,
+                                    pose_line_thickness,
+                                )
+                        for kpt in kpts_arr:
+                            if not is_renderable_pose_keypoint(
+                                kpt[0], kpt[1], kpt[2], pose_min_conf
+                            ):
+                                continue
+                            cv2.circle(
+                                frame,
+                                (int(round(float(kpt[0]))), int(round(float(kpt[1])))),
+                                pose_point_radius,
+                                pose_color,
+                                pose_point_thickness,
+                            )
+
+            # Enqueue frame for background write (overlaps disk I/O with CPU rendering)
+            _write_q.put(frame)
+
+            # Update progress every 30 frames
+            if rel_idx % 30 == 0:
+                progress = int(((rel_idx + 1) / total_frames) * 100)
+                self._mw.progress_bar.setValue(progress)
+                QApplication.processEvents()
+
+        # Signal writer thread to finish and wait for all frames to be flushed
+        _write_q.put(None)
+        _writer.join()
+
+        # Cleanup
+        cap.release()
+        out.release()
+
+        logger.info(f"✓ Video saved to: {output_path}")
+        logger.info("=" * 80)
+
+        _complete_after_video()
+
+
+
+
+    def on_tracking_finished(
+        self: object, finished_normally, fps_list, full_traj
+    ):
+        """on_tracking_finished method documentation."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.tracking_worker is not None
+            and sender is not self._mw.tracking_worker
+        ):
+            logger.debug(
+                "Ignoring stale tracking finished signal from previous worker."
+            )
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._mw.progress_bar.setVisible(False)
+        self._mw.progress_label.setVisible(False)
+
+        self._stop_csv_writer()
+
+        if self._mw._stop_all_requested:
+            logger.info("Tracking stop requested; skipping post-processing pipeline.")
+            self._cleanup_thread_reference("tracking_worker")
+            self._mw._refresh_progress_visibility()
+            gc.collect()
+            return
+
+        # Check if this was preview mode
+        was_preview_mode = self._mw.btn_preview.isChecked()
+
+        if was_preview_mode:
+            self._mw.btn_preview.setChecked(False)
+            self._mw.btn_preview.setText("Preview Mode")
+            # Hide stats labels and re-enable UI for preview mode
+            self._mw.label_current_fps.setVisible(False)
+            self._mw.label_elapsed_time.setVisible(False)
+            self._mw.label_eta.setVisible(False)
+            self._mw._set_ui_controls_enabled(True)
+            self._mw.btn_start.blockSignals(True)
+            self._mw.btn_start.setChecked(False)
+            self._mw.btn_start.blockSignals(False)
+            self._mw.btn_start.setText("Start Full Tracking")
+            self._mw._apply_ui_state("idle" if self._mw.current_video_path else "no_video")
+            if finished_normally:
+                logger.info("Preview completed.")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Preview Interrupted",
+                    "Preview was stopped or encountered an error.",
+                )
+            gc.collect()
+            return  # Exit early - no post-processing, no backward tracking for preview
+
+        worker_props_path = ""
+        if self._mw.tracking_worker is not None:
+            worker_props_path = str(
+                getattr(self._mw.tracking_worker, "individual_properties_cache_path", "")
+                or ""
+            ).strip()
+        if worker_props_path:
+            self._mw.current_individual_properties_cache_path = worker_props_path
+            logger.info(
+                "Using individual properties cache for export: %s",
+                worker_props_path,
+            )
+
+        if finished_normally:
+            logger.info("Tracking completed successfully.")
+            is_backward_mode = (
+                hasattr(self._mw.tracking_worker, "backward_mode")
+                and self._mw.tracking_worker.backward_mode
+            )
+            # Accumulate fps_list across forward and backward passes
+            if isinstance(fps_list, (list, tuple)) and fps_list:
+                self._mw._session_fps_list = list(self._mw._session_fps_list) + [
+                    f for f in fps_list if f and f > 0
+                ]
+            if not is_backward_mode:
+                self._mw._session_frames_processed = (
+                    len(fps_list) if isinstance(fps_list, (list, tuple)) else 0
+                )
+            is_backward_enabled = self._panels.tracking.chk_enable_backward.isChecked()
+
+            processed_trajectories = full_traj
+            if self._panels.postprocess.enable_postprocessing.isChecked():
+                params = self._mw.get_parameters_dict()
+                raw_csv_path = self._panels.setup.csv_line.text()
+
+                if is_backward_mode and raw_csv_path:
+                    # Use backward CSV for processing
+                    base, ext = os.path.splitext(raw_csv_path)
+                    csv_to_process = f"{base}_backward{ext}"
+                elif is_backward_enabled and raw_csv_path:
+                    # Forward mode with backward enabled: use _forward.csv
+                    # (tracking writes to _forward.csv when backward is enabled)
+                    base, ext = os.path.splitext(raw_csv_path)
+                    csv_to_process = f"{base}_forward{ext}"
+                else:
+                    # Forward-only mode: use base path
+                    csv_to_process = raw_csv_path
+
+                from hydra_suite.core.post.processing import (
+                    interpolate_trajectories,
+                    process_trajectories_from_csv,
+                )
+
+                if csv_to_process and os.path.exists(csv_to_process):
+                    # Use CSV-based processing to preserve confidence columns
+                    processed_trajectories, stats = process_trajectories_from_csv(
+                        csv_to_process, params
+                    )
+                    logger.info(f"Post-processing stats: {stats}")
+
+                    # NOTE: Do NOT apply interpolation here if backward tracking will follow
+                    # Interpolation should only be applied AFTER merging (in MergeWorker)
+                    # or in forward-only mode (below). Pre-merge interpolation can affect
+                    # merge candidate detection by filling gaps that should remain as gaps.
+
+                    # NOTE: Do NOT scale to original space yet if backward tracking will happen
+                    # Scaling will be done after merging or in forward-only mode
+                else:
+                    # Fallback to old method if CSV not available
+                    processed_trajectories, stats = process_trajectories(
+                        full_traj, params
+                    )
+                    logger.info(f"Post-processing stats (fallback): {stats}")
+
+            if not is_backward_mode:
+                raw_csv_path = self._panels.setup.csv_line.text()
+                if raw_csv_path:
+                    base, ext = os.path.splitext(raw_csv_path)
+                    # Track intermediate forward CSV as temporary (only if cleanup enabled)
+                    forward_csv = f"{base}_forward{ext}"
+                    if (
+                        self._panels.postprocess.chk_cleanup_temp_files.isChecked()
+                        and forward_csv not in self._mw.temporary_files
+                    ):
+                        self._mw.temporary_files.append(forward_csv)
+
+                    processed_csv_path = f"{base}_forward_processed{ext}"
+                    # Only track processed CSV as temporary if backward tracking will run
+                    # and cleanup is enabled (it will be merged into final file).
+                    # Otherwise, this IS the final file.
+                    if (
+                        is_backward_enabled
+                        and self._panels.postprocess.chk_cleanup_temp_files.isChecked()
+                        and processed_csv_path not in self._mw.temporary_files
+                    ):
+                        self._mw.temporary_files.append(processed_csv_path)
+
+                    self.save_trajectories_to_csv(
+                        processed_trajectories, processed_csv_path
+                    )
+
+                if is_backward_enabled:
+                    self._mw.forward_processed_trajs = processed_trajectories
+                    # Log coordinate ranges for debugging
+                    if (
+                        isinstance(processed_trajectories, pd.DataFrame)
+                        and not processed_trajectories.empty
+                    ):
+                        logger.info(
+                            f"Forward trajectories stored for merge: "
+                            f"X range [{processed_trajectories['X'].min():.1f}, {processed_trajectories['X'].max():.1f}], "
+                            f"Y range [{processed_trajectories['Y'].min():.1f}, {processed_trajectories['Y'].max():.1f}]"
+                        )
+                    self.start_backward_tracking()
+                else:
+                    # Forward-only mode: Apply interpolation here (no merge step)
+                    interp_method = (
+                        self._panels.postprocess.combo_interpolation_method.currentText().lower()
+                    )
+                    if interp_method != "none":
+                        max_gap = max(
+                            1,
+                            round(
+                                self._panels.postprocess.spin_interpolation_max_gap.value()
+                                * self._panels.setup.spin_fps.value()
+                            ),
+                        )
+                        heading_flip_max_burst = (
+                            self._panels.postprocess.spin_heading_flip_max_burst.value()
+                        )
+                        processed_trajectories = interpolate_trajectories(
+                            processed_trajectories,
+                            method=interp_method,
+                            max_gap=max_gap,
+                            heading_flip_max_burst=heading_flip_max_burst,
+                        )
+
+                    # Scale coordinates to original video space (forward-only mode)
+                    resize_factor = self._panels.setup.spin_resize.value()
+                    processed_trajectories = self._scale_trajectories_to_original_space(
+                        processed_trajectories, resize_factor
+                    )
+
+                    # Re-save the scaled trajectories
+                    final_csv_path = None
+                    if raw_csv_path:
+                        base, ext = os.path.splitext(raw_csv_path)
+                        # In forward-only mode, the final output is _forward_processed.csv
+                        final_csv_path = f"{base}_forward_processed{ext}"
+                        self.save_trajectories_to_csv(
+                            processed_trajectories, final_csv_path
+                        )
+                        # Track initial tracking CSV as temporary (only if cleanup enabled)
+                        if (
+                            self._panels.postprocess.chk_cleanup_temp_files.isChecked()
+                            and raw_csv_path not in self._mw.temporary_files
+                        ):
+                            self._mw.temporary_files.append(raw_csv_path)
+
+                    # Complete session pipeline. Video generation is deferred to
+                    # the final step after pose export + interpolation.
+                    self._finish_tracking_session(final_csv_path=final_csv_path)
+                    return
+            else:
+                raw_csv_path = self._panels.setup.csv_line.text()
+                if raw_csv_path:
+                    base, ext = os.path.splitext(raw_csv_path)
+                    # Track intermediate backward CSV as temporary (only if cleanup enabled)
+                    backward_csv = f"{base}_backward{ext}"
+                    if (
+                        self._panels.postprocess.chk_cleanup_temp_files.isChecked()
+                        and backward_csv not in self._mw.temporary_files
+                    ):
+                        self._mw.temporary_files.append(backward_csv)
+
+                    processed_csv_path = f"{base}_backward_processed{ext}"
+                    # Track processed CSV as temporary (only if cleanup enabled)
+                    if (
+                        self._panels.postprocess.chk_cleanup_temp_files.isChecked()
+                        and processed_csv_path not in self._mw.temporary_files
+                    ):
+                        self._mw.temporary_files.append(processed_csv_path)
+                    self.save_trajectories_to_csv(
+                        processed_trajectories, processed_csv_path
+                    )
+                self._mw.backward_processed_trajs = processed_trajectories
+                # Log coordinate ranges for debugging
+                if (
+                    isinstance(processed_trajectories, pd.DataFrame)
+                    and not processed_trajectories.empty
+                ):
+                    logger.info(
+                        f"Backward trajectories stored for merge: "
+                        f"X range [{processed_trajectories['X'].min():.1f}, {processed_trajectories['X'].max():.1f}], "
+                        f"Y range [{processed_trajectories['Y'].min():.1f}, {processed_trajectories['Y'].max():.1f}]"
+                    )
+
+                # Check if both forward and backward trajectories exist for merging
+                has_forward = self._mw.forward_processed_trajs is not None and (
+                    isinstance(self._mw.forward_processed_trajs, pd.DataFrame)
+                    and not self._mw.forward_processed_trajs.empty
+                    or isinstance(self._mw.forward_processed_trajs, list)
+                    and len(self._mw.forward_processed_trajs) > 0
+                )
+                has_backward = self._mw.backward_processed_trajs is not None and (
+                    isinstance(self._mw.backward_processed_trajs, pd.DataFrame)
+                    and not self._mw.backward_processed_trajs.empty
+                    or isinstance(self._mw.backward_processed_trajs, list)
+                    and len(self._mw.backward_processed_trajs) > 0
+                )
+
+                if has_forward and has_backward:
+                    # Start merge in background thread (will handle cleanup when done)
+                    self.merge_and_save_trajectories()
+                else:
+                    # No merge needed, do cleanup now
+                    # Pass the correct CSV path based on what we processed
+                    self._finish_tracking_session(final_csv_path=processed_csv_path)
+        else:
+            logger.error("Tracking did not finish normally.")
+            QMessageBox.warning(
+                self,
+                "Tracking Failed",
+                "An error occurred during tracking. Check logs for details.",
+            )
+            if self._panels.setup.g_batch.isChecked():
+                self._mw.current_batch_index = -1
+                logger.info("Batch mode aborted due to error.")
+            self._finish_tracking_session(final_csv_path=None)
+
+
+
+
+    def _build_pose_augmented_dataframe(self, final_csv_path):
+        """Load final CSV and merge available cached/interpolated pose columns."""
+        if not final_csv_path or not os.path.exists(final_csv_path):
+            return None
+
+        # Check for any available analysis source (pose, tag, cnn, headtail)
+        _has_interp_tag = bool(
+            (getattr(self._mw, "current_interpolated_tag_csv_path", None))
+            or (
+                isinstance(
+                    getattr(self._mw, "current_interpolated_tag_df", None),
+                    pd.DataFrame,
+                )
+            )
+        )
+        _has_interp_cnn = bool(
+            getattr(self._mw, "current_interpolated_cnn_csv_paths", None)
+            or getattr(self._mw, "current_interpolated_cnn_dfs", None)
+        )
+        _has_interp_ht = bool(
+            (getattr(self._mw, "current_interpolated_headtail_csv_path", None))
+            or (
+                isinstance(
+                    getattr(self._mw, "current_interpolated_headtail_df", None),
+                    pd.DataFrame,
+                )
+            )
+        )
+        _has_other_analyses = _has_interp_tag or _has_interp_cnn or _has_interp_ht
+
+        if not self._mw._is_pose_export_enabled() and not _has_other_analyses:
+            return None
+
+        cache_path = str(self._mw.current_individual_properties_cache_path or "").strip()
+        cache_available = bool(cache_path and os.path.exists(cache_path))
+        interp_pose_path = str(self._mw.current_interpolated_pose_csv_path or "").strip()
+        interp_available = bool(interp_pose_path and os.path.exists(interp_pose_path))
+        interp_pose_df_mem = getattr(self._mw, "current_interpolated_pose_df", None)
+        interp_mem_available = (
+            isinstance(interp_pose_df_mem, pd.DataFrame)
+            and not interp_pose_df_mem.empty
+        )
+        if (
+            not cache_available
+            and not interp_available
+            and not interp_mem_available
+            and not _has_other_analyses
+        ):
+            logger.warning(
+                "Pose export skipped: no pose sources found (cache=%s, interpolated=%s, in_memory=%s).",
+                cache_path or "<empty>",
+                interp_pose_path or "<empty>",
+                bool(interp_mem_available),
+            )
+            return None
+
+        try:
+            trajectories_df = pd.read_csv(final_csv_path)
+        except Exception:
+            logger.exception(
+                "Pose export skipped: failed to load trajectories CSV: %s",
+                final_csv_path,
+            )
+            return None
+
+        try:
+            with_pose_df = trajectories_df
+            if cache_available:
+                min_valid_conf = float(
+                    self._panels.identity.spin_pose_min_kpt_conf_valid.value()
+                )
+                _resize_factor = float(
+                    self._mw.get_parameters_dict().get("RESIZE_FACTOR", 1.0)
+                )
+                _coord_scale = (
+                    1.0 / _resize_factor
+                    if _resize_factor and _resize_factor != 1.0
+                    else 1.0
+                )
+                with_pose_df = augment_trajectories_with_pose_cache(
+                    with_pose_df,
+                    cache_path,
+                    ignore_keypoints=self._mw._parse_pose_ignore_keypoints(),
+                    min_valid_conf=min_valid_conf,
+                    coordinate_scale=_coord_scale,
+                )
+            if interp_available:
+                interp_pose_df = pd.read_csv(interp_pose_path)
+                with_pose_df = merge_interpolated_pose_df(with_pose_df, interp_pose_df)
+            elif interp_mem_available:
+                with_pose_df = merge_interpolated_pose_df(
+                    with_pose_df, interp_pose_df_mem
+                )
+
+            # --- Merge interpolated AprilTag observations ---
+            _interp_tag_path = str(
+                getattr(self._mw, "current_interpolated_tag_csv_path", None) or ""
+            ).strip()
+            _interp_tag_df = getattr(self._mw, "current_interpolated_tag_df", None)
+            try:
+                from hydra_suite.core.identity.properties.export import (
+                    merge_interpolated_apriltag_df,
+                )
+
+                if _interp_tag_path and os.path.exists(_interp_tag_path):
+                    _tag_df = pd.read_csv(_interp_tag_path)
+                    with_pose_df = merge_interpolated_apriltag_df(with_pose_df, _tag_df)
+                elif (
+                    isinstance(_interp_tag_df, pd.DataFrame)
+                    and not _interp_tag_df.empty
+                ):
+                    with_pose_df = merge_interpolated_apriltag_df(
+                        with_pose_df, _interp_tag_df
+                    )
+            except Exception:
+                logger.debug("Interpolated AprilTag merge skipped.", exc_info=True)
+
+            # --- Merge interpolated CNN identity predictions ---
+            _interp_cnn_paths = (
+                getattr(self._mw, "current_interpolated_cnn_csv_paths", {}) or {}
+            )
+            _interp_cnn_dfs = getattr(self._mw, "current_interpolated_cnn_dfs", {}) or {}
+            try:
+                from hydra_suite.core.identity.properties.export import (
+                    merge_interpolated_cnn_df,
+                )
+
+                _all_cnn_labels = set(_interp_cnn_paths.keys()) | set(
+                    _interp_cnn_dfs.keys()
+                )
+                for _cnn_label in _all_cnn_labels:
+                    _cnn_path = str(_interp_cnn_paths.get(_cnn_label, "")).strip()
+                    if _cnn_path and os.path.exists(_cnn_path):
+                        _cnn_df = pd.read_csv(_cnn_path)
+                        with_pose_df = merge_interpolated_cnn_df(
+                            with_pose_df, _cnn_df, label=_cnn_label
+                        )
+                    elif _cnn_label in _interp_cnn_dfs:
+                        _cnn_df = _interp_cnn_dfs[_cnn_label]
+                        if isinstance(_cnn_df, pd.DataFrame) and not _cnn_df.empty:
+                            with_pose_df = merge_interpolated_cnn_df(
+                                with_pose_df, _cnn_df, label=_cnn_label
+                            )
+            except Exception:
+                logger.debug("Interpolated CNN merge skipped.", exc_info=True)
+
+            # --- Merge interpolated head-tail directions ---
+            _interp_ht_path = str(
+                getattr(self._mw, "current_interpolated_headtail_csv_path", None) or ""
+            ).strip()
+            _interp_ht_df = getattr(self._mw, "current_interpolated_headtail_df", None)
+            try:
+                from hydra_suite.core.identity.properties.export import (
+                    merge_interpolated_headtail_df,
+                )
+
+                if _interp_ht_path and os.path.exists(_interp_ht_path):
+                    _ht_df = pd.read_csv(_interp_ht_path)
+                    with_pose_df = merge_interpolated_headtail_df(with_pose_df, _ht_df)
+                elif (
+                    isinstance(_interp_ht_df, pd.DataFrame) and not _interp_ht_df.empty
+                ):
+                    with_pose_df = merge_interpolated_headtail_df(
+                        with_pose_df, _interp_ht_df
+                    )
+            except Exception:
+                logger.debug("Interpolated head-tail merge skipped.", exc_info=True)
+        except Exception:
+            logger.exception(
+                "Pose export skipped: failed while merging pose sources (cache=%s, interpolated=%s)",
+                cache_path or "<empty>",
+                interp_pose_path or "<empty>",
+            )
+            return None
+
+        if with_pose_df is None or with_pose_df.empty:
+            logger.warning(
+                "Pose export skipped: merged pose dataframe is empty for %s",
+                final_csv_path,
+            )
+            return None
+
+        # Extract pose labels from the merged DataFrame
+        import re as _re
+
+        _kpt_re = _re.compile(r"^PoseKpt_(.+)_X$")
+        pose_labels = [
+            m.group(1) for col in with_pose_df.columns if (m := _kpt_re.match(str(col)))
+        ]
+
+        if pose_labels:
+            params = self._mw.get_parameters_dict()
+            # Resolve anterior/posterior indices for body-length calibration
+            from hydra_suite.core.identity.pose.features import (
+                resolve_pose_group_indices,
+            )
+
+            kpt_names = []
+            try:
+                from hydra_suite.core.identity.properties.cache import (
+                    IndividualPropertiesCache,
+                )
+
+                _cache_path = str(
+                    self._mw.current_individual_properties_cache_path or ""
+                ).strip()
+                if _cache_path and os.path.exists(_cache_path):
+                    _cache = IndividualPropertiesCache(_cache_path, mode="r")
+                    try:
+                        kpt_names = [
+                            str(v)
+                            for v in (
+                                _cache.metadata.get("pose_keypoint_names", []) or []
+                            )
+                        ]
+                    finally:
+                        _cache.close()
+            except Exception:
+                pass
+            anterior_indices = resolve_pose_group_indices(
+                params.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), kpt_names
+            )
+            posterior_indices = resolve_pose_group_indices(
+                params.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), kpt_names
+            )
+
+            # Load skeleton edges from the skeleton JSON for anatomy checks
+            skeleton_edges = []
+            try:
+                _skel_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
+                if _skel_file and os.path.exists(_skel_file):
+                    with open(_skel_file, "r", encoding="utf-8") as _sf:
+                        _skel_data = json.load(_sf)
+                    for _edge in _skel_data.get(
+                        "skeleton_edges", _skel_data.get("edges", [])
+                    ):
+                        if isinstance(_edge, (list, tuple)) and len(_edge) >= 2:
+                            try:
+                                skeleton_edges.append((int(_edge[0]), int(_edge[1])))
+                            except Exception:
+                                pass
+            except Exception:
+                logger.exception(
+                    "Failed to load skeleton edges for anatomy check; skipping."
+                )
+                skeleton_edges = []
+
+            # Calibrate body-length prior from high-confidence frames
+            body_length_prior = None
+            if anterior_indices and posterior_indices:
+                try:
+                    body_length_prior = calibrate_body_length_prior(
+                        with_pose_df,
+                        pose_labels,
+                        anterior_indices,
+                        posterior_indices,
+                        min_valid_conf=float(
+                            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+                        ),
+                    )
+                    if body_length_prior.is_valid:
+                        logger.info(
+                            "Body-length prior calibrated: median=%.1f px, MAD=%.1f px, n=%d",
+                            body_length_prior.median_px,
+                            body_length_prior.mad_px,
+                            body_length_prior.n_samples,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Body-length prior calibration failed; skipping anatomy check."
+                    )
+                    body_length_prior = None
+
+            # Calibrate per-edge length priors from high-confidence frames
+            edge_length_priors = None
+            if skeleton_edges:
+                try:
+                    edge_length_priors = calibrate_edge_length_priors(
+                        with_pose_df,
+                        pose_labels,
+                        skeleton_edges,
+                        min_valid_conf=float(
+                            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+                        ),
+                    )
+                    if edge_length_priors.is_valid:
+                        logger.info(
+                            "Edge-length priors calibrated for %d edges.",
+                            len(edge_length_priors.priors),
+                        )
+                except Exception:
+                    logger.exception(
+                        "Edge-length prior calibration failed; skipping skeleton check."
+                    )
+                    edge_length_priors = None
+
+            # Per-frame quality gate
+            try:
+                with_pose_df = apply_quality_to_dataframe(
+                    with_pose_df,
+                    pose_labels,
+                    params,
+                    body_length_prior=body_length_prior,
+                    anterior_indices=anterior_indices if anterior_indices else None,
+                    posterior_indices=posterior_indices if posterior_indices else None,
+                    skeleton_edges=skeleton_edges if skeleton_edges else None,
+                    edge_length_priors=edge_length_priors,
+                )
+            except Exception:
+                logger.exception("Pose quality gating failed; using unfiltered pose.")
+
+            # Temporal post-processing per trajectory
+            max_gap = int(params.get("POSE_POSTPROC_MAX_GAP", 5))
+            z_threshold = float(params.get("POSE_TEMPORAL_OUTLIER_ZSCORE", 3.0))
+            if z_threshold > 0.0 and "TrajectoryID" in with_pose_df.columns:
+                try:
+                    parts = []
+                    for _, traj_group in with_pose_df.groupby(
+                        "TrajectoryID", sort=False
+                    ):
+                        parts.append(
+                            apply_temporal_pose_postprocessing(
+                                traj_group,
+                                pose_labels,
+                                max_gap=max_gap,
+                                z_score_threshold=z_threshold,
+                            )
+                        )
+                    if parts:
+                        with_pose_df = (
+                            pd.concat(parts, ignore_index=True)
+                            .sort_values(["TrajectoryID", "FrameID"], kind="stable")
+                            .reset_index(drop=True)
+                        )
+                except Exception:
+                    logger.exception(
+                        "Pose temporal post-processing failed; using unfiltered pose."
+                    )
+
+        return with_pose_df
+
+
+
+
+    def _export_pose_augmented_csv(self, final_csv_path):
+        """Write a pose-augmented trajectories CSV next to the final CSV."""
+        with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
+        if with_pose_df is None or with_pose_df.empty:
+            return None
+
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        try:
+            with_pose_df.to_csv(with_pose_path, index=False)
+        except Exception:
+            logger.exception("Failed to save pose-augmented CSV to: %s", with_pose_path)
+            return None
+
+        logger.info("Pose-augmented trajectories saved to: %s", with_pose_path)
+        return with_pose_path
+
+
+
+
+    def _relink_final_pose_augmented_csv(self, final_csv_path):
+        """Rewrite final CSV IDs after pose-aware relinking and regenerate _with_pose.csv."""
+        if not final_csv_path or not os.path.exists(final_csv_path):
+            return None
+
+        with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
+        params = self._mw.get_parameters_dict()
+
+        try:
+            base_df = pd.read_csv(final_csv_path)
+        except Exception:
+            logger.exception(
+                "Relinking skipped: failed to reload final CSV: %s", final_csv_path
+            )
+            return self._export_pose_augmented_csv(final_csv_path)
+
+        relink_input_df = (
+            with_pose_df
+            if with_pose_df is not None and not with_pose_df.empty
+            else base_df
+        )
+        relinked_with_pose = relink_trajectories_with_pose(relink_input_df, params)
+        if relinked_with_pose is None or relinked_with_pose.empty:
+            relinked_with_pose = relink_input_df
+
+        common_cols = [
+            col for col in base_df.columns if col in relinked_with_pose.columns
+        ]
+        relinked_base = relinked_with_pose.loc[:, common_cols].copy()
+        relinked_base = relinked_base.sort_values(
+            ["TrajectoryID", "FrameID"], kind="stable"
+        ).reset_index(drop=True)
+        relinked_with_pose = relinked_with_pose.sort_values(
+            ["TrajectoryID", "FrameID"], kind="stable"
+        ).reset_index(drop=True)
+
+        try:
+            relinked_base.to_csv(final_csv_path, index=False)
+        except Exception:
+            logger.exception("Failed to rewrite relinked final CSV: %s", final_csv_path)
+            return None
+
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        if with_pose_df is not None and not with_pose_df.empty:
+            try:
+                relinked_with_pose.to_csv(with_pose_path, index=False)
+            except Exception:
+                logger.exception(
+                    "Failed to rewrite relinked pose-augmented CSV: %s", with_pose_path
+                )
+                return None
+        elif os.path.exists(with_pose_path):
+            try:
+                os.remove(with_pose_path)
+            except Exception:
+                logger.warning(
+                    "Failed to remove stale pose-augmented CSV: %s", with_pose_path
+                )
+
+        logger.info(
+            "Relinked final CSV rewritten: %s (%d trajectories)",
+            final_csv_path,
+            (
+                int(relinked_base["TrajectoryID"].nunique())
+                if "TrajectoryID" in relinked_base.columns
+                else 0
+            ),
+        )
+        if with_pose_df is not None and not with_pose_df.empty:
+            logger.info("Relinked pose-augmented CSV saved: %s", with_pose_path)
+            return with_pose_path
+        return final_csv_path
+
+
+
+
+    def _load_video_trajectories(self, final_csv_path):
+        """Load best available trajectories for video generation (prefers pose-augmented CSV)."""
+        if not final_csv_path:
+            return None, None
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        candidate = with_pose_path if os.path.exists(with_pose_path) else final_csv_path
+        if not os.path.exists(candidate):
+            return None, None
+        try:
+            return pd.read_csv(candidate), candidate
+        except Exception:
+            logger.exception("Failed to load video trajectories from: %s", candidate)
+            return None, None
+
+
+
+
+    def _run_pending_video_generation_or_finalize(self):
+        """Run video generation if queued; otherwise finalize UI/session cleanup."""
+        if self._mw._stop_all_requested:
+            self._finalize_tracking_session_ui()
+            return
+        csv_path = self._mw._pending_video_csv_path
+        should_render_video = bool(self._mw._pending_video_generation and csv_path)
+        self._mw._pending_video_generation = False
+        self._mw._pending_video_csv_path = None
+        self._mw._pending_pose_export_csv_path = None
+
+        if should_render_video:
+            trajectories_df, loaded_path = self._load_video_trajectories(csv_path)
+            if trajectories_df is None or trajectories_df.empty:
+                logger.warning(
+                    "Skipping final video generation: no trajectories loaded from %s",
+                    csv_path,
+                )
+                self._finalize_tracking_session_ui()
+                return
+            logger.info(
+                "Final video rendering uses trajectories from: %s",
+                loaded_path or csv_path,
+            )
+            self._generate_video_from_trajectories(
+                trajectories_df,
+                csv_path=csv_path,
+                finalize_on_complete=False,
+            )
+            return
+
+        self._finalize_tracking_session_ui()
+
+
+
+
+    def _finish_tracking_session(self, final_csv_path=None):
+        """Complete tracking session cleanup and UI updates."""
+        if self._mw._stop_all_requested:
+            self._finalize_tracking_session_ui()
+            return
+        self._mw._session_final_csv_path = final_csv_path
+        # Hide progress elements
+        self._mw.progress_bar.setVisible(False)
+        self._mw.progress_label.setVisible(False)
+
+        if final_csv_path:
+            self._mw._pending_pose_export_csv_path = final_csv_path
+            self._export_pose_augmented_csv(final_csv_path)
+
+        self._mw._pending_video_csv_path = final_csv_path
+        self._mw._pending_video_generation = bool(
+            final_csv_path
+            and self._panels.postprocess.check_video_output.isChecked()
+            and self._panels.postprocess.video_out_line.text().strip()
+        )
+
+        # Generate dataset if enabled (BEFORE cleanup so files are still available)
+        if self._panels.dataset.chk_enable_dataset_gen.isChecked():
+            self._generate_training_dataset(override_csv_path=final_csv_path)
+            self._mw._dataset_was_started = True
+
+        # Interpolate occlusions for individual analysis (post-pass).
+        # This also powers pose enrichment on occluded frames in final CSV.
+        if self._mw._should_run_interpolated_postpass():
+            started = self._generate_interpolated_individual_crops(final_csv_path)
+            if started:
+                # Hold final UI/session completion until interpolation finishes.
+                self._mw._pending_finish_after_interp = True
+                return
+
+        if final_csv_path:
+            self._relink_final_pose_augmented_csv(final_csv_path)
+
+        if self._start_pending_oriented_track_video_export(final_csv_path):
+            return
+
+        self._run_pending_video_generation_or_finalize()
+
+
+
+
+    def _finalize_tracking_session_ui(self):
+        """Finalize session cleanup and return UI to idle state."""
+        self._mw._pending_pose_export_csv_path = None
+        self._mw._pending_video_csv_path = None
+        self._mw._pending_video_generation = False
+        self._mw._pending_finish_after_track_videos = False
+        self._mw.current_interpolated_pose_df = None
+        self._mw.current_interpolated_roi_npz_path = None
+        # Force-clear progress UI at terminal session state.
+        self._mw.progress_bar.setVisible(False)
+        self._mw.progress_label.setVisible(False)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText("Ready")
+        # Clean up session logging
+        self._mw._cleanup_session_logging()
+        self._mw._cleanup_temporary_files()
+
+        # Hide stats labels
+        self._mw.label_current_fps.setVisible(False)
+        self._mw.label_elapsed_time.setVisible(False)
+        self._mw.label_eta.setVisible(False)
+
+        # Determine if we are continuing a batch
+        is_batch_continuing = (
+            self._panels.setup.g_batch.isChecked()
+            and self._mw.current_batch_index >= 0
+            and (self._mw.current_batch_index + 1) < len(self._mw.batch_videos)
+        )
+
+        if not is_batch_continuing:
+            self._mw._set_ui_controls_enabled(True)
+            self._mw.btn_start.blockSignals(True)
+            self._mw.btn_start.setChecked(False)
+            self._mw.btn_start.blockSignals(False)
+            self._mw.btn_start.setText("Start Full Tracking")
+            self._mw._apply_ui_state("idle" if self._mw.current_video_path else "no_video")
+            logger.info("✓ Tracking session complete.")
+
+            # Show end-of-session summary. If the dataset worker is still running,
+            # defer the summary until it finishes so we can include its result.
+            if getattr(self._mw, "_dataset_was_started", False) and self._mw._is_worker_running(
+                self._mw.dataset_worker
+            ):
+                self._mw._show_summary_on_dataset_done = True
+            else:
+                self._show_session_summary()
+        else:
+            logger.info("✓ Video complete. Continuing batch...")
+            # Disable deferred summary for intermediate batch items so it doesn't block
+            self._mw._show_summary_on_dataset_done = False
+
+        # --- Batch Mode Continuation ---
+        if self._panels.setup.g_batch.isChecked() and self._mw.current_batch_index >= 0:
+            self._mw.current_batch_index += 1
+            if self._mw.current_batch_index < len(self._mw.batch_videos):
+                # Load next video
+                fp = self._mw.batch_videos[self._mw.current_batch_index]
+                self._panels.setup.list_batch_videos.setCurrentRow(
+                    self._mw.current_batch_index
+                )
+
+                # We MUST skip_config_load here to preserve the keystone parameters
+                # currently in the UI so they are applied to this video.
+                self._mw._setup_video_file(fp, skip_config_load=True)
+
+                # Small delay to ensure UI updates before starting next
+                logger.info(
+                    f"Batch Mode: Starting next video ({self._mw.current_batch_index + 1}/{len(self._mw.batch_videos)})"
+                )
+                QTimer.singleShot(1000, lambda: self.start_tracking(preview_mode=False))
+            else:
+                # Batch complete
+                self._mw.current_batch_index = -1
+                QMessageBox.information(
+                    self,
+                    "Batch Complete",
+                    f"Finished processing {len(self._mw.batch_videos)} videos.",
+                )
+        else:
+            # Ensure reset if batch mode is disabled mid-run or not used
+            self._mw.current_batch_index = -1
+
+
+
+
+    def _generate_interpolated_individual_crops(self, csv_path):
+        """Post-pass interpolation for occluded segments in individual dataset."""
+        try:
+            if self._mw._stop_all_requested:
+                return False
+            if not self._panels.identity.chk_individual_interpolate.isChecked():
+                return False
+
+            target_csv = None
+            if csv_path and os.path.exists(csv_path):
+                target_csv = csv_path
+            elif self._panels.setup.csv_line.text() and os.path.exists(
+                self._panels.setup.csv_line.text()
+            ):
+                target_csv = self._panels.setup.csv_line.text()
+            if not target_csv or not os.path.exists(target_csv):
+                return False
+
+            video_path = self._panels.setup.file_line.text()
+            if not video_path or not os.path.exists(video_path):
+                return False
+
+            params = self._mw.get_parameters_dict()
+            output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+            if not output_dir:
+                # Keep interpolated analysis available even when image-save toggle is off.
+                csv_dir = os.path.dirname(target_csv) if target_csv else ""
+                fallback_output = (
+                    os.path.join(csv_dir, "training_data") if csv_dir else ""
+                )
+                if fallback_output:
+                    try:
+                        os.makedirs(fallback_output, exist_ok=True)
+                    except Exception:
+                        pass
+                    params["INDIVIDUAL_DATASET_OUTPUT_DIR"] = fallback_output
+                    logger.info(
+                        "Interpolated analysis output dir not set; using fallback: %s",
+                        fallback_output,
+                    )
+
+            self._mw.progress_bar.setVisible(True)
+            self._mw.progress_label.setVisible(True)
+            self._mw.progress_bar.setValue(0)
+            self._mw.progress_label.setText("Interpolating occluded crops...")
+
+            if self._mw.interp_worker is not None and self._mw.interp_worker.isRunning():
+                logger.warning(
+                    "Interpolated crop generation already in progress; skipping duplicate request."
+                )
+                return True
+            if self._mw.interp_worker is not None and not self._mw.interp_worker.isRunning():
+                self._mw.interp_worker.deleteLater()
+                self._mw.interp_worker = None
+
+            self._mw.current_interpolated_roi_npz_path = None
+            self._mw.current_interpolated_pose_csv_path = None
+            self._mw.current_interpolated_pose_df = None
+            self._mw.current_interpolated_tag_csv_path = None
+            self._mw.current_interpolated_tag_df = None
+            self._mw.current_interpolated_cnn_csv_paths = {}
+            self._mw.current_interpolated_cnn_dfs = {}
+            self._mw.current_interpolated_headtail_csv_path = None
+            self._mw.current_interpolated_headtail_df = None
+
+            _interp_profiling = bool(params.get("ENABLE_PROFILING", False))
+            _interp_profile_path = None
+            if _interp_profiling:
+                if self._mw.current_detection_cache_path:
+                    _interp_profile_path = str(
+                        Path(self._mw.current_detection_cache_path).parent
+                        / "interp_profile.json"
+                    )
+                elif video_path:
+                    _interp_profile_path = str(
+                        Path(video_path).parent / "interp_profile.json"
+                    )
+
+            self._mw.interp_worker = InterpolatedCropsWorker(
+                target_csv,
+                video_path,
+                self._mw.current_detection_cache_path,
+                params,
+                enable_profiling=_interp_profiling,
+                profile_export_path=_interp_profile_path,
+            )
+            self._mw.interp_worker.progress_signal.connect(self.on_progress_update)
+            self._mw.interp_worker.finished_signal.connect(
+                self._on_interpolated_crops_finished
+            )
+            self._mw.interp_worker.start()
+            return True
+        except Exception as e:
+            logger.warning(f"Interpolated individual crops failed: {e}")
+            return False
+
+
+
+
+    def start_backward_tracking(self):
+        """start_backward_tracking method documentation."""
+        if self._mw._stop_all_requested:
+            return
+        logger.info("=" * 80)
+        logger.info("Starting backward tracking pass (using cached detections)...")
+        logger.info("=" * 80)
+
+        video_fp = self._panels.setup.file_line.text()
+        if not video_fp:
+            return
+
+        # Use original video (no reversal needed with detection caching)
+        self._mw.progress_bar.setVisible(True)
+        self._mw.progress_label.setVisible(True)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText(
+            "Starting backward tracking (using cached detections)..."
+        )
+        QApplication.processEvents()
+
+        # Start backward tracking directly on original video with cached detections
+        self.start_tracking_on_video(video_fp, backward_mode=True)
+
+
+
+
+    def start_tracking(
+        self: object, preview_mode: bool, backward_mode: bool = False
+    ):
+        """start_tracking method documentation."""
+        if not preview_mode:
+            # If batch mode group is checked, initialize batch processing
+            if self._panels.setup.g_batch.isChecked():
+                if self._mw.current_batch_index < 0:
+                    res = QMessageBox.question(
+                        self,
+                        "Start Batch Process",
+                        f"This will process {len(self._mw.batch_videos)} videos sequentially using the CURRENT parameters.\n\n"
+                        "Each video will have its own CSV and configuration file saved in its source directory.\n\n"
+                        "Continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if res == QMessageBox.No:
+                        return
+
+                    # Start at the first video (Keystone)
+                    self._mw.current_batch_index = 0
+                    self._mw._sync_keystone_to_batch()
+                    fp = self._mw.batch_videos[0]
+                    self._panels.setup.list_batch_videos.setCurrentRow(0)
+
+                    # Ensure the keystone video is loaded WITHOUT overwriting current UI params
+                    if self._mw.current_video_path != fp:
+                        self._mw._setup_video_file(fp, skip_config_load=True)
+
+            # Save config for the CURRENTLY LOADED video (this persists the keystone's params to the current video)
+            # In batch mode, we automatically overwrite to avoid halting the automated process.
+            if not self._mw.save_config(
+                prompt_if_exists=not self._panels.setup.g_batch.isChecked()
+            ):
+                # User cancelled config save, abort tracking
+                self._mw.current_batch_index = -1  # Reset batch if cancelled
+                return
+
+        video_fp = self._panels.setup.file_line.text()
+        if not video_fp:
+            QMessageBox.warning(self, "No video", "Please select a video file first.")
+            return
+        if preview_mode:
+            self.start_preview_on_video(video_fp)
+        else:
+            self.start_tracking_on_video(video_fp, backward_mode=False)
+
+
+
+
+    def start_preview_on_video(self, video_path):
+        """start_preview_on_video method documentation."""
+        if self._mw.tracking_worker and self._mw.tracking_worker.isRunning():
+            return
+        self._mw._stop_all_requested = False
+        self._mw._pending_finish_after_interp = False
+
+        # Stop video playback if active
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+
+        # Reset first frame flag for auto-fit
+        self._mw._tracking_first_frame = True
+        self._mw.csv_writer_thread = None
+
+        params = self._mw.get_parameters_dict()
+        if not self._mw._validate_yolo_model_requirements(
+            params, mode_label="tracking preview"
+        ):
+            return
+        # Preview should always render frames regardless of visualization-free toggle
+        params["VISUALIZATION_FREE_MODE"] = False
+        # Preview must not use ONNX/TensorRT — downgrade to the native device runtime.
+        safe_rt = self._mw._preview_safe_runtime(params.get("COMPUTE_RUNTIME", "cpu"))
+        if safe_rt != params.get("COMPUTE_RUNTIME"):
+            safe_det = derive_detection_runtime_settings(safe_rt)
+            params["COMPUTE_RUNTIME"] = safe_rt
+            params["YOLO_DEVICE"] = safe_det["yolo_device"]
+            params["ENABLE_GPU_BACKGROUND"] = safe_det["enable_gpu_background"]
+            params["ENABLE_TENSORRT"] = safe_det["enable_tensorrt"]
+            params["ENABLE_ONNX_RUNTIME"] = safe_det["enable_onnx_runtime"]
+            safe_pose = derive_pose_runtime_settings(
+                safe_rt, backend_family=params.get("POSE_MODEL_TYPE", "yolo")
+            )
+            params["POSE_RUNTIME_FLAVOR"] = safe_pose["pose_runtime_flavor"]
+
+        # Reuse an existing detection cache when one covers the current frame
+        # range — this ensures preview uses the same detections as the autotune
+        # preview instead of re-running live YOLO inference, which can produce
+        # slightly different detection sets and cause visible jumps.
+        start_frame = params.get("START_FRAME", 0)
+        end_frame = params.get("END_FRAME", 0)
+        cache_path, cache_valid = self._mw._find_or_plan_optimizer_cache_path(
+            video_path, params, start_frame, end_frame
+        )
+
+        if not cache_valid:
+            res = QMessageBox.question(
+                self,
+                "Build Detection Cache",
+                "No detection cache found for this frame range.\n\n"
+                "Build one now for a consistent preview?\n"
+                "(Detection-only scan — no CSV output, no config save.)",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res == QMessageBox.Yes:
+                self._mw._pending_preview_video_path = video_path
+                self._mw._cache_builder_worker = DetectionCacheBuilderWorker(
+                    video_path,
+                    cache_path,
+                    params,
+                    start_frame,
+                    end_frame,
+                )
+                self._mw._cache_builder_worker.progress_signal.connect(
+                    self.on_progress_update
+                )
+                self._mw._cache_builder_worker.finished_signal.connect(
+                    self._mw._on_preview_cache_built
+                )
+                self._mw.progress_bar.setVisible(True)
+                self._mw.progress_label.setVisible(True)
+                self._mw.progress_bar.setValue(0)
+                self._mw.progress_label.setText("Building detection cache for preview...")
+                self._mw._cache_builder_worker.start()
+                return  # Will resume via _on_preview_cache_built
+
+        self._mw.tracking_worker = TrackingWorker(
+            video_path,
+            csv_writer_thread=None,
+            video_output_path=None,
+            backward_mode=False,
+            detection_cache_path=cache_path if cache_valid else None,
+            preview_mode=True,
+            use_cached_detections=cache_valid,
+        )
+        self._mw.tracking_worker.set_parameters(params)
+        self._mw.tracking_worker.frame_signal.connect(self.on_new_frame)
+        self._mw.tracking_worker.finished_signal.connect(self.on_tracking_finished)
+        self._mw.tracking_worker.progress_signal.connect(self.on_progress_update)
+        self._mw.tracking_worker.stats_signal.connect(self.on_stats_update)
+        self._mw.tracking_worker.warning_signal.connect(self.on_tracking_warning)
+        self._mw.tracking_worker.pose_exported_model_resolved_signal.connect(
+            self.on_pose_exported_model_resolved
+        )
+
+        self._mw.progress_bar.setVisible(True)
+        self._mw.progress_label.setVisible(True)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText("Preview Mode Active")
+
+        self._mw._prepare_tracking_display()
+        self._mw._apply_ui_state("preview")
+        self._mw.tracking_worker.start()
+
+
+
+
+    def start_tracking_on_video(
+        self: object, video_path, backward_mode = False
+    ):
+        """start_tracking_on_video method documentation."""
+        if self._mw.tracking_worker and self._mw.tracking_worker.isRunning():
+            return
+        self._mw._stop_all_requested = False
+        self._mw._pending_finish_after_interp = False
+        if not backward_mode:
+            # Reset per-session summary state for each new forward tracking run.
+            self._mw._session_result_dataset = None
+            self._mw._dataset_was_started = False
+            self._mw._show_summary_on_dataset_done = False
+            self._mw._session_wall_start = time.time()
+            self._mw._session_final_csv_path = None
+            self._mw._session_fps_list = []
+            self._mw._session_frames_processed = 0
+
+        # Stop video playback if active
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+
+        # Reset first frame flag for auto-fit
+        self._mw._tracking_first_frame = True
+
+        # Session logging is already set up in start_full() - don't duplicate here
+        # For backward mode, we reuse the same session log
+
+        self._mw.csv_writer_thread = None
+        if self._panels.setup.csv_line.text():
+            # Determine header based on confidence tracking setting
+            save_confidence = self._panels.setup.check_save_confidence.isChecked()
+            if save_confidence:
+                hdr = [
+                    "TrackID",
+                    "TrajectoryID",
+                    "Index",
+                    "X",
+                    "Y",
+                    "Theta",
+                    "FrameID",
+                    "State",
+                    "DetectionConfidence",
+                    "AssignmentConfidence",
+                    "PositionUncertainty",
+                    "DetectionID",
+                ]
+            else:
+                hdr = [
+                    "TrackID",
+                    "TrajectoryID",
+                    "Index",
+                    "X",
+                    "Y",
+                    "Theta",
+                    "FrameID",
+                    "State",
+                    "DetectionID",
+                ]
+            # Append TagID column when AprilTag identity is active
+            if self._mw._selected_identity_method() == "apriltags":
+                hdr.append("TagID")
+            csv_path = self._panels.setup.csv_line.text()
+            base, ext = os.path.splitext(csv_path)
+            if backward_mode:
+                csv_path = f"{base}_backward{ext}"
+            elif self._panels.tracking.chk_enable_backward.isChecked():
+                # Forward mode with backward tracking enabled - save as _forward.csv
+                csv_path = f"{base}_forward{ext}"
+            self._mw.csv_writer_thread = CSVWriterThread(csv_path, header=hdr)
+            self._mw.csv_writer_thread.start()
+
+        # Video output is no longer generated during tracking
+        # Instead, it's generated from post-processed trajectories after merging
+        # This ensures the video shows clean, merged trajectories with stable IDs
+        video_output_path = None
+
+        # Generate detection cache path based on video and detection method
+        # Cache is always created for forward tracking to allow reuse on reruns
+        detection_cache_path = None
+        params = self._mw.get_parameters_dict()
+        logger.info(
+            f"Launching {'backward' if backward_mode else 'forward'} tracking for frame range "
+            f"{params.get('START_FRAME')}..{params.get('END_FRAME')}"
+        )
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
+        use_cached_detections = self._panels.setup.chk_use_cached_detections.isChecked()
+        if not self._mw._validate_yolo_model_requirements(params, mode_label="tracking"):
+            return
+
+        # Generate model-specific cache name
+        def get_cache_model_ids():
+            """Generate raw-detection and TensorRT-engine cache identity keys."""
+            # Include resize factor in cache ID since detections are scale-dependent
+            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+            resize_str = f"r{int(resize_factor * 100)}"
+
+            def normalize_for_hash(value: object):
+                """Convert values to deterministic, JSON-safe forms for hashing."""
+                if isinstance(value, np.ndarray):
+                    arr = np.ascontiguousarray(value)
+                    return {
+                        "type": "ndarray",
+                        "dtype": str(arr.dtype),
+                        "shape": list(arr.shape),
+                        "digest": hashlib.md5(arr.tobytes()).hexdigest(),
+                    }
+                if isinstance(value, np.integer):
+                    return int(value)
+                if isinstance(value, np.floating):
+                    if np.isnan(value):
+                        return "NaN"
+                    if np.isinf(value):
+                        return "Infinity" if value > 0 else "-Infinity"
+                    return float(value)
+                if isinstance(value, np.bool_):
+                    return bool(value)
+                if isinstance(value, Path):
+                    return str(value)
+                if isinstance(value, dict):
+                    return {
+                        str(k): normalize_for_hash(v)
+                        for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+                    }
+                if isinstance(value, (list, tuple)):
+                    return [normalize_for_hash(v) for v in value]
+                return value
+
+            def extract_hash_params(keys: object):
+                return {k: normalize_for_hash(params.get(k)) for k in keys}
+
+            def build_cache_id(
+                prefix: str, cache_params, model_stem: str = ""
+            ) -> str:
+                digest = hashlib.md5(
+                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:12]
+                if model_stem:
+                    return f"{prefix}_{model_stem}_{resize_str}_{digest}"
+                return f"{prefix}_{resize_str}_{digest}"
+
+            def get_model_fingerprint(model_path: object):
+                from hydra_suite.trackerkit.gui.main_window import resolve_model_path as _resolve_model_path
+                configured = str(model_path or "")
+                resolved = str(_resolve_model_path(configured))
+                fingerprint = {
+                    "configured_path": configured,
+                    "resolved_path": resolved,
+                }
+                if resolved and os.path.exists(resolved):
+                    try:
+                        stat = os.stat(resolved)
+                        fingerprint["size_bytes"] = stat.st_size
+                        fingerprint["mtime_ns"] = stat.st_mtime_ns
+                    except OSError:
+                        fingerprint["size_bytes"] = None
+                        fingerprint["mtime_ns"] = None
+                else:
+                    fingerprint["size_bytes"] = None
+                    fingerprint["mtime_ns"] = None
+                return fingerprint
+
+            # Common inference settings that affect detections for both methods.
+            common_detection_keys = (
+                "DETECTION_METHOD",
+                "RESIZE_FACTOR",
+                "MAX_TARGETS",
+                "COMPUTE_RUNTIME",
+            )
+
+            if detection_method == "yolo_obb":
+                yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+                direct_model = params.get(
+                    "YOLO_OBB_DIRECT_MODEL_PATH",
+                    params.get("YOLO_MODEL_PATH", "best.pt"),
+                )
+                crop_obb_model = params.get(
+                    "YOLO_CROP_OBB_MODEL_PATH", params.get("YOLO_MODEL_PATH", "best.pt")
+                )
+                active_obb_model = (
+                    direct_model if yolo_mode == "direct" else crop_obb_model
+                )
+                model_fingerprint = get_model_fingerprint(active_obb_model)
+                model_name = os.path.basename(
+                    model_fingerprint["resolved_path"]
+                    or model_fingerprint["configured_path"]
+                )
+                model_stem = os.path.splitext(model_name)[0] or "model"
+                safe_model_stem = "".join(
+                    c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
+                )
+
+                yolo_inference_keys = (
+                    "YOLO_TARGET_CLASSES",
+                    "YOLO_DEVICE",
+                    "ENABLE_TENSORRT",
+                    "TENSORRT_MAX_BATCH_SIZE",
+                    "YOLO_OBB_MODE",
+                    "YOLO_SEQ_CROP_PAD_RATIO",
+                    "YOLO_SEQ_MIN_CROP_SIZE_PX",
+                    "YOLO_SEQ_ENFORCE_SQUARE_CROP",
+                    "YOLO_SEQ_STAGE2_IMGSZ",
+                    "YOLO_SEQ_STAGE2_POW2_PAD",
+                    "YOLO_HEADTAIL_CONF_THRESHOLD",
+                    "POSE_OVERRIDES_HEADTAIL",
+                )
+                cache_params = {
+                    "common": extract_hash_params(common_detection_keys),
+                    "yolo": extract_hash_params(yolo_inference_keys),
+                    "models": normalize_for_hash(
+                        {
+                            "active_obb": model_fingerprint,
+                            "direct_obb": get_model_fingerprint(direct_model),
+                            "detect": get_model_fingerprint(
+                                params.get("YOLO_DETECT_MODEL_PATH", "")
+                            ),
+                            "crop_obb": get_model_fingerprint(crop_obb_model),
+                            "headtail": get_model_fingerprint(
+                                params.get("YOLO_HEADTAIL_MODEL_PATH", "")
+                            ),
+                        }
+                    ),
+                    # Bump when raw detection extraction/filtering semantics change.
+                    "raw_detection_cache_version": 4,
+                }
+                # Class order should not change cache identity.
+                classes = cache_params["yolo"].get("YOLO_TARGET_CLASSES")
+                if classes is not None:
+                    if isinstance(classes, str):
+                        raw_classes = [
+                            c.strip() for c in classes.split(",") if c.strip()
+                        ]
+                    elif isinstance(classes, (list, tuple)):
+                        raw_classes = list(classes)
+                    else:
+                        raw_classes = [classes]
+                    try:
+                        cache_params["yolo"]["YOLO_TARGET_CLASSES"] = sorted(
+                            int(c) for c in raw_classes
+                        )
+                    except (TypeError, ValueError):
+                        cache_params["yolo"]["YOLO_TARGET_CLASSES"] = sorted(
+                            str(c) for c in raw_classes
+                        )
+
+                build_batch_size = params.get(
+                    "TENSORRT_BUILD_BATCH_SIZE",
+                    params.get("TENSORRT_MAX_BATCH_SIZE", 1),
+                )
+                try:
+                    build_batch_size = max(1, int(build_batch_size or 1))
+                except (TypeError, ValueError):
+                    build_batch_size = max(
+                        1, int(params.get("TENSORRT_MAX_BATCH_SIZE", 1) or 1)
+                    )
+                try:
+                    build_workspace_gb = float(
+                        params.get("TENSORRT_BUILD_WORKSPACE_GB", 4.0)
+                    )
+                except (TypeError, ValueError):
+                    build_workspace_gb = 4.0
+
+                engine_cache_params = {
+                    "engine": {
+                        "runtime": "tensorrt",
+                        "device": normalize_for_hash(params.get("YOLO_DEVICE")),
+                        "build_batch_size": build_batch_size,
+                        "workspace_gb": round(max(0.5, build_workspace_gb), 3),
+                        "active_obb": model_fingerprint,
+                        "export_profile": "trt_fp16_static_v1",
+                    },
+                    "engine_cache_version": 1,
+                }
+
+                return {
+                    "inference": build_cache_id(
+                        "yolo", cache_params, model_stem=safe_model_stem
+                    ),
+                    "engine": build_cache_id(
+                        "yolo_engine",
+                        engine_cache_params,
+                        model_stem=safe_model_stem,
+                    ),
+                }
+
+            bg_detection_keys = (
+                "MAX_CONTOUR_MULTIPLIER",
+                "ENABLE_SIZE_FILTERING",
+                "MIN_OBJECT_SIZE",
+                "MAX_OBJECT_SIZE",
+                "ROI_MASK",
+                "BACKGROUND_PRIME_FRAMES",
+                "ENABLE_ADAPTIVE_BACKGROUND",
+                "BACKGROUND_LEARNING_RATE",
+                "ENABLE_GPU_BACKGROUND",
+                "GPU_DEVICE_ID",
+                "THRESHOLD_VALUE",
+                "MORPH_KERNEL_SIZE",
+                "ENABLE_ADDITIONAL_DILATION",
+                "DILATION_ITERATIONS",
+                "DILATION_KERNEL_SIZE",
+                "BRIGHTNESS",
+                "CONTRAST",
+                "GAMMA",
+                "DARK_ON_LIGHT_BACKGROUND",
+                "ENABLE_LIGHTING_STABILIZATION",
+                "LIGHTING_SMOOTH_FACTOR",
+                "LIGHTING_MEDIAN_WINDOW",
+                "ENABLE_CONSERVATIVE_SPLIT",
+                "CONSERVATIVE_KERNEL_SIZE",
+                "CONSERVATIVE_ERODE_ITER",
+                "MIN_CONTOUR_AREA",
+                "MIN_DETECTIONS_TO_START",
+                "MIN_DETECTION_COUNTS",
+            )
+            cache_params = {
+                "common": extract_hash_params(common_detection_keys),
+                "background_subtraction": extract_hash_params(bg_detection_keys),
+            }
+            return {
+                "inference": build_cache_id("bgsub", cache_params),
+                "engine": None,
+            }
+
+        cache_ids = get_cache_model_ids()
+        model_id = cache_ids["inference"]
+        params["INFERENCE_MODEL_ID"] = model_id
+        if cache_ids.get("engine"):
+            params["ENGINE_MODEL_ID"] = cache_ids["engine"]
+        csv_dir = (
+            os.path.dirname(self._panels.setup.csv_line.text())
+            if self._panels.setup.csv_line.text()
+            else ""
+        )
+        artifact_base_dirs = candidate_artifact_base_dirs(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        if artifact_base_dir != Path(video_path).parent:
+            logger.warning(
+                "Video directory not writable; using artifact root: %s",
+                artifact_base_dir,
+            )
+
+        existing_detection_cache = find_existing_detection_cache_path(
+            video_path,
+            model_id,
+            artifact_base_dirs=artifact_base_dirs,
+        )
+        if existing_detection_cache is not None:
+            detection_cache_path = str(existing_detection_cache)
+        else:
+            detection_cache_path = str(
+                build_detection_cache_path(
+                    video_path,
+                    model_id,
+                    artifact_base_dir=artifact_base_dir,
+                )
+            )
+
+        # Do NOT delete old detection caches; keep all for reuse
+        self._mw.current_detection_cache_path = detection_cache_path
+
+        self._mw.tracking_worker = TrackingWorker(
+            video_path,
+            csv_writer_thread=self._mw.csv_writer_thread,
+            video_output_path=video_output_path,
+            backward_mode=backward_mode,
+            detection_cache_path=detection_cache_path,
+            preview_mode=False,  # Full tracking mode - batching enabled if applicable
+            use_cached_detections=use_cached_detections,
+        )
+        self._mw.tracking_worker.set_parameters(params)
+        self._mw.parameters_changed.connect(self._mw.tracking_worker.update_parameters)
+        self._mw.tracking_worker.frame_signal.connect(self.on_new_frame)
+        self._mw.tracking_worker.finished_signal.connect(self.on_tracking_finished)
+        self._mw.tracking_worker.progress_signal.connect(self.on_progress_update)
+        self._mw.tracking_worker.stats_signal.connect(self.on_stats_update)
+        self._mw.tracking_worker.warning_signal.connect(self.on_tracking_warning)
+        self._mw.tracking_worker.pose_exported_model_resolved_signal.connect(
+            self.on_pose_exported_model_resolved
+        )
+
+        self._mw.progress_bar.setVisible(True)
+        self._mw.progress_label.setVisible(True)
+        self._mw.progress_bar.setValue(0)
+        self._mw.progress_label.setText(
+            "Backward Tracking..." if backward_mode else "Forward Tracking..."
+        )
+
+        self._mw._prepare_tracking_display()
+        self._mw._apply_ui_state("tracking")
+        self._mw.tracking_worker.start()
+
+
+
+
+    def _generate_training_dataset(self, override_csv_path=None):
+        """Generate training dataset from tracking results for active learning."""
+        try:
+            if self._mw._stop_all_requested:
+                return
+            logger.info("Starting training dataset generation...")
+
+            # Prevent launching overlapping dataset threads; this can lead to
+            # QThread destruction while still running if references are replaced.
+            if self._mw.dataset_worker is not None and self._mw.dataset_worker.isRunning():
+                logger.warning(
+                    "Dataset generation already in progress; skipping duplicate request."
+                )
+                return
+            if self._mw.dataset_worker is not None and not self._mw.dataset_worker.isRunning():
+                self._mw.dataset_worker.deleteLater()
+                self._mw.dataset_worker = None
+
+            video_path = self._panels.setup.file_line.text()
+            if not video_path or not os.path.exists(video_path):
+                QMessageBox.warning(
+                    self, "Dataset Generation Error", "Source video file not found."
+                )
+                return
+
+            # Validate parameters
+            # Auto-compute output directory
+            output_dir = os.path.join(
+                os.path.dirname(video_path),
+                f"{os.path.splitext(os.path.basename(video_path))[0]}_datasets",
+                "active_learning",
+            )
+
+            if not os.path.exists(output_dir):
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Dataset Generation Error",
+                        f"Could not create output directory: {output_dir}\nError: {e}",
+                    )
+                    return
+
+            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
+            csv_path = (
+                override_csv_path
+                if override_csv_path
+                else self._panels.setup.csv_line.text()
+            )
+
+            if not csv_path or not os.path.exists(csv_path):
+                QMessageBox.warning(
+                    self, "Dataset Generation Error", "Tracking CSV file not found."
+                )
+                return
+
+            # Get parameters
+            params = self._mw.get_parameters_dict()
+            max_frames = self._panels.dataset.spin_dataset_max_frames.value()
+            diversity_window = self._panels.dataset.spin_dataset_diversity_window.value()
+            include_context = (
+                self._panels.dataset.chk_dataset_include_context.isChecked()
+            )
+            probabilistic = self._panels.dataset.chk_dataset_probabilistic.isChecked()
+
+            # Get class name
+            class_name = self._panels.dataset.line_dataset_class_name.text().strip()
+            if not class_name:
+                class_name = "object"
+
+            # Show progress bar
+            self._mw.progress_bar.setVisible(True)
+            self._mw.progress_label.setVisible(True)
+            self._mw.progress_bar.setValue(0)
+            self._mw.progress_label.setText("Preparing dataset generation...")
+
+            # Create and start dataset generation worker thread
+            self._mw.dataset_worker = DatasetGenerationWorker(
+                video_path=video_path,
+                csv_path=csv_path,
+                detection_cache_path=self._mw.current_detection_cache_path,
+                output_dir=output_dir,
+                dataset_name="",
+                class_name=class_name,
+                params=params,
+                max_frames=max_frames,
+                diversity_window=diversity_window,
+                include_context=include_context,
+                probabilistic=probabilistic,
+            )
+            self._mw.dataset_worker.progress_signal.connect(self.on_dataset_progress)
+            self._mw.dataset_worker.finished_signal.connect(self.on_dataset_finished)
+            self._mw.dataset_worker.error_signal.connect(self.on_dataset_error)
+            self._mw.dataset_worker.finished.connect(
+                self._on_dataset_worker_thread_finished
+            )
+            self._mw.dataset_worker.start()
+
+        except Exception as e:
+            logger.error(f"Dataset generation failed: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Dataset Generation Error",
+                f"Failed to generate dataset:\n{str(e)}",
+            )
+
+
+
+
+    def on_dataset_progress(self, value, message):
+        """Update progress bar during dataset generation."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.dataset_worker is not None
+            and sender is not self._mw.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._mw._stop_all_requested:
+            return
+        self._mw.progress_bar.setValue(value)
+        self._mw.progress_label.setText(message)
+
+
+
+
+    def on_dataset_finished(
+        self: object, dataset_dir, num_frames
+    ):
+        """Handle dataset generation completion."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.dataset_worker is not None
+            and sender is not self._mw.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._mw._stop_all_requested:
+            self._cleanup_thread_reference("dataset_worker")
+            self._mw._refresh_progress_visibility()
+            return
+        self._mw._refresh_progress_visibility()
+
+        logger.info(f"Dataset generation complete: {dataset_dir}")
+        logger.info(f"Frames exported: {num_frames}")
+        logger.info(
+            "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
+        )
+
+        # Store result; popup is deferred to end-of-session summary.
+        self._mw._session_result_dataset = {
+            "success": True,
+            "num_frames": num_frames,
+            "dir": dataset_dir,
+        }
+        if getattr(self._mw, "_show_summary_on_dataset_done", False):
+            self._mw._show_summary_on_dataset_done = False
+            self._show_session_summary()
+
+
+
+
+    def on_dataset_error(self, error_message):
+        """Handle dataset generation errors."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.dataset_worker is not None
+            and sender is not self._mw.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._mw._stop_all_requested:
+            self._cleanup_thread_reference("dataset_worker")
+            self._mw._refresh_progress_visibility()
+            return
+        self._mw._refresh_progress_visibility()
+
+        logger.error(f"Dataset generation error: {error_message}")
+
+        # Store result; popup is deferred to end-of-session summary.
+        self._mw._session_result_dataset = {
+            "success": False,
+            "error": error_message,
+        }
+        if getattr(self._mw, "_show_summary_on_dataset_done", False):
+            self._mw._show_summary_on_dataset_done = False
+            self._show_session_summary()
+
+
+
+
+    def _show_session_summary(self):
+        """Show a single end-of-session summary dialog listing completed processes."""
+        lines = []
+
+        # --- Timing ---
+        if self._mw._session_wall_start is not None:
+            elapsed = time.time() - self._mw._session_wall_start
+            h = int(elapsed // 3600)
+            m = int((elapsed % 3600) // 60)
+            s = int(elapsed % 60)
+            elapsed_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+            lines.append(f"Duration: {elapsed_str}")
+
+        # --- Frames / FPS ---
+        frames = self._mw._session_frames_processed
+        if frames > 0:
+            lines.append(f"Frames processed: {frames}")
+        fps_vals = [f for f in self._mw._session_fps_list if f and f > 0]
+        if fps_vals:
+            avg_fps = sum(fps_vals) / len(fps_vals)
+            lines.append(f"Average FPS: {avg_fps:.1f}")
+
+        # --- Video / CSV ---
+        video_path = self._panels.setup.file_line.text()
+        if video_path:
+            lines.append(f"Video: {os.path.basename(video_path)}")
+        csv_path = self._mw._session_final_csv_path or self._panels.setup.csv_line.text()
+        if csv_path:
+            lines.append(f"Output CSV: {os.path.basename(csv_path)}")
+
+        # --- Trajectory / track count ---
+        if csv_path and os.path.exists(csv_path):
+            try:
+                _df = pd.read_csv(csv_path, usecols=["TrajectoryID"])
+                n_trajs = int(_df["TrajectoryID"].nunique())
+                lines.append(f"Trajectories: {n_trajs}")
+            except Exception:
+                pass
+
+        # --- Pipelines run ---
+        pipelines = []
+        if self._panels.postprocess.enable_postprocessing.isChecked():
+            pipelines.append("Post-processing")
+        if self._panels.tracking.chk_enable_backward.isChecked():
+            pipelines.append("Backward tracking")
+        if self._mw._is_individual_pipeline_enabled():
+            pipelines.append("Individual analysis")
+            if self._panels.identity.chk_enable_pose_extractor.isChecked():
+                pipelines.append("Pose extraction")
+        if pipelines:
+            lines.append("Pipelines: " + ", ".join(pipelines))
+
+        # --- Separator before optional sub-results ---
+        lines.append("")
+
+        # --- Dataset generation result ---
+        result = getattr(self._mw, "_session_result_dataset", None)
+        if result is not None:
+            if result.get("success"):
+                lines.append(
+                    f"\u2713 Dataset generated: {result['num_frames']} frame(s)"
+                    f"\n  Location: {result['dir']}"
+                )
+            else:
+                lines.append(
+                    f"\u2717 Dataset generation failed: {result.get('error', 'unknown error')}"
+                )
+
+        # Clean up state
+        self._mw._session_result_dataset = None
+        self._mw._dataset_was_started = False
+        self._mw._show_summary_on_dataset_done = False
+
+        QMessageBox.information(self, "Tracking Complete", "\n".join(lines))
+
+        # Offer to open RefineKit for interactive proofreading
+        self._panels.postprocess._btn_open_refinekit.setEnabled(
+            bool(self._mw.current_video_path)
+        )
+        if self._mw.current_video_path:
+            reply = QMessageBox.question(
+                self,
+                "Open RefineKit?",
+                "Tracking complete. Open in RefineKit for "
+                "interactive identity proofreading?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._mw._open_refinekit()
+
+
+
+
+    def _on_dataset_worker_thread_finished(self):
+        """Release completed dataset worker safely."""
+        sender = None
+        if (
+            sender is not None
+            and self._mw.dataset_worker is not None
+            and sender is not self._mw.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("dataset_worker")
+        self._mw._refresh_progress_visibility()
+
+
+
