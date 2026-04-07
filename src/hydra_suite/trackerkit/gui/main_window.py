@@ -1133,6 +1133,10 @@ class MainWindow(QMainWindow):
             main_window=self, config=self.config, parent=self
         )
         self.tabs.addTab(self._postprocess_panel, "Clean Results")
+        # Cross-panel wire: pose-toggle in IdentityPanel must re-run cleaning visibility
+        self._identity_panel.g_pose_runtime.toggled.connect(
+            self._postprocess_panel._on_cleaning_toggled
+        )
 
         # Tab 6: Dataset Generation (Active Learning)
         from hydra_suite.trackerkit.gui.panels.dataset_panel import DatasetPanel
@@ -3185,33 +3189,6 @@ class MainWindow(QMainWindow):
             )
             self._update_background_color_button()
 
-    def _select_video_pose_color(self):
-        """Open color picker for fixed pose overlay color (BGR)."""
-        from PySide6.QtGui import QColor
-        from PySide6.QtWidgets import QColorDialog
-
-        b, g, r = self._postprocess_panel._video_pose_color
-        initial_color = QColor(r, g, b)
-        color = QColorDialog.getColor(initial_color, self, "Choose Pose Overlay Color")
-        if color.isValid():
-            self._postprocess_panel._video_pose_color = (
-                color.blue(),
-                color.green(),
-                color.red(),
-            )
-            self._update_video_pose_color_button()
-
-    def _update_video_pose_color_button(self):
-        """Update fixed pose-color preview button and text label."""
-        b, g, r = self._postprocess_panel._video_pose_color
-        self._postprocess_panel.btn_video_pose_color.setStyleSheet(
-            f"background-color: rgb({r}, {g}, {b}); "
-            f"border: 1px solid #333; border-radius: 2px;"
-        )
-        self._postprocess_panel.lbl_video_pose_color.setText(
-            f"{self._postprocess_panel._video_pose_color}"
-        )
-
     def _update_background_color_button(self):
         """Update the color button display and label."""
         b, g, r = self._identity_panel._background_color
@@ -3352,92 +3329,6 @@ class MainWindow(QMainWindow):
         enabled = self._tracking_panel.chk_enable_confidence_density_map.isChecked()
         self._tracking_panel.g_density.setVisible(enabled)
         self._tracking_panel.g_density.setEnabled(enabled)
-
-    def _on_cleaning_toggled(self, state):
-        """Enable/disable trajectory cleaning controls based on checkbox."""
-        enabled = self._postprocess_panel.enable_postprocessing.isChecked()
-
-        # Hide/show all cleaning parameter widgets
-        self._postprocess_panel.spin_min_trajectory_length.setVisible(enabled)
-        self._postprocess_panel.lbl_min_trajectory_length.setVisible(enabled)
-        self._postprocess_panel.spin_max_velocity_break.setVisible(enabled)
-        self._postprocess_panel.lbl_max_velocity_break.setVisible(enabled)
-        self._postprocess_panel.spin_max_occlusion_gap.setVisible(enabled)
-        self._postprocess_panel.lbl_max_occlusion_gap.setVisible(enabled)
-        self._postprocess_panel.chk_enable_tracklet_relinking.setVisible(enabled)
-        self._postprocess_panel.lbl_enable_tracklet_relinking.setVisible(enabled)
-        self._postprocess_panel.spin_relink_pose_max_distance.setVisible(enabled)
-        self._postprocess_panel.lbl_relink_pose_max_distance.setVisible(enabled)
-        self._postprocess_panel.spin_max_velocity_zscore.setVisible(enabled)
-        self._postprocess_panel.lbl_max_velocity_zscore.setVisible(enabled)
-        self._postprocess_panel.spin_velocity_zscore_window.setVisible(enabled)
-        self._postprocess_panel.lbl_velocity_zscore_window.setVisible(enabled)
-        self._postprocess_panel.spin_velocity_zscore_min_vel.setVisible(enabled)
-        self._postprocess_panel.lbl_velocity_zscore_min_vel.setVisible(enabled)
-        self._postprocess_panel.combo_interpolation_method.setVisible(enabled)
-        self._postprocess_panel.lbl_interpolation_method.setVisible(enabled)
-        self._postprocess_panel.spin_interpolation_max_gap.setVisible(enabled)
-        self._postprocess_panel.lbl_interpolation_max_gap.setVisible(enabled)
-        self._postprocess_panel.spin_heading_flip_max_burst.setVisible(enabled)
-        self._postprocess_panel.lbl_heading_flip_max_burst.setVisible(enabled)
-        self._postprocess_panel.spin_merge_overlap_multiplier.setVisible(enabled)
-        self._postprocess_panel.lbl_merge_overlap_multiplier.setVisible(enabled)
-        self._postprocess_panel.spin_min_overlap_frames.setVisible(enabled)
-        self._postprocess_panel.lbl_min_overlap_frames.setVisible(enabled)
-        self._postprocess_panel.chk_cleanup_temp_files.setVisible(enabled)
-
-        # Also control enable state
-        self._postprocess_panel.spin_min_trajectory_length.setEnabled(enabled)
-        self._postprocess_panel.spin_max_velocity_break.setEnabled(enabled)
-        self._postprocess_panel.spin_max_occlusion_gap.setEnabled(enabled)
-        self._postprocess_panel.chk_enable_tracklet_relinking.setEnabled(enabled)
-        self._postprocess_panel.spin_relink_pose_max_distance.setEnabled(enabled)
-        self._postprocess_panel.spin_max_velocity_zscore.setEnabled(enabled)
-        self._postprocess_panel.spin_velocity_zscore_window.setEnabled(enabled)
-        self._postprocess_panel.spin_velocity_zscore_min_vel.setEnabled(enabled)
-        self._postprocess_panel.combo_interpolation_method.setEnabled(enabled)
-        self._postprocess_panel.spin_interpolation_max_gap.setEnabled(enabled)
-        self._postprocess_panel.spin_heading_flip_max_burst.setEnabled(enabled)
-        self._postprocess_panel.spin_merge_overlap_multiplier.setEnabled(enabled)
-        self._postprocess_panel.spin_min_overlap_frames.setEnabled(enabled)
-        self._postprocess_panel.chk_cleanup_temp_files.setEnabled(enabled)
-
-        # Pose quality widgets — visible only when post-processing AND pose export are active
-        pose_enabled = enabled and self._is_pose_export_enabled()
-        self._postprocess_panel.spin_pose_export_min_valid_fraction.setVisible(
-            pose_enabled
-        )
-        self._postprocess_panel.lbl_pose_export_min_valid_fraction.setVisible(
-            pose_enabled
-        )
-        self._postprocess_panel.spin_pose_export_min_valid_keypoints.setVisible(
-            pose_enabled
-        )
-        self._postprocess_panel.lbl_pose_export_min_valid_keypoints.setVisible(
-            pose_enabled
-        )
-        self._postprocess_panel.spin_relink_min_pose_quality.setVisible(pose_enabled)
-        self._postprocess_panel.lbl_relink_min_pose_quality.setVisible(pose_enabled)
-        self._postprocess_panel.spin_pose_postproc_max_gap.setVisible(pose_enabled)
-        self._postprocess_panel.lbl_pose_postproc_max_gap.setVisible(pose_enabled)
-        self._postprocess_panel.spin_pose_temporal_outlier_zscore.setVisible(
-            pose_enabled
-        )
-        self._postprocess_panel.lbl_pose_temporal_outlier_zscore.setVisible(
-            pose_enabled
-        )
-
-        self._postprocess_panel.spin_pose_export_min_valid_fraction.setEnabled(
-            pose_enabled
-        )
-        self._postprocess_panel.spin_pose_export_min_valid_keypoints.setEnabled(
-            pose_enabled
-        )
-        self._postprocess_panel.spin_relink_min_pose_quality.setEnabled(pose_enabled)
-        self._postprocess_panel.spin_pose_postproc_max_gap.setEnabled(pose_enabled)
-        self._postprocess_panel.spin_pose_temporal_outlier_zscore.setEnabled(
-            pose_enabled
-        )
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -3764,14 +3655,6 @@ class MainWindow(QMainWindow):
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
         if fp:
             self._setup_panel.csv_line.setText(fp)
-
-    def select_video_output(self: object) -> object:
-        """select_video_output method documentation."""
-        fp, _ = QFileDialog.getSaveFileName(
-            self, "Select Video Output", "", "Video Files (*.mp4 *.avi)"
-        )
-        if fp:
-            self._postprocess_panel.video_out_line.setText(fp)
 
     # =========================================================================
     # VIDEO PLAYER FUNCTIONS
@@ -4237,44 +4120,6 @@ class MainWindow(QMainWindow):
             f"Head-tail crop dimensions will adapt to this ratio.\n"
             f"Aspect ratio filtering (if enabled) will use this as the centre.",
         )
-
-    def _on_video_output_toggled(self, checked):
-        """Enable/disable video output controls."""
-        # Hide/show all video output widgets
-        self._postprocess_panel.btn_video_out.setVisible(checked)
-        self._postprocess_panel.video_out_line.setVisible(checked)
-        self._postprocess_panel.lbl_video_path.setVisible(checked)
-        self._postprocess_panel.lbl_video_viz_settings.setVisible(checked)
-        self._postprocess_panel.check_show_labels.setVisible(checked)
-        self._postprocess_panel.check_show_orientation.setVisible(checked)
-        self._postprocess_panel.check_show_trails.setVisible(checked)
-        self._postprocess_panel.spin_trail_duration.setVisible(checked)
-        self._postprocess_panel.lbl_trail_duration.setVisible(checked)
-        self._postprocess_panel.spin_marker_size.setVisible(checked)
-        self._postprocess_panel.lbl_marker_size.setVisible(checked)
-        self._postprocess_panel.spin_text_scale.setVisible(checked)
-        self._postprocess_panel.lbl_text_scale.setVisible(checked)
-        self._postprocess_panel.spin_arrow_length.setVisible(checked)
-        self._postprocess_panel.lbl_arrow_length.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_settings.setVisible(checked)
-        self._postprocess_panel.check_video_show_pose.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_color_mode.setVisible(checked)
-        self._postprocess_panel.combo_video_pose_color_mode.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_color_label.setVisible(checked)
-        self._postprocess_panel.btn_video_pose_color.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_color.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_point_radius.setVisible(checked)
-        self._postprocess_panel.spin_video_pose_point_radius.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_point_thickness.setVisible(checked)
-        self._postprocess_panel.spin_video_pose_point_thickness.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_line_thickness.setVisible(checked)
-        self._postprocess_panel.spin_video_pose_line_thickness.setVisible(checked)
-        self._postprocess_panel.lbl_video_pose_disabled_hint.setVisible(checked)
-
-        # Also control enable state
-        self._postprocess_panel.btn_video_out.setEnabled(checked)
-        self._postprocess_panel.video_out_line.setEnabled(checked)
-        self._sync_video_pose_overlay_controls()
 
     def _update_preview_display(self):
         """Update the video display with current brightness/contrast/gamma settings."""
@@ -10785,7 +10630,7 @@ class MainWindow(QMainWindow):
                 self._postprocess_panel._video_pose_color = tuple(
                     int(max(0, min(255, float(v)))) for v in pose_color
                 )
-                self._update_video_pose_color_button()
+                self._postprocess_panel._update_video_pose_color_button()
             self._sync_video_pose_overlay_controls()
 
             # === VISUALIZATION OVERLAYS ===

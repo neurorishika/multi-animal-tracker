@@ -336,7 +336,7 @@ class IdentityPanel(QWidget):
         self.g_pose_runtime.toggled.connect(
             self._main_window._on_runtime_context_changed
         )
-        self.g_pose_runtime.toggled.connect(self._main_window._on_cleaning_toggled)
+        # Cross-panel connection wired in MainWindow.init_ui() after both panels exist
         self.chk_enable_pose_extractor = self.g_pose_runtime
         self._main_window._set_compact_section_widget(self.g_pose_runtime)
         vl_pose = QVBoxLayout(self.g_pose_runtime)
