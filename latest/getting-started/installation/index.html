@@ -2590,7 +2590,7 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/cu130
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;hydra-suite[cuda13]&quot;</span>
 </span></code></pre></div>
-<p><strong>You do not need the CUDA toolkit installed.</strong> PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (<code>nvidia-cublas-cu12</code>, <code>nvidia-cudnn-cu12</code>, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.</p>
+<p><strong>You do not need the CUDA toolkit installed.</strong> PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (<code>nvidia-cublas-cu12</code>, <code>nvidia-cudnn-cu12</code>, <code>nvidia-curand-cu12</code>, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.</p>
 <h3 id="amd-gpu-rocm-linux-only">AMD GPU / ROCm (Linux only)<a class="headerlink" href="#amd-gpu-rocm-linux-only" title="Permanent link">&para;</a></h3>
 <p>Requires ROCm installed system-wide first. See the dedicated <a href="../rocm/">ROCm setup guide</a>.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/rocm7.2
@@ -2805,7 +2805,9 @@
 <li>Ensure you installed with <code>[cuda]</code> or <code>[cuda13]</code> extra</li>
 <li>Ensure PyTorch is imported before ONNX Runtime (PyTorch preloads CUDA libs)</li>
 <li>Verify: <code>python -c "import torch; import onnxruntime as ort; print(ort.get_available_providers())"</code></li>
-<li><strong>conda path:</strong> re-run <code>make install-cuda CUDA_MAJOR=13</code> to refresh hooks</li>
+<li>For a direct ONNX Runtime session check, use: <code>python -c "import onnxruntime as ort; s=ort.InferenceSession('model.onnx', providers=['CUDAExecutionProvider']); print(s.get_providers())"</code></li>
+<li>If you see <code>libcurand.so.10: cannot open shared object file</code>, update the conda env: <code>conda install -n hydra-cuda -c nvidia -c conda-forge libcurand=10.*</code></li>
+<li><strong>conda path:</strong> re-run <code>make install-cuda CUDA_MAJOR=13</code> (or <code>CUDA_MAJOR=12</code>) and reactivate the environment to refresh hooks; the Makefile now runs a CUDA runtime self-check and fails fast if ONNX Runtime libraries are still missing</li>
 </ul>
 <h3 id="pyside6-qt-errors-on-linux-pip-only">PySide6 / Qt errors on Linux (pip only)<a class="headerlink" href="#pyside6-qt-errors-on-linux-pip-only" title="Permanent link">&para;</a></h3>
 <p>pip-installed PySide6 may need system libraries:</p>
