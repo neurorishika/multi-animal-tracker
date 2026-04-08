@@ -781,6 +781,21 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self._dataset_panel, "Build Dataset")
 
+        control_panels = (
+            self._setup_panel,
+            self._detection_panel,
+            self._identity_panel,
+            self._tracking_panel,
+            self._postprocess_panel,
+            self._dataset_panel,
+        )
+        right_panel_min_width = max(
+            560,
+            self.tabs.minimumSizeHint().width() + 24,
+            max(panel.minimumSizeHint().width() for panel in control_panels) + 24,
+        )
+        right_panel.setMinimumWidth(right_panel_min_width)
+
         right_layout.addWidget(self.tabs, stretch=1)
 
         # Persistent Action Panel (Bottom Right)
@@ -918,9 +933,6 @@ class MainWindow(QMainWindow):
         self._identity_panel._refresh_pose_direction_keypoint_lists()
         self._sync_pose_backend_ui()
         self._sync_individual_analysis_mode_ui()
-
-        # Dataset panel bootstrap
-        self._dataset_panel._refresh_xanylabeling_envs()
 
         # Load default preset (custom if available, otherwise default.json)
         self._load_default_preset_on_startup()
@@ -1160,6 +1172,16 @@ class MainWindow(QMainWindow):
             if item.text().strip()
         ]
 
+    def _pose_group_list_widget(self, attr_name):
+        """Resolve a pose-group list widget from compatibility attrs or the identity panel."""
+        widget = getattr(self, attr_name, None)
+        if widget is not None:
+            return widget
+        panel = getattr(self, "_identity_panel", None)
+        if panel is None:
+            return None
+        return getattr(panel, attr_name, None)
+
     def _set_pose_group_selection(self, list_widget, values):
         """Select keypoints in list widget from config-provided values."""
         if list_widget is None:
@@ -1207,9 +1229,9 @@ class MainWindow(QMainWindow):
 
     def _apply_pose_keypoint_selection_constraints(self, changed_group="ignore"):
         """Enforce exclusivity across ignore/anterior/posterior keypoint selections."""
-        ignore_list = getattr(self, "list_pose_ignore_keypoints", None)
-        ant_list = getattr(self, "list_pose_direction_anterior", None)
-        post_list = getattr(self, "list_pose_direction_posterior", None)
+        ignore_list = self._pose_group_list_widget("list_pose_ignore_keypoints")
+        ant_list = self._pose_group_list_widget("list_pose_direction_anterior")
+        post_list = self._pose_group_list_widget("list_pose_direction_posterior")
         if ignore_list is None or ant_list is None or post_list is None:
             return
 
@@ -1283,19 +1305,19 @@ class MainWindow(QMainWindow):
     def _parse_pose_ignore_keypoints(self):
         """Parse keypoints to ignore from list selection."""
         return self._selected_pose_group_keypoints(
-            getattr(self, "list_pose_ignore_keypoints", None)
+            self._pose_group_list_widget("list_pose_ignore_keypoints")
         )
 
     def _parse_pose_direction_anterior_keypoints(self):
         """Parse anterior keypoint group from list selection."""
         return self._selected_pose_group_keypoints(
-            getattr(self, "list_pose_direction_anterior", None)
+            self._pose_group_list_widget("list_pose_direction_anterior")
         )
 
     def _parse_pose_direction_posterior_keypoints(self):
         """Parse posterior keypoint group from list selection."""
         return self._selected_pose_group_keypoints(
-            getattr(self, "list_pose_direction_posterior", None)
+            self._pose_group_list_widget("list_pose_direction_posterior")
         )
 
     def _selected_pose_sleap_env(self):
@@ -1547,6 +1569,8 @@ class MainWindow(QMainWindow):
         """Handle showing/hiding batch controls and syncing keystone video."""
         self._setup_panel.lbl_batch_warning.setVisible(checked)
         self._setup_panel.container_batch.setVisible(checked)
+        if hasattr(self, "_postprocess_panel"):
+            self._postprocess_panel.set_batch_mode_active(checked)
         if checked:
             self._sync_keystone_to_batch()
         else:
@@ -1779,7 +1803,15 @@ class MainWindow(QMainWindow):
 
     def _on_frame_range_changed(self):
         """Handle frame range spinbox changes."""
-        self._session_orch._on_frame_range_changed()
+        self._session_orch._on_frame_range_changed(changed_widget=self.sender())
+
+    def _on_trail_history_changed(self):
+        """Sync trail-history special values with trajectory overlay visibility."""
+        self._session_orch._on_trail_history_changed()
+
+    def _commit_pending_setup_edits(self):
+        """Commit typed setup values before saving or launching tracking."""
+        self._session_orch._commit_pending_setup_edits()
 
     def _update_range_info(self):
         """Update the frame range info label."""
@@ -2181,6 +2213,35 @@ class MainWindow(QMainWindow):
             repository_dir=repository_dir,
         )
 
+    def _handle_remove_selected_yolo_model(
+        self,
+        combo,
+        refresh_callback,
+        selection_callback,
+        *,
+        model_kind: str = "model",
+    ) -> None:
+        """Remove the selected repository-backed model from a TrackerKit selector."""
+        self._config_orch._handle_remove_selected_yolo_model(
+            combo,
+            refresh_callback,
+            selection_callback,
+            model_kind=model_kind,
+        )
+
+    def _handle_remove_selected_pose_model(self) -> None:
+        """Remove the selected pose model from the local repository."""
+        self._config_orch._handle_remove_selected_pose_model()
+
+    def _confirm_and_remove_repository_model(
+        self, model_path: object, *, model_kind: str = "model"
+    ) -> bool:
+        """Confirm and remove a specific repository-backed model path."""
+        return self._config_orch._confirm_and_remove_repository_model(
+            model_path,
+            model_kind=model_kind,
+        )
+
     def toggle_preview(self, checked):
         """Toggle preview mode on/off."""
         self._session_orch.toggle_preview(checked)
@@ -2390,6 +2451,21 @@ class MainWindow(QMainWindow):
         if dataset_dir is None:
             return None
         return Path(dataset_dir).expanduser()
+
+    def _resolve_current_oriented_track_video_dir(self):
+        """Resolve the active per-session oriented-video output directory."""
+        from hydra_suite.core.identity.dataset.oriented_video import (
+            resolve_oriented_track_video_dir,
+        )
+
+        params = self.get_parameters_dict()
+        output_dir = resolve_oriented_track_video_dir(
+            params.get("ORIENTED_TRACK_VIDEO_OUTPUT_DIR"),
+            self._individual_dataset_run_id,
+        )
+        if output_dir is None:
+            return None
+        return Path(output_dir).expanduser()
 
     def _generate_oriented_track_videos(self, final_csv_path):
         """Export orientation-fixed videos for final trajectories."""
@@ -2707,7 +2783,6 @@ class MainWindow(QMainWindow):
             # Dataset Generation - YOLO Detection Parameters (separate from tracking)
             "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
             "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
-            "xanylabeling_env": "",  # Preferred X-AnyLabeling conda env
         }
 
         if os.path.exists(config_path):

@@ -178,17 +178,6 @@ def validate_obb_dataset(
 
     class_ids = sorted(int(x) for x in stats.get("class_ids", set()))
     stats["class_ids"] = class_ids
-    if len(class_ids) > 1:
-        issues.append(
-            ValidationIssue(
-                severity="error",
-                code="multi_class_source",
-                message=(
-                    "Source OBB dataset contains multiple classes. "
-                    "Use explicit class remapping into a derived workspace copy."
-                ),
-            )
-        )
 
     return ValidationReport(
         valid=not any(i.severity == "error" for i in issues), issues=issues, stats=stats

@@ -69,8 +69,25 @@ def test_dataset_panel_wired_in_main_window(main_window):
 
     assert hasattr(main_window, "_dataset_panel")
     assert isinstance(main_window._dataset_panel, DatasetPanel)
-    assert hasattr(main_window._dataset_panel, "combo_xanylabeling_env")
     assert hasattr(main_window._dataset_panel, "chk_enable_dataset_gen")
+    assert hasattr(main_window._dataset_panel, "g_oriented_videos")
+    assert hasattr(
+        main_window._dataset_panel,
+        "chk_suppress_foreign_obb_individual_dataset",
+    )
+    assert hasattr(
+        main_window._dataset_panel,
+        "chk_suppress_foreign_obb_oriented_videos",
+    )
+    assert hasattr(
+        main_window._dataset_panel,
+        "chk_fix_oriented_video_direction_flips",
+    )
+    assert hasattr(
+        main_window._dataset_panel,
+        "chk_enable_oriented_video_affine_stabilization",
+    )
+    assert hasattr(main_window._dataset_panel, "g_downstream_tools")
 
 
 def test_setup_panel_wired_in_main_window(main_window):
@@ -81,6 +98,14 @@ def test_setup_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._setup_panel, SetupPanel)
     assert hasattr(main_window._setup_panel, "combo_presets")
     assert hasattr(main_window._setup_panel, "btn_file")
+    assert not main_window._setup_panel.spin_start_frame.keyboardTracking()
+    assert not main_window._setup_panel.spin_end_frame.keyboardTracking()
+    assert main_window._setup_panel.spin_traj_hist.minimum() == -1
+
+
+def test_controls_panel_has_wider_minimum_width(main_window):
+    """The right-side controls panel keeps enough width for tab content."""
+    assert main_window.splitter.widget(1).minimumWidth() >= 560
 
 
 def test_tracking_panel_wired_in_main_window(main_window):
@@ -101,6 +126,8 @@ def test_postprocess_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._postprocess_panel, PostProcessPanel)
     assert hasattr(main_window._postprocess_panel, "enable_postprocessing")
     assert hasattr(main_window._postprocess_panel, "combo_interpolation_method")
+    assert hasattr(main_window._postprocess_panel, "g_refinekit")
+    assert hasattr(main_window._postprocess_panel, "chk_prompt_open_refinekit")
 
 
 def test_identity_panel_wired_in_main_window(main_window):
@@ -109,8 +136,11 @@ def test_identity_panel_wired_in_main_window(main_window):
 
     assert hasattr(main_window, "_identity_panel")
     assert isinstance(main_window._identity_panel, IdentityPanel)
+    assert hasattr(main_window._identity_panel, "g_headtail")
     assert hasattr(main_window._identity_panel, "combo_yolo_headtail_model")
     assert hasattr(main_window._identity_panel, "combo_yolo_headtail_model_type")
+    assert hasattr(main_window._identity_panel, "btn_remove_yolo_headtail_model")
+    assert hasattr(main_window._identity_panel, "btn_remove_pose_model")
 
 
 def test_detection_panel_wired_in_main_window(main_window):
@@ -121,3 +151,6 @@ def test_detection_panel_wired_in_main_window(main_window):
     assert isinstance(main_window._detection_panel, DetectionPanel)
     assert hasattr(main_window._detection_panel, "combo_detection_method")
     assert hasattr(main_window._detection_panel, "stack_detection")
+    assert hasattr(main_window._detection_panel, "btn_remove_yolo_model")
+    assert hasattr(main_window._detection_panel, "btn_remove_yolo_detect_model")
+    assert hasattr(main_window._detection_panel, "btn_remove_yolo_crop_obb_model")

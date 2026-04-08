@@ -161,3 +161,22 @@ def test_individual_dataset_generator_writes_canonicalization_metadata(tmp_path:
     assert entry["canonicalization"]["size_px"] == [16.0, 8.0]
     assert entry["canonicalization"]["orientation_source"] == "tracking_theta"
     assert len(entry["obb_corners_local"]) == 4
+
+
+def test_individual_dataset_generator_cache_only_mode_skips_images_dir(tmp_path: Path):
+    generator = IndividualDatasetGenerator(
+        {
+            "ENABLE_INDIVIDUAL_DATASET": True,
+            "ENABLE_INDIVIDUAL_IMAGE_SAVE": False,
+            "INDIVIDUAL_DATASET_RUN_ID": "20260311_120000",
+            "INDIVIDUAL_OUTPUT_FORMAT": "png",
+        },
+        output_dir=str(tmp_path / "oriented_videos"),
+        video_name="video.mp4",
+        dataset_name="",
+    )
+
+    assert generator.run_dir == tmp_path / "oriented_videos" / "20260311_120000"
+    assert generator.crops_dir is None
+    assert generator.run_dir.exists()
+    assert not (generator.run_dir / "images").exists()

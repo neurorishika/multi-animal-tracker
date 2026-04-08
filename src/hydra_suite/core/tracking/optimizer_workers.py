@@ -528,7 +528,8 @@ class TrackingPreviewWorker(QThread):
                 ]
 
             _TRAIL_LEN = int(self.params.get("TRAJECTORY_HISTORY_SECONDS", 5))
-            trail: list[deque] = [deque(maxlen=max(_TRAIL_LEN, 10)) for _ in range(N)]
+            _trail_maxlen = None if _TRAIL_LEN < 0 else max(_TRAIL_LEN, 1)
+            trail: list[deque] = [deque(maxlen=_trail_maxlen) for _ in range(N)]
 
             show_circles = self.params.get("SHOW_CIRCLES", True)
             show_orientation = self.params.get("SHOW_ORIENTATION", True)

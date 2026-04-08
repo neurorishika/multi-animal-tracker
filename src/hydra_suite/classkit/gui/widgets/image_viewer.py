@@ -65,9 +65,8 @@ class ImageCanvas(QGraphicsView):
         """Clear the internal pixmap cache."""
         self._pixmap_cache.clear()
         self._cache_order.clear()
-        # Note: We don't auto-call set_image here because for canonical images
-        # _last_path is a virtual key, not a filesystem path.
-        # MainWindow handles the refresh.
+        # Force the next refresh to reload even if the same image/key is requested.
+        self._last_path = None
 
     def _cache_get(self, key: str):
         if key not in self._pixmap_cache:
@@ -187,6 +186,13 @@ class ImageCanvas(QGraphicsView):
             return
         self._display_pixmap(pixmap)
         self._last_path = None  # mark as not from a path so next set_image reloads
+
+    def clear_image(self) -> None:
+        """Clear the current preview image and reset view-tracking state."""
+        self.pix_item.setPixmap(QPixmap())
+        self.scene.setSceneRect(QRectF())
+        self._last_path = None
+        self._last_dimensions = None
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Zoom logic from PoseKit."""

@@ -89,8 +89,11 @@ class CustomCNNParams:
     """
 
     backbone: str = "tinyclassifier"
+    fine_tune_method: str = "head_only"
     trainable_layers: int = 0  # 0=frozen, -1=all, N=last N layer groups
     backbone_lr_scale: float = 0.1  # LR multiplier for unfrozen backbone layers
+    layerwise_lr_decay: float = 0.75
+    gradual_unfreeze_interval: int = 5
     input_size: int = 224  # Resize target (square) for torchvision backbones
     epochs: int = 50
     batch: int = 32

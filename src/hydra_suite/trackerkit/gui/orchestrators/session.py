@@ -162,19 +162,12 @@ class SessionOrchestrator:
 
     def _apply_ui_state(self, state: str):
         if state == "no_video":
-            extra_allowed = [
-                self._mw._dataset_panel.combo_xanylabeling_env,
-                self._mw._dataset_panel.btn_refresh_envs,
-                self._mw._dataset_panel.btn_open_xanylabeling,
-                self._mw._dataset_panel.btn_open_pose_label,
-            ]
             self._set_interactive_widgets_enabled(
                 False,
                 allowlist=[
                     self._panels.setup.btn_file,
                     self._panels.setup.btn_load_config,
-                ]
-                + extra_allowed,
+                ],
                 remember_state=False,
             )
             self._mw.btn_start.setEnabled(False)
@@ -608,8 +601,11 @@ class SessionOrchestrator:
 
     def _sync_video_pose_overlay_controls(self, *_args):
         """Gate pose video overlay controls based on pose inference enable state."""
-        has_controls = hasattr(self._mw, "check_video_show_pose") and hasattr(
-            self._mw, "combo_video_pose_color_mode"
+        panel = getattr(self._mw, "_postprocess_panel", None)
+        has_controls = (
+            panel is not None
+            and hasattr(panel, "check_video_show_pose")
+            and hasattr(panel, "combo_video_pose_color_mode")
         )
         if not has_controls:
             return
@@ -741,6 +737,72 @@ class SessionOrchestrator:
         self._panels.setup.lbl_range_info.setText(
             f"Tracking {num_frames} frames ({duration_sec:.2f} seconds)"
         )
+
+    def _commit_pending_setup_edits(self):
+        """Commit any typed spinbox text before reading setup values."""
+        changed_widget = None
+        for spinbox in (
+            self._panels.setup.spin_start_frame,
+            self._panels.setup.spin_end_frame,
+        ):
+            if spinbox.lineEdit().text() != str(spinbox.value()):
+                changed_widget = spinbox
+            spinbox.interpretText()
+        if self._panels.setup.spin_traj_hist.lineEdit().text() != str(
+            self._panels.setup.spin_traj_hist.value()
+        ):
+            self._panels.setup.spin_traj_hist.interpretText()
+        self._normalize_frame_range(changed_widget=changed_widget)
+        self._sync_trail_history_bounds()
+
+    def _normalize_frame_range(self, changed_widget=None):
+        """Clamp frame range bounds while preserving the field the user just edited."""
+        start_spin = self._panels.setup.spin_start_frame
+        end_spin = self._panels.setup.spin_end_frame
+        max_frame = max(0, min(start_spin.maximum(), end_spin.maximum()))
+
+        start = max(0, min(start_spin.value(), max_frame))
+        end = max(0, min(end_spin.value(), max_frame))
+
+        if start > end:
+            if changed_widget is end_spin:
+                start = end
+            else:
+                end = start
+
+        if start_spin.value() != start:
+            start_spin.blockSignals(True)
+            start_spin.setValue(start)
+            start_spin.blockSignals(False)
+        if end_spin.value() != end:
+            end_spin.blockSignals(True)
+            end_spin.setValue(end)
+            end_spin.blockSignals(False)
+
+    def _sync_trail_history_bounds(self):
+        """Cap trail history to the loaded video's frame count."""
+        spinbox = self._panels.setup.spin_traj_hist
+        previous_value = spinbox.value()
+        max_history = (
+            max(0, int(self._mw.video_total_frames))
+            if getattr(self._mw, "video_total_frames", 0) > 0
+            else max(int(spinbox.maximum()), 60)
+        )
+        spinbox.blockSignals(True)
+        spinbox.setRange(-1, max_history)
+        if previous_value > max_history:
+            spinbox.setValue(max_history)
+        spinbox.blockSignals(False)
+        if spinbox.value() != previous_value:
+            self._on_trail_history_changed()
+
+    def _on_trail_history_changed(self):
+        """Apply special trail-history values to the trajectory overlay toggle."""
+        trail_history = self._panels.setup.spin_traj_hist.value()
+        if trail_history == 0:
+            self._panels.setup.chk_show_trajectories.setChecked(False)
+        elif not self._panels.setup.chk_show_trajectories.isChecked():
+            self._panels.setup.chk_show_trajectories.setChecked(True)
 
     # =========================================================================
     # PIPELINE STATE QUERIES
@@ -992,6 +1054,8 @@ class SessionOrchestrator:
             self._mw._identity_panel.lbl_individual_yolo_only_notice.setVisible(
                 not is_yolo
             )
+            self._mw._identity_panel.g_headtail.setVisible(pipeline_enabled)
+            self._mw._identity_panel.g_headtail.setEnabled(pipeline_enabled)
             self._mw._identity_panel.g_identity.setVisible(pipeline_enabled)
             self._mw._identity_panel.g_identity.setEnabled(pipeline_enabled)
             self._mw._identity_panel.g_pose_runtime.setVisible(pipeline_enabled)
@@ -1002,11 +1066,14 @@ class SessionOrchestrator:
             self._mw._identity_panel.g_individual_pipeline_common.setEnabled(
                 pipeline_enabled
             )
+            self._mw._identity_panel._sync_headtail_analysis_ui()
             self._mw._identity_panel._sync_identity_method_ui()
             self._mw._identity_panel._sync_pose_analysis_ui()
         if hasattr(self._mw, "_dataset_panel"):
             self._mw._dataset_panel.g_individual_dataset.setVisible(pipeline_enabled)
             self._mw._dataset_panel.g_individual_dataset.setEnabled(pipeline_enabled)
+            self._mw._dataset_panel.g_oriented_videos.setVisible(pipeline_enabled)
+            self._mw._dataset_panel.g_oriented_videos.setEnabled(pipeline_enabled)
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
@@ -1018,10 +1085,14 @@ class SessionOrchestrator:
         if hasattr(self._mw, "_dataset_panel"):
             self._mw._dataset_panel.ind_output_group.setVisible(save_enabled)
             self._mw._dataset_panel.ind_output_group.setEnabled(save_enabled)
-            self._mw._dataset_panel.lbl_individual_info.setVisible(save_enabled)
-            self._mw._dataset_panel.chk_generate_individual_track_videos.setVisible(
-                pipeline_enabled
+            self._mw._dataset_panel.chk_suppress_foreign_obb_individual_dataset.setVisible(
+                save_enabled
             )
+            self._mw._dataset_panel.chk_suppress_foreign_obb_individual_dataset.setEnabled(
+                save_enabled
+            )
+            self._mw._dataset_panel.lbl_individual_info.setVisible(save_enabled)
+            self._mw._dataset_panel.lbl_oriented_video_info.setVisible(pipeline_enabled)
             has_headtail = bool(
                 str(
                     self._mw._identity_panel._get_selected_yolo_headtail_model_path()
@@ -1032,12 +1103,16 @@ class SessionOrchestrator:
             self._mw._dataset_panel.chk_generate_individual_track_videos.setEnabled(
                 oriented_enabled
             )
+            self._mw._dataset_panel.chk_suppress_foreign_obb_oriented_videos.setEnabled(
+                oriented_enabled
+                and self._mw._dataset_panel.chk_generate_individual_track_videos.isChecked()
+            )
             if not oriented_enabled:
                 self._mw._dataset_panel.chk_generate_individual_track_videos.setChecked(
                     False
                 )
                 self._mw._dataset_panel.chk_generate_individual_track_videos.setToolTip(
-                    "Requires a head-tail model to be configured."
+                    "Requires head-tail orientation to be enabled with a configured model."
                 )
             else:
                 self._mw._dataset_panel.chk_generate_individual_track_videos.setToolTip(
@@ -1165,6 +1240,7 @@ class SessionOrchestrator:
         self._panels.setup.spin_end_frame.setMaximum(self._mw.video_total_frames - 1)
         self._panels.setup.spin_end_frame.setValue(self._mw.video_total_frames - 1)
         self._panels.setup.spin_end_frame.setEnabled(True)
+        self._sync_trail_history_bounds()
         self._panels.setup.btn_set_start_current.setEnabled(True)
         self._panels.setup.btn_set_end_current.setEnabled(True)
         self._panels.setup.btn_reset_range.setEnabled(True)
@@ -1317,15 +1393,9 @@ class SessionOrchestrator:
         else:
             self._mw._stop_playback()
 
-    def _on_frame_range_changed(self):
+    def _on_frame_range_changed(self, changed_widget=None):
         """Handle frame range spinbox changes."""
-        if (
-            self._panels.setup.spin_start_frame.value()
-            > self._panels.setup.spin_end_frame.value()
-        ):
-            self._panels.setup.spin_end_frame.setValue(
-                self._panels.setup.spin_start_frame.value()
-            )
+        self._normalize_frame_range(changed_widget=changed_widget)
         self._update_range_info()
 
     def _set_start_to_current(self):
@@ -1368,6 +1438,16 @@ class SessionOrchestrator:
 
         self._mw._set_interactive_widgets_enabled(True, remember_state=True)
         self._mw._set_video_interaction_enabled(True)
+        self._sync_contextual_controls()
+        self._mw._sync_individual_analysis_mode_ui()
+        self._mw._sync_pose_backend_ui()
+        if hasattr(self._mw, "_detection_panel"):
+            self._mw._detection_panel._sync_model_selector_buttons()
+        if hasattr(self._mw, "_identity_panel"):
+            self._mw._identity_panel._sync_headtail_model_remove_button()
+            self._mw._identity_panel._sync_pose_model_remove_button()
+            for row in self._mw._identity_panel._cnn_classifier_rows():
+                row._sync_model_ui()
         self._mw.btn_test_detection.setText("Test Detection on Preview")
         self._mw.btn_test_detection.setEnabled(
             self._mw.preview_frame_original is not None

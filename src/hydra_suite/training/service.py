@@ -95,22 +95,29 @@ class TrainingOrchestrator:
         self,
         sources: list[SourceDataset],
         *,
-        class_name: str,
+        class_name: str | None = None,
+        class_names: list[str] | None = None,
         split_cfg: SplitConfig,
         seed: int,
         dedup: bool,
     ) -> DatasetBuildResult:
         """Merge multiple OBB source datasets into a single unified dataset with optional deduplication."""
+        resolved_class_names = [
+            str(name).strip()
+            for name in (class_names or [class_name or "object"])
+            if str(name).strip()
+        ] or ["object"]
         out_root = self.workspace_root / "datasets"
         out_root.mkdir(parents=True, exist_ok=True)
         return merge_obb_sources(
             sources=sources,
             output_root=out_root,
-            class_name=class_name,
+            class_name=resolved_class_names[0],
+            class_names=resolved_class_names,
             split_cfg=split_cfg,
             seed=seed,
             dedup=dedup,
-            remap_single_class=True,
+            remap_single_class=len(resolved_class_names) == 1,
         )
 
     def build_role_dataset(
@@ -118,7 +125,8 @@ class TrainingOrchestrator:
         role: TrainingRole,
         merged_obb_dataset_dir: str,
         *,
-        class_name: str,
+        class_name: str | None = None,
+        class_names: list[str] | None = None,
         crop_pad_ratio: float = 0.15,
         min_crop_size_px: int = 64,
         enforce_square: bool = True,
@@ -131,6 +139,7 @@ class TrainingOrchestrator:
             merged_obb_dataset_dir=merged_obb_dataset_dir,
             role_output_root=out_root,
             class_name=class_name,
+            class_names=class_names,
             crop_pad_ratio=crop_pad_ratio,
             min_crop_size_px=min_crop_size_px,
             enforce_square=enforce_square,

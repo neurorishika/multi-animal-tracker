@@ -1,9 +1,14 @@
 from pathlib import Path
 
+import pytest
+
 from hydra_suite.classkit.config.presets import (
     age_preset,
     color_tag_preset,
+    get_custom_scheme_preset_key,
     head_tail_preset,
+    list_saved_scheme_presets,
+    save_scheme_preset,
 )
 from hydra_suite.classkit.config.schemas import Factor, LabelingScheme, ProjectConfig
 
@@ -76,8 +81,6 @@ def test_encode_label_wrong_length_raises():
         ],
         training_modes=["flat_yolo"],
     )
-    import pytest
-
     with pytest.raises(ValueError, match="Expected 2 factor values"):
         scheme.encode_label(["red"])  # missing second factor
 
@@ -91,8 +94,6 @@ def test_decode_label_wrong_parts_raises():
         ],
         training_modes=["flat_yolo"],
     )
-    import pytest
-
     with pytest.raises(ValueError, match="Expected 2 parts"):
         scheme.decode_label("red|blue|green")  # too many parts
 
@@ -103,7 +104,7 @@ def test_head_tail_preset():
     assert len(scheme.factors) == 1
     assert set(scheme.factors[0].labels) == {"left", "right", "up", "down"}
     assert scheme.total_classes == 4
-    assert scheme.training_modes == ["flat_tiny", "flat_yolo", "flat_custom"]
+    assert scheme.training_modes == ["flat_yolo", "flat_custom"]
 
 
 def test_color_tag_preset_1factor():
@@ -111,7 +112,7 @@ def test_color_tag_preset_1factor():
     scheme = color_tag_preset(n_factors=1, colors=colors)
     assert scheme.total_classes == 5
     assert len(scheme.factors) == 1
-    assert scheme.training_modes == ["flat_tiny", "flat_yolo", "flat_custom"]
+    assert scheme.training_modes == ["flat_yolo", "flat_custom"]
 
 
 def test_color_tag_preset_2factor():
@@ -122,10 +123,8 @@ def test_color_tag_preset_2factor():
     assert scheme.factors[0].name == "tag_1"
     assert scheme.factors[1].name == "tag_2"
     assert scheme.training_modes == [
-        "flat_tiny",
         "flat_yolo",
         "flat_custom",
-        "multihead_tiny",
         "multihead_yolo",
         "multihead_custom",
     ]
@@ -136,10 +135,8 @@ def test_color_tag_preset_3factor():
     scheme = color_tag_preset(n_factors=3, colors=colors)
     assert scheme.total_classes == 125
     assert scheme.training_modes == [
-        "flat_tiny",
         "flat_yolo",
         "flat_custom",
-        "multihead_tiny",
         "multihead_yolo",
         "multihead_custom",
     ]
@@ -150,7 +147,7 @@ def test_age_preset_default():
     assert scheme.total_classes == 2
     assert "young" in scheme.factors[0].labels
     assert "old" in scheme.factors[0].labels
-    assert scheme.training_modes == ["flat_tiny", "flat_yolo", "flat_custom"]
+    assert scheme.training_modes == ["flat_yolo", "flat_custom"]
 
 
 def test_age_preset_extra_classes():
@@ -165,15 +162,11 @@ def test_color_tag_preset_custom_colors():
 
 
 def test_color_tag_preset_invalid_n_factors_raises():
-    import pytest
-
     with pytest.raises(ValueError):
         color_tag_preset(n_factors=0, colors=["red"])
 
 
 def test_color_tag_preset_empty_colors_raises():
-    import pytest
-
     with pytest.raises(ValueError):
         color_tag_preset(n_factors=1, colors=[])
 
@@ -199,3 +192,39 @@ def test_labeling_scheme_from_dict_defaults():
     assert scheme.training_modes == []
     assert scheme.description == ""
     assert scheme.factors[0].shortcut_keys == []
+
+
+def test_save_scheme_preset_persists_in_user_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HYDRA_CONFIG_DIR", str(tmp_path / "config"))
+    scheme = LabelingScheme(
+        name="tag_stack",
+        factors=[
+            Factor(name="tag_1", labels=["red", "blue"]),
+            Factor(name="tag_2", labels=["left", "right"]),
+        ],
+        training_modes=["flat_tiny", "multihead_tiny"],
+    )
+
+    preset_path = save_scheme_preset("Colony Tags", scheme)
+    presets = list_saved_scheme_presets()
+
+    assert preset_path.exists()
+    assert [preset.key for preset in presets] == [
+        get_custom_scheme_preset_key("Colony Tags")
+    ]
+    assert presets[0].is_custom is True
+    assert presets[0].scheme == scheme
+
+
+def test_save_scheme_preset_requires_overwrite_for_duplicates(tmp_path, monkeypatch):
+    monkeypatch.setenv("HYDRA_CONFIG_DIR", str(tmp_path / "config"))
+    scheme = LabelingScheme(
+        name="age",
+        factors=[Factor(name="age", labels=["young", "old"])],
+        training_modes=["flat_tiny"],
+    )
+
+    save_scheme_preset("Age Labels", scheme)
+
+    with pytest.raises(FileExistsError):
+        save_scheme_preset("Age Labels", scheme)

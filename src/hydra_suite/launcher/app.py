@@ -166,7 +166,7 @@ APP_CATALOG = [
     {
         "name": "FilterKit",
         "icon": "filterkit.svg",
-        "entry": "hydra_suite.filterkit.gui:main",
+        "entry": "hydra_suite.filterkit.app:main",
         "description": (
             "Dataset filtering and curation tool for managing "
             "image datasets and annotations."

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -114,6 +114,8 @@ class ParameterHelperDialog(BaseDialog):
         self._prev_scroll_h = 0
         self._prev_scroll_v = 0
         self._prev_last_frame: np.ndarray | None = None
+        self._prev_zoom_anchor: tuple[int, int, float, float] | None = None
+        self._prev_auto_fit_pending = True
 
         self.setMinimumSize(1200, 740)
         self.setup_ui()
@@ -849,6 +851,10 @@ class ParameterHelperDialog(BaseDialog):
         self._prev_label.mouseDoubleClickEvent = lambda _: self._fit_preview()
         self._prev_label.wheelEvent = self._on_prev_wheel
         self._prev_scroll.setWidget(self._prev_label)
+        for target in (self._prev_label, self._prev_scroll.viewport()):
+            target.setAttribute(Qt.WA_AcceptTouchEvents, True)
+            target.grabGesture(Qt.PinchGesture)
+            target.installEventFilter(self)
         lay.addWidget(self._prev_scroll, stretch=1)
 
         zoom_row = QHBoxLayout()
@@ -891,6 +897,7 @@ class ParameterHelperDialog(BaseDialog):
         self._prev_zoom_label.setText(f"{val}%")
         if self._prev_last_frame is not None:
             self._display_preview_frame(self._prev_last_frame)
+            self._restore_preview_zoom_anchor()
 
     def _fit_preview(self):
         if self._prev_last_frame is None:
@@ -917,6 +924,146 @@ class ParameterHelperDialog(BaseDialog):
         """Update the embedded preview panel."""
         self._prev_last_frame = rgb
         self._display_preview_frame(rgb)
+        if self._prev_auto_fit_pending:
+            self._prev_auto_fit_pending = False
+            QTimer.singleShot(0, self._fit_preview)
+
+    def _capture_preview_zoom_anchor(self, viewport_pos=None) -> None:
+        viewport = self._prev_scroll.viewport()
+        if viewport_pos is None:
+            viewport_pos = viewport.rect().center()
+        viewport_x = max(0, min(viewport.width(), viewport_pos.x()))
+        viewport_y = max(0, min(viewport.height(), viewport_pos.y()))
+        label_width = max(self._prev_label.width(), 1)
+        label_height = max(self._prev_label.height(), 1)
+        offset_x = max((viewport.width() - label_width) // 2, 0)
+        offset_y = max((viewport.height() - label_height) // 2, 0)
+        local_x = (
+            self._prev_scroll.horizontalScrollBar().value() + viewport_x - offset_x
+        )
+        local_y = self._prev_scroll.verticalScrollBar().value() + viewport_y - offset_y
+        local_x = max(0, min(label_width, local_x))
+        local_y = max(0, min(label_height, local_y))
+        self._prev_zoom_anchor = (
+            viewport_x,
+            viewport_y,
+            local_x / label_width,
+            local_y / label_height,
+        )
+
+    def _restore_preview_zoom_anchor(self) -> None:
+        if self._prev_zoom_anchor is None:
+            return
+        viewport_x, viewport_y, rel_x, rel_y = self._prev_zoom_anchor
+        self._prev_zoom_anchor = None
+        viewport = self._prev_scroll.viewport()
+        label_width = max(self._prev_label.width(), 1)
+        label_height = max(self._prev_label.height(), 1)
+        offset_x = max((viewport.width() - label_width) // 2, 0)
+        offset_y = max((viewport.height() - label_height) // 2, 0)
+        target_x = int(round(rel_x * label_width - viewport_x + offset_x))
+        target_y = int(round(rel_y * label_height - viewport_y + offset_y))
+        hbar = self._prev_scroll.horizontalScrollBar()
+        vbar = self._prev_scroll.verticalScrollBar()
+        hbar.setValue(max(0, min(hbar.maximum(), target_x)))
+        vbar.setValue(max(0, min(vbar.maximum(), target_y)))
+
+    def _preview_viewport_pos_from_event(self, evt, source_widget=None):
+        viewport = self._prev_scroll.viewport()
+        origin = source_widget or self._prev_label
+        if hasattr(evt, "position"):
+            pos = evt.position()
+            local_point = pos.toPoint() if hasattr(pos, "toPoint") else pos
+            if origin is viewport:
+                return local_point
+            return viewport.mapFromGlobal(origin.mapToGlobal(local_point))
+        if hasattr(evt, "globalPosition"):
+            pos = evt.globalPosition()
+            global_point = pos.toPoint() if hasattr(pos, "toPoint") else pos
+            return viewport.mapFromGlobal(global_point)
+        return viewport.rect().center()
+
+    def _set_preview_zoom_value(self, new_value: int, viewport_pos=None) -> bool:
+        bounded_value = max(10, min(400, int(round(new_value))))
+        if bounded_value == self._prev_zoom_slider.value():
+            return False
+        if viewport_pos is not None:
+            self._capture_preview_zoom_anchor(viewport_pos)
+        self._prev_zoom_slider.setValue(bounded_value)
+        return True
+
+    def _handle_preview_wheel(self, evt, source_widget=None) -> bool:
+        if evt.modifiers() != Qt.ControlModifier:
+            return False
+        viewport_pos = self._preview_viewport_pos_from_event(evt, source_widget)
+        delta = evt.angleDelta().y()
+        if delta == 0:
+            evt.accept()
+            return True
+        zoom_step = 10 if delta > 0 else -10
+        self._set_preview_zoom_value(
+            self._prev_zoom_slider.value() + zoom_step,
+            viewport_pos,
+        )
+        evt.accept()
+        return True
+
+    def _handle_preview_native_gesture(self, evt, source_widget=None) -> bool:
+        gesture_type = evt.gestureType()
+        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
+        begin_gesture = getattr(Qt, "BeginNativeGesture", None)
+        end_gesture = getattr(Qt, "EndNativeGesture", None)
+        if gesture_type in (begin_gesture, end_gesture):
+            evt.accept()
+            return True
+        if gesture_type != zoom_gesture:
+            return False
+        viewport_pos = self._preview_viewport_pos_from_event(evt, source_widget)
+        scale_delta = float(evt.value())
+        if abs(scale_delta) < 1e-6:
+            evt.accept()
+            return True
+        scaled_zoom = self._prev_zoom_slider.value() * max(0.2, 1.0 + scale_delta)
+        if int(round(scaled_zoom)) == self._prev_zoom_slider.value():
+            scaled_zoom = self._prev_zoom_slider.value() + (
+                1 if scale_delta > 0 else -1
+            )
+        self._set_preview_zoom_value(scaled_zoom, viewport_pos)
+        evt.accept()
+        return True
+
+    def _handle_preview_pinch_gesture(self, evt, source_widget=None) -> bool:
+        pinch = evt.gesture(Qt.PinchGesture)
+        if pinch is None:
+            return False
+        if pinch.state() == Qt.GestureUpdated:
+            viewport_pos = self._preview_viewport_pos_from_event(pinch, source_widget)
+            zoom_delta = int((pinch.scaleFactor() - 1.0) * 60)
+            if zoom_delta != 0:
+                self._set_preview_zoom_value(
+                    self._prev_zoom_slider.value() + zoom_delta,
+                    viewport_pos,
+                )
+        evt.accept()
+        return True
+
+    def eventFilter(self, watched, event):
+        preview_targets = (self._prev_label, self._prev_scroll.viewport())
+        if watched in preview_targets:
+            if event.type() == QEvent.Wheel and self._handle_preview_wheel(
+                event, watched
+            ):
+                return True
+            if (
+                event.type() == QEvent.NativeGesture
+                and self._handle_preview_native_gesture(event, watched)
+            ):
+                return True
+            if event.type() == QEvent.Gesture and self._handle_preview_pinch_gesture(
+                event, watched
+            ):
+                return True
+        return super().eventFilter(watched, event)
 
     def _on_prev_mouse_press(self, evt):
         if evt.button() in (Qt.LeftButton, Qt.MiddleButton):
@@ -948,15 +1095,7 @@ class ParameterHelperDialog(BaseDialog):
             evt.accept()
 
     def _on_prev_wheel(self, evt):
-        if evt.modifiers() == Qt.ControlModifier:
-            delta = evt.angleDelta().y()
-            new_val = max(
-                10,
-                min(400, self._prev_zoom_slider.value() + (10 if delta > 0 else -10)),
-            )
-            self._prev_zoom_slider.setValue(new_val)
-            evt.accept()
-        else:
+        if not self._handle_preview_wheel(evt, self._prev_label):
             evt.ignore()  # pass to scroll area for normal scrolling
 
     # ── Control bars ──────────────────────────────────────────────────────────
@@ -1216,6 +1355,7 @@ class ParameterHelperDialog(BaseDialog):
             self.preview_worker.wait()
 
         self.status_label.setText(f"Previewing Rank {row + 1}...")
+        self._prev_auto_fit_pending = True
         self.preview_worker = TrackingPreviewWorker(
             self.video_path,
             self.detection_cache_path,

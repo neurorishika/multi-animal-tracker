@@ -38,6 +38,7 @@ from hydra_suite.trackerkit.gui.model_utils import (
     make_model_path_relative,
     make_pose_model_path_relative,
     register_yolo_model,
+    remove_model_from_repository,
 )
 
 if TYPE_CHECKING:
@@ -372,6 +373,14 @@ class ConfigOrchestrator:
             preferred_model_path=yolo_headtail_model
         )
         self._mw._set_yolo_headtail_model_selection(resolved_yolo_headtail)
+        self._panels.identity.g_headtail.setChecked(
+            bool(
+                get_cfg(
+                    "enable_headtail_orientation",
+                    default=bool(str(yolo_headtail_model).strip()),
+                )
+            )
+        )
         self._panels.identity.chk_pose_overrides_headtail.setChecked(
             bool(get_cfg("pose_overrides_headtail", default=True))
         )
@@ -665,6 +674,12 @@ class ConfigOrchestrator:
     def _load_config_postprocessing(self, get_cfg, get_cfg_time):
         self._panels.postprocess.enable_postprocessing.setChecked(
             get_cfg("enable_postprocessing", default=True)
+        )
+        self._panels.postprocess.chk_prompt_open_refinekit.setChecked(
+            bool(get_cfg("prompt_open_refinekit_on_tracking_complete", default=False))
+        )
+        self._panels.postprocess.set_batch_mode_active(
+            self._panels.setup.g_batch.isChecked()
         )
         self._panels.postprocess.spin_min_trajectory_length.setValue(
             get_cfg_time(
@@ -1061,6 +1076,14 @@ class ConfigOrchestrator:
             get_cfg("pose_skeleton_file", default="")
         )
         self._panels.identity._refresh_pose_direction_keypoint_lists()
+        pose_group_lists = (
+            self._panels.identity.list_pose_ignore_keypoints,
+            self._panels.identity.list_pose_direction_anterior,
+            self._panels.identity.list_pose_direction_posterior,
+        )
+        for list_widget in pose_group_lists:
+            list_widget.blockSignals(True)
+            list_widget.clearSelection()
         ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
         self._mw._set_pose_group_selection(
             self._panels.identity.list_pose_ignore_keypoints, ignore_kpts
@@ -1073,6 +1096,8 @@ class ConfigOrchestrator:
         self._mw._set_pose_group_selection(
             self._panels.identity.list_pose_direction_posterior, post_kpts
         )
+        for list_widget in pose_group_lists:
+            list_widget.blockSignals(False)
         self._mw._apply_pose_keypoint_selection_constraints("ignore")
         self._mw.advanced_config["pose_sleap_env"] = str(
             get_cfg("pose_sleap_env", default="sleap")
@@ -1093,8 +1118,19 @@ class ConfigOrchestrator:
         )
         self._panels.identity.spin_pose_batch.setValue(shared_pose_batch)
 
-        self._panels.dataset.chk_suppress_foreign_obb_dataset.setChecked(
-            get_cfg("suppress_foreign_obb_dataset", default=False)
+        self._panels.dataset.chk_suppress_foreign_obb_individual_dataset.setChecked(
+            get_cfg(
+                "suppress_foreign_obb_individual_dataset",
+                "suppress_foreign_obb_dataset",
+                default=False,
+            )
+        )
+        self._panels.dataset.chk_suppress_foreign_obb_oriented_videos.setChecked(
+            get_cfg(
+                "suppress_foreign_obb_oriented_videos",
+                "suppress_foreign_obb_dataset",
+                default=False,
+            )
         )
         self._panels.dataset.chk_enable_individual_dataset.setChecked(
             get_cfg(
@@ -1105,6 +1141,18 @@ class ConfigOrchestrator:
         )
         self._panels.dataset.chk_generate_individual_track_videos.setChecked(
             get_cfg("generate_oriented_track_videos", default=False)
+        )
+        self._panels.dataset.chk_fix_oriented_video_direction_flips.setChecked(
+            get_cfg("fix_oriented_video_direction_flips", default=False)
+        )
+        self._panels.dataset.spin_oriented_video_heading_flip_burst.setValue(
+            get_cfg("oriented_video_heading_flip_burst", default=5)
+        )
+        self._panels.dataset.chk_enable_oriented_video_affine_stabilization.setChecked(
+            get_cfg("enable_oriented_video_affine_stabilization", default=False)
+        )
+        self._panels.dataset.spin_oriented_video_stabilization_window.setValue(
+            get_cfg("oriented_video_stabilization_window", default=5)
         )
         format_text = get_cfg("individual_output_format", default="png").upper()
         format_idx = self._panels.dataset.combo_individual_format.findText(format_text)
@@ -1247,6 +1295,8 @@ class ConfigOrchestrator:
             make_pose_model_path_relative,
         )
 
+        self._mw._commit_pending_setup_edits()
+
         yolo_mode = (
             "sequential"
             if self._panels.detection.combo_yolo_obb_mode.currentIndex() == 1
@@ -1256,7 +1306,7 @@ class ConfigOrchestrator:
         yolo_detect_path = self._mw._get_selected_yolo_detect_model_path()
         yolo_crop_obb_path = self._mw._get_selected_yolo_crop_obb_model_path()
         yolo_headtail_path = (
-            self._panels.identity._get_selected_yolo_headtail_model_path()
+            self._panels.identity._get_configured_yolo_headtail_model_path()
         )
         yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
         yolo_cls = (
@@ -1321,6 +1371,7 @@ class ConfigOrchestrator:
                 "save_confidence_metrics": self._panels.setup.check_save_confidence.isChecked(),
                 "use_cached_detections": self._panels.setup.chk_use_cached_detections.isChecked(),
                 "visualization_free_mode": self._panels.setup.chk_visualization_free.isChecked(),
+                "prompt_open_refinekit_on_tracking_complete": self._panels.postprocess.chk_prompt_open_refinekit.isChecked(),
                 # === DETECTION STRATEGY ===
                 "detection_method": (
                     "background_subtraction"
@@ -1370,6 +1421,7 @@ class ConfigOrchestrator:
                 "yolo_headtail_model_path": make_model_path_relative(
                     yolo_headtail_path
                 ),
+                "enable_headtail_orientation": self._panels.identity.g_headtail.isChecked(),
                 "yolo_headtail_model_type": self._panels.identity.combo_yolo_headtail_model_type.currentText(),
                 "pose_overrides_headtail": self._panels.identity.chk_pose_overrides_headtail.isChecked(),
                 "yolo_seq_crop_pad_ratio": self._panels.detection.spin_yolo_seq_crop_pad.value(),
@@ -1647,6 +1699,14 @@ class ConfigOrchestrator:
                 "generate_oriented_track_videos": bool(
                     self._panels.dataset.chk_generate_individual_track_videos.isChecked()
                 ),
+                "fix_oriented_video_direction_flips": bool(
+                    self._panels.dataset.chk_fix_oriented_video_direction_flips.isChecked()
+                ),
+                "oriented_video_heading_flip_burst": self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
+                "enable_oriented_video_affine_stabilization": bool(
+                    self._panels.dataset.chk_enable_oriented_video_affine_stabilization.isChecked()
+                ),
+                "oriented_video_stabilization_window": self._panels.dataset.spin_oriented_video_stabilization_window.value(),
                 "individual_output_format": self._panels.dataset.combo_individual_format.currentText().lower(),
             }
         )
@@ -1660,7 +1720,8 @@ class ConfigOrchestrator:
                     int(c) for c in self._panels.identity._background_color
                 ],  # Ensure JSON serializable
                 "suppress_foreign_obb_regions": self._panels.identity.chk_suppress_foreign_obb.isChecked(),
-                "suppress_foreign_obb_dataset": self._panels.dataset.chk_suppress_foreign_obb_dataset.isChecked(),
+                "suppress_foreign_obb_individual_dataset": self._panels.dataset.chk_suppress_foreign_obb_individual_dataset.isChecked(),
+                "suppress_foreign_obb_oriented_videos": self._panels.dataset.chk_suppress_foreign_obb_oriented_videos.isChecked(),
             }
         )
 
@@ -1694,6 +1755,8 @@ class ConfigOrchestrator:
 
     def get_parameters_dict(self: object) -> object:
         """get_parameters_dict method documentation."""
+        self._mw._commit_pending_setup_edits()
+
         N = self._panels.setup.spin_max_targets.value()
         np.random.seed(42)
         colors = [tuple(c.tolist()) for c in np.random.randint(0, 255, (N, 3))]
@@ -2122,6 +2185,23 @@ class ConfigOrchestrator:
             "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
             "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
             "GENERATE_ORIENTED_TRACK_VIDEOS": self._mw._should_generate_oriented_track_videos(),
+            "ORIENTED_VIDEO_FIX_DIRECTION_FLIPS": bool(
+                self._panels.dataset.chk_fix_oriented_video_direction_flips.isChecked()
+            ),
+            "ORIENTED_VIDEO_HEADING_FLIP_MAX_BURST": self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
+            "ORIENTED_VIDEO_ENABLE_AFFINE_STABILIZATION": bool(
+                self._panels.dataset.chk_enable_oriented_video_affine_stabilization.isChecked()
+            ),
+            "ORIENTED_VIDEO_STABILIZATION_WINDOW": self._panels.dataset.spin_oriented_video_stabilization_window.value(),
+            "ORIENTED_TRACK_VIDEO_OUTPUT_DIR": (
+                os.path.join(
+                    os.path.dirname(self._mw.current_video_path),
+                    f"{os.path.splitext(os.path.basename(self._mw.current_video_path))[0]}_datasets",
+                    "oriented_videos",
+                )
+                if self._mw.current_video_path
+                else ""
+            ),
             "INDIVIDUAL_DATASET_NAME": (
                 ""
                 if str(
@@ -2146,7 +2226,8 @@ class ConfigOrchestrator:
                 int(c) for c in self._panels.identity._background_color
             ],  # Ensure JSON serializable
             "SUPPRESS_FOREIGN_OBB_REGIONS": self._panels.identity.chk_suppress_foreign_obb.isChecked(),
-            "SUPPRESS_FOREIGN_OBB_DATASET": self._panels.dataset.chk_suppress_foreign_obb_dataset.isChecked(),
+            "SUPPRESS_FOREIGN_OBB_DATASET": self._panels.dataset.chk_suppress_foreign_obb_individual_dataset.isChecked(),
+            "SUPPRESS_FOREIGN_OBB_ORIENTED_VIDEO": self._panels.dataset.chk_suppress_foreign_obb_oriented_videos.isChecked(),
             "INDIVIDUAL_DATASET_RUN_ID": self._mw._individual_dataset_run_id,
             "ENABLE_CONFIDENCE_DENSITY_MAP": self._panels.tracking.chk_enable_confidence_density_map.isChecked(),
             "DENSITY_GAUSSIAN_SIGMA_SCALE": self._panels.tracking.spin_density_gaussian_sigma_scale.value(),
@@ -2404,7 +2485,6 @@ class ConfigOrchestrator:
             # Dataset Generation - YOLO Detection Parameters (separate from tracking)
             "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
             "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
-            "xanylabeling_env": "",  # Preferred X-AnyLabeling conda env
         }
 
         if os.path.exists(config_path):
@@ -3187,7 +3267,58 @@ class ConfigOrchestrator:
             new_p = dialog.get_selected_params()
             if not new_p:
                 return
+            import math
+
+            fps = max(float(self._panels.setup.spin_fps.value()), 1e-6)
+            reference_body_size = float(
+                self._panels.detection.spin_reference_body_size.value()
+            )
+            resize_factor = float(self._panels.setup.spin_resize.value())
+            scaled_body_area = (
+                math.pi * (reference_body_size / 2.0) ** 2 * (resize_factor**2)
+            )
+
             # Apply optimised values back to the UI widgets
+            if "BRIGHTNESS" in new_p:
+                self._panels.detection.slider_brightness.setValue(
+                    int(new_p["BRIGHTNESS"])
+                )
+            if "CONTRAST" in new_p:
+                self._panels.detection.slider_contrast.setValue(
+                    int(round(float(new_p["CONTRAST"]) * 100.0))
+                )
+            if "GAMMA" in new_p:
+                self._panels.detection.slider_gamma.setValue(
+                    int(round(float(new_p["GAMMA"]) * 100.0))
+                )
+            if "DARK_ON_LIGHT_BACKGROUND" in new_p:
+                self._panels.detection.chk_dark_on_light.setChecked(
+                    bool(new_p["DARK_ON_LIGHT_BACKGROUND"])
+                )
+            if "BACKGROUND_PRIME_FRAMES" in new_p:
+                self._panels.detection.spin_bg_prime.setValue(
+                    float(new_p["BACKGROUND_PRIME_FRAMES"]) / fps
+                )
+            if "ENABLE_ADAPTIVE_BACKGROUND" in new_p:
+                self._panels.detection.chk_adaptive_bg.setChecked(
+                    bool(new_p["ENABLE_ADAPTIVE_BACKGROUND"])
+                )
+            if "BACKGROUND_LEARNING_RATE" in new_p:
+                self._panels.detection.spin_bg_learning.setValue(
+                    float(new_p["BACKGROUND_LEARNING_RATE"])
+                )
+            if "ENABLE_LIGHTING_STABILIZATION" in new_p:
+                self._panels.detection.chk_lighting_stab.setChecked(
+                    bool(new_p["ENABLE_LIGHTING_STABILIZATION"])
+                )
+            if "LIGHTING_SMOOTH_FACTOR" in new_p:
+                self._panels.detection.spin_lighting_smooth.setValue(
+                    float(new_p["LIGHTING_SMOOTH_FACTOR"])
+                )
+            if "LIGHTING_MEDIAN_WINDOW" in new_p:
+                self._panels.detection.spin_lighting_median.setValue(
+                    int(new_p["LIGHTING_MEDIAN_WINDOW"])
+                )
             if "THRESHOLD_VALUE" in new_p:
                 self._panels.detection.spin_threshold.setValue(new_p["THRESHOLD_VALUE"])
             if "MORPH_KERNEL_SIZE" in new_p:
@@ -3197,6 +3328,22 @@ class ConfigOrchestrator:
             if "MIN_CONTOUR_AREA" in new_p:
                 self._panels.detection.spin_min_contour.setValue(
                     new_p["MIN_CONTOUR_AREA"]
+                )
+            if "MAX_CONTOUR_MULTIPLIER" in new_p:
+                self._panels.detection.spin_max_contour_multiplier.setValue(
+                    int(new_p["MAX_CONTOUR_MULTIPLIER"])
+                )
+            if "ENABLE_SIZE_FILTERING" in new_p:
+                self._panels.detection.chk_size_filtering.setChecked(
+                    bool(new_p["ENABLE_SIZE_FILTERING"])
+                )
+            if "MIN_OBJECT_SIZE" in new_p and scaled_body_area > 0:
+                self._panels.detection.spin_min_object_size.setValue(
+                    float(new_p["MIN_OBJECT_SIZE"]) / scaled_body_area
+                )
+            if "MAX_OBJECT_SIZE" in new_p and scaled_body_area > 0:
+                self._panels.detection.spin_max_object_size.setValue(
+                    float(new_p["MAX_OBJECT_SIZE"]) / scaled_body_area
                 )
             if "ENABLE_ADDITIONAL_DILATION" in new_p:
                 self._panels.detection.chk_additional_dilation.setChecked(
@@ -3386,6 +3533,56 @@ class ConfigOrchestrator:
         if selected_data and selected_data not in ("__add_new__", "__none__"):
             return str(selected_data)
         return str(default_path or "")
+
+    @staticmethod
+    def _selector_has_removable_model(combo) -> bool:
+        """Return True when the selector currently points at a stored model."""
+        selected_data = combo.currentData(Qt.UserRole)
+        return bool(selected_data and selected_data not in ("__add_new__", "__none__"))
+
+    def _confirm_and_remove_repository_model(
+        self, model_path: object, *, model_kind: str = "model"
+    ) -> bool:
+        """Confirm and remove a specific stored model from the local repository."""
+        stored_path = str(model_path or "").strip()
+        if not stored_path:
+            return False
+
+        display_name = os.path.basename(stored_path.rstrip("/\\")) or stored_path
+        reply = QMessageBox.question(
+            self._mw,
+            f"Remove {model_kind}",
+            f"Remove this {model_kind} from the local repository?\n\n"
+            f"{display_name}\n\n"
+            "This deletes the stored model and removes any registry entry. "
+            "This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+
+        try:
+            removed = remove_model_from_repository(stored_path)
+        except Exception as exc:
+            logger.error("Failed to remove %s '%s': %s", model_kind, stored_path, exc)
+            QMessageBox.warning(
+                self._mw,
+                f"Remove {model_kind}",
+                f"Could not remove the selected {model_kind}:\n{exc}",
+            )
+            return False
+
+        if not removed:
+            QMessageBox.warning(
+                self._mw,
+                f"Remove {model_kind}",
+                f"The selected {model_kind} could not be removed.",
+            )
+            return False
+
+        logger.info("Removed %s from repository: %s", model_kind, stored_path)
+        return True
 
     def _import_yolo_model_to_repository(
         self,
@@ -3638,6 +3835,28 @@ class ConfigOrchestrator:
         refresh_callback(preferred_model_path=final_path)
         selection_callback(final_path)
 
+    def _handle_remove_selected_yolo_model(
+        self,
+        combo,
+        refresh_callback,
+        selection_callback,
+        *,
+        model_kind: str = "model",
+    ) -> None:
+        """Remove the currently selected repository-backed YOLO/classification model."""
+        if not self._selector_has_removable_model(combo):
+            return
+
+        selected_path = str(combo.currentData(Qt.UserRole) or "").strip()
+        if not self._confirm_and_remove_repository_model(
+            selected_path,
+            model_kind=model_kind,
+        ):
+            return
+
+        refresh_callback(preferred_model_path="")
+        selection_callback("")
+
     def _handle_add_new_pose_model(self):
         """Browse for a pose model, import it if outside repo, refresh combo, and select it."""
         from hydra_suite.trackerkit.gui.model_utils import (
@@ -3749,6 +3968,28 @@ class ConfigOrchestrator:
             )
         self._mw._set_pose_model_path_for_backend(
             final_path, backend=backend, update_combo=True
+        )
+
+    def _handle_remove_selected_pose_model(self) -> None:
+        """Remove the currently selected pose model or SLEAP model directory."""
+        if not hasattr(self._mw, "_identity_panel"):
+            return
+
+        combo = self._mw._identity_panel.combo_pose_model
+        if not self._selector_has_removable_model(combo):
+            return
+
+        backend = self._mw._current_pose_backend_key()
+        model_kind = "SLEAP model" if backend == "sleap" else "pose model"
+        selected_path = str(combo.currentData(Qt.UserRole) or "").strip()
+        if not self._confirm_and_remove_repository_model(
+            selected_path,
+            model_kind=model_kind,
+        ):
+            return
+
+        self._mw._set_pose_model_path_for_backend(
+            "", backend=backend, update_combo=True
         )
 
     def _import_pose_model_to_repository(self, source_path, backend="yolo"):

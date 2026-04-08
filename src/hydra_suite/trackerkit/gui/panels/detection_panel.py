@@ -590,29 +590,83 @@ class DetectionPanel(QWidget):
 
         self.combo_yolo_model = QComboBox()
         self.combo_yolo_model.activated.connect(self.on_yolo_model_changed)
+        self.combo_yolo_model.currentIndexChanged.connect(
+            lambda _index: self._sync_model_selector_buttons()
+        )
         self.combo_yolo_model.setFixedHeight(30)
         self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
-        f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
+        self.btn_remove_yolo_model = self._create_model_remove_button(
+            "Remove the selected direct OBB model from the local repository."
+        )
+        self.btn_remove_yolo_model.clicked.connect(
+            lambda: self._main_window._handle_remove_selected_yolo_model(
+                combo=self.combo_yolo_model,
+                refresh_callback=self._refresh_yolo_model_combo,
+                selection_callback=self._main_window._set_yolo_model_selection,
+                model_kind="direct OBB model",
+            )
+        )
+        self.direct_model_row_widget = self._build_model_selector_row(
+            self.combo_yolo_model,
+            self.btn_remove_yolo_model,
+        )
+        f_yolo.addRow("Direct OBB model", self.direct_model_row_widget)
 
         self.combo_yolo_detect_model = QComboBox()
         self.combo_yolo_detect_model.activated.connect(
             self.on_yolo_detect_model_changed
         )
+        self.combo_yolo_detect_model.currentIndexChanged.connect(
+            lambda _index: self._sync_model_selector_buttons()
+        )
         self.combo_yolo_detect_model.setFixedHeight(30)
         self.combo_yolo_detect_model.setToolTip(
             "Sequential stage-1 model (axis-aligned detect)."
         )
-        f_yolo.addRow("Seq detect model", self.combo_yolo_detect_model)
+        self.btn_remove_yolo_detect_model = self._create_model_remove_button(
+            "Remove the selected sequential detect model from the local repository."
+        )
+        self.btn_remove_yolo_detect_model.clicked.connect(
+            lambda: self._main_window._handle_remove_selected_yolo_model(
+                combo=self.combo_yolo_detect_model,
+                refresh_callback=self._refresh_yolo_detect_model_combo,
+                selection_callback=self._main_window._set_yolo_detect_model_selection,
+                model_kind="sequential detect model",
+            )
+        )
+        self.seq_detect_model_row_widget = self._build_model_selector_row(
+            self.combo_yolo_detect_model,
+            self.btn_remove_yolo_detect_model,
+        )
+        f_yolo.addRow("Seq detect model", self.seq_detect_model_row_widget)
 
         self.combo_yolo_crop_obb_model = QComboBox()
         self.combo_yolo_crop_obb_model.activated.connect(
             self.on_yolo_crop_obb_model_changed
         )
+        self.combo_yolo_crop_obb_model.currentIndexChanged.connect(
+            lambda _index: self._sync_model_selector_buttons()
+        )
         self.combo_yolo_crop_obb_model.setFixedHeight(30)
         self.combo_yolo_crop_obb_model.setToolTip(
             "Sequential stage-2 OBB model trained on cropped detections."
         )
-        f_yolo.addRow("Seq crop OBB model", self.combo_yolo_crop_obb_model)
+        self.btn_remove_yolo_crop_obb_model = self._create_model_remove_button(
+            "Remove the selected sequential crop OBB model from the local repository."
+        )
+        self.btn_remove_yolo_crop_obb_model.clicked.connect(
+            lambda: self._main_window._handle_remove_selected_yolo_model(
+                combo=self.combo_yolo_crop_obb_model,
+                refresh_callback=self._refresh_yolo_crop_obb_model_combo,
+                selection_callback=self._main_window._set_yolo_crop_obb_model_selection,
+                model_kind="sequential crop OBB model",
+            )
+        )
+        self.seq_crop_obb_model_row_widget = self._build_model_selector_row(
+            self.combo_yolo_crop_obb_model,
+            self.btn_remove_yolo_crop_obb_model,
+        )
+        f_yolo.addRow("Seq crop OBB model", self.seq_crop_obb_model_row_widget)
 
         self.yolo_seq_advanced = CollapsibleGroupBox(
             "Sequential Advanced Settings", initially_expanded=False
@@ -1087,6 +1141,7 @@ class DetectionPanel(QWidget):
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
+        self._sync_model_selector_buttons()
 
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""
@@ -1729,6 +1784,7 @@ class DetectionPanel(QWidget):
             task_family="obb",
             usage_role="obb_direct",
         )
+        self._sync_model_selector_buttons()
 
     def _refresh_yolo_detect_model_combo(self, preferred_model_path: object = None):
         self._main_window._populate_yolo_model_combo(
@@ -1739,6 +1795,7 @@ class DetectionPanel(QWidget):
             task_family="detect",
             usage_role="seq_detect",
         )
+        self._sync_model_selector_buttons()
 
     def _refresh_yolo_crop_obb_model_combo(self, preferred_model_path: object = None):
         self._main_window._populate_yolo_model_combo(
@@ -1749,6 +1806,45 @@ class DetectionPanel(QWidget):
             task_family="obb",
             usage_role="seq_crop_obb",
         )
+        self._sync_model_selector_buttons()
+
+    @staticmethod
+    def _create_model_remove_button(tooltip: str) -> QPushButton:
+        """Create a compact remove button for a model-selector row."""
+        button = QPushButton("-")
+        button.setObjectName("SecondaryBtn")
+        button.setFixedSize(28, 30)
+        button.setToolTip(tooltip)
+        return button
+
+    @staticmethod
+    def _build_model_selector_row(
+        combo: QComboBox, remove_button: QPushButton
+    ) -> QWidget:
+        """Return a combo row with a dedicated remove button."""
+        widget = QWidget()
+        row = QHBoxLayout(widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(combo, 1)
+        row.addWidget(remove_button, 0)
+        return widget
+
+    @staticmethod
+    def _combo_has_selected_model(combo: QComboBox) -> bool:
+        """Return True when the combo currently points to a removable model."""
+        selected_data = combo.currentData(Qt.UserRole)
+        return bool(selected_data and selected_data not in ("__add_new__", "__none__"))
+
+    def _sync_model_selector_buttons(self) -> None:
+        """Enable remove buttons only when their combos point to real models."""
+        button_pairs = (
+            (self.combo_yolo_model, self.btn_remove_yolo_model),
+            (self.combo_yolo_detect_model, self.btn_remove_yolo_detect_model),
+            (self.combo_yolo_crop_obb_model, self.btn_remove_yolo_crop_obb_model),
+        )
+        for combo, button in button_pairs:
+            button.setEnabled(self._combo_has_selected_model(combo))
 
     # =========================================================================
     # YOLO MODE CHANGED (moved from MainWindow)

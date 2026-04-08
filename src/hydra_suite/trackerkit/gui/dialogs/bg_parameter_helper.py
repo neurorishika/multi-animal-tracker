@@ -14,7 +14,7 @@ import logging
 from typing import Any, Dict, List
 
 import numpy as np
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -119,6 +119,8 @@ class BgParameterHelperDialog(BaseDialog):
         self._prev_scroll_v = 0
         self._prev_frames: List[np.ndarray] = []
         self._prev_current_idx = 0
+        self._prev_zoom_anchor: tuple[int, int, float, float] | None = None
+        self._prev_auto_fit_pending = True
 
         self._build_ui()
 
@@ -449,56 +451,198 @@ class BgParameterHelperDialog(BaseDialog):
         lay.setSpacing(8)
         lay.setContentsMargins(4, 4, 4, 4)
 
-        # --- Thresholding group ---
-        self.cb_threshold = QCheckBox("THRESHOLD_VALUE")
-        self.cb_threshold.setChecked(True)
-        self.cb_morph = QCheckBox("MORPH_KERNEL_SIZE")
-        self.cb_morph.setChecked(True)
-        self.cb_min_contour = QCheckBox("MIN_CONTOUR_AREA")
-        self.cb_min_contour.setChecked(True)
+        self._param_checkboxes: Dict[str, QCheckBox] = {}
+        core_keys = {
+            "THRESHOLD_VALUE",
+            "MORPH_KERNEL_SIZE",
+            "MIN_CONTOUR_AREA",
+            "ENABLE_ADDITIONAL_DILATION",
+            "DILATION_KERNEL_SIZE",
+            "DILATION_ITERATIONS",
+            "ENABLE_CONSERVATIVE_SPLIT",
+            "CONSERVATIVE_KERNEL_SIZE",
+            "CONSERVATIVE_ERODE_ITER",
+        }
+        self._core_param_keys = set(core_keys)
+
+        note = QLabel(
+            "Select any background-subtraction factors to include in the search. "
+            "When an enable flag and its child parameters are both selected, the child "
+            "values are still explored so the search space stays stable instead of being "
+            "conditionally collapsed."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #aaa; font-size: 11px;")
+        lay.addWidget(note)
+
+        quick_row = QHBoxLayout()
+        btn_select_all = QPushButton("Select All")
+        btn_select_all.clicked.connect(lambda: self._set_param_selection(None))
+        quick_row.addWidget(btn_select_all)
+        btn_core = QPushButton("Core Only")
+        btn_core.clicked.connect(
+            lambda: self._set_param_selection(self._core_param_keys)
+        )
+        quick_row.addWidget(btn_core)
+        btn_clear = QPushButton("Clear")
+        btn_clear.clicked.connect(lambda: self._set_param_selection(set()))
+        quick_row.addWidget(btn_clear)
+        quick_row.addStretch(1)
+        lay.addLayout(quick_row)
+
+        def _cb(name: str, checked: bool = False) -> QCheckBox:
+            cb = QCheckBox(name)
+            cb.setChecked(checked)
+            self._param_checkboxes[name] = cb
+            return cb
+
+        # --- Image adjustments ---
         lay.addWidget(
             self._checkboxes_in_group(
-                "Thresholding",
+                "Image & Polarity",
                 [
                     (
-                        self.cb_threshold,
+                        _cb("BRIGHTNESS"),
+                        "Brightness adjustment applied before subtraction.",
+                    ),
+                    (
+                        _cb("CONTRAST"),
+                        "Contrast multiplier applied before subtraction.",
+                    ),
+                    (_cb("GAMMA"), "Gamma correction applied before subtraction."),
+                    (
+                        _cb("DARK_ON_LIGHT_BACKGROUND"),
+                        "Whether animals are darker than the background.",
+                    ),
+                ],
+            )
+        )
+
+        # --- Background model group ---
+        lay.addWidget(
+            self._checkboxes_in_group(
+                "Background Model",
+                [
+                    (
+                        _cb("BACKGROUND_PRIME_FRAMES"),
+                        "How many frames are used to build the initial lightest-pixel background.",
+                    ),
+                    (
+                        _cb("ENABLE_ADAPTIVE_BACKGROUND"),
+                        "Whether the background updates over time.",
+                    ),
+                    (
+                        _cb("BACKGROUND_LEARNING_RATE"),
+                        "Adaptive background learning rate.",
+                    ),
+                ],
+            )
+        )
+
+        # --- Lighting group ---
+        lay.addWidget(
+            self._checkboxes_in_group(
+                "Lighting Stabilization",
+                [
+                    (
+                        _cb("ENABLE_LIGHTING_STABILIZATION"),
+                        "Enable temporal lighting normalization.",
+                    ),
+                    (
+                        _cb("LIGHTING_SMOOTH_FACTOR"),
+                        "Temporal smoothing factor for lighting stabilization.",
+                    ),
+                    (
+                        _cb("LIGHTING_MEDIAN_WINDOW"),
+                        "Median window for lighting estimation (odd).",
+                    ),
+                ],
+            )
+        )
+
+        # --- Thresholding group ---
+        lay.addWidget(
+            self._checkboxes_in_group(
+                "Thresholding & Contours",
+                [
+                    (
+                        _cb("THRESHOLD_VALUE", checked=True),
                         "Binary threshold applied to the difference image.",
                     ),
-                    (self.cb_morph, "Morphological open/close kernel size (odd)."),
-                    (self.cb_min_contour, "Minimum contour area in pixels."),
+                    (
+                        _cb("MORPH_KERNEL_SIZE", checked=True),
+                        "Morphological open/close kernel size (odd).",
+                    ),
+                    (
+                        _cb("MIN_CONTOUR_AREA", checked=True),
+                        "Minimum contour area in pixels.",
+                    ),
+                    (
+                        _cb("MAX_CONTOUR_MULTIPLIER"),
+                        "Maximum contour count multiplier before the frame is rejected as noisy.",
+                    ),
+                ],
+            )
+        )
+
+        lay.addWidget(
+            self._checkboxes_in_group(
+                "Size Filtering",
+                [
+                    (
+                        _cb("ENABLE_SIZE_FILTERING"),
+                        "Enable filtering against expected one-animal size bounds.",
+                    ),
+                    (
+                        _cb("MIN_OBJECT_SIZE"),
+                        "Minimum object size multiplier relative to the current body-size estimate.",
+                    ),
+                    (
+                        _cb("MAX_OBJECT_SIZE"),
+                        "Maximum object size multiplier relative to the current body-size estimate.",
+                    ),
                 ],
             )
         )
 
         # --- Dilation group ---
-        self.cb_enable_dil = QCheckBox("ENABLE_ADDITIONAL_DILATION")
-        self.cb_dil_kernel = QCheckBox("DILATION_KERNEL_SIZE")
-        self.cb_dil_iter = QCheckBox("DILATION_ITERATIONS")
         lay.addWidget(
             self._checkboxes_in_group(
                 "Additional Dilation",
                 [
-                    (self.cb_enable_dil, "Toggle additional dilation pass."),
-                    (self.cb_dil_kernel, "Dilation kernel size (odd)."),
-                    (self.cb_dil_iter, "Number of dilation iterations."),
+                    (
+                        _cb("ENABLE_ADDITIONAL_DILATION", checked=True),
+                        "Toggle additional dilation pass.",
+                    ),
+                    (
+                        _cb("DILATION_KERNEL_SIZE", checked=True),
+                        "Dilation kernel size (odd).",
+                    ),
+                    (
+                        _cb("DILATION_ITERATIONS", checked=True),
+                        "Number of dilation iterations.",
+                    ),
                 ],
             )
         )
 
         # --- Conservative split group ---
-        self.cb_enable_split = QCheckBox("ENABLE_CONSERVATIVE_SPLIT")
-        self.cb_split_kernel = QCheckBox("CONSERVATIVE_KERNEL_SIZE")
-        self.cb_split_erode = QCheckBox("CONSERVATIVE_ERODE_ITER")
         lay.addWidget(
             self._checkboxes_in_group(
                 "Conservative Split",
                 [
-                    (self.cb_enable_split, "Toggle local re-thresholding split."),
                     (
-                        self.cb_split_kernel,
+                        _cb("ENABLE_CONSERVATIVE_SPLIT", checked=True),
+                        "Toggle local re-thresholding split.",
+                    ),
+                    (
+                        _cb("CONSERVATIVE_KERNEL_SIZE", checked=True),
                         "Kernel size for erosion before re-thresholding.",
                     ),
-                    (self.cb_split_erode, "Number of erosion iterations."),
+                    (
+                        _cb("CONSERVATIVE_ERODE_ITER", checked=True),
+                        "Number of erosion iterations.",
+                    ),
                 ],
             )
         )
@@ -506,6 +650,11 @@ class BgParameterHelperDialog(BaseDialog):
         lay.addStretch()
         scroll.setWidget(container)
         return scroll
+
+    def _set_param_selection(self, selected_keys: set[str] | None) -> None:
+        """Set checkbox states for all tunable parameters."""
+        for key, checkbox in self._param_checkboxes.items():
+            checkbox.setChecked(True if selected_keys is None else key in selected_keys)
 
     @staticmethod
     def _checkboxes_in_group(
@@ -628,15 +777,8 @@ class BgParameterHelperDialog(BaseDialog):
     def get_tuning_config(self) -> Dict[str, bool]:
         """Return a mapping of background-subtraction parameter names to whether each is enabled for auto-tuning."""
         return {
-            "THRESHOLD_VALUE": self.cb_threshold.isChecked(),
-            "MORPH_KERNEL_SIZE": self.cb_morph.isChecked(),
-            "MIN_CONTOUR_AREA": self.cb_min_contour.isChecked(),
-            "ENABLE_ADDITIONAL_DILATION": self.cb_enable_dil.isChecked(),
-            "DILATION_KERNEL_SIZE": self.cb_dil_kernel.isChecked(),
-            "DILATION_ITERATIONS": self.cb_dil_iter.isChecked(),
-            "ENABLE_CONSERVATIVE_SPLIT": self.cb_enable_split.isChecked(),
-            "CONSERVATIVE_KERNEL_SIZE": self.cb_split_kernel.isChecked(),
-            "CONSERVATIVE_ERODE_ITER": self.cb_split_erode.isChecked(),
+            key: checkbox.isChecked()
+            for key, checkbox in self._param_checkboxes.items()
         }
 
     def get_selected_params(self) -> Dict[str, Any]:
@@ -797,9 +939,23 @@ class BgParameterHelperDialog(BaseDialog):
     def _format_changes(self, params: Dict[str, Any]) -> str:
         """Compact one-liner: tuned value with \u25b2/\u25bc/= vs base params."""
         labels = {
+            "BRIGHTNESS": ("Bri", "d"),
+            "CONTRAST": ("Con", ".2f"),
+            "GAMMA": ("Gam", ".2f"),
+            "DARK_ON_LIGHT_BACKGROUND": ("Pol", ""),
+            "BACKGROUND_PRIME_FRAMES": ("Prime", "d"),
+            "ENABLE_ADAPTIVE_BACKGROUND": ("Adapt", ""),
+            "BACKGROUND_LEARNING_RATE": ("Learn", ".4f"),
+            "ENABLE_LIGHTING_STABILIZATION": ("Light", ""),
+            "LIGHTING_SMOOTH_FACTOR": ("LSm", ".3f"),
+            "LIGHTING_MEDIAN_WINDOW": ("LWin", "d"),
             "THRESHOLD_VALUE": ("Thr", "d"),
             "MORPH_KERNEL_SIZE": ("Morph", "d"),
             "MIN_CONTOUR_AREA": ("MinC", "d"),
+            "MAX_CONTOUR_MULTIPLIER": ("MaxC", "d"),
+            "ENABLE_SIZE_FILTERING": ("Size", ""),
+            "MIN_OBJECT_SIZE": ("MinS", "d"),
+            "MAX_OBJECT_SIZE": ("MaxS", "d"),
             "ENABLE_ADDITIONAL_DILATION": ("Dil", ""),
             "DILATION_KERNEL_SIZE": ("DilK", "d"),
             "DILATION_ITERATIONS": ("DilI", "d"),
@@ -871,6 +1027,10 @@ class BgParameterHelperDialog(BaseDialog):
         self._prev_label.mouseDoubleClickEvent = lambda _: self._fit_preview()
         self._prev_label.wheelEvent = self._on_prev_wheel
         self._prev_scroll.setWidget(self._prev_label)
+        for target in (self._prev_label, self._prev_scroll.viewport()):
+            target.setAttribute(Qt.WA_AcceptTouchEvents, True)
+            target.grabGesture(Qt.PinchGesture)
+            target.installEventFilter(self)
         lay.addWidget(self._prev_scroll, stretch=1)
 
         # Frame navigation slider
@@ -931,11 +1091,22 @@ class BgParameterHelperDialog(BaseDialog):
 
     # ── Preview actions ───────────────────────────────────────────────────────
 
-    def _get_cached_bg_u8(self):
-        """Retrieve the background image cached by the optimizer, if available."""
-        if self.optimizer is not None:
-            return getattr(self.optimizer, "_cached_bg_u8", None)
-        return None
+    def _preview_cache_kwargs(self) -> Dict[str, Any]:
+        """Expose optimizer-cached raw frames so preview reuses the same sample set."""
+        if self.optimizer is None:
+            return {}
+        return {
+            "cached_prime_frames": getattr(
+                self.optimizer, "_cached_prime_frames", None
+            ),
+            "cached_sample_frames": getattr(
+                self.optimizer, "_cached_sample_frames", None
+            ),
+            "cached_sample_indices": getattr(
+                self.optimizer, "_cached_sample_indices", None
+            ),
+            "roi_mask": getattr(self.optimizer, "_cached_roi_mask", None),
+        }
 
     @Slot()
     def _run_preview(self) -> None:
@@ -952,6 +1123,7 @@ class BgParameterHelperDialog(BaseDialog):
 
         self._prev_frames.clear()
         self._prev_current_idx = 0
+        self._prev_auto_fit_pending = True
         self._frame_slider.setRange(0, 0)
         self._frame_label.setText("0/0")
         self.status_label.setText(f"Generating preview for Rank {row + 1}\u2026")
@@ -961,8 +1133,8 @@ class BgParameterHelperDialog(BaseDialog):
             base_params=self.base_params,
             trial_params=trial_params,
             n_sample_frames=self.spin_frames.value(),
-            bg_u8=self._get_cached_bg_u8(),
             parent=self,
+            **self._preview_cache_kwargs(),
         )
         self.preview_worker.frame_signal.connect(self._on_preview_frame_received)
         self.preview_worker.finished_signal.connect(
@@ -981,6 +1153,9 @@ class BgParameterHelperDialog(BaseDialog):
         self._frame_slider.setValue(n - 1)
         self._frame_label.setText(f"{n}/{n}")
         self._display_preview_frame(rgb)
+        if self._prev_auto_fit_pending:
+            self._prev_auto_fit_pending = False
+            QTimer.singleShot(0, self._fit_preview)
 
     def _on_frame_slider_changed(self, val: int) -> None:
         if 0 <= val < len(self._prev_frames):
@@ -1008,6 +1183,7 @@ class BgParameterHelperDialog(BaseDialog):
         self._prev_zoom_label.setText(f"{val}%")
         if self._prev_frames and 0 <= self._prev_current_idx < len(self._prev_frames):
             self._display_preview_frame(self._prev_frames[self._prev_current_idx])
+            self._restore_preview_zoom_anchor()
 
     def _fit_preview(self) -> None:
         if not self._prev_frames:
@@ -1018,6 +1194,143 @@ class BgParameterHelperDialog(BaseDialog):
         avail_h = max(self._prev_scroll.height() - 4, 1)
         z = min(avail_w / max(w, 1), avail_h / max(h, 1))
         self._prev_zoom_slider.setValue(max(10, min(400, int(z * 100))))
+
+    def _capture_preview_zoom_anchor(self, viewport_pos=None) -> None:
+        viewport = self._prev_scroll.viewport()
+        if viewport_pos is None:
+            viewport_pos = viewport.rect().center()
+        viewport_x = max(0, min(viewport.width(), viewport_pos.x()))
+        viewport_y = max(0, min(viewport.height(), viewport_pos.y()))
+        label_width = max(self._prev_label.width(), 1)
+        label_height = max(self._prev_label.height(), 1)
+        offset_x = max((viewport.width() - label_width) // 2, 0)
+        offset_y = max((viewport.height() - label_height) // 2, 0)
+        local_x = (
+            self._prev_scroll.horizontalScrollBar().value() + viewport_x - offset_x
+        )
+        local_y = self._prev_scroll.verticalScrollBar().value() + viewport_y - offset_y
+        local_x = max(0, min(label_width, local_x))
+        local_y = max(0, min(label_height, local_y))
+        self._prev_zoom_anchor = (
+            viewport_x,
+            viewport_y,
+            local_x / label_width,
+            local_y / label_height,
+        )
+
+    def _restore_preview_zoom_anchor(self) -> None:
+        if self._prev_zoom_anchor is None:
+            return
+        viewport_x, viewport_y, rel_x, rel_y = self._prev_zoom_anchor
+        self._prev_zoom_anchor = None
+        viewport = self._prev_scroll.viewport()
+        label_width = max(self._prev_label.width(), 1)
+        label_height = max(self._prev_label.height(), 1)
+        offset_x = max((viewport.width() - label_width) // 2, 0)
+        offset_y = max((viewport.height() - label_height) // 2, 0)
+        target_x = int(round(rel_x * label_width - viewport_x + offset_x))
+        target_y = int(round(rel_y * label_height - viewport_y + offset_y))
+        hbar = self._prev_scroll.horizontalScrollBar()
+        vbar = self._prev_scroll.verticalScrollBar()
+        hbar.setValue(max(0, min(hbar.maximum(), target_x)))
+        vbar.setValue(max(0, min(vbar.maximum(), target_y)))
+
+    def _preview_viewport_pos_from_event(self, evt, source_widget=None):
+        viewport = self._prev_scroll.viewport()
+        origin = source_widget or self._prev_label
+        if hasattr(evt, "position"):
+            pos = evt.position()
+            local_point = pos.toPoint() if hasattr(pos, "toPoint") else pos
+            if origin is viewport:
+                return local_point
+            return viewport.mapFromGlobal(origin.mapToGlobal(local_point))
+        if hasattr(evt, "globalPosition"):
+            pos = evt.globalPosition()
+            global_point = pos.toPoint() if hasattr(pos, "toPoint") else pos
+            return viewport.mapFromGlobal(global_point)
+        return viewport.rect().center()
+
+    def _set_preview_zoom_value(self, new_value: int, viewport_pos=None) -> bool:
+        bounded_value = max(10, min(400, int(round(new_value))))
+        if bounded_value == self._prev_zoom_slider.value():
+            return False
+        if viewport_pos is not None:
+            self._capture_preview_zoom_anchor(viewport_pos)
+        self._prev_zoom_slider.setValue(bounded_value)
+        return True
+
+    def _handle_preview_wheel(self, evt, source_widget=None) -> bool:
+        if evt.modifiers() != Qt.ControlModifier:
+            return False
+        viewport_pos = self._preview_viewport_pos_from_event(evt, source_widget)
+        delta = evt.angleDelta().y()
+        if delta == 0:
+            evt.accept()
+            return True
+        zoom_step = 10 if delta > 0 else -10
+        self._set_preview_zoom_value(
+            self._prev_zoom_slider.value() + zoom_step,
+            viewport_pos,
+        )
+        evt.accept()
+        return True
+
+    def _handle_preview_native_gesture(self, evt, source_widget=None) -> bool:
+        gesture_type = evt.gestureType()
+        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
+        begin_gesture = getattr(Qt, "BeginNativeGesture", None)
+        end_gesture = getattr(Qt, "EndNativeGesture", None)
+        if gesture_type in (begin_gesture, end_gesture):
+            evt.accept()
+            return True
+        if gesture_type != zoom_gesture:
+            return False
+        viewport_pos = self._preview_viewport_pos_from_event(evt, source_widget)
+        scale_delta = float(evt.value())
+        if abs(scale_delta) < 1e-6:
+            evt.accept()
+            return True
+        scaled_zoom = self._prev_zoom_slider.value() * max(0.2, 1.0 + scale_delta)
+        if int(round(scaled_zoom)) == self._prev_zoom_slider.value():
+            scaled_zoom = self._prev_zoom_slider.value() + (
+                1 if scale_delta > 0 else -1
+            )
+        self._set_preview_zoom_value(scaled_zoom, viewport_pos)
+        evt.accept()
+        return True
+
+    def _handle_preview_pinch_gesture(self, evt, source_widget=None) -> bool:
+        pinch = evt.gesture(Qt.PinchGesture)
+        if pinch is None:
+            return False
+        if pinch.state() == Qt.GestureUpdated:
+            viewport_pos = self._preview_viewport_pos_from_event(pinch, source_widget)
+            zoom_delta = int((pinch.scaleFactor() - 1.0) * 60)
+            if zoom_delta != 0:
+                self._set_preview_zoom_value(
+                    self._prev_zoom_slider.value() + zoom_delta,
+                    viewport_pos,
+                )
+        evt.accept()
+        return True
+
+    def eventFilter(self, watched, event):
+        preview_targets = (self._prev_label, self._prev_scroll.viewport())
+        if watched in preview_targets:
+            if event.type() == QEvent.Wheel and self._handle_preview_wheel(
+                event, watched
+            ):
+                return True
+            if (
+                event.type() == QEvent.NativeGesture
+                and self._handle_preview_native_gesture(event, watched)
+            ):
+                return True
+            if event.type() == QEvent.Gesture and self._handle_preview_pinch_gesture(
+                event, watched
+            ):
+                return True
+        return super().eventFilter(watched, event)
 
     # ── Preview mouse events ──────────────────────────────────────────────────
 
@@ -1051,15 +1364,7 @@ class BgParameterHelperDialog(BaseDialog):
             evt.accept()
 
     def _on_prev_wheel(self, evt) -> None:
-        if evt.modifiers() == Qt.ControlModifier:
-            delta = evt.angleDelta().y()
-            new_val = max(
-                10,
-                min(400, self._prev_zoom_slider.value() + (10 if delta > 0 else -10)),
-            )
-            self._prev_zoom_slider.setValue(new_val)
-            evt.accept()
-        else:
+        if not self._handle_preview_wheel(evt, self._prev_label):
             evt.ignore()  # pass to scroll area for normal scrolling
 
     # ── Cleanup ───────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import pandas as pd
 from hydra_suite.core.identity.dataset.oriented_video import (
     OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
+    resolve_oriented_track_video_dir,
 )
 from hydra_suite.data.detection_cache import DetectionCache
 
@@ -50,6 +51,16 @@ def test_resolve_individual_dataset_dir_uses_run_id(tmp_path: Path):
     )
 
     assert resolved == dataset_dir
+
+
+def test_resolve_oriented_track_video_dir_uses_run_id(tmp_path: Path):
+    root = tmp_path / "oriented_videos"
+    run_dir = root / "20260311_120000"
+    run_dir.mkdir(parents=True)
+
+    resolved = resolve_oriented_track_video_dir(root, run_id="20260311_120000")
+
+    assert resolved == run_dir
 
 
 def test_oriented_track_video_export_streams_from_source_video_and_caches(
@@ -288,3 +299,195 @@ def test_oriented_track_video_prefers_directed_heading_and_preserves_branch(
     assert np.allclose(task1.affine, interp_expected_affine)
     assert task1.out_w == interp_expected_w
     assert task1.out_h == interp_expected_h
+
+
+def test_oriented_track_video_can_fix_short_heading_flip_bursts(tmp_path: Path):
+    dataset_dir = tmp_path / "oriented_videos" / "run_20260311"
+    cache_path = tmp_path / "detections.npz"
+    final_csv_path = tmp_path / "tracks_final.csv"
+    video_path = tmp_path / "source.mp4"
+
+    _write_video(video_path, [(0, 0, 255), (0, 255, 0), (255, 0, 0)])
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=2) as cache:
+        cache.add_frame(
+            0,
+            meas=[np.array([20.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(20.0, 24.0, 6.0)],
+            detection_ids=[101],
+        )
+        cache.add_frame(
+            1,
+            meas=[np.array([24.0, 24.0, math.pi], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(24.0, 24.0, 6.0)],
+            detection_ids=[102],
+        )
+        cache.add_frame(
+            2,
+            meas=[np.array([28.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(28.0, 24.0, 6.0)],
+            detection_ids=[103],
+        )
+        cache.save()
+
+    pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 1,
+                "FrameID": 0,
+                "DetectionID": 101,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 1,
+                "DetectionID": 102,
+                "Theta": math.pi,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 2,
+                "DetectionID": 103,
+                "Theta": 0.0,
+                "State": "active",
+            },
+        ]
+    ).to_csv(final_csv_path, index=False)
+
+    exporter = OrientedTrackVideoExporter(
+        dataset_dir,
+        final_csv_path,
+        video_path=video_path,
+        detection_cache_path=cache_path,
+        fps=5.0,
+        padding_fraction=0.0,
+        fix_direction_flips=True,
+        heading_flip_max_burst=1,
+    )
+
+    trajectories_df = exporter._load_final_dataframe()
+    frame_bundles, _track_sizes, missing_rows = exporter._build_frame_bundles(
+        trajectories_df,
+        {},
+    )
+
+    assert missing_rows == 0
+    corrected_task = frame_bundles[1].tasks[0]
+    expected_affine, expected_w, expected_h = exporter._compute_affine(
+        24.0,
+        24.0,
+        12.0,
+        12.0,
+        0.0,
+    )
+
+    assert np.allclose(corrected_task.affine, expected_affine)
+    assert corrected_task.out_w == expected_w
+    assert corrected_task.out_h == expected_h
+
+
+def test_oriented_track_video_affine_stabilization_smooths_jitter(tmp_path: Path):
+    dataset_dir = tmp_path / "oriented_videos" / "run_20260311"
+    cache_path = tmp_path / "detections.npz"
+    final_csv_path = tmp_path / "tracks_final.csv"
+    video_path = tmp_path / "source.mp4"
+
+    _write_video(video_path, [(0, 0, 255), (0, 255, 0), (255, 0, 0)])
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=2) as cache:
+        cache.add_frame(
+            0,
+            meas=[np.array([20.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(20.0, 24.0, 6.0)],
+            detection_ids=[101],
+        )
+        cache.add_frame(
+            1,
+            meas=[np.array([28.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[256.0],
+            shapes=[(256.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(28.0, 24.0, 12.0)],
+            detection_ids=[102],
+        )
+        cache.add_frame(
+            2,
+            meas=[np.array([20.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(20.0, 24.0, 6.0)],
+            detection_ids=[103],
+        )
+        cache.save()
+
+    pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 1,
+                "FrameID": 0,
+                "DetectionID": 101,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 1,
+                "DetectionID": 102,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 2,
+                "DetectionID": 103,
+                "Theta": 0.0,
+                "State": "active",
+            },
+        ]
+    ).to_csv(final_csv_path, index=False)
+
+    exporter = OrientedTrackVideoExporter(
+        dataset_dir,
+        final_csv_path,
+        video_path=video_path,
+        detection_cache_path=cache_path,
+        fps=5.0,
+        padding_fraction=0.0,
+        enable_affine_stabilization=True,
+        stabilization_window=3,
+    )
+
+    trajectories_df = exporter._load_final_dataframe()
+    frame_bundles, _track_sizes, missing_rows = exporter._build_frame_bundles(
+        trajectories_df,
+        {},
+    )
+
+    assert missing_rows == 0
+    stabilized_task = frame_bundles[1].tasks[0]
+    expected_affine, expected_w, expected_h = exporter._compute_affine(
+        20.0,
+        24.0,
+        12.0,
+        12.0,
+        0.0,
+    )
+
+    assert np.allclose(stabilized_task.affine, expected_affine)
+    assert stabilized_task.out_w == expected_w
+    assert stabilized_task.out_h == expected_h

@@ -29,7 +29,11 @@ from PySide6.QtWidgets import (
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 from ..models import OBBSource
-from ..utils import list_images_in_source
+from ..utils import (
+    ensure_detectkit_source_structure,
+    list_images_in_source,
+    source_class_id_map,
+)
 
 if TYPE_CHECKING:
     from ..models import DetectKitProject
@@ -216,16 +220,20 @@ class DatasetPanel(QWidget):
             logger.warning("Failed to scan conda envs: %s", exc)
 
     def _validate_source(self, path: str) -> None:
-        """Run validation and auto-convert xlabel JSON if needed."""
+        """Validate a candidate DetectKit source against the current project scheme."""
+        source_dir = ensure_detectkit_source_structure(path)
         try:
             from hydra_suite.training.dataset_inspector import (
                 inspect_obb_or_detect_dataset,
             )
 
-            inspect_obb_or_detect_dataset(path)
+            inspect_obb_or_detect_dataset(source_dir)
         except Exception:
-            # Validation failed -- try xlabel->YOLO conversion
             self._try_xlabel_convert(path)
+            inspect_obb_or_detect_dataset(source_dir)
+
+        if self._project is not None:
+            source_class_id_map(source_dir, self._project.class_names)
 
     def _try_xlabel_convert(self, path: str) -> None:
         """Attempt to convert xlabel JSON labels to YOLO format via conda env."""
@@ -240,12 +248,6 @@ class DatasetPanel(QWidget):
                 logger.debug("xlabel conversion not applicable for %s: %s", path, msg)
         except Exception:
             logger.debug("xlabel conversion failed for %s", path, exc_info=True)
-
-    def _ensure_classes_txt(self, source_dir: Path) -> None:
-        """Create classes.txt in source dir if missing, using project class_name."""
-        classes_file = source_dir / "classes.txt"
-        if not classes_file.exists() and self._project is not None:
-            classes_file.write_text(self._project.class_name + "\n", encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Slots
@@ -288,13 +290,28 @@ class DatasetPanel(QWidget):
         dirs = self._get_multiple_dirs("Select OBB Source Datasets")
         if not dirs:
             return
+        added_rows: list[int] = []
+        skipped: list[str] = []
         for d in dirs:
             p = Path(d)
-            src = OBBSource(path=str(p), name=p.name)
-            self._validate_source(str(p))
+            try:
+                self._validate_source(str(p))
+            except Exception as exc:
+                skipped.append(f"{p.name}: {exc}")
+                continue
+            src = OBBSource(path=str(p), name=p.name, validated=True)
             self._add_source_item(src)
-        # Select the first newly added source
-        self.source_list.setCurrentRow(self.source_list.count() - len(dirs))
+            added_rows.append(self.source_list.count() - 1)
+
+        if added_rows:
+            self.source_list.setCurrentRow(added_rows[0])
+
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Skipped Invalid Sources",
+                "\n\n".join(skipped),
+            )
 
     def _remove_source(self) -> None:
         """Remove the selected source from the list."""
@@ -333,7 +350,13 @@ class DatasetPanel(QWidget):
             p = str(entry.get("path", ""))
             if not p:
                 continue
-            src = OBBSource(path=p, name=Path(p).name)
+            try:
+                self._validate_source(p)
+            except Exception as exc:
+                skipped = f"{Path(p).name}: {exc}"
+                QMessageBox.warning(self, "Skipped Invalid Source", skipped)
+                continue
+            src = OBBSource(path=p, name=Path(p).name, validated=True)
             self._add_source_item(src)
 
     def _open_xanylabeling(self) -> None:
@@ -357,7 +380,11 @@ class DatasetPanel(QWidget):
             return
 
         source_dir = Path(source_path)
-        self._ensure_classes_txt(source_dir)
+        try:
+            self._validate_source(str(source_dir))
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Source", str(exc))
+            return
 
         # Build the shell command: activate conda env, convert yolo->xlabel, open GUI
         convert_cmd = (
@@ -428,9 +455,7 @@ class DatasetPanel(QWidget):
         source_path = self._selected_source_path()
         if source_path is None:
             return
-        self._ensure_classes_txt(Path(source_path))
         self._try_xlabel_convert(source_path)
         self._validate_source(source_path)
         # Refresh image list
-        self._on_source_changed(self.source_list.currentRow())
         self._on_source_changed(self.source_list.currentRow())

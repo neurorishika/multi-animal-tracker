@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from ....data.detection_cache import DetectionCache
+from ...post.processing import _fix_heading_flips
 from ..geometry import ellipse_axes_from_area, ellipse_to_obb_corners
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,11 @@ class FrameTask:
     affine: np.ndarray
     out_w: int
     out_h: int
+    center_x: float
+    center_y: float
+    width: float
+    height: float
+    theta: float
     corners: np.ndarray
     expanded_corners: np.ndarray
     polygon_index: int
@@ -89,6 +95,28 @@ def resolve_individual_dataset_dir(
     return matches[-1] if matches else None
 
 
+def resolve_oriented_track_video_dir(
+    output_dir: str | Path | None,
+    run_id: str | None = None,
+) -> Optional[Path]:
+    """Resolve the run directory used for oriented-track video outputs."""
+    if not output_dir:
+        return None
+    root = Path(output_dir).expanduser()
+    if not str(root).strip():
+        return None
+
+    run_part = str(run_id or "").strip()
+    if run_part:
+        return root / run_part
+
+    if not root.exists():
+        return None
+
+    matches = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name)
+    return matches[-1] if matches else None
+
+
 class OrientedTrackVideoExporter:
     """Build per-track orientation-fixed videos directly from cached geometry."""
 
@@ -104,6 +132,10 @@ class OrientedTrackVideoExporter:
         padding_fraction: float = 0.1,
         background_color: tuple[int, int, int] = (0, 0, 0),
         suppress_foreign_obb: bool = False,
+        fix_direction_flips: bool = False,
+        heading_flip_max_burst: int = 5,
+        enable_affine_stabilization: bool = False,
+        stabilization_window: int = 5,
         output_subdir: str = "oriented_videos",
         codec: str = "mp4v",
     ) -> None:
@@ -120,6 +152,10 @@ class OrientedTrackVideoExporter:
         self.padding_fraction = max(0.0, float(padding_fraction or 0.0))
         self.background_color = self._normalize_background_color(background_color)
         self.suppress_foreign_obb = bool(suppress_foreign_obb)
+        self.fix_direction_flips = bool(fix_direction_flips)
+        self.heading_flip_max_burst = max(1, int(heading_flip_max_burst or 1))
+        self.enable_affine_stabilization = bool(enable_affine_stabilization)
+        self.stabilization_window = max(1, int(stabilization_window or 1))
         self.output_dir = self.dataset_dir / str(output_subdir).strip()
         self.codec = str(codec or "mp4v")
 
@@ -424,7 +460,103 @@ class OrientedTrackVideoExporter:
                 detection_cache.close()
 
         frame_bundles = {k: v for k, v in frame_bundles.items() if v.tasks}
+        frame_bundles, track_sizes = self._apply_track_postprocessing(
+            frame_bundles,
+            track_sizes,
+        )
         return frame_bundles, track_sizes, missing_rows
+
+    def _apply_track_postprocessing(
+        self,
+        frame_bundles: dict[int, FrameBundle],
+        track_sizes: dict[int, tuple[int, int]],
+    ) -> tuple[dict[int, FrameBundle], dict[int, tuple[int, int]]]:
+        if not frame_bundles:
+            return frame_bundles, track_sizes
+        if not self.fix_direction_flips and not self.enable_affine_stabilization:
+            return frame_bundles, track_sizes
+
+        tasks_by_track: dict[int, list[FrameTask]] = defaultdict(list)
+        for bundle in frame_bundles.values():
+            for task in bundle.tasks:
+                tasks_by_track[task.trajectory_id].append(task)
+
+        updated_track_sizes: dict[int, tuple[int, int]] = {}
+        window = self._normalized_smoothing_window(self.stabilization_window)
+        for trajectory_id, tasks in tasks_by_track.items():
+            tasks.sort(key=lambda task: task.frame_id)
+            center_x = np.array([task.center_x for task in tasks], dtype=np.float64)
+            center_y = np.array([task.center_y for task in tasks], dtype=np.float64)
+            width = np.array([task.width for task in tasks], dtype=np.float64)
+            height = np.array([task.height for task in tasks], dtype=np.float64)
+            theta = np.array([task.theta for task in tasks], dtype=np.float64)
+
+            if self.fix_direction_flips and len(theta) > 0:
+                theta = _fix_heading_flips(
+                    theta,
+                    max_burst=self.heading_flip_max_burst,
+                )
+
+            if self.enable_affine_stabilization and len(tasks) > 1:
+                center_x = self._smooth_numeric_series(center_x, window)
+                center_y = self._smooth_numeric_series(center_y, window)
+                width = self._smooth_numeric_series(width, window)
+                height = self._smooth_numeric_series(height, window)
+                theta = self._smooth_angle_series(theta, window)
+
+            for idx, task in enumerate(tasks):
+                affine, out_w, out_h = self._compute_affine(
+                    float(center_x[idx]),
+                    float(center_y[idx]),
+                    max(1.0, float(width[idx])),
+                    max(1.0, float(height[idx])),
+                    float(theta[idx]),
+                )
+                task.center_x = float(center_x[idx])
+                task.center_y = float(center_y[idx])
+                task.width = max(1.0, float(width[idx]))
+                task.height = max(1.0, float(height[idx]))
+                task.theta = self._normalize_theta(float(theta[idx]))
+                task.affine = affine
+                task.out_w = out_w
+                task.out_h = out_h
+                updated_track_sizes[trajectory_id] = self._merge_canvas_size(
+                    updated_track_sizes.get(trajectory_id),
+                    (out_w, out_h),
+                )
+
+        return frame_bundles, updated_track_sizes or track_sizes
+
+    @staticmethod
+    def _normalized_smoothing_window(window: int) -> int:
+        value = max(1, int(window or 1))
+        return value if value % 2 == 1 else value + 1
+
+    @classmethod
+    def _smooth_numeric_series(cls, values: np.ndarray, window: int) -> np.ndarray:
+        if len(values) < 2 or window <= 1:
+            return values.copy()
+        half = window // 2
+        result = values.astype(np.float64, copy=True)
+        for idx in range(len(values)):
+            start = max(0, idx - half)
+            end = min(len(values), idx + half + 1)
+            result[idx] = float(np.nanmedian(values[start:end]))
+        return result
+
+    @classmethod
+    def _smooth_angle_series(cls, values: np.ndarray, window: int) -> np.ndarray:
+        if len(values) < 2 or window <= 1:
+            return values.copy()
+        unwrapped = np.unwrap(values.astype(np.float64, copy=False))
+        half = window // 2
+        result = unwrapped.copy()
+        for idx in range(len(unwrapped)):
+            start = max(0, idx - half)
+            end = min(len(unwrapped), idx + half + 1)
+            result[idx] = float(np.nanmean(unwrapped[start:end]))
+        two_pi = 2.0 * math.pi
+        return np.mod(result, two_pi)
 
     def _add_actual_tasks(
         self,
@@ -565,6 +697,11 @@ class OrientedTrackVideoExporter:
             affine=affine,
             out_w=out_w,
             out_h=out_h,
+            center_x=float(center_x),
+            center_y=float(center_y),
+            width=float(box_w),
+            height=float(box_h),
+            theta=self._normalize_theta(float(theta)),
             corners=np.asarray(corners, dtype=np.float32),
             expanded_corners=self._expand_corners(corners, self.padding_fraction),
             polygon_index=int(polygon_index),

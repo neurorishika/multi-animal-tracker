@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Signal
@@ -12,15 +10,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -80,7 +75,7 @@ class DatasetPanel(QWidget):
         vl_active.addWidget(
             self._main_window._create_help_label(
                 "Automatically identify challenging frames during tracking and export them for annotation.\n\n"
-                "Workflow: Run tracking → Review/correct in X-AnyLabeling → Train improved YOLO model"
+                "Workflow: Run tracking → Review/correct in DetectKit → Train improved YOLO model"
             )
         )
 
@@ -241,54 +236,11 @@ class DatasetPanel(QWidget):
 
         vl_content.addWidget(self.g_quality_metrics)
 
-        # X-AnyLabeling Integration
-        self.g_xanylabeling = QGroupBox("How should X-AnyLabeling be integrated?")
-        self._main_window._set_compact_section_widget(self.g_xanylabeling)
-        vl_xany = QVBoxLayout(self.g_xanylabeling)
-
-        # Conda environment selection
-        h_env = QHBoxLayout()
-        h_env.addWidget(QLabel("Conda environment"))
-        self.combo_xanylabeling_env = QComboBox()
-        self.combo_xanylabeling_env.setToolTip(
-            "Select a conda environment with X-AnyLabeling installed.\n"
-            "Environment names should start with 'x-anylabeling-' to be detected."
-        )
-        self.combo_xanylabeling_env.currentTextChanged.connect(
-            self._on_xanylabeling_env_changed
-        )
-        h_env.addWidget(self.combo_xanylabeling_env, 1)
-        self.btn_refresh_envs = QPushButton("🔄")
-        self.btn_refresh_envs.setMaximumWidth(40)
-        self.btn_refresh_envs.setToolTip("Refresh conda environments list")
-        self.btn_refresh_envs.clicked.connect(self._refresh_xanylabeling_envs)
-        h_env.addWidget(self.btn_refresh_envs)
-        vl_xany.addLayout(h_env)
-
-        # Open in X-AnyLabeling button
-        self.btn_open_xanylabeling = QPushButton(
-            "Open Active Learning Dataset in X-AnyLabeling"
-        )
-        self.btn_open_xanylabeling.setToolTip(
-            "Browse for a dataset directory and open it in X-AnyLabeling.\n"
-            "Directory must contain: classes.txt, images/, and labels/"
-        )
-        self.btn_open_xanylabeling.clicked.connect(self._open_in_xanylabeling)
-        self.btn_open_xanylabeling.setEnabled(False)
-        vl_xany.addWidget(self.btn_open_xanylabeling)
-
-        # X-AnyLabeling integration is now separate from Active Learning content
-
         # Add content to main group box
         vl_active.addWidget(self.active_learning_content)
 
         # Add main group box to form
         form.addWidget(self.g_active_learning)
-
-        # ============================================================
-        # X-AnyLabeling Integration (separate section)
-        # ============================================================
-        form.addWidget(self.g_xanylabeling)
 
         # Initially hide content (checkbox starts unchecked)
         self.active_learning_content.setVisible(False)
@@ -297,7 +249,7 @@ class DatasetPanel(QWidget):
         # Individual Dataset Generator Section (Real-time OBB crops)
         # ============================================================
         self.g_individual_dataset = QGroupBox(
-            "Should individual crops be collected in real time?"
+            "Should individual crop images be saved to disk?"
         )
         self._main_window._set_compact_section_widget(self.g_individual_dataset)
         vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
@@ -306,7 +258,8 @@ class DatasetPanel(QWidget):
                 "Persist individual-analysis crop images to disk.\n\n"
                 "• This save option depends on Analyze Individuals pipeline being enabled\n"
                 "• Crops contain only the detected animal (OBB-masked)\n"
-                "• Intended for downstream labeling/training workflows\n\n"
+                "• Intended for downstream labeling/training workflows\n"
+                "• Saved under individual_crops/<run_id or dataset_run>/images\n\n"
                 "Note: Available only in YOLO OBB mode."
             )
         )
@@ -318,17 +271,6 @@ class DatasetPanel(QWidget):
             self._on_individual_dataset_toggled
         )
         vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
-
-        self.chk_generate_individual_track_videos = QCheckBox(
-            "Generate orientation-fixed videos for final tracks after cleanup"
-        )
-        self.chk_generate_individual_track_videos.setChecked(False)
-        self.chk_generate_individual_track_videos.setToolTip(
-            "After final cleaning completes, export one orientation-fixed video per\n"
-            "final TrajectoryID by streaming the source video and using the detection\n"
-            "cache plus interpolated ROI cache. Independent from saved crop files."
-        )
-        vl_ind_dataset.addWidget(self.chk_generate_individual_track_videos)
 
         # Output Configuration
         self.ind_output_group = QGroupBox(
@@ -369,19 +311,19 @@ class DatasetPanel(QWidget):
 
         vl_ind_dataset.addWidget(self.ind_output_group)
 
-        self.chk_suppress_foreign_obb_dataset = QCheckBox(
-            "Suppress foreign animal regions in saved crops"
+        self.chk_suppress_foreign_obb_individual_dataset = QCheckBox(
+            "Suppress foreign animal regions in saved crop images"
         )
-        self.chk_suppress_foreign_obb_dataset.setChecked(False)
-        self.chk_suppress_foreign_obb_dataset.setToolTip(
+        self.chk_suppress_foreign_obb_individual_dataset.setChecked(False)
+        self.chk_suppress_foreign_obb_individual_dataset.setToolTip(
             "Fill overlapping animals' OBB areas with the background color before\n"
-            "saving each individual crop image.\n"
+            "saving individual crop images to disk.\n"
             "\n"
-            "Prevents other animals from appearing in a detection's crop, which\n"
-            "can confuse downstream labeling or training.\n"
-            "Only applies to YOLO OBB detections (no effect in background-subtraction mode)."
+            "Prevents other animals from appearing inside saved crops used for\n"
+            "downstream labeling or training. Only applies to YOLO OBB detections\n"
+            "(no effect in background-subtraction mode)."
         )
-        vl_ind_dataset.addWidget(self.chk_suppress_foreign_obb_dataset)
+        vl_ind_dataset.addWidget(self.chk_suppress_foreign_obb_individual_dataset)
 
         # Info label about filtering
         self.lbl_individual_info = self._main_window._create_help_label(
@@ -394,38 +336,154 @@ class DatasetPanel(QWidget):
         form.addWidget(self.g_individual_dataset)
 
         # ============================================================
-        # Pose Label UI Integration (Top-level section)
+        # Oriented Video Export Section
         # ============================================================
-        self.g_pose_label = QGroupBox("Do you want to launch PoseKit labeler?")
-        self._main_window._set_compact_section_widget(self.g_pose_label)
-        vl_pose = QVBoxLayout(self.g_pose_label)
-        vl_pose.addWidget(
+        self.g_oriented_videos = QGroupBox(
+            "Should oriented videos be exported after cleanup?"
+        )
+        self._main_window._set_compact_section_widget(self.g_oriented_videos)
+        vl_oriented = QVBoxLayout(self.g_oriented_videos)
+        vl_oriented.addWidget(
             self._main_window._create_help_label(
-                "Open an individual dataset folder in PoseKit Labeler for keypoint annotation.\n"
-                "Select a dataset root that contains an `images/` directory."
+                "Export one orientation-fixed video per final cleaned trajectory.\n\n"
+                "• Runs after final cleanup completes\n"
+                "• Uses the detection cache plus interpolated ROI geometry\n"
+                "• Can run without saving individual crop images\n"
+                "• Saved beside active_learning/ and individual_crops/ under oriented_videos/<run_id>\n\n"
+                "Requires head-tail orientation to be configured in Analyze Individuals."
             )
         )
 
-        # Open in Pose Label button
-        self.btn_open_pose_label = QPushButton(
-            "Open Individual Dataset in PoseKit Labeler"
+        self.chk_generate_individual_track_videos = QCheckBox(
+            "Generate orientation-fixed videos for final tracks after cleanup"
         )
-        self.btn_open_pose_label.setToolTip(
-            "Browse for a dataset directory and open it in PoseKit Labeler.\n"
-            "Directory must contain: images/\n"
-            "PoseKit project data will be stored in: posekit_project/"
+        self.chk_generate_individual_track_videos.setChecked(False)
+        self.chk_generate_individual_track_videos.setToolTip(
+            "After final cleaning completes, export one orientation-fixed video per\n"
+            "final TrajectoryID by streaming the source video and using the detection\n"
+            "cache plus interpolated ROI cache. Independent from saved crop files."
         )
-        self.btn_open_pose_label.clicked.connect(self._open_pose_label_ui)
-        self.btn_open_pose_label.setEnabled(True)
-        vl_pose.addWidget(self.btn_open_pose_label)
+        self.chk_generate_individual_track_videos.toggled.connect(
+            self._on_oriented_video_toggled
+        )
+        vl_oriented.addWidget(self.chk_generate_individual_track_videos)
 
-        form.addWidget(self.g_pose_label)
+        self.oriented_video_options = QGroupBox("Oriented Video Post-Processing")
+        oriented_options_layout = QFormLayout(self.oriented_video_options)
+        oriented_options_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.chk_fix_oriented_video_direction_flips = QCheckBox(
+            "Fix short head-tail direction flip bursts"
+        )
+        self.chk_fix_oriented_video_direction_flips.setChecked(False)
+        self.chk_fix_oriented_video_direction_flips.setToolTip(
+            "Correct isolated ~180-degree direction bursts after tracking cleanup\n"
+            "before rendering oriented videos. Uses the same bounded flip logic\n"
+            "as trajectory post-processing, but only affects video export."
+        )
+        oriented_options_layout.addRow(
+            "Direction fixing",
+            self.chk_fix_oriented_video_direction_flips,
+        )
+
+        self.spin_oriented_video_heading_flip_burst = QSpinBox()
+        self.spin_oriented_video_heading_flip_burst.setRange(1, 50)
+        self.spin_oriented_video_heading_flip_burst.setValue(5)
+        self.spin_oriented_video_heading_flip_burst.setToolTip(
+            "Maximum length of an isolated direction-flip burst to correct.\n"
+            "Longer runs are preserved as real orientation changes."
+        )
+        oriented_options_layout.addRow(
+            "Max flip burst (frames)",
+            self.spin_oriented_video_heading_flip_burst,
+        )
+
+        self.chk_enable_oriented_video_affine_stabilization = QCheckBox(
+            "Apply temporal affine stabilization"
+        )
+        self.chk_enable_oriented_video_affine_stabilization.setChecked(False)
+        self.chk_enable_oriented_video_affine_stabilization.setToolTip(
+            "Temporally smooth crop center, size, and orientation after cleanup\n"
+            "to reduce frame-to-frame jitter in exported oriented videos."
+        )
+        self.chk_enable_oriented_video_affine_stabilization.toggled.connect(
+            self._sync_oriented_video_postprocess_controls
+        )
+        oriented_options_layout.addRow(
+            "Affine stabilization",
+            self.chk_enable_oriented_video_affine_stabilization,
+        )
+
+        self.spin_oriented_video_stabilization_window = QSpinBox()
+        self.spin_oriented_video_stabilization_window.setRange(1, 31)
+        self.spin_oriented_video_stabilization_window.setSingleStep(2)
+        self.spin_oriented_video_stabilization_window.setValue(5)
+        self.spin_oriented_video_stabilization_window.setToolTip(
+            "Centered temporal smoothing window used for affine stabilization.\n"
+            "Odd values work best; even values are rounded up internally."
+        )
+        oriented_options_layout.addRow(
+            "Stabilization window (frames)",
+            self.spin_oriented_video_stabilization_window,
+        )
+
+        vl_oriented.addWidget(self.oriented_video_options)
+
+        self.chk_suppress_foreign_obb_oriented_videos = QCheckBox(
+            "Suppress foreign animal regions in oriented videos"
+        )
+        self.chk_suppress_foreign_obb_oriented_videos.setChecked(False)
+        self.chk_suppress_foreign_obb_oriented_videos.setToolTip(
+            "Fill overlapping animals' OBB areas with the background color before\n"
+            "rendering oriented-track video frames.\n"
+            "\n"
+            "Prevents other animals from appearing inside oriented-video exports,\n"
+            "which can confuse review and visualization.\n"
+            "Only applies to YOLO OBB detections (no effect in background-subtraction mode)."
+        )
+        vl_oriented.addWidget(self.chk_suppress_foreign_obb_oriented_videos)
+
+        self.lbl_oriented_video_info = self._main_window._create_help_label(
+            "Oriented videos reuse detections already filtered by ROI and size settings.\n"
+            "No separate crop-dataset save is required.",
+            attach_to_title=False,
+        )
+        vl_oriented.addWidget(self.lbl_oriented_video_info)
+
+        form.addWidget(self.g_oriented_videos)
+
+        # ============================================================
+        # Next-step guidance
+        # ============================================================
+        self.g_downstream_tools = QGroupBox("What should you use next?")
+        self._main_window._set_compact_section_widget(self.g_downstream_tools)
+        vl_downstream = QVBoxLayout(self.g_downstream_tools)
+        vl_downstream.addWidget(
+            self._main_window._create_help_label(
+                "TrackerKit no longer launches annotation tools from this tab.\n\n"
+                "Use DetectKit from the HYDRA Suite launcher to review and correct detection datasets.\n"
+                "Use PoseKit from the HYDRA Suite launcher to label pose datasets generated from individual crops."
+            )
+        )
+        guidance = QLabel(
+            "Detection review: open DetectKit from HYDRA Suite\n"
+            "Pose labeling: open PoseKit from HYDRA Suite"
+        )
+        guidance.setWordWrap(True)
+        guidance.setStyleSheet("color: #b8b8b8; font-size: 11px;")
+        vl_downstream.addWidget(guidance)
+
+        form.addWidget(self.g_downstream_tools)
 
         # Initially hide individual dataset widgets (checkbox starts unchecked)
         self.g_individual_dataset.setVisible(False)
+        self.g_oriented_videos.setVisible(False)
         self.ind_output_group.setVisible(False)
+        self.chk_suppress_foreign_obb_individual_dataset.setVisible(False)
         self.lbl_individual_info.setVisible(False)
-        self.chk_generate_individual_track_videos.setVisible(False)
+        self.lbl_oriented_video_info.setVisible(False)
+        self.oriented_video_options.setVisible(False)
+        self._sync_oriented_video_postprocess_controls()
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -443,328 +501,23 @@ class DatasetPanel(QWidget):
         # Hide/show entire content container
         self.active_learning_content.setVisible(enabled)
 
-    def _refresh_xanylabeling_envs(self):
-        """Scan for conda environments starting with 'x-anylabeling-'."""
-        self.combo_xanylabeling_env.clear()
-        preferred = str(
-            self._main_window.advanced_config.get("xanylabeling_env", "")
-        ).strip()
-
-        try:
-            import subprocess
-
-            # Get list of conda environments
-            result = subprocess.run(
-                ["conda", "env", "list"], capture_output=True, text=True, timeout=10
-            )
-
-            if result.returncode == 0:
-                envs = []
-                for line in result.stdout.split("\n"):
-                    # Skip comments and empty lines
-                    if line.strip() and not line.startswith("#"):
-                        # Parse environment name (first column)
-                        parts = line.split()
-                        if parts:
-                            env_name = parts[0]
-                            # Check if it starts with 'x-anylabeling-'
-                            if env_name.startswith("x-anylabeling-"):
-                                envs.append(env_name)
-
-                if envs:
-                    self.combo_xanylabeling_env.addItems(envs)
-                    if preferred in envs:
-                        self.combo_xanylabeling_env.setCurrentText(preferred)
-                    self.btn_open_xanylabeling.setEnabled(True)
-                    logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
-                else:
-                    self.combo_xanylabeling_env.addItem("No X-AnyLabeling envs found")
-                    self.btn_open_xanylabeling.setEnabled(False)
-                    logger.warning(
-                        "No conda environments starting with 'x-anylabeling-' found. "
-                        "Create one with: conda create -n x-anylabeling-env python=3.10 && "
-                        "conda activate x-anylabeling-env && pip install x-anylabeling"
-                    )
-            else:
-                self.combo_xanylabeling_env.addItem("Conda not available")
-                self.btn_open_xanylabeling.setEnabled(False)
-                logger.warning("Could not detect conda environments")
-
-        except FileNotFoundError:
-            self.combo_xanylabeling_env.addItem("Conda not installed")
-            self.btn_open_xanylabeling.setEnabled(False)
-            logger.warning("Conda not found in PATH")
-        except Exception as e:
-            self.combo_xanylabeling_env.addItem("Error detecting envs")
-            self.btn_open_xanylabeling.setEnabled(False)
-            logger.error(f"Error detecting conda environments: {e}")
-
-    def _selected_xanylabeling_env(self) -> str:
-        """Return the selected X-AnyLabeling env or an empty string."""
-        env_name = self.combo_xanylabeling_env.currentText().strip()
-        invalid_prefixes = (
-            "no x-anylabeling envs",
-            "conda not available",
-            "conda not installed",
-            "error detecting envs",
-        )
-        if not env_name or env_name.lower().startswith(invalid_prefixes):
-            return ""
-        return env_name
-
-    def _on_xanylabeling_env_changed(self, _text: str) -> None:
-        """Persist the preferred X-AnyLabeling env as a global UI preference."""
-        env_name = self._selected_xanylabeling_env()
-        if not env_name:
-            return
-        if self._main_window.advanced_config.get("xanylabeling_env") == env_name:
-            return
-        self._main_window.advanced_config["xanylabeling_env"] = env_name
-        self._main_window._save_advanced_config()
-
-    def _open_in_xanylabeling(self):
-        """Open a dataset directory in X-AnyLabeling."""
-        # Get selected conda environment
-        env_name = self.combo_xanylabeling_env.currentText()
-        if (
-            not env_name
-            or env_name.startswith("No ")
-            or env_name.startswith("Conda ")
-            or env_name.startswith("Error")
-        ):
-            QMessageBox.warning(
-                self,
-                "No Environment",
-                "Please select a valid conda environment with X-AnyLabeling installed.",
-            )
-            return
-
-        video_path = self._main_window._setup_panel.file_line.text().strip()
-        start_dir = os.path.dirname(video_path) if video_path else ""
-
-        # Browse for dataset directory
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select Dataset Directory",
-            start_dir,
-        )
-
-        if not directory:
-            return
-
-        dataset_path = Path(directory)
-
-        # Validate directory structure
-        classes_file = dataset_path / "classes.txt"
-        images_dir = dataset_path / "images"
-        labels_dir = dataset_path / "labels"
-
-        missing = []
-        if not classes_file.exists():
-            missing.append("classes.txt")
-        if not images_dir.exists() or not images_dir.is_dir():
-            missing.append("images/")
-        if not labels_dir.exists() or not labels_dir.is_dir():
-            missing.append("labels/")
-
-        if missing:
-            QMessageBox.warning(
-                self,
-                "Invalid Dataset",
-                f"Dataset directory is missing required items:\n{', '.join(missing)}\n\n"
-                f"A valid dataset must contain:\n"
-                f"- classes.txt\n"
-                f"- images/ (directory)\n"
-                f"- labels/ (directory)",
-            )
-            return
-
-        # Determine shell command based on OS
-        import platform
-        import subprocess
-
-        system = platform.system()
-
-        try:
-            if system == "Darwin":  # macOS
-                # Create an AppleScript to open Terminal and run commands
-                # Source conda.sh directly to initialize conda in the session
-                script = f"""
-                tell application "Terminal"
-                    activate
-                    do script "source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
-                end tell
-                """
-                subprocess.Popen(["osascript", "-e", script])
-
-            elif system == "Windows":
-                # Use cmd.exe with conda activation
-                cmd = f'start cmd /k "conda activate {env_name} && cd /d {dataset_path} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
-                subprocess.Popen(cmd, shell=True)
-
-            else:  # Linux
-                # Try common terminal emulators
-                terminals = ["gnome-terminal", "konsole", "xterm"]
-                terminal_found = False
-
-                for terminal in terminals:
-                    try:
-                        if terminal == "gnome-terminal":
-                            subprocess.Popen(
-                                [
-                                    terminal,
-                                    "--",
-                                    "bash",
-                                    "-c",
-                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
-                                ]
-                            )
-                        elif terminal == "konsole":
-                            subprocess.Popen(
-                                [
-                                    terminal,
-                                    "-e",
-                                    "bash",
-                                    "-c",
-                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
-                                ]
-                            )
-                        else:  # xterm
-                            subprocess.Popen(
-                                [
-                                    terminal,
-                                    "-e",
-                                    "bash",
-                                    "-c",
-                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
-                                ]
-                            )
-                        terminal_found = True
-                        break
-                    except FileNotFoundError:
-                        continue
-
-                if not terminal_found:
-                    QMessageBox.warning(
-                        self,
-                        "No Terminal Found",
-                        "Could not find a supported terminal emulator (gnome-terminal, konsole, or xterm).",
-                    )
-                    return
-
-            logger.info(f"Opened X-AnyLabeling for dataset: {dataset_path}")
-            QMessageBox.information(
-                self,
-                "X-AnyLabeling Launched",
-                f"X-AnyLabeling is starting in environment: {env_name}\n\n"
-                f"Commands being executed:\n"
-                f"1. Convert YOLO to X-Label format\n"
-                f"2. Open X-AnyLabeling with images\n\n"
-                f"Dataset: {dataset_path}",
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to open X-AnyLabeling: {e}", exc_info=True)
-            QMessageBox.critical(
-                self, "Launch Error", f"Failed to open X-AnyLabeling:\n{str(e)}"
-            )
-
-    def _open_pose_label_ui(self):
-        """Open a dataset folder in PoseKit Labeler."""
-        video_path = self._main_window._setup_panel.file_line.text().strip()
-        if video_path:
-            start_dir = os.path.dirname(video_path)
-        else:
-            start_dir = str(Path.home())
-
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select Pose Dataset Folder",
-            start_dir,
-        )
-        if not directory:
-            return
-
-        dataset_root = Path(directory).expanduser().resolve()
-        images_dir = dataset_root / "images"
-        if not images_dir.exists() or not images_dir.is_dir():
-            QMessageBox.warning(
-                self,
-                "Invalid Dataset",
-                "Selected folder does not contain an `images/` directory.\n\n"
-                "Please select a dataset root with this structure:\n"
-                "dataset_root/\n"
-                "  images/\n",
-            )
-            return
-
-        # Check if images directory has any images
-        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-        has_images = any(
-            f.suffix.lower() in image_extensions
-            for f in images_dir.rglob("*")
-            if f.is_file()
-        )
-
-        if not has_images:
-            QMessageBox.warning(
-                self,
-                "No Images Found",
-                f"No image files found in:\n{images_dir}\n\n"
-                f"Supported formats: {', '.join(image_extensions)}",
-            )
-            return
-
-        # Launch pose_label.py using the current Python interpreter
-        import subprocess
-        import sys
-
-        try:
-            # The labeler lives in the posekit.gui.main module.
-            # dataset_panel.py is at .../trackerkit/gui/panels/dataset_panel.py
-            # so parent.parent gives .../trackerkit/gui/
-            gui_dir = Path(__file__).parent.parent
-            package_root = gui_dir.parent
-            labeler_dir = package_root / "posekit" / "ui"
-            pose_label_script = labeler_dir / "main.py"
-
-            if not pose_label_script.exists():
-                QMessageBox.critical(
-                    self,
-                    "Script Not Found",
-                    f"Could not find posekit UI entry point at:\n{pose_label_script}",
-                )
-                return
-
-            # Use the current Python executable (same environment as mat).
-            # Run as a module to support relative imports inside the package.
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "hydra_suite.posekit.gui.main",
-                    str(dataset_root),
-                ],
-                cwd=str(package_root.parent),  # root where hydra_suite package lives
-            )
-
-            logger.info(f"Opened PoseKit Labeler for dataset: {dataset_root}")
-            QMessageBox.information(
-                self,
-                "PoseKit Labeler Launched",
-                f"PoseKit Labeler is starting...\n\n"
-                f"Dataset: {dataset_root}\n"
-                f"Images: {images_dir}\n\n"
-                f"Project data will be created/loaded at:\n"
-                f"{dataset_root / 'posekit_project'}",
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to open Pose Label UI: {e}", exc_info=True)
-            QMessageBox.critical(
-                self, "Launch Error", f"Failed to open Pose Label UI:\n{str(e)}"
-            )
-
     def _on_individual_dataset_toggled(self, enabled):
         """Enable/disable individual dataset generation controls."""
         self._main_window._sync_individual_analysis_mode_ui()
+
+    def _on_oriented_video_toggled(self, enabled):
+        """Show or hide oriented-video post-processing controls."""
+        self.oriented_video_options.setVisible(bool(enabled))
+        self._sync_oriented_video_postprocess_controls()
+
+    def _sync_oriented_video_postprocess_controls(self):
+        """Enable dependent oriented-video controls only when their toggles are active."""
+        enabled = bool(self.chk_generate_individual_track_videos.isChecked())
+        self.oriented_video_options.setEnabled(enabled)
+        self.chk_suppress_foreign_obb_oriented_videos.setEnabled(enabled)
+        self.spin_oriented_video_heading_flip_burst.setEnabled(
+            enabled and self.chk_fix_oriented_video_direction_flips.isChecked()
+        )
+        self.spin_oriented_video_stabilization_window.setEnabled(
+            enabled and self.chk_enable_oriented_video_affine_stabilization.isChecked()
+        )

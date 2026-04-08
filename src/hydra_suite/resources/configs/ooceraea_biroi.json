@@ -236,5 +236,6 @@
     231
   ],
   "suppress_foreign_obb_regions": true,
-  "suppress_foreign_obb_dataset": false
+  "suppress_foreign_obb_individual_dataset": false,
+  "suppress_foreign_obb_oriented_videos": false
 }

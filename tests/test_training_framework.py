@@ -29,6 +29,7 @@ from hydra_suite.training.registry import (
     new_run_id,
 )
 from hydra_suite.training.runner import build_ultralytics_command
+from hydra_suite.training.service import TrainingOrchestrator
 
 
 def _write_image(path: Path, value: int = 120):
@@ -65,6 +66,37 @@ def _make_split_obb_dataset(root: Path):
                 "test: images/test",
                 "names:",
                 "  0: ant",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ds
+
+
+def _make_multiclass_split_obb_dataset(root: Path):
+    ds = root / "obb_ds_multiclass"
+    split_defs = {
+        "train": [("train_0", 0), ("train_1", 1)],
+        "val": [("val_0", 1)],
+        "test": [("test_0", 0)],
+    }
+    for split, entries in split_defs.items():
+        for name, class_id in entries:
+            _write_image(
+                ds / "images" / split / f"{name}.jpg", value=100 + class_id * 20
+            )
+            _write_obb_label(ds / "labels" / split / f"{name}.txt", cls_id=class_id)
+    (ds / "dataset.yaml").write_text(
+        "\n".join(
+            [
+                f"path: {ds}",
+                "train: images/train",
+                "val: images/val",
+                "test: images/test",
+                "names:",
+                "  0: ant",
+                "  1: bee",
             ]
         )
         + "\n",
@@ -193,6 +225,94 @@ def test_derive_detect_and_crop_from_obb(tmp_path: Path):
     assert len(vals) == 9
     coords = [float(v) for v in vals[1:]]
     assert all(0.0 <= c <= 1.0 for c in coords)
+
+
+def test_orchestrator_preserves_multiclass_ids_and_names(tmp_path: Path):
+    src = _make_multiclass_split_obb_dataset(tmp_path)
+    orchestrator = TrainingOrchestrator(tmp_path / "workspace")
+
+    merged = orchestrator.build_merged_obb_dataset(
+        [SourceDataset(path=str(src), name="src")],
+        class_names=["ant", "bee"],
+        split_cfg=SplitConfig(train=0.8, val=0.2, test=0.0),
+        seed=5,
+        dedup=False,
+    )
+
+    merged_ids = {
+        int(label.read_text(encoding="utf-8").strip().split()[0])
+        for label in (Path(merged.dataset_dir) / "labels").rglob("*.txt")
+        if label.read_text(encoding="utf-8").strip()
+    }
+    assert merged_ids == {0, 1}
+    merged_yaml = (Path(merged.dataset_dir) / "dataset.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "0: ant" in merged_yaml
+    assert "1: bee" in merged_yaml
+
+    detect = orchestrator.build_role_dataset(
+        TrainingRole.SEQ_DETECT,
+        merged.dataset_dir,
+        class_names=["ant", "bee"],
+    )
+    detect_ids = {
+        int(label.read_text(encoding="utf-8").strip().split()[0])
+        for label in (Path(detect.dataset_dir) / "labels").rglob("*.txt")
+        if label.read_text(encoding="utf-8").strip()
+    }
+    assert detect_ids == {0, 1}
+
+    crop = orchestrator.build_role_dataset(
+        TrainingRole.SEQ_CROP_OBB,
+        merged.dataset_dir,
+        class_names=["ant", "bee"],
+    )
+    crop_ids = {
+        int(label.read_text(encoding="utf-8").strip().split()[0])
+        for label in (Path(crop.dataset_dir) / "labels").rglob("*.txt")
+        if label.read_text(encoding="utf-8").strip()
+    }
+    assert crop_ids == {0, 1}
+    crop_yaml = (Path(crop.dataset_dir) / "dataset.yaml").read_text(encoding="utf-8")
+    assert "0: ant" in crop_yaml
+    assert "1: bee" in crop_yaml
+
+
+def test_merge_obb_sources_filters_and_remaps_source_superset_classes(tmp_path: Path):
+    src = tmp_path / "source_superset"
+    (src / "images" / "train").mkdir(parents=True)
+    (src / "labels" / "train").mkdir(parents=True)
+    (src / "images" / "val").mkdir(parents=True)
+    (src / "labels" / "val").mkdir(parents=True)
+    _write_image(src / "images" / "train" / "mixed.jpg", value=90)
+    (src / "labels" / "train" / "mixed.txt").write_text(
+        "1 0.2 0.2 0.8 0.2 0.8 0.8 0.2 0.8\n" "2 0.3 0.3 0.7 0.3 0.7 0.7 0.3 0.7\n",
+        encoding="utf-8",
+    )
+    _write_image(src / "images" / "val" / "kept.jpg", value=110)
+    (src / "labels" / "val" / "kept.txt").write_text(
+        "0 0.2 0.2 0.8 0.2 0.8 0.8 0.2 0.8\n",
+        encoding="utf-8",
+    )
+    (src / "classes.txt").write_text("bee\nant\nwasp\n", encoding="utf-8")
+
+    res = merge_obb_sources(
+        sources=[SourceDataset(path=str(src), name="superset")],
+        output_root=tmp_path / "out",
+        class_names=["ant", "bee"],
+        split_cfg=SplitConfig(train=0.8, val=0.2, test=0.0),
+        seed=11,
+        dedup=False,
+        remap_single_class=False,
+    )
+
+    merged_labels = sorted((Path(res.dataset_dir) / "labels").rglob("*.txt"))
+    merged_text = "\n".join(path.read_text(encoding="utf-8") for path in merged_labels)
+
+    assert "2 0.3" not in merged_text
+    assert "0 0.2" in merged_text
+    assert "1 0.2" in merged_text
 
 
 def test_runner_command_per_role(tmp_path: Path):

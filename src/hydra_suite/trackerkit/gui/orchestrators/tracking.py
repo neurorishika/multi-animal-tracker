@@ -800,10 +800,10 @@ class TrackingOrchestrator:
             if not final_csv_path or not os.path.exists(final_csv_path):
                 return False
 
-            dataset_dir = self._mw._resolve_current_individual_dataset_dir()
-            if dataset_dir is None:
+            output_dir = self._mw._resolve_current_oriented_track_video_dir()
+            if output_dir is None:
                 logger.warning(
-                    "Skipping oriented track video export: no individual dataset directory found."
+                    "Skipping oriented track video export: no oriented-video output directory found."
                 )
                 return False
             if not self._mw.current_detection_cache_path or not os.path.exists(
@@ -841,14 +841,25 @@ class TrackingOrchestrator:
             )
             self._mw.oriented_video_worker = OrientedTrackVideoWorker(
                 final_csv_path,
-                str(dataset_dir),
+                str(output_dir),
                 self._panels.setup.file_line.text().strip(),
                 self._mw.current_detection_cache_path,
                 self._mw.current_interpolated_roi_npz_path,
                 self._mw._resolve_source_video_fps(),
                 max(0.0, padding_fraction),
                 tuple(int(c) for c in self._panels.identity._background_color),
-                bool(self._panels.dataset.chk_suppress_foreign_obb_dataset.isChecked()),
+                bool(
+                    self._panels.dataset.chk_suppress_foreign_obb_oriented_videos.isChecked()
+                ),
+                bool(
+                    self._panels.dataset.chk_fix_oriented_video_direction_flips.isChecked()
+                ),
+                self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
+                bool(
+                    self._panels.dataset.chk_enable_oriented_video_affine_stabilization.isChecked()
+                ),
+                self._panels.dataset.spin_oriented_video_stabilization_window.value(),
+                output_subdir="",
             )
             self._mw.oriented_video_worker.progress_signal.connect(
                 self._mw.on_progress_update
@@ -2603,7 +2614,17 @@ class TrackingOrchestrator:
                 return False
 
             params = self._mw.get_parameters_dict()
+            save_interpolated_outputs = bool(
+                params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
+            )
+            generate_oriented_videos = bool(
+                params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+            )
             output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+            if not save_interpolated_outputs and generate_oriented_videos:
+                output_dir = str(
+                    params.get("ORIENTED_TRACK_VIDEO_OUTPUT_DIR", output_dir)
+                ).strip()
             if not output_dir:
                 # Keep interpolated analysis available even when image-save toggle is off.
                 csv_dir = os.path.dirname(target_csv) if target_csv else ""
@@ -3418,7 +3439,7 @@ class TrackingOrchestrator:
         logger.info(f"Dataset generation complete: {dataset_dir}")
         logger.info(f"Frames exported: {num_frames}")
         logger.info(
-            "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
+            "Use DetectKit from HYDRA Suite to review/correct detection datasets"
         )
 
         # Store result; popup is deferred to end-of-session summary.
@@ -3538,11 +3559,13 @@ class TrackingOrchestrator:
 
         QMessageBox.information(self._mw, "Tracking Complete", "\n".join(lines))
 
-        # Offer to open RefineKit for interactive proofreading
-        self._panels.postprocess._btn_open_refinekit.setEnabled(
+        # Offer to open RefineKit for interactive proofreading after single-video runs.
+        should_prompt_refinekit = (
             bool(self._mw.current_video_path)
+            and not self._panels.setup.g_batch.isChecked()
+            and self._panels.postprocess.chk_prompt_open_refinekit.isChecked()
         )
-        if self._mw.current_video_path:
+        if should_prompt_refinekit:
             reply = QMessageBox.question(
                 self._mw,
                 "Open RefineKit?",

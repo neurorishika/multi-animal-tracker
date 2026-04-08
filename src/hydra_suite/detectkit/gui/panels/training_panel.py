@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -43,6 +44,8 @@ from hydra_suite.training.validation import format_validation_report
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 from hydra_suite.utils.gpu_utils import get_device_info
 from hydra_suite.widgets.workers import BaseWorker
+
+from ..models import DEFAULT_CLASS_NAME, normalize_class_names
 
 logger = logging.getLogger(__name__)
 
@@ -212,8 +215,10 @@ class TrainingPanel(QWidget):
         gb = QGroupBox("Config")
         form = QFormLayout(gb)
 
-        self.line_class = QLineEdit("object")
-        form.addRow("Class name", self.line_class)
+        self.class_names_edit = QPlainTextEdit(DEFAULT_CLASS_NAME)
+        self.class_names_edit.setPlaceholderText("ant\nbee")
+        self.class_names_edit.setFixedHeight(84)
+        form.addRow("Class names", self.class_names_edit)
 
         self.line_workspace = QLineEdit(str(self.workspace_default))
         self.btn_workspace = QPushButton("Browse...")
@@ -551,7 +556,7 @@ class TrainingPanel(QWidget):
         self._proj = proj
         self._main_window = main_window
 
-        self.line_class.setText(proj.class_name or "object")
+        self._set_class_names(proj.class_names)
         self.line_species.setText(proj.species or "")
         self.line_model_tag.setText(proj.model_tag or "train")
 
@@ -610,7 +615,7 @@ class TrainingPanel(QWidget):
 
     def collect_state(self, proj):
         """Write all widget values back to *proj* fields."""
-        proj.class_name = self.line_class.text().strip() or "object"
+        proj.class_names = self._class_names()
         proj.species = self.line_species.text().strip()
         proj.model_tag = self.line_model_tag.text().strip() or "train"
 
@@ -666,6 +671,22 @@ class TrainingPanel(QWidget):
         # Publish
         proj.auto_import = self.chk_auto_import.isChecked()
         proj.auto_select = self.chk_auto_select.isChecked()
+
+    def _class_names(self) -> list[str]:
+        """Return normalized class names from the config editor."""
+        return normalize_class_names(self.class_names_edit.toPlainText().splitlines())
+
+    def _set_class_names(self, class_names: list[str]) -> None:
+        """Populate the config editor from a class-name list."""
+        self.class_names_edit.setPlainText(
+            "\n".join(normalize_class_names(class_names))
+        )
+
+    def refresh_class_names_from_project(self) -> None:
+        """Refresh only the class-name editor from the current project."""
+        if self._proj is None:
+            return
+        self._set_class_names(self._proj.class_names)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -834,7 +855,7 @@ class TrainingPanel(QWidget):
             )
             merged = self.orchestrator.build_merged_obb_dataset(
                 obb_sources,
-                class_name=self.line_class.text().strip() or "object",
+                class_names=self._class_names(),
                 split_cfg=split,
                 seed=self.spin_seed.value(),
                 dedup=self.chk_dedup.isChecked(),
@@ -846,7 +867,7 @@ class TrainingPanel(QWidget):
                 build = self.orchestrator.build_role_dataset(
                     role,
                     merged.dataset_dir,
-                    class_name=self.line_class.text().strip() or "object",
+                    class_names=self._class_names(),
                     crop_pad_ratio=self.spin_crop_pad.value(),
                     min_crop_size_px=self.spin_crop_min_px.value(),
                     enforce_square=self.chk_crop_square.isChecked(),
@@ -1083,8 +1104,10 @@ class TrainingPanel(QWidget):
             resume_from=str(last_pt),
         )
 
+        class_names = self._class_names()
         publish_meta = {
-            "class_name": self.line_class.text().strip() or "object",
+            "class_names": class_names,
+            "class_name": class_names[0],
             "resumed_from": str(last_pt),
         }
         entry = {"role": role, "spec": spec, "publish_meta": publish_meta}
@@ -1266,7 +1289,8 @@ class TrainingPanel(QWidget):
 
         config = {
             "version": 1,
-            "class_name": self.line_class.text().strip(),
+            "class_names": self._class_names(),
+            "class_name": self._class_names()[0],
             "roles": roles,
             "hyperparams": {
                 "epochs": self.spin_epochs.value(),
@@ -1341,8 +1365,10 @@ class TrainingPanel(QWidget):
             self._append_log(f"Failed to load config: {exc}")
             return
 
-        if "class_name" in config:
-            self.line_class.setText(config["class_name"])
+        if "class_names" in config:
+            self._set_class_names(config["class_names"])
+        elif "class_name" in config:
+            self._set_class_names([config["class_name"]])
 
         self._apply_roles_config(config.get("roles", []))
         self._apply_hyperparams_config(config.get("hyperparams", {}))

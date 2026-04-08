@@ -10,6 +10,7 @@ from hydra_suite.paths import (
     get_brand_icon_bytes,
     get_bundled_config_names,
     get_bundled_skeleton_names,
+    get_classkit_scheme_presets_dir,
     get_default_config,
     get_models_dir,
     get_skeleton_config,
@@ -149,6 +150,16 @@ def test_get_presets_dir_seeds_on_first_use(tmp_path, monkeypatch):
     p = get_presets_dir()
     assert (p / ".seeded").exists()
     assert any(f.suffix == ".json" for f in p.iterdir())
+
+
+def test_get_classkit_scheme_presets_dir_uses_config_root(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    monkeypatch.setattr("hydra_suite.paths._user_config_dir", lambda: config_dir)
+
+    p = get_classkit_scheme_presets_dir()
+
+    assert p == config_dir / "classkit" / "scheme_presets"
+    assert p.exists()
 
 
 def test_get_skeleton_dir_seeds_on_first_use(tmp_path, monkeypatch):

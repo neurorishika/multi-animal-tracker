@@ -1,11 +1,10 @@
 """NewProjectDialog — dialog for creating a new ClassKit project."""
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
     QDialogButtonBox,
     QFormLayout,
     QFrame,
@@ -15,40 +14,18 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
+from hydra_suite.classkit.config.presets import (
+    flatten_scheme_labels,
+    get_available_scheme_presets,
+)
 from hydra_suite.classkit.gui.dialogs._helpers import _SchemeWrapper
 from hydra_suite.classkit.gui.dialogs.class_editor import ClassEditorDialog
+from hydra_suite.classkit.gui.project import default_project_parent_dir
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
-
-_DARK_STYLE = """
-    QDialog { background-color: #1e1e1e; }
-    QGroupBox {
-        border: 1px solid #3e3e42; border-radius: 6px;
-        margin-top: 12px; padding-top: 12px; color: #cccccc;
-    }
-    QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
-    QLabel { color: #cccccc; }
-    QLineEdit, QTextEdit, QPlainTextEdit, QListWidget {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QLineEdit:focus, QTextEdit:focus { border: 1px solid #007acc; }
-    QComboBox, QSpinBox, QDoubleSpinBox {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QComboBox:focus, QSpinBox:focus { border: 1px solid #007acc; }
-    QCheckBox { color: #cccccc; }
-    QPushButton {
-        background-color: #0e639c; color: #ffffff;
-        border: none; border-radius: 4px;
-        padding: 8px 16px; font-weight: 500;
-    }
-    QPushButton:hover { background-color: #1177bb; }
-    QPushButton:pressed { background-color: #0d5a8f; }
-    QPushButton:disabled { background-color: #3e3e42; color: #888888; }
-"""
+from hydra_suite.widgets.dialogs import BaseDialog
 
 _BTN_NEUTRAL = (
     "QPushButton { background-color:#3e3e42; color:#e0e0e0; padding:4px 12px; border-radius:4px; }"
@@ -56,63 +33,75 @@ _BTN_NEUTRAL = (
 )
 
 
-class NewProjectDialog(QDialog):
+class NewProjectDialog(BaseDialog):
     """Dialog for creating a new ClassKit project."""
 
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Create New Project")
-        self.setMinimumWidth(520)
-        self.setStyleSheet(_DARK_STYLE)
+        super().__init__("Create New Project", parent=parent)
+        self.setMinimumWidth(580)
 
         self._custom_scheme: Optional[dict] = None
+        self._preset_lookup: dict[str, object] = {}
 
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.setSpacing(16)
 
-        header = QLabel("<h2 style='color:#ffffff; margin:0;'>Create New Project</h2>")
+        header = QLabel("<h2 style='margin:0;'>Create New Project</h2>")
+        intro = QLabel(
+            "Choose the project folder first, then pick a starter labeling scheme or define one in full."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #aaaaaa;")
         layout.addWidget(header)
+        layout.addWidget(intro)
 
-        form = QFormLayout()
-        form.setSpacing(12)
+        details_group = QGroupBox("Project Details")
+        details_layout = QVBoxLayout(details_group)
+        details_layout.setSpacing(10)
+        details_form = QFormLayout()
+        details_form.setSpacing(12)
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("MyDataset")
-        form.addRow("<b>Project Name:</b>", self.name_edit)
+        self.name_edit.textChanged.connect(self._update_project_preview)
+        self.name_edit.textChanged.connect(self._validate)
+        details_form.addRow("Project Name", self.name_edit)
 
         location_row = QHBoxLayout()
         self.location_edit = QLineEdit()
         self.location_edit.setPlaceholderText("Select project location\u2026")
-        self.location_edit.setText(str(Path.home() / "ClassKit" / "projects"))
+        self.location_edit.setText(str(default_project_parent_dir()))
+        self.location_edit.textChanged.connect(self._update_project_preview)
+        self.location_edit.textChanged.connect(self._validate)
         browse_btn = QPushButton("Browse\u2026")
         browse_btn.setMaximumWidth(90)
         browse_btn.clicked.connect(self._browse_location)
         location_row.addWidget(self.location_edit, 1)
         location_row.addWidget(browse_btn)
-        form.addRow("<b>Location:</b>", location_row)
+        details_form.addRow("Location", location_row)
+        details_layout.addLayout(details_form)
 
-        layout.addLayout(form)
+        preview_label = QLabel("Project Folder")
+        preview_label.setStyleSheet("color: #cfcfcf;")
+        details_layout.addWidget(preview_label)
 
-        scheme_group = QGroupBox("Labeling Scheme")
+        self.project_preview = QLabel()
+        self.project_preview.setWordWrap(True)
+        self.project_preview.setStyleSheet(
+            "padding: 10px; background-color: #252526; border-radius: 6px; "
+            "border-left: 3px solid #0e639c;"
+        )
+        details_layout.addWidget(self.project_preview)
+        layout.addWidget(details_group)
+
+        scheme_group = QGroupBox("Labeling Setup")
         scheme_vlayout = QVBoxLayout(scheme_group)
         scheme_vlayout.setSpacing(10)
 
         preset_row = QHBoxLayout()
         self.preset_combo = QComboBox()
-        self.preset_combo.addItem("None \u2014 define manually after creation", "none")
-        self.preset_combo.addItem(
-            "Head / Tail  (4 directions \u00b7 A D W S)", "head_tail"
-        )
-        self.preset_combo.addItem(
-            "Color tag \u2014 1 factor  (5 colors)", "color_tag_1"
-        )
-        self.preset_combo.addItem(
-            "Color tag \u2014 2 factors  (25 composites)", "color_tag_2"
-        )
-        self.preset_combo.addItem(
-            "Color tag \u2014 3 factors  (125 composites)", "color_tag_3"
-        )
-        self.preset_combo.addItem("Age  (young / old)", "age")
+        self._populate_presets()
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         preset_row.addWidget(QLabel("Quick preset:"))
         preset_row.addWidget(self.preset_combo, 1)
@@ -147,8 +136,7 @@ class NewProjectDialog(QDialog):
         layout.addWidget(scheme_group)
 
         info = QLabel(
-            "<b>Tip:</b> You can always reconfigure the scheme later from the "
-            "left panel.  The project folder will be created at the specified location."
+            "You can refine the labeling scheme later from the project workspace. ClassKit will create the project folder at the selected location."
         )
         info.setWordWrap(True)
         info.setStyleSheet(
@@ -157,28 +145,26 @@ class NewProjectDialog(QDialog):
         )
         layout.addWidget(info)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.button(QDialogButtonBox.Ok).setText("Create Project")
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
+        self.add_content(content)
 
-        self.name_edit.textChanged.connect(self._validate)
+        create_button = self._buttons.button(QDialogButtonBox.Ok)
+        create_button.setText("Create Project")
+
         self._validate()
+        self._update_project_preview()
         self._on_preset_changed()
 
     def _on_preset_changed(self):
         key = self.preset_combo.currentData()
-        _C = ["red", "blue", "green", "yellow", "white"]
-        info_map = {
-            "none": "Free-form \u2014 define labels manually after the project is created.",
-            "head_tail": "1 factor \u00b7 4 labels: left, right, up, down  (keys A D W S).",
-            "color_tag_1": f"1 factor \u00b7 5 labels: {', '.join(_C)}.",
-            "color_tag_2": "2 factors \u00d7 5 colors = 25 composite labels.",
-            "color_tag_3": "3 factors \u00d7 5 colors = 125 composite labels.",
-            "age": "1 factor \u00b7 2 labels: young, old.",
-        }
-        self._scheme_info.setText(info_map.get(key, ""))
+        preset = self._preset_lookup.get(key)
+        if key == "none":
+            self._scheme_info.setText(
+                "Free-form — define labels manually after the project is created."
+            )
+        elif preset is not None:
+            self._scheme_info.setText(getattr(preset, "description", ""))
+        else:
+            self._scheme_info.setText("")
         if self._custom_scheme is not None:
             self._custom_scheme = None
             self._custom_scheme_lbl.setText("")
@@ -187,6 +173,10 @@ class NewProjectDialog(QDialog):
     def _open_scheme_editor(self):
         dlg = ClassEditorDialog(parent=self)
         if dlg.exec():
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
+            self._populate_presets()
             self._custom_scheme = dlg.get_scheme_dict()
             factors = self._custom_scheme.get("factors", [])
             total_labels = sum(len(f.get("labels", [])) for f in factors)
@@ -196,60 +186,78 @@ class NewProjectDialog(QDialog):
                 f"({factor_names})"
             )
             self._btn_define_scheme.setText("Edit Full Scheme\u2026")
-            self.preset_combo.setCurrentIndex(0)
+            self._scheme_info.setText(
+                "Custom scheme selected. Edit it again to change factors or labels."
+            )
+
+    def _populate_presets(self) -> None:
+        current_key = (
+            self.preset_combo.currentData() if self.preset_combo.count() else "none"
+        )
+        self._preset_lookup = {}
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem("None — define manually after creation", "none")
+        for preset in get_available_scheme_presets():
+            self._preset_lookup[preset.key] = preset
+            self.preset_combo.addItem(preset.label, preset.key)
+        target_index = self.preset_combo.findData(current_key)
+        self.preset_combo.setCurrentIndex(target_index if target_index >= 0 else 0)
+        self.preset_combo.blockSignals(False)
 
     def _browse_location(self):
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select Project Location",
-            self.location_edit.text() or str(Path.home()),
+            self.location_edit.text() or str(default_project_parent_dir()),
         )
         if folder:
             self.location_edit.setText(folder)
 
     def _validate(self):
-        ok = self.buttons.button(QDialogButtonBox.Ok)
-        ok.setEnabled(len(self.name_edit.text().strip()) > 0)
+        ok = self._buttons.button(QDialogButtonBox.Ok)
+        ok.setEnabled(
+            bool(self.name_edit.text().strip())
+            and bool(self.location_edit.text().strip())
+        )
+
+    def _update_project_preview(self) -> None:
+        project_path = self.get_project_path()
+        if project_path is None:
+            self.project_preview.setText(
+                "Project folder: choose a location and enter a project name."
+            )
+            return
+        self.project_preview.setText(f"Project folder: {project_path}")
+
+    def get_project_path(self) -> Path | None:
+        """Return the full ClassKit project directory, or None if incomplete."""
+        name = self.name_edit.text().strip()
+        location = self.location_edit.text().strip()
+        if not name or not location:
+            return None
+        return Path(location).expanduser() / name
 
     def get_project_info(self) -> dict:
         name = self.name_edit.text().strip()
-        project_path = Path(self.location_edit.text()) / name
+        project_path = self.get_project_path()
 
         if self._custom_scheme is not None:
             scheme_dict = self._custom_scheme
-            classes: List[str] = []
-            for f in scheme_dict.get("factors", []):
-                classes.extend(f.get("labels", []))
+            classes = flatten_scheme_labels(scheme_dict)
             return {
                 "name": name,
-                "path": str(project_path),
+                "path": str(project_path) if project_path is not None else "",
                 "classes": classes,
                 "scheme": _SchemeWrapper(scheme_dict),
             }
 
-        from hydra_suite.classkit.config.presets import (
-            age_preset,
-            color_tag_preset,
-            head_tail_preset,
-        )
-
-        _C = ["red", "blue", "green", "yellow", "white"]
-        key = self.preset_combo.currentData()
-        preset_map = {
-            "head_tail": head_tail_preset(),
-            "color_tag_1": color_tag_preset(1, _C),
-            "color_tag_2": color_tag_preset(2, _C),
-            "color_tag_3": color_tag_preset(3, _C),
-            "age": age_preset(),
-        }
-        scheme_obj = preset_map.get(key)
-        classes = []
-        if scheme_obj is not None:
-            for f in scheme_obj.factors:
-                classes.extend(f.labels)
+        preset = self._preset_lookup.get(self.preset_combo.currentData())
+        scheme_obj = getattr(preset, "scheme", None)
+        classes = flatten_scheme_labels(scheme_obj) if scheme_obj is not None else []
         return {
             "name": name,
-            "path": str(project_path),
+            "path": str(project_path) if project_path is not None else "",
             "classes": classes,
             "scheme": scheme_obj,
         }

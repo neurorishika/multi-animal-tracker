@@ -15,6 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .class_mapping import build_class_id_map, resolve_dataset_class_names
 from .contracts import DatasetBuildResult, SourceDataset, SplitConfig, TrainingRole
 from .dataset_inspector import (
     DatasetInspection,
@@ -22,6 +23,36 @@ from .dataset_inspector import (
     split_items_for_training,
     stratified_split_items,
 )
+
+
+def _normalize_class_names(
+    class_names: list[str] | None = None,
+    class_name: str | None = None,
+) -> list[str]:
+    """Normalize single-class and multi-class inputs into an ordered list."""
+    if class_names is not None:
+        candidates = class_names
+    elif class_name is not None:
+        candidates = [class_name]
+    else:
+        candidates = []
+
+    resolved = [str(name).strip() for name in candidates if str(name).strip()]
+    return resolved or ["object"]
+
+
+def _validate_class_name_coverage(
+    class_names: list[str],
+    class_ids: set[int],
+    *,
+    dataset_label: str,
+) -> None:
+    """Ensure dataset class ids are covered by the provided class-name list."""
+    missing = sorted(class_id for class_id in class_ids if class_id >= len(class_names))
+    if missing:
+        raise RuntimeError(
+            f"{dataset_label} contains class ids {missing} but only {len(class_names)} class names were configured."
+        )
 
 
 def _timestamp() -> str:
@@ -52,13 +83,21 @@ def _normalize_split_cfg(cfg: SplitConfig) -> tuple[float, float, float]:
 
 
 def _write_dataset_yaml(
-    root_dir: Path, class_name: str, include_test: bool = False
+    root_dir: Path,
+    class_names: list[str] | None = None,
+    *,
+    class_name: str | None = None,
+    include_test: bool = False,
 ) -> Path:
+    resolved_class_names = _normalize_class_names(
+        class_names=class_names,
+        class_name=class_name,
+    )
     data = {
         "path": str(root_dir.resolve()),
         "train": "images/train",
         "val": "images/val",
-        "names": {0: class_name},
+        "names": {idx: name for idx, name in enumerate(resolved_class_names)},
     }
     if include_test:
         data["test"] = "images/test"
@@ -76,7 +115,10 @@ def _write_dataset_yaml(
         ]
         if include_test:
             lines.append("test: images/test")
-        lines += ["names:", f"  0: {class_name}"]
+        lines.append("names:")
+        lines.extend(
+            f"  {idx}: {name}" for idx, name in enumerate(resolved_class_names)
+        )
         out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
@@ -109,29 +151,51 @@ def _parse_obb_label_lines(lbl_path: Path) -> list[tuple[int, np.ndarray]]:
     return out
 
 
-def _copy_remap_label(lbl: Path, lbl_dst: Path, remap_single_class: bool) -> None:
-    """Copy a label file, optionally remapping all class IDs to 0."""
-    if remap_single_class:
-        lines = []
-        for cls_id, poly in _parse_obb_label_lines(lbl):
-            _ = cls_id
-            coords = " ".join(f"{float(v):.6f}" for v in poly.reshape(-1))
-            lines.append(f"0 {coords}")
-        lbl_dst.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    else:
-        shutil.copy2(lbl, lbl_dst)
+def _render_filtered_obb_label(
+    lbl: Path,
+    *,
+    class_id_map: dict[int, int] | None = None,
+    remap_single_class: bool = False,
+) -> tuple[str, set[int]]:
+    """Return filtered/remapped OBB label text and the kept class ids."""
+    detections = _parse_obb_label_lines(lbl)
+    lines: list[str] = []
+    kept_class_ids: set[int] = set()
+    for cls_id, poly in detections:
+        mapped_id = int(cls_id)
+        if class_id_map is not None:
+            mapped = class_id_map.get(mapped_id)
+            if mapped is None:
+                continue
+            mapped_id = int(mapped)
+        elif remap_single_class:
+            mapped_id = 0
+
+        coords = " ".join(f"{float(v):.6f}" for v in poly.reshape(-1))
+        lines.append(f"{mapped_id} {coords}")
+        kept_class_ids.add(mapped_id)
+
+    text = "\n".join(lines) + ("\n" if lines else "")
+    return text, kept_class_ids
 
 
 def merge_obb_sources(
     sources: list[SourceDataset],
     output_root: str | Path,
-    class_name: str,
     split_cfg: SplitConfig,
+    class_name: str | None = None,
     seed: int = 42,
     dedup: bool = True,
     remap_single_class: bool = True,
+    class_names: list[str] | None = None,
 ) -> DatasetBuildResult:
     """Merge OBB sources into one canonical dataset (non-destructive)."""
+    resolved_class_names = _normalize_class_names(
+        class_names=class_names,
+        class_name=class_name,
+    )
+    if remap_single_class:
+        resolved_class_names = resolved_class_names[:1]
 
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -148,10 +212,20 @@ def merge_obb_sources(
     split_counts = {"train": 0, "val": 0, "test": 0}
     source_items: dict[str, int] = defaultdict(int)
     duplicate_skipped = 0
+    encountered_class_ids: set[int] = set()
 
     for src in sources:
         src_name = _safe_name(src.name or Path(src.path).name)
         inspection: DatasetInspection = inspect_obb_or_detect_dataset(src.path)
+        class_id_map: dict[int, int] | None = None
+        try:
+            source_class_names = resolve_dataset_class_names(
+                src.path, inspection.class_names
+            )
+            class_id_map = build_class_id_map(source_class_names, resolved_class_names)
+        except RuntimeError:
+            if not remap_single_class:
+                raise
         if "all" in inspection.splits:
             split_items = stratified_split_items(
                 list(inspection.splits["all"]), split_tuple, seed=seed
@@ -165,6 +239,13 @@ def merge_obb_sources(
             for idx, item in enumerate(items):
                 img = Path(item.image_path)
                 lbl = Path(item.label_path)
+                label_text, kept_class_ids = _render_filtered_obb_label(
+                    lbl,
+                    class_id_map=class_id_map,
+                    remap_single_class=remap_single_class,
+                )
+                if not label_text:
+                    continue
                 if dedup:
                     file_hash = _hash_file(img)
                     if file_hash in seen_hashes:
@@ -177,7 +258,8 @@ def merge_obb_sources(
                 lbl_dst = out_dir / "labels" / split / f"{stem}.txt"
 
                 shutil.copy2(img, img_dst)
-                _copy_remap_label(lbl, lbl_dst, remap_single_class)
+                lbl_dst.write_text(label_text, encoding="utf-8")
+                encountered_class_ids.update(kept_class_ids)
 
                 split_counts[split] += 1
                 source_items[src_name] += 1
@@ -188,7 +270,16 @@ def merge_obb_sources(
         )
 
     include_test = split_counts["test"] > 0
-    _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)
+    _validate_class_name_coverage(
+        resolved_class_names,
+        encountered_class_ids,
+        dataset_label="Merged OBB dataset",
+    )
+    _write_dataset_yaml(
+        out_dir,
+        class_names=resolved_class_names,
+        include_test=include_test,
+    )
     manifest = {
         "type": "merged_obb",
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -197,6 +288,7 @@ def merge_obb_sources(
         "seed": int(seed),
         "dedup": bool(dedup),
         "remap_single_class": bool(remap_single_class),
+        "class_names": resolved_class_names,
         "counts": split_counts,
         "source_items": dict(source_items),
         "duplicates_skipped": int(duplicate_skipped),
@@ -260,9 +352,15 @@ def _unique_dst_pair(out_dir: Path, split: str, img_path: Path) -> tuple[Path, P
 def derive_detect_dataset_from_obb(
     obb_dataset_dir: str | Path,
     output_root: str | Path,
-    class_name: str,
+    class_name: str | None = None,
+    *,
+    class_names: list[str] | None = None,
 ) -> DatasetBuildResult:
     """Create YOLO-detect dataset by converting OBB polygons to AABB labels."""
+    resolved_class_names = _normalize_class_names(
+        class_names=class_names,
+        class_name=class_name,
+    )
 
     src = Path(obb_dataset_dir).expanduser().resolve()
     out_root = Path(output_root).expanduser().resolve()
@@ -274,6 +372,7 @@ def derive_detect_dataset_from_obb(
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
     counts = {"train": 0, "val": 0, "test": 0, "objects": 0}
+    encountered_class_ids: set[int] = set()
 
     for split in ("train", "val", "test"):
         src_img = src / "images" / split
@@ -290,9 +389,9 @@ def derive_detect_dataset_from_obb(
             detections = _parse_obb_label_lines(lbl_path)
             out_lines = []
             for cls_id, poly in detections:
-                _ = cls_id
+                encountered_class_ids.add(int(cls_id))
                 cx, cy, bw, bh = _convert_obb_to_aabb(poly)
-                out_lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+                out_lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
             if not out_lines:
                 continue
 
@@ -303,7 +402,16 @@ def derive_detect_dataset_from_obb(
             counts["objects"] += len(out_lines)
 
     include_test = counts["test"] > 0
-    _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)
+    _validate_class_name_coverage(
+        resolved_class_names,
+        encountered_class_ids,
+        dataset_label="Derived detect dataset",
+    )
+    _write_dataset_yaml(
+        out_dir,
+        class_names=resolved_class_names,
+        include_test=include_test,
+    )
     manifest = {
         "type": "derived_detect",
         "source": str(src),
@@ -400,15 +508,17 @@ def _process_crop_obb_image(
     pad_ratio: float,
     min_crop_size_px: int,
     enforce_square: bool,
-) -> int:
+) -> tuple[int, set[int]]:
     """Create crop-domain OBB samples for one source image."""
     img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
     if img is None or img.size == 0:
-        return 0
+        return 0, set()
 
     written = 0
+    class_ids: set[int] = set()
     detections = _parse_obb_label_lines(lbl_path)
-    for obj_idx, (_cls_id, poly_norm) in enumerate(detections):
+    for obj_idx, (cls_id, poly_norm) in enumerate(detections):
+        class_ids.add(int(cls_id))
         result = _extract_crop_for_object(
             img, poly_norm, pad_ratio, min_crop_size_px, enforce_square
         )
@@ -420,21 +530,27 @@ def _process_crop_obb_image(
         dst_img, dst_lbl = _unique_crop_output_paths(out_dir, split, stem)
         cv2.imwrite(str(dst_img), crop)
         coords = " ".join(f"{float(v):.6f}" for v in poly_crop.reshape(-1))
-        dst_lbl.write_text(f"0 {coords}\n", encoding="utf-8")
+        dst_lbl.write_text(f"{cls_id} {coords}\n", encoding="utf-8")
         written += 1
 
-    return written
+    return written, class_ids
 
 
 def derive_crop_obb_dataset_from_obb(
     obb_dataset_dir: str | Path,
     output_root: str | Path,
-    class_name: str,
+    class_name: str | None = None,
+    *,
+    class_names: list[str] | None = None,
     pad_ratio: float = 0.15,
     min_crop_size_px: int = 64,
     enforce_square: bool = True,
 ) -> DatasetBuildResult:
     """Create crop-domain OBB dataset for sequential stage-2 training."""
+    resolved_class_names = _normalize_class_names(
+        class_names=class_names,
+        class_name=class_name,
+    )
 
     src = Path(obb_dataset_dir).expanduser().resolve()
     out_root = Path(output_root).expanduser().resolve()
@@ -446,6 +562,7 @@ def derive_crop_obb_dataset_from_obb(
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
     counts = {"train": 0, "val": 0, "test": 0, "objects": 0}
+    encountered_class_ids: set[int] = set()
 
     for split in ("train", "val", "test"):
         src_img = src / "images" / split
@@ -458,7 +575,7 @@ def derive_crop_obb_dataset_from_obb(
             lbl_path = _find_label_for_obb_image(img_path, src_img, src_lbl)
             if lbl_path is None:
                 continue
-            written = _process_crop_obb_image(
+            written, class_ids = _process_crop_obb_image(
                 img_path,
                 lbl_path,
                 out_dir,
@@ -467,11 +584,21 @@ def derive_crop_obb_dataset_from_obb(
                 min_crop_size_px,
                 enforce_square,
             )
+            encountered_class_ids.update(class_ids)
             counts[split] += written
             counts["objects"] += written
 
     include_test = counts["test"] > 0
-    _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)
+    _validate_class_name_coverage(
+        resolved_class_names,
+        encountered_class_ids,
+        dataset_label="Derived crop OBB dataset",
+    )
+    _write_dataset_yaml(
+        out_dir,
+        class_names=resolved_class_names,
+        include_test=include_test,
+    )
     manifest = {
         "type": "derived_crop_obb",
         "source": str(src),
@@ -492,8 +619,9 @@ def prepare_role_dataset(
     role: TrainingRole,
     merged_obb_dataset_dir: str,
     role_output_root: str | Path,
-    class_name: str,
+    class_name: str | None = None,
     *,
+    class_names: list[str] | None = None,
     crop_pad_ratio: float = 0.15,
     min_crop_size_px: int = 64,
     enforce_square: bool = True,
@@ -512,13 +640,17 @@ def prepare_role_dataset(
         )
     if role == TrainingRole.SEQ_DETECT:
         return derive_detect_dataset_from_obb(
-            merged_obb_dataset_dir, out_root, class_name
+            merged_obb_dataset_dir,
+            out_root,
+            class_name=class_name,
+            class_names=class_names,
         )
     if role == TrainingRole.SEQ_CROP_OBB:
         return derive_crop_obb_dataset_from_obb(
             merged_obb_dataset_dir,
             out_root,
-            class_name,
+            class_name=class_name,
+            class_names=class_names,
             pad_ratio=crop_pad_ratio,
             min_crop_size_px=min_crop_size_px,
             enforce_square=enforce_square,

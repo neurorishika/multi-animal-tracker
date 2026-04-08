@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -239,3 +240,54 @@ def register_yolo_model(model_path: object, metadata: object) -> object:
     registry = load_yolo_model_registry()
     registry[rel_path] = _normalize_yolo_model_metadata(metadata)
     save_yolo_model_registry(registry)
+
+
+def unregister_yolo_model(model_path: object) -> bool:
+    """Remove a model metadata entry from the registry when present."""
+    rel_path = make_model_path_relative(model_path)
+    registry = load_yolo_model_registry()
+    if rel_path not in registry:
+        return False
+    registry.pop(rel_path, None)
+    save_yolo_model_registry(registry)
+    return True
+
+
+def remove_model_from_repository(model_path: object) -> bool:
+    """Delete a stored model file or directory and clear any matching registry entry."""
+    path_str = str(model_path or "").strip()
+    if not path_str:
+        return False
+
+    models_root = os.path.abspath(get_models_root_directory())
+    if os.path.isabs(path_str):
+        abs_path = os.path.abspath(path_str)
+    else:
+        abs_path = os.path.abspath(os.path.join(models_root, path_str))
+
+    try:
+        if os.path.commonpath([models_root, abs_path]) != models_root:
+            logger.warning("Refusing to remove model outside repository: %s", abs_path)
+            return False
+    except ValueError:
+        logger.warning("Refusing to remove model with incompatible path: %s", abs_path)
+        return False
+
+    removed_registry_entry = False
+    try:
+        rel_path = os.path.relpath(abs_path, models_root)
+    except ValueError:
+        rel_path = path_str
+    registry = load_yolo_model_registry()
+    if rel_path in registry:
+        registry.pop(rel_path, None)
+        save_yolo_model_registry(registry)
+        removed_registry_entry = True
+
+    if os.path.isdir(abs_path):
+        shutil.rmtree(abs_path)
+        return True
+    if os.path.isfile(abs_path):
+        os.remove(abs_path)
+        return True
+    return removed_registry_entry

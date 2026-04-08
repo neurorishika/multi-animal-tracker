@@ -433,6 +433,7 @@ class SetupPanel(QWidget):
         self.spin_start_frame.setMinimum(0)
         self.spin_start_frame.setMaximum(0)
         self.spin_start_frame.setValue(0)
+        self.spin_start_frame.setKeyboardTracking(False)
         self.spin_start_frame.setEnabled(False)
         self.spin_start_frame.setToolTip("First frame to track (0-based index)")
         self.spin_start_frame.valueChanged.connect(
@@ -453,6 +454,7 @@ class SetupPanel(QWidget):
         self.spin_end_frame.setMinimum(0)
         self.spin_end_frame.setMaximum(0)
         self.spin_end_frame.setValue(0)
+        self.spin_end_frame.setKeyboardTracking(False)
         self.spin_end_frame.setEnabled(False)
         self.spin_end_frame.setToolTip("Last frame to track (0-based index, inclusive)")
         self.spin_end_frame.valueChanged.connect(
@@ -720,14 +722,19 @@ class SetupPanel(QWidget):
         # Trail length
         f_trail = QFormLayout(None)
         self.spin_traj_hist = QSpinBox()
-        self.spin_traj_hist.setRange(1, 60)
+        self.spin_traj_hist.setRange(-1, 999999)
         self.spin_traj_hist.setValue(5)
+        self.spin_traj_hist.setKeyboardTracking(False)
         self.spin_traj_hist.setToolTip(
-            "Length of trajectory trails to display (1-60 seconds).\n"
-            "Longer = more visible path history but more cluttered.\n"
-            "Recommended: 3-10 seconds."
+            "Length of trajectory trails to display in frames.\n"
+            "Use -1 for the complete video history.\n"
+            "Use 0 to disable trajectory trails.\n"
+            "Positive values are capped to the loaded video length."
         )
-        f_trail.addRow("Trail history (seconds)", self.spin_traj_hist)
+        self.spin_traj_hist.valueChanged.connect(
+            self._main_window._on_trail_history_changed
+        )
+        f_trail.addRow("Trail history", self.spin_traj_hist)
         vl_display.addLayout(f_trail)
 
         form.addWidget(self.g_display)
@@ -749,14 +756,21 @@ class SetupPanel(QWidget):
         self.chk_debug_logging.stateChanged.connect(
             self._main_window.toggle_debug_logging
         )
-        v_dbg.addWidget(self.chk_debug_logging)
         self.chk_enable_profiling = QCheckBox("Enable performance profiling")
         self.chk_enable_profiling.setToolTip(
             "Collect detailed timing for every tracking pipeline step "
             "(init, detection, precompute, tracking loop, post-processing). "
             "Exports a JSON profile next to outputs. Disabled by default for zero overhead."
         )
-        v_dbg.addWidget(self.chk_enable_profiling)
+        debug_toggle_grid = QGridLayout()
+        debug_toggle_grid.setContentsMargins(0, 0, 0, 0)
+        debug_toggle_grid.setHorizontalSpacing(12)
+        debug_toggle_grid.setVerticalSpacing(6)
+        debug_toggle_grid.addWidget(self.chk_debug_logging, 0, 0)
+        debug_toggle_grid.addWidget(self.chk_enable_profiling, 0, 1)
+        debug_toggle_grid.setColumnStretch(0, 1)
+        debug_toggle_grid.setColumnStretch(1, 1)
+        v_dbg.addLayout(debug_toggle_grid)
         form.addWidget(g_debug)
 
         scroll.setWidget(content)

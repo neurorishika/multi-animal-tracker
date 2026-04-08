@@ -281,8 +281,9 @@ def _build_tiny_dataset_class(input_w, input_h):
 
 
 def _apply_tiny_augmentation(img, augment, profile):
-    """Apply optional flip/rotation augmentations to an image."""
+    """Apply optional canonical-pose-safe augmentations to an image."""
     import cv2
+    import numpy as np
 
     if not (augment and profile and profile.enabled):
         return img
@@ -290,10 +291,19 @@ def _apply_tiny_augmentation(img, augment, profile):
         img = cv2.flip(img, 0)
     if profile.fliplr > 0 and random.random() < profile.fliplr:
         img = cv2.flip(img, 1)
-    if profile.rotate > 0:
-        angle = random.uniform(-profile.rotate, profile.rotate)
-        M = cv2.getRotationMatrix2D((img.shape[1] // 2, img.shape[0] // 2), angle, 1.0)
-        img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+    if profile.brightness > 0:
+        factor = random.uniform(
+            max(0.0, 1.0 - profile.brightness), 1.0 + profile.brightness
+        )
+        img = np.clip(img.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+    if profile.contrast > 0:
+        factor = random.uniform(
+            max(0.0, 1.0 - profile.contrast), 1.0 + profile.contrast
+        )
+        mean = img.mean(axis=(0, 1), keepdims=True)
+        img = np.clip((img.astype(np.float32) - mean) * factor + mean, 0, 255).astype(
+            np.uint8
+        )
     return img
 
 
@@ -454,11 +464,15 @@ def _save_tiny_checkpoint(
 
     _ckpt_dict = {
         "model_state_dict": model.state_dict(),
+        "arch": "tinyclassifier",
         "input_size": [input_w, input_h],
         "num_classes": num_classes,
         "class_names": [name for name, _idx in sorted_class_items],
         "best_val_acc": float(best_val_acc),
         "history": history,
+        "hidden_layers": int(spec.tiny_params.hidden_layers),
+        "hidden_dim": int(spec.tiny_params.hidden_dim),
+        "dropout": float(spec.tiny_params.dropout),
     }
     torch.save(_ckpt_dict, out_ckpt)
 
@@ -489,6 +503,58 @@ def _try_onnx_export(model, ckpt_dict, out_ckpt, log_cb):
             log_cb, f"ONNX export skipped ({type(_onnx_exc).__name__}: {_onnx_exc})"
         )
         return None
+
+
+def _load_compatible_checkpoint_weights(
+    model,
+    checkpoint_path: str | Path,
+    *,
+    expected_arch: str = "",
+    log_cb: LogCallback | None = None,
+) -> dict:
+    """Load compatible tensors from a prior checkpoint into a training model."""
+    import torch
+
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+    state_dict = ckpt.get("model_state_dict")
+    if not isinstance(state_dict, dict) or not state_dict:
+        raise RuntimeError(
+            f"Starting checkpoint '{checkpoint_path}' does not contain model weights."
+        )
+
+    checkpoint_arch = str(ckpt.get("arch") or "").strip()
+    if checkpoint_arch and expected_arch and checkpoint_arch != expected_arch:
+        raise RuntimeError(
+            "Starting checkpoint backbone does not match the selected training backbone: "
+            f"checkpoint={checkpoint_arch}, selected={expected_arch}."
+        )
+
+    model_state = model.state_dict()
+    compatible_state = {}
+    skipped = 0
+    for name, value in state_dict.items():
+        target = model_state.get(name)
+        if target is not None and getattr(target, "shape", None) == getattr(
+            value, "shape", None
+        ):
+            compatible_state[name] = value
+        else:
+            skipped += 1
+
+    if not compatible_state:
+        raise RuntimeError(
+            f"Starting checkpoint '{checkpoint_path}' is incompatible with the current model configuration."
+        )
+
+    model.load_state_dict(compatible_state, strict=False)
+    _safe_log(
+        log_cb,
+        "Warm-started training from "
+        f"{checkpoint_path.name}: loaded {len(compatible_state)} tensors"
+        + (f", skipped {skipped} mismatched tensors." if skipped else "."),
+    )
+    return {"loaded": len(compatible_state), "skipped": skipped, "checkpoint": ckpt}
 
 
 def _train_tiny_classify(
@@ -548,6 +614,14 @@ def _train_tiny_classify(
             )
 
     model = _TinyClassifierCompat(num_classes, spec.tiny_params).to(device)
+
+    if spec.resume_from:
+        _load_compatible_checkpoint_weights(
+            model,
+            spec.resume_from,
+            expected_arch="tinyclassifier",
+            log_cb=log_cb,
+        )
 
     train_loader, val_loader = _create_tiny_data_loaders(
         TinyDataset,
@@ -620,7 +694,7 @@ def _train_tiny_classify(
 def _build_discriminative_param_groups(model, params):
     """Split model parameters into head and backbone groups with discriminative LR."""
     head_params, backbone_params = [], []
-    head_names = {"classifier", "fc", "heads"}
+    head_names = {"classifier", "fc", "head", "heads"}
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
@@ -636,8 +710,99 @@ def _build_discriminative_param_groups(model, params):
     return param_groups
 
 
+def _build_full_finetune_param_groups(model, params):
+    """Train all currently-enabled parameters with a uniform learning rate."""
+    params_list = [p for p in model.parameters() if p.requires_grad]
+    return [{"params": params_list, "lr": params.lr}] if params_list else []
+
+
+def _build_layerwise_lr_decay_param_groups(
+    model, backbone, params, get_layer_groups_fn
+):
+    """Assign progressively smaller learning rates to earlier backbone groups."""
+    head_names = {"classifier", "fc", "head", "heads"}
+    head_params = []
+    assigned_ids = set()
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if any(name.startswith(prefix) for prefix in head_names):
+            head_params.append(parameter)
+            assigned_ids.add(id(parameter))
+
+    param_groups = []
+    if head_params:
+        param_groups.append({"params": head_params, "lr": params.lr})
+
+    decay = float(getattr(params, "layerwise_lr_decay", 0.75) or 0.75)
+    decay = min(max(decay, 0.1), 1.0)
+    groups = get_layer_groups_fn(model, backbone)
+    for depth, group in enumerate(reversed(groups), start=1):
+        group_params = []
+        for parameter in group.parameters():
+            if parameter.requires_grad and id(parameter) not in assigned_ids:
+                group_params.append(parameter)
+                assigned_ids.add(id(parameter))
+        if group_params:
+            param_groups.append(
+                {"params": group_params, "lr": params.lr * (decay**depth)}
+            )
+
+    leftover = [
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) not in assigned_ids
+    ]
+    if leftover:
+        param_groups.append(
+            {"params": leftover, "lr": params.lr * (decay ** (len(groups) + 1))}
+        )
+    return param_groups
+
+
+def _resolve_initial_trainable_layers(params, get_layer_groups_fn, model, backbone):
+    """Map the requested fine-tuning strategy to an initial unfreeze depth."""
+    method = str(getattr(params, "fine_tune_method", "head_only") or "head_only")
+    if params.backbone == "tinyclassifier":
+        return -1
+    if method == "full_finetune":
+        return -1
+    if method == "head_only":
+        return 0
+    if method == "partial_unfreezing":
+        total = len(get_layer_groups_fn(model, backbone))
+        configured = int(getattr(params, "trainable_layers", 1) or 1)
+        return max(1, min(total, configured))
+    if method == "layerwise_lr_decay":
+        return -1
+    if method == "gradual_unfreezing":
+        return 0
+    return int(getattr(params, "trainable_layers", 0) or 0)
+
+
+def _build_optimizer_for_fine_tune_strategy(
+    model,
+    backbone,
+    params,
+    torch_module,
+    get_layer_groups_fn,
+):
+    """Build an AdamW optimizer matching the selected fine-tuning strategy."""
+    method = str(getattr(params, "fine_tune_method", "head_only") or "head_only")
+    if method == "full_finetune":
+        param_groups = _build_full_finetune_param_groups(model, params)
+    elif method == "layerwise_lr_decay":
+        param_groups = _build_layerwise_lr_decay_param_groups(
+            model, backbone, params, get_layer_groups_fn
+        )
+    else:
+        param_groups = _build_discriminative_param_groups(model, params)
+    return torch_module.optim.AdamW(param_groups, weight_decay=params.weight_decay)
+
+
 def _run_torchvision_training_loop(
     model,
+    backbone,
     train_loader,
     val_loader,
     optimizer,
@@ -645,6 +810,8 @@ def _run_torchvision_training_loop(
     device,
     params,
     save_torchvision_checkpoint_fn,
+    freeze_backbone_fn,
+    get_layer_groups_fn,
     best_ckpt_path,
     class_names,
     log_cb,
@@ -661,11 +828,41 @@ def _run_torchvision_training_loop(
     best_val_acc = 0.0
     patience_count = 0
     history: dict = {"train_loss": [], "val_acc": []}
+    current_unfrozen_groups = 0
+    total_groups = 0
+    if backbone != "tinyclassifier":
+        try:
+            total_groups = len(get_layer_groups_fn(model, backbone))
+        except Exception:
+            total_groups = 0
 
     for epoch in range(params.epochs):
         if should_cancel and should_cancel():
             _safe_log(log_cb, "Training canceled.")
             break
+
+        if (
+            backbone != "tinyclassifier"
+            and str(getattr(params, "fine_tune_method", "head_only"))
+            == "gradual_unfreezing"
+            and total_groups > 0
+        ):
+            interval = max(1, int(getattr(params, "gradual_unfreeze_interval", 5) or 5))
+            desired_groups = min(total_groups, epoch // interval)
+            if desired_groups != current_unfrozen_groups:
+                freeze_backbone_fn(model, backbone, desired_groups)
+                optimizer = _build_optimizer_for_fine_tune_strategy(
+                    model,
+                    backbone,
+                    params,
+                    torch,
+                    get_layer_groups_fn,
+                )
+                current_unfrozen_groups = desired_groups
+                _safe_log(
+                    log_cb,
+                    f"Gradual unfreezing: training head + last {desired_groups} backbone groups.",
+                )
 
         model.train()
         total_loss = 0.0
@@ -702,7 +899,7 @@ def _run_torchvision_training_loop(
             patience_count = 0
             save_torchvision_checkpoint_fn(
                 model=model,
-                backbone=params.backbone,
+                backbone=backbone,
                 class_names=class_names,
                 factor_names=[],
                 input_size=(sz, sz),
@@ -710,6 +907,15 @@ def _run_torchvision_training_loop(
                 history=history,
                 trainable_layers=params.trainable_layers,
                 backbone_lr_scale=params.backbone_lr_scale,
+                extra_meta={
+                    "fine_tune_method": getattr(
+                        params, "fine_tune_method", "head_only"
+                    ),
+                    "layerwise_lr_decay": getattr(params, "layerwise_lr_decay", 0.75),
+                    "gradual_unfreeze_interval": getattr(
+                        params, "gradual_unfreeze_interval", 5
+                    ),
+                },
                 path=best_ckpt_path,
             )
         else:
@@ -736,6 +942,8 @@ def _train_custom_classify(
     from .torchvision_model import (
         build_torchvision_classifier,
         export_torchvision_to_onnx,
+        freeze_backbone,
+        get_layer_groups,
         load_torchvision_classifier,
         save_torchvision_checkpoint,
     )
@@ -762,14 +970,26 @@ def _train_custom_classify(
     std = [0.229, 0.224, 0.225]
     sz = params.input_size
 
-    train_tf = transforms.Compose(
+    profile = spec.augmentation_profile
+    train_transforms = [transforms.Resize((sz, sz))]
+    if profile.fliplr > 0:
+        train_transforms.append(transforms.RandomHorizontalFlip(p=profile.fliplr))
+    if profile.flipud > 0:
+        train_transforms.append(transforms.RandomVerticalFlip(p=profile.flipud))
+    if profile.brightness > 0 or profile.contrast > 0:
+        train_transforms.append(
+            transforms.ColorJitter(
+                brightness=float(profile.brightness),
+                contrast=float(profile.contrast),
+            )
+        )
+    train_transforms.extend(
         [
-            transforms.Resize((sz, sz)),
-            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
         ]
     )
+    train_tf = transforms.Compose(train_transforms)
     val_tf = transforms.Compose(
         [
             transforms.Resize((sz, sz)),
@@ -791,12 +1011,39 @@ def _train_custom_classify(
 
     device = _pick_torch_device(spec.device)
     model = build_torchvision_classifier(
-        params.backbone, len(class_names), params.trainable_layers
+        params.backbone,
+        len(class_names),
+        -1,
+        hidden_layers=params.hidden_layers,
+        hidden_dim=params.hidden_dim,
+        dropout=params.dropout,
+        input_width=params.input_width,
+        input_height=params.input_height,
     )
+    if spec.resume_from:
+        _load_compatible_checkpoint_weights(
+            model,
+            spec.resume_from,
+            expected_arch=params.backbone,
+            log_cb=log_cb,
+        )
+    initial_trainable_layers = _resolve_initial_trainable_layers(
+        params,
+        get_layer_groups,
+        model,
+        params.backbone,
+    )
+    if initial_trainable_layers != -1:
+        freeze_backbone(model, params.backbone, initial_trainable_layers)
     model.to(device)
 
-    param_groups = _build_discriminative_param_groups(model, params)
-    optimizer = torch.optim.AdamW(param_groups, weight_decay=params.weight_decay)
+    optimizer = _build_optimizer_for_fine_tune_strategy(
+        model,
+        params.backbone,
+        params,
+        torch,
+        get_layer_groups,
+    )
     criterion = nn.CrossEntropyLoss(label_smoothing=params.label_smoothing)
 
     best_ckpt_path = (
@@ -805,6 +1052,7 @@ def _train_custom_classify(
 
     best_val_acc, history = _run_torchvision_training_loop(
         model,
+        params.backbone,
         train_loader,
         val_loader,
         optimizer,
@@ -812,6 +1060,8 @@ def _train_custom_classify(
         device,
         params,
         save_torchvision_checkpoint,
+        freeze_backbone,
+        get_layer_groups,
         best_ckpt_path,
         class_names,
         log_cb,

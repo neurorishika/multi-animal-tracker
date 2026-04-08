@@ -94,6 +94,9 @@ class EmbeddingWorker(QRunnable):
     @Slot()
     def run(self):
         db_cls = None
+        reused_embeddings = None
+        reused_metadata = None
+        remaining_paths = list(self.image_paths)
         if self.db_path:
             from ..core.store.db import ClassKitDB as _ClassKitDB
 
@@ -138,7 +141,24 @@ class EmbeddingWorker(QRunnable):
                     )
                     return
 
-                self.signals.progress.emit(0, "No cache found, computing embeddings...")
+                incremental = db.get_incremental_embedding_prefix(
+                    cache_model_name,
+                    resolved_device,
+                    self.image_paths,
+                )
+                if incremental is not None:
+                    reused_embeddings, reused_metadata, remaining_paths = incremental
+                    self.signals.progress.emit(
+                        12,
+                        (
+                            f"Reusing {reused_embeddings.shape[0]:,} cached embeddings; "
+                            f"computing {len(remaining_paths):,} new"
+                        ),
+                    )
+                else:
+                    self.signals.progress.emit(
+                        0, "No cache found, computing embeddings..."
+                    )
 
             self.signals.progress.emit(0, f"Loading model: {self.model_name}...")
 
@@ -150,17 +170,34 @@ class EmbeddingWorker(QRunnable):
             embedder.load_model()
 
             self.signals.progress.emit(
-                10, f"Computing embeddings for {len(self.image_paths):,} images..."
+                10,
+                (
+                    f"Computing embeddings for {len(remaining_paths):,} images..."
+                    if reused_embeddings is not None
+                    else f"Computing embeddings for {len(self.image_paths):,} images..."
+                ),
             )
             self.signals.progress.emit(
                 12, f"Batch size: {self.batch_size}, Device: {embedder.device}"
             )
 
             # Compute embeddings
-            embeddings = embedder.embed(
-                self.image_paths,
-                batch_size=self.batch_size,
-            )
+            if reused_embeddings is not None:
+                import numpy as np
+
+                new_embeddings = embedder.embed(
+                    remaining_paths,
+                    batch_size=self.batch_size,
+                )
+                embeddings = np.concatenate(
+                    [reused_embeddings, new_embeddings],
+                    axis=0,
+                )
+            else:
+                embeddings = embedder.embed(
+                    self.image_paths,
+                    batch_size=self.batch_size,
+                )
 
             self.signals.progress.emit(
                 90, f"Computed {embeddings.shape[0]:,} embeddings"
@@ -170,16 +207,31 @@ class EmbeddingWorker(QRunnable):
             if db_cls is not None:
                 self.signals.progress.emit(92, "Saving embeddings to cache...")
                 db = db_cls(self.db_path)
-                db.save_embeddings(
+                metadata = {
+                    "model_name": self.model_name,
+                    "reused_prefix_count": (
+                        int(reused_embeddings.shape[0])
+                        if reused_embeddings is not None
+                        else 0
+                    ),
+                }
+                if (
+                    reused_metadata is not None
+                    and reused_metadata.get("id") is not None
+                ):
+                    metadata["parent_embedding_id"] = int(reused_metadata["id"])
+
+                embedding_cache_id = db.save_embeddings(
                     embeddings,
                     cache_model_name,
                     embedder.device,
                     self.batch_size,
-                    meta={
-                        "model_name": self.model_name,
-                    },
+                    meta=metadata,
+                    image_paths=self.image_paths,
                 )
                 self.signals.progress.emit(95, "Cached for future use")
+            else:
+                embedding_cache_id = None
 
             self.signals.progress.emit(100, f"Complete! Shape: {embeddings.shape}")
             self.signals.success.emit(
@@ -188,7 +240,13 @@ class EmbeddingWorker(QRunnable):
                     "dimension": embedder.dimension,
                     "cached": False,
                     "metadata": {
+                        "id": embedding_cache_id,
                         "model_name": self.model_name,
+                        "reused_prefix_count": (
+                            int(reused_embeddings.shape[0])
+                            if reused_embeddings is not None
+                            else 0
+                        ),
                     },
                 }
             )

@@ -11,16 +11,35 @@ QDialog {
 QLabel {
     color: #e0e0e0;
 }
-QGroupBox {
-    color: #aaaaaa;
-    border: 1px solid #333333;
+QLineEdit,
+QPlainTextEdit,
+QListWidget,
+QComboBox,
+QDoubleSpinBox {
+    background-color: #252526;
+    color: #e0e0e0;
+    border: 1px solid #3e3e42;
     border-radius: 4px;
-    margin-top: 8px;
-    padding-top: 6px;
+    padding: 6px;
+}
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QListWidget:focus,
+QComboBox:focus,
+QDoubleSpinBox:focus {
+    border: 1px solid #0e639c;
+}
+QGroupBox {
+    color: #cfcfcf;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding: 14px 12px 10px 12px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 8px;
+    left: 10px;
+    padding: 0 6px;
 }
 QPushButton {
     background-color: #2d2d2d;
@@ -34,6 +53,17 @@ QPushButton:hover {
 }
 QPushButton:pressed {
     background-color: #1a1a1a;
+}
+QPushButton:disabled {
+    background-color: #252526;
+    color: #7f7f7f;
+    border-color: #333333;
+}
+QCheckBox {
+    color: #d0d0d0;
+}
+QFrame {
+    color: #3e3e42;
 }
 """
 
@@ -75,7 +105,10 @@ class BaseDialog(QDialog):
             self.setStyleSheet(_DARK_STYLE)
 
         self._root_layout = QVBoxLayout(self)
+        self._root_layout.setContentsMargins(16, 16, 16, 16)
+        self._root_layout.setSpacing(16)
         self._content_layout = QVBoxLayout()
+        self._content_layout.setSpacing(12)
         self._root_layout.addLayout(self._content_layout)
 
         self._buttons = QDialogButtonBox(buttons)

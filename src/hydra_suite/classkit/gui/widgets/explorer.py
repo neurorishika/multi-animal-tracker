@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from ..color_utils import build_category_color_map, color_for_value
+from .color_utils import build_category_color_map, color_for_value
 
 
 class ExplorerView(QGraphicsView):
@@ -21,6 +21,7 @@ class ExplorerView(QGraphicsView):
 
     point_clicked = Signal(int)  # Emits index of clicked point
     point_hovered = Signal(int)  # Emits index when hovering over a point
+    empty_hovered = Signal()  # Emits when hovering empty space after a point hover
     empty_double_clicked = Signal()  # Emits when empty background is double-clicked
 
     def __init__(self, parent=None) -> None:
@@ -59,6 +60,23 @@ class ExplorerView(QGraphicsView):
         self._zoom_factor = 1.0
         self._min_zoom = 0.1
         self._max_zoom = 50.0
+
+    def clear_data(self) -> None:
+        """Remove all plotted items and reset explorer state."""
+        self.scene.clear()
+        self.points = []
+        self.selected_index = None
+        self.candidate_indices = set()
+        self.round_labeled_indices = set()
+        self.interactive_indices = set()
+        self._last_hover_idx = None
+        self._has_fitted_view = False
+        self._coords = None
+        self._labels = None
+        self._confidences = None
+        self._base_colors = []
+        self._base_radii = []
+        self._point_centers = []
 
     def _radius_scale(self) -> float:
         view_scale = self.transform().m11()
@@ -386,11 +404,13 @@ class ExplorerView(QGraphicsView):
         self.labeling_mode = labeling_mode
         if self.labeling_mode:
             self.interactive_indices = set(self.candidate_indices)
-        norm_coords = self._normalize_coords(coords)
+        self._coords = np.asarray(coords)
+        norm_coords = self._normalize_coords(self._coords)
         self.scene.clear()
         self.points = []
         self._base_colors = []
         self._base_radii = []
+        self._point_centers = []
         category_colors = build_category_color_map(self._labels_for_color_map(labels))
         radius_scale = self._radius_scale()
 
@@ -401,9 +421,6 @@ class ExplorerView(QGraphicsView):
             item.setFlag(QGraphicsItem.ItemIsSelectable)
             # Store index in data field or subclass
             item.setData(0, i)
-
-            self.scene.addItem(item)
-            self.points.append(item)
 
         if not preserve_view or not self._has_fitted_view:
             self.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
@@ -429,6 +446,8 @@ class ExplorerView(QGraphicsView):
                 self._last_hover_idx = idx
                 self.point_hovered.emit(idx)
         else:
+            if self._last_hover_idx is not None:
+                self.empty_hovered.emit()
             self._last_hover_idx = None
 
     def mouseDoubleClickEvent(self, event) -> None:

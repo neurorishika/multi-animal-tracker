@@ -173,6 +173,25 @@ def get_skeleton_dir() -> Path:
     return p
 
 
+def get_classkit_config_dir() -> Path:
+    """Return (and create) the ClassKit-specific config directory."""
+    p = _user_config_dir() / "classkit"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_classkit_scheme_presets_dir() -> Path:
+    """Return (and create) the ClassKit scheme preset directory."""
+    p = get_classkit_config_dir() / "scheme_presets"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_classkit_timm_backbones_path() -> Path:
+    """Return the persistent ClassKit custom-backbone registry path."""
+    return get_classkit_config_dir() / "custom_timm_backbones.json"
+
+
 def print_paths() -> None:
     """Print all resolved paths. Useful for debugging and user support.
 
@@ -187,6 +206,8 @@ def print_paths() -> None:
     print(f"Training runs:     {get_training_runs_dir()}")
     print(f"Presets:           {get_presets_dir()}")
     print(f"Skeletons:         {get_skeleton_dir()}")
+    print(f"ClassKit config:   {get_classkit_config_dir()}")
+    print(f"ClassKit schemes:  {get_classkit_scheme_presets_dir()}")
     print(f"Advanced config:   {get_advanced_config_path()}")
     override_cfg = os.environ.get("HYDRA_CONFIG_DIR")
     override_data = os.environ.get("HYDRA_DATA_DIR")

@@ -54,12 +54,17 @@ class IndividualDatasetGenerator:
         """
         self.params = params
         self.enabled = params.get("ENABLE_INDIVIDUAL_DATASET", False)
+        self.save_images = bool(
+            params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", self.enabled)
+        )
 
         # Output configuration
         self.output_dir = Path(output_dir) if output_dir else None
         self.video_name = video_name
-        self.dataset_name = dataset_name or params.get(
-            "INDIVIDUAL_DATASET_NAME", "individual_dataset"
+        self.dataset_name = (
+            params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset")
+            if dataset_name is None
+            else dataset_name
         )
 
         # Crop parameters - only padding (crop size is determined by OBB)
@@ -94,6 +99,7 @@ class IndividualDatasetGenerator:
         # Statistics
         self.total_saved = 0
         self.crops_dir = None
+        self.run_dir = None
         self.metadata = []
 
         # Async write thread — keeps disk I/O off the tracking/interpolation thread.
@@ -129,14 +135,20 @@ class IndividualDatasetGenerator:
                 dataset_folder_name = f"{name_part}_{timestamp}"
             else:
                 dataset_folder_name = timestamp
-        self.crops_dir = self.output_dir / dataset_folder_name / "images"
-        self.crops_dir.mkdir(parents=True, exist_ok=True)
+        self.run_dir = self.output_dir / dataset_folder_name
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.save_images:
+            self.crops_dir = self.run_dir / "images"
+            self.crops_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.crops_dir = None
 
         # Create metadata file path
-        self.metadata_path = self.crops_dir.parent / "metadata.json"
+        self.metadata_path = self.run_dir / "metadata.json"
 
         # Load existing metadata if present (append mode)
-        if self.metadata_path.exists():
+        if self.save_images and self.metadata_path.exists():
             try:
                 with open(self.metadata_path, "r") as f:
                     data = json.load(f)
@@ -145,8 +157,12 @@ class IndividualDatasetGenerator:
             except Exception:
                 pass
 
-        logger.info(f"Individual dataset output directory: {self.crops_dir}")
-        self._start_write_thread()
+        logger.info(
+            "Individual dataset output directory: %s",
+            self.crops_dir if self.crops_dir is not None else self.run_dir,
+        )
+        if self.save_images:
+            self._start_write_thread()
 
     def _start_write_thread(self) -> None:
         """Start the background thread that drains the write queue."""
@@ -735,8 +751,11 @@ class IndividualDatasetGenerator:
         Returns:
             str: Path to the dataset directory, or None if not enabled
         """
-        if not self.enabled or self.crops_dir is None:
+        if not self.enabled or self.run_dir is None:
             return None
+
+        if not self.save_images or self.crops_dir is None:
+            return str(self.run_dir)
 
         # Drain the async write queue before writing metadata so that all crops
         # are guaranteed to be on disk when the JSON is finalized.

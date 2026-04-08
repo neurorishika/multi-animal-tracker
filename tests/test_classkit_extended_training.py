@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 import torch
 
 
@@ -13,8 +15,11 @@ def test_custom_cnn_params_defaults():
 
     p = CustomCNNParams()
     assert p.backbone == "tinyclassifier"
+    assert p.fine_tune_method == "head_only"
     assert p.trainable_layers == 0
     assert p.backbone_lr_scale == 0.1
+    assert p.layerwise_lr_decay == 0.75
+    assert p.gradual_unfreeze_interval == 5
     assert p.input_size == 224
     assert p.epochs == 50
     assert p.batch == 32
@@ -61,9 +66,32 @@ def test_training_run_spec_has_custom_params():
         derived_dataset_dir="/tmp/ds",
         base_model="",
         hyperparams=None,
-        custom_params=CustomCNNParams(backbone="convnext_tiny"),
+        custom_params=CustomCNNParams(
+            backbone="convnext_tiny", fine_tune_method="full_finetune"
+        ),
     )
     assert spec2.custom_params.backbone == "convnext_tiny"
+    assert spec2.custom_params.fine_tune_method == "full_finetune"
+
+
+def test_custom_backbone_registry_persists(monkeypatch, tmp_path):
+    monkeypatch.setenv("HYDRA_CONFIG_DIR", str(tmp_path / "cfg"))
+
+    from hydra_suite.classkit.config.custom_backbones import (
+        get_custom_backbone_choices,
+        load_user_timm_backbones,
+        register_user_timm_backbones,
+    )
+
+    register_user_timm_backbones(
+        ["timm/resnet50.a1_in1k", "timm/convnext_tiny.fb_in1k"]
+    )
+
+    loaded = load_user_timm_backbones()
+    assert loaded == ["timm/resnet50.a1_in1k", "timm/convnext_tiny.fb_in1k"]
+    choices = get_custom_backbone_choices()
+    assert "tinyclassifier" in choices
+    assert "timm/resnet50.a1_in1k" in choices
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +441,62 @@ def test_runner_flat_custom_dispatches_to_custom_classify():
     ) as mock_fn:
         runner.run_training(spec, "/tmp/run")
         mock_fn.assert_called_once()
+
+
+def test_load_compatible_checkpoint_weights_skips_mismatched_head(tmp_path: Path):
+    from hydra_suite.training.runner import _load_compatible_checkpoint_weights
+
+    class ToyClassifier(torch.nn.Module):
+        def __init__(self, num_classes: int) -> None:
+            super().__init__()
+            self.features = torch.nn.Linear(4, 4)
+            self.classifier = torch.nn.Linear(4, num_classes)
+
+    source = ToyClassifier(num_classes=2)
+    target = ToyClassifier(num_classes=3)
+
+    checkpoint_path = tmp_path / "toy.pth"
+    torch.save(
+        {
+            "arch": "toy_backbone",
+            "model_state_dict": source.state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    original_target_head = target.classifier.weight.detach().clone()
+    result = _load_compatible_checkpoint_weights(
+        target,
+        checkpoint_path,
+        expected_arch="toy_backbone",
+    )
+
+    assert result["loaded"] == 2
+    assert result["skipped"] == 2
+    assert torch.equal(target.features.weight, source.features.weight)
+    assert not torch.equal(target.classifier.weight, source.classifier.weight)
+    assert torch.equal(target.classifier.weight, original_target_head)
+
+
+def test_load_compatible_checkpoint_weights_rejects_arch_mismatch(tmp_path: Path):
+    from hydra_suite.training.runner import _load_compatible_checkpoint_weights
+
+    model = torch.nn.Linear(4, 2)
+    checkpoint_path = tmp_path / "toy_bad_arch.pth"
+    torch.save(
+        {
+            "arch": "other_backbone",
+            "model_state_dict": model.state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    with pytest.raises(RuntimeError, match="backbone"):
+        _load_compatible_checkpoint_weights(
+            model,
+            checkpoint_path,
+            expected_arch="toy_backbone",
+        )
 
 
 def test_all_presets_include_flat_custom():

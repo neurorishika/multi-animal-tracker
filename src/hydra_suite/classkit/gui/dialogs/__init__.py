@@ -1,16 +1,20 @@
 """classkit GUI dialogs package."""
 
-from hydra_suite.classkit.gui.dialogs.add_source import AddSourceDialog
-from hydra_suite.classkit.gui.dialogs.apriltag_autolabel import AprilTagAutoLabelDialog
-from hydra_suite.classkit.gui.dialogs.class_editor import ClassEditorDialog
-from hydra_suite.classkit.gui.dialogs.cluster import ClusterDialog
-from hydra_suite.classkit.gui.dialogs.embedding import EmbeddingDialog
-from hydra_suite.classkit.gui.dialogs.export import ExportDialog
-from hydra_suite.classkit.gui.dialogs.model_history import ModelHistoryDialog
-from hydra_suite.classkit.gui.dialogs.new_project import NewProjectDialog
-from hydra_suite.classkit.gui.dialogs.shortcut_editor import ShortcutEditorDialog
-from hydra_suite.classkit.gui.dialogs.source_manager import SourceManagerDialog
-from hydra_suite.classkit.gui.dialogs.training import ClassKitTrainingDialog
+from importlib import import_module
+
+_DIALOG_MODULES = {
+    "AddSourceDialog": "add_source",
+    "SourceManagerDialog": "source_manager",
+    "ClassEditorDialog": "class_editor",
+    "ShortcutEditorDialog": "shortcut_editor",
+    "NewProjectDialog": "new_project",
+    "EmbeddingDialog": "embedding",
+    "ClusterDialog": "cluster",
+    "ClassKitTrainingDialog": "training",
+    "ExportDialog": "export",
+    "ModelHistoryDialog": "model_history",
+    "AprilTagAutoLabelDialog": "apriltag_autolabel",
+}
 
 __all__ = [
     "AddSourceDialog",
@@ -25,3 +29,18 @@ __all__ = [
     "ModelHistoryDialog",
     "AprilTagAutoLabelDialog",
 ]
+
+
+def __getattr__(name: str):
+    module_name = _DIALOG_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module = import_module(f"{__name__}.{module_name}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

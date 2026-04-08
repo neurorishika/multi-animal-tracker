@@ -39,9 +39,38 @@ BACKBONE_DISPLAY_NAMES: dict[str, str] = {
     "vit_b_16": "ViT-B/16",
 }
 
+HEAD_MODULE_NAMES = {
+    "classifier",
+    "fc",
+    "head",
+    "heads",
+    "head_drop",
+    "fc_norm",
+}
+
+
+def is_timm_backbone(backbone: str) -> bool:
+    """Return True when the backbone key refers to a TIMM model."""
+    return str(backbone).startswith("timm/")
+
+
+def _strip_timm_prefix(backbone: str) -> str:
+    return str(backbone).split("/", 1)[1] if is_timm_backbone(backbone) else backbone
+
 
 def _load_pretrained(backbone: str) -> nn.Module:
     """Load a pretrained torchvision model by backbone key."""
+    if is_timm_backbone(backbone):
+        try:
+            import timm
+        except Exception as exc:
+            raise RuntimeError(
+                "TIMM backbones require the 'timm' package to be installed."
+            ) from exc
+
+        model_name = _strip_timm_prefix(backbone)
+        return timm.create_model(model_name, pretrained=True)
+
     weights_map = {
         "convnext_tiny": tvm.ConvNeXt_Tiny_Weights.IMAGENET1K_V1,
         "convnext_small": tvm.ConvNeXt_Small_Weights.IMAGENET1K_V1,
@@ -56,6 +85,14 @@ def _load_pretrained(backbone: str) -> nn.Module:
 
 def _replace_head(model: nn.Module, backbone: str, num_classes: int) -> nn.Module:
     """Replace the final classifier head with a new linear layer."""
+    if is_timm_backbone(backbone):
+        if hasattr(model, "reset_classifier"):
+            model.reset_classifier(num_classes=num_classes)
+            return model
+        raise ValueError(
+            f"Unsupported TIMM backbone for head replacement: {backbone!r}"
+        )
+
     if backbone.startswith("convnext"):
         in_features = model.classifier[-1].in_features
         model.classifier[-1] = nn.Linear(in_features, num_classes)
@@ -81,6 +118,28 @@ def get_layer_groups(model: nn.Module, backbone: str) -> list[nn.Module]:
     EfficientNet returns individual feature blocks.
     ViT-B/16 returns individual encoder layers.
     """
+    if is_timm_backbone(backbone):
+        if hasattr(model, "blocks") and len(model.blocks) > 0:
+            return list(model.blocks)
+        if hasattr(model, "stages") and len(model.stages) > 0:
+            return list(model.stages)
+        if hasattr(model, "layer1") and hasattr(model, "layer4"):
+            return [model.layer1, model.layer2, model.layer3, model.layer4]
+        if hasattr(model, "features") and isinstance(model.features, nn.Sequential):
+            return list(model.features)
+
+        groups: list[nn.Module] = []
+        for name, module in model.named_children():
+            if name in HEAD_MODULE_NAMES or name in {"global_pool", "flatten"}:
+                continue
+            if isinstance(module, (nn.Sequential, nn.ModuleList)) and len(module) > 0:
+                groups.extend(list(module))
+            else:
+                groups.append(module)
+        if groups:
+            return groups
+        raise ValueError(f"Unsupported TIMM backbone for layer groups: {backbone!r}")
+
     if backbone.startswith("convnext"):
         # ConvNeXt's features Sequential interleaves LayerNorm downsampling
         # transitions at even indices (0, 2, 4, 6) with the four main ConvNeXt
@@ -101,6 +160,13 @@ def get_layer_groups(model: nn.Module, backbone: str) -> list[nn.Module]:
 
 def _get_head_module(model: nn.Module, backbone: str) -> nn.Module | None:
     """Return the classifier head module for a given backbone."""
+    if is_timm_backbone(backbone):
+        for name in ("head", "classifier", "fc", "heads"):
+            module = getattr(model, name, None)
+            if isinstance(module, nn.Module):
+                return module
+        return None
+
     if backbone.startswith("convnext") or backbone.startswith("efficientnet"):
         return model.classifier
     if backbone.startswith("resnet"):
@@ -166,9 +232,13 @@ def build_torchvision_classifier(
     Returns:
         nn.Module in train mode with head replaced and freezing applied.
     """
-    if backbone != "tinyclassifier" and backbone not in TORCHVISION_BACKBONES:
+    if (
+        backbone != "tinyclassifier"
+        and backbone not in TORCHVISION_BACKBONES
+        and not is_timm_backbone(backbone)
+    ):
         raise ValueError(
-            f"Unknown backbone {backbone!r}. Must be one of {TORCHVISION_BACKBONES}"
+            f"Unknown backbone {backbone!r}. Must be one of {TORCHVISION_BACKBONES} or a timm/<model> entry"
         )
     if backbone == "tinyclassifier":
         from hydra_suite.training.tiny_model import _build_tiny_classifier_class
@@ -197,6 +267,7 @@ def save_torchvision_checkpoint(
     history: dict[str, Any],
     trainable_layers: int,
     backbone_lr_scale: float,
+    extra_meta: dict[str, Any] | None = None,
     path: str | Path,
 ) -> Path:
     """Save a torchvision model checkpoint in the unified ClassKit .pth format."""
@@ -214,6 +285,8 @@ def save_torchvision_checkpoint(
         "trainable_layers": trainable_layers,
         "backbone_lr_scale": backbone_lr_scale,
     }
+    if isinstance(extra_meta, dict) and extra_meta:
+        ckpt.update(extra_meta)
     torch.save(ckpt, str(path))
     return path
 

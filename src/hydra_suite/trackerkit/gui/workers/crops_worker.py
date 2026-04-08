@@ -641,10 +641,11 @@ class InterpolatedCropsWorker(BaseWorker):
             "headtail_csv_path": None,
         }
 
-        if gen.crops_dir is None:
+        parent = getattr(gen, "run_dir", None)
+        if parent is None and gen.crops_dir is not None:
+            parent = gen.crops_dir.parent
+        if parent is None:
             return result
-
-        parent = gen.crops_dir.parent
 
         if save_interpolated_outputs and interp_rows:
             result["mapping_path"] = _write_csv_artifact(
@@ -1257,9 +1258,16 @@ class InterpolatedCropsWorker(BaseWorker):
         save_interpolated_outputs = bool(
             self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
         )
+        generate_oriented_videos = bool(
+            self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+        )
+        if not save_interpolated_outputs and generate_oriented_videos:
+            output_dir = self.params.get(
+                "ORIENTED_TRACK_VIDEO_OUTPUT_DIR",
+                output_dir,
+            )
         cache_interpolated_artifacts = bool(
-            save_interpolated_outputs
-            or self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+            save_interpolated_outputs or generate_oriented_videos
         )
         gen_params = dict(self.params or {})
         gen_params["ENABLE_INDIVIDUAL_DATASET"] = cache_interpolated_artifacts
@@ -1269,7 +1277,11 @@ class InterpolatedCropsWorker(BaseWorker):
             gen_params,
             output_dir,
             Path(self.video_path).stem,
-            self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
+            (
+                self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset")
+                if save_interpolated_outputs
+                else ""
+            ),
         )
         gen.enabled = cache_interpolated_artifacts
 

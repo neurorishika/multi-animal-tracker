@@ -24,6 +24,11 @@ class OrientedTrackVideoWorker(BaseWorker):
         padding_fraction,
         background_color,
         suppress_foreign_obb,
+        fix_direction_flips=False,
+        heading_flip_max_burst=5,
+        enable_affine_stabilization=False,
+        stabilization_window=5,
+        output_subdir="oriented_videos",
     ):
         super().__init__()
         self.final_csv_path = final_csv_path
@@ -35,6 +40,11 @@ class OrientedTrackVideoWorker(BaseWorker):
         self.padding_fraction = padding_fraction
         self.background_color = background_color
         self.suppress_foreign_obb = suppress_foreign_obb
+        self.fix_direction_flips = fix_direction_flips
+        self.heading_flip_max_burst = heading_flip_max_burst
+        self.enable_affine_stabilization = enable_affine_stabilization
+        self.stabilization_window = stabilization_window
+        self.output_subdir = output_subdir
         self._stop_requested = False
 
     def stop(self):
@@ -57,6 +67,11 @@ class OrientedTrackVideoWorker(BaseWorker):
                 padding_fraction=self.padding_fraction,
                 background_color=self.background_color,
                 suppress_foreign_obb=self.suppress_foreign_obb,
+                fix_direction_flips=self.fix_direction_flips,
+                heading_flip_max_burst=self.heading_flip_max_burst,
+                enable_affine_stabilization=self.enable_affine_stabilization,
+                stabilization_window=self.stabilization_window,
+                output_subdir=self.output_subdir,
             )
             result = exporter.export(
                 progress_callback=self.progress_signal.emit,

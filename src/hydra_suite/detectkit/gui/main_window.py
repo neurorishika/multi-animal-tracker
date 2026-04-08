@@ -11,7 +11,6 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -31,10 +30,26 @@ from .panels.dataset_panel import DatasetPanel
 from .panels.evaluation_panel import EvaluationPanel
 from .panels.history_panel import HistoryPanel
 from .panels.training_panel import TrainingPanel
-from .project import create_project, open_project, project_file_path, save_project
-from .utils import find_label_for_image, parse_obb_label
+from .project import (
+    create_project,
+    default_project_parent_dir,
+    open_project,
+    project_file_path,
+    save_project,
+)
+from .utils import find_label_for_image, parse_obb_label, source_class_id_map
 
 logger = logging.getLogger(__name__)
+
+_DATASET_PANEL_MIN_WIDTH = 360
+_DATASET_PANEL_MAX_WIDTH = 500
+_CANVAS_MIN_WIDTH = 480
+_RIGHT_PANEL_MIN_WIDTH = 480
+_RIGHT_PANEL_MAX_WIDTH = 620
+_WORKSPACE_MIN_HEIGHT = 760
+_WORKSPACE_MIN_WIDTH = (
+    _DATASET_PANEL_MIN_WIDTH + _CANVAS_MIN_WIDTH + _RIGHT_PANEL_MIN_WIDTH + 24
+)
 
 _DARK_STYLESHEET = """
 QMainWindow { background-color: #1e1e1e; }
@@ -69,6 +84,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("DetectKit")
         self.setStyleSheet(_DARK_STYLESHEET)
+        self.setMinimumSize(_WORKSPACE_MIN_WIDTH, _WORKSPACE_MIN_HEIGHT)
 
         self.config = DetectKitConfig()
         self._project: Optional[DetectKitProject] = None
@@ -90,6 +106,9 @@ class MainWindow(QMainWindow):
 
         # Start on welcome page
         self._stack.setCurrentIndex(0)
+
+        # Hide the menu bar while on the welcome page.
+        self.menuBar().hide()
 
     # ------------------------------------------------------------------
     # Welcome page
@@ -154,21 +173,25 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(6)
+        splitter.setChildrenCollapsible(False)
+        self.splitter = splitter
 
         # Left: Dataset panel
         self._dataset_panel = DatasetPanel()
-        self._dataset_panel.setMinimumWidth(280)
-        self._dataset_panel.setMaximumWidth(450)
+        self._dataset_panel.setMinimumWidth(_DATASET_PANEL_MIN_WIDTH)
+        self._dataset_panel.setMaximumWidth(_DATASET_PANEL_MAX_WIDTH)
         splitter.addWidget(self._dataset_panel)
 
         # Center: OBB Canvas
         self._canvas = OBBCanvas()
+        self._canvas.setMinimumWidth(_CANVAS_MIN_WIDTH)
         splitter.addWidget(self._canvas)
 
         # Right: Tab widget
         self._right_tabs = QTabWidget()
-        self._right_tabs.setMinimumWidth(380)
-        self._right_tabs.setMaximumWidth(550)
+        self._right_tabs.setMinimumWidth(_RIGHT_PANEL_MIN_WIDTH)
+        self._right_tabs.setMaximumWidth(_RIGHT_PANEL_MAX_WIDTH)
 
         self._training_panel = TrainingPanel()
         self._evaluation_panel = EvaluationPanel()
@@ -184,6 +207,16 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, False)
+        splitter.setSizes(
+            [
+                _DATASET_PANEL_MIN_WIDTH,
+                _CANVAS_MIN_WIDTH + 120,
+                _RIGHT_PANEL_MIN_WIDTH,
+            ]
+        )
 
         layout.addWidget(splitter)
         self._stack.addWidget(page)  # index 1
@@ -250,16 +283,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def new_project(self) -> None:
-        """Create a new DetectKit project via directory + class name dialogs."""
-        from hydra_suite.paths import get_projects_dir
+        """Create a new DetectKit project via a dedicated project dialog."""
+        from .dialogs import NewProjectDialog
 
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Project Directory", str(get_projects_dir())
-        )
-        if not directory:
+        dialog = NewProjectDialog(self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
             return
 
-        proj_dir = Path(directory)
+        project_info = dialog.get_project_info()
+        proj_dir = Path(project_info["path"]).expanduser()
         pf = project_file_path(proj_dir)
 
         # If a project already exists, offer to open it instead.
@@ -276,24 +308,17 @@ class MainWindow(QMainWindow):
                     self._load_project(proj)
             return
 
-        class_name, ok = QInputDialog.getText(
-            self,
-            "Class Name",
-            "Enter the object class name (e.g. 'ant', 'bee'):",
-            text="object",
+        proj = create_project(
+            proj_dir,
+            project_info["class_name"],
+            class_names=list(project_info.get("class_names", [])),
         )
-        if not ok or not class_name.strip():
-            return
-
-        proj = create_project(proj_dir, class_name.strip())
         self._load_project(proj)
 
     def open_project_dialog(self) -> None:
         """Open an existing project via directory picker."""
-        from hydra_suite.paths import get_projects_dir
-
         directory = QFileDialog.getExistingDirectory(
-            self, "Open DetectKit Project", str(get_projects_dir())
+            self, "Open DetectKit Project", str(default_project_parent_dir())
         )
         if not directory:
             return
@@ -311,7 +336,7 @@ class MainWindow(QMainWindow):
     def _load_project(self, proj: DetectKitProject) -> None:
         """Activate *proj*: wire panels, update title, switch to workspace."""
         self._project = proj
-        self.setWindowTitle(f"DetectKit - {proj.project_dir.name}")
+        self.setWindowTitle("DetectKit")
 
         # Wire panels
         self._dataset_panel.set_project(proj, self)
@@ -321,6 +346,7 @@ class MainWindow(QMainWindow):
 
         # Switch to workspace
         self._stack.setCurrentIndex(1)
+        self.menuBar().show()
 
         # Refresh recent lists
         if hasattr(self, "_recents_store"):
@@ -363,9 +389,22 @@ class MainWindow(QMainWindow):
             img = cv2.imread(image_path)
             if img is not None:
                 h, w = img.shape[:2]
-                class_name = self._project.class_name if self._project else "object"
-                dets = parse_obb_label(label_path, w, h)
-                self._canvas.set_detections(dets, class_name=class_name)
+                class_names = self._project.class_names if self._project else ["object"]
+                class_id_map = None
+                if self._project is not None:
+                    try:
+                        class_id_map = source_class_id_map(
+                            source_path, self._project.class_names
+                        )
+                    except Exception:
+                        class_id_map = {}
+                        logger.warning(
+                            "Skipping incompatible source labels for preview: %s",
+                            source_path,
+                            exc_info=True,
+                        )
+                dets = parse_obb_label(label_path, w, h, class_id_map=class_id_map)
+                self._canvas.set_detections(dets, class_names=class_names)
 
         self._canvas.fit_in_view()
 

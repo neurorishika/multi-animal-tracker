@@ -2675,11 +2675,12 @@ class TrackingWorker(QThread):
                 profiler.tick("visualization")
                 # Incrementally prune old trajectory points instead of
                 # rebuilding from trajectories_full every frame.
-                _traj_horizon = params["TRAJECTORY_HISTORY_SECONDS"]
-                _cutoff = self.frame_count - _traj_horizon
-                for _tp_list in trajectories_pruned:
-                    while _tp_list and _tp_list[0][3] < _cutoff:
-                        _tp_list.pop(0)
+                _traj_horizon = int(params["TRAJECTORY_HISTORY_SECONDS"])
+                if _traj_horizon >= 0:
+                    _cutoff = self.frame_count - _traj_horizon
+                    for _tp_list in trajectories_pruned:
+                        while _tp_list and _tp_list[0][3] < _cutoff:
+                            _tp_list.pop(0)
 
                 self._draw_overlays(
                     overlay,

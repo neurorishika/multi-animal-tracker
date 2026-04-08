@@ -479,7 +479,7 @@ class FilterKitWindow(QMainWindow):
         super().__init__()
         self.config = FilterKitConfig()
         self.apply_stylesheet()
-        self.setWindowTitle("FilterKit - Dataset Subsampling")
+        self.setWindowTitle("FilterKit")
         self.resize(1400, 950)
         self.setMinimumSize(1300, 900)
 

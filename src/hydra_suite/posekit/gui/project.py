@@ -24,6 +24,18 @@ from .utils import _resolve_project_path, list_images
 # -----------------------------
 
 
+def default_project_parent_dir() -> Path:
+    """Return the default parent directory for new standalone PoseKit projects."""
+    from hydra_suite.paths import get_projects_dir
+
+    parent = get_projects_dir() / "PoseKit"
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass
+    return parent
+
+
 def _resolve_images_dir(folder: Path) -> Path:
     """Auto-detect where images live within *folder*.
 

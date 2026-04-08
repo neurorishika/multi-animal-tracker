@@ -17,9 +17,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from hydra_suite.classkit.gui.dialogs.source_validation import (
+    CLASSKIT_IMAGES_SUBDIR,
+    count_classkit_images,
+    resolve_classkit_images_dir,
+)
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
-CLASSKIT_IMAGES_SUBDIR = "images"
 CLASSKIT_SIEVE_THRESHOLD = 5000
 
 _DARK_STYLE = """
@@ -55,9 +59,8 @@ _DARK_STYLE = """
 class AddSourceDialog(QDialog):
     """Pick one or more image source folders for a ClassKit project.
 
-    For each folder the user picks, the ``images/`` subdirectory is preferred
-    (if it exists and contains images), otherwise the root folder itself is
-    used — matching the PoseKit convention.
+    Each folder the user picks must contain an ``images/`` subdirectory.
+    ClassKit ingests images from that directory only.
 
     If a folder contains more images than ``CLASSKIT_SIEVE_THRESHOLD``, the
     dialog offers to open FilterKit before continuing.
@@ -82,9 +85,8 @@ class AddSourceDialog(QDialog):
         layout.setSpacing(12)
 
         info = QLabel(
-            "Add one or more folders containing images.  "
-            f"An <b>{CLASSKIT_IMAGES_SUBDIR}/</b> subdirectory is preferred when present; "
-            "otherwise the folder root is used."
+            "Add one or more dataset root folders. Each source must contain an "
+            f"<b>{CLASSKIT_IMAGES_SUBDIR}/</b> subdirectory with images."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -129,24 +131,17 @@ class AddSourceDialog(QDialog):
 
         d = Path(path).expanduser().resolve()
 
-        # Prefer images/ subdirectory (PoseKit convention)
-        candidate = d / CLASSKIT_IMAGES_SUBDIR
-        if candidate.is_dir() and self._has_images(candidate):
-            resolved = candidate
-            location_note = f"(from {CLASSKIT_IMAGES_SUBDIR}/ subdirectory)"
-        else:
-            resolved = d
-            location_note = "(folder root)"
-
-        count = self._count_images(resolved)
-        if count == 0:
+        try:
+            resolved = resolve_classkit_images_dir(d)
+        except ValueError as exc:
             QMessageBox.warning(
                 self,
-                "No Images Found",
-                f"No images were found in:\n{resolved}\n\n"
-                "Please select a folder that contains .jpg / .jpeg / .png files.",
+                "Invalid Source Folder",
+                str(exc),
             )
             return
+
+        count = count_classkit_images(resolved)
 
         # Duplicate check
         if resolved in self._existing or any(
@@ -181,7 +176,7 @@ class AddSourceDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "hydra_suite.filterkit.gui",
+                            "hydra_suite.filterkit",
                             str(d),
                         ],
                         start_new_session=True,
@@ -196,7 +191,7 @@ class AddSourceDialog(QDialog):
 
         self._sources.append((d, resolved, d.name))
         item = QListWidgetItem(
-            f"{d.name}  \u2014  {count:,} images  {location_note}\n{d}"
+            f"{d.name}  \u2014  {count:,} images  (using {CLASSKIT_IMAGES_SUBDIR}/)\n{d}"
         )
         self._list.addItem(item)
 
@@ -206,18 +201,6 @@ class AddSourceDialog(QDialog):
             self._list.takeItem(row)
             if row < len(self._sources):
                 self._sources.pop(row)
-
-    @staticmethod
-    def _has_images(folder: Path) -> bool:
-        exts = {".jpg", ".jpeg", ".png"}
-        return any(p.suffix.lower() in exts for p in folder.iterdir() if p.is_file())
-
-    @staticmethod
-    def _count_images(folder: Path) -> int:
-        exts = {".jpg", ".jpeg", ".png"}
-        return sum(
-            1 for p in folder.iterdir() if p.is_file() and p.suffix.lower() in exts
-        )
 
     @property
     def sources(self) -> List[Tuple[Path, Path, str]]:

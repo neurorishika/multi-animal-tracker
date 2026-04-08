@@ -40,7 +40,6 @@ dependencies = [
     "hnswlib",
     "usearch",
     "annoy",
-    "pupil-apriltags",
     "platformdirs>=3.0",
 ]
 

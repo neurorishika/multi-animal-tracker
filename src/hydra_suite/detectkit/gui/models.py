@@ -7,6 +7,26 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+DEFAULT_CLASS_NAME = "object"
+
+
+def normalize_class_names(values: Any) -> list[str]:
+    """Normalize class-name input into a non-empty ordered list."""
+    if isinstance(values, str):
+        candidates = [values]
+    elif isinstance(values, (list, tuple)):
+        candidates = list(values)
+    else:
+        candidates = []
+
+    class_names = [str(name).strip() for name in candidates if str(name).strip()]
+    return class_names or [DEFAULT_CLASS_NAME]
+
+
+def class_name_map(class_names: list[str]) -> dict[int, str]:
+    """Return the class-id to class-name mapping for a project."""
+    return {idx: name for idx, name in enumerate(normalize_class_names(class_names))}
+
 
 @dataclass
 class OBBSource:
@@ -36,7 +56,7 @@ class DetectKitProject:
 
     # Core
     project_dir: Path = field(default_factory=lambda: Path("."))
-    class_name: str = "object"
+    class_names: list[str] = field(default_factory=lambda: [DEFAULT_CLASS_NAME])
     sources: list[OBBSource] = field(default_factory=list)
 
     # Split
@@ -98,6 +118,16 @@ class DetectKitProject:
     last_source_index: int = 0
     last_image_index: int = 0
 
+    @property
+    def class_name(self) -> str:
+        """Backward-compatible access to the primary class name."""
+        return normalize_class_names(self.class_names)[0]
+
+    @class_name.setter
+    def class_name(self, value: str) -> None:
+        """Backward-compatible setter that replaces the project class list."""
+        self.class_names = normalize_class_names([value])
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize all fields to a dictionary."""
         d: dict[str, Any] = {"version": 1}
@@ -132,6 +162,8 @@ class DetectKitProject:
 
             if name == "project_dir":
                 proj.project_dir = Path(val)
+            elif name == "class_names":
+                proj.class_names = normalize_class_names(val)
             elif name == "sources":
                 proj.sources = [OBBSource.from_dict(s) for s in val]
             else:
@@ -147,5 +179,10 @@ class DetectKitProject:
                     setattr(proj, name, str(val))
                 else:
                     setattr(proj, name, val)
+
+        if "class_names" not in raw and "class_name" in raw:
+            proj.class_names = normalize_class_names([raw.get("class_name", "")])
+        else:
+            proj.class_names = normalize_class_names(proj.class_names)
 
         return proj

@@ -1,5 +1,6 @@
 """ClassKitTrainingDialog — training dialog for ClassKit."""
 
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtWidgets import (
@@ -10,7 +11,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -21,10 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.training.torchvision_model import (
-    BACKBONE_DISPLAY_NAMES,
-    TORCHVISION_BACKBONES,
+from hydra_suite.classkit.config.custom_backbones import (
+    custom_backbone_display_name,
+    get_custom_backbone_choices,
+    register_user_timm_backbones,
 )
+from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+
+from .timm_backbone_browser import TimmBackboneBrowserDialog
 
 
 class ClassKitTrainingDialog(QDialog):
@@ -35,18 +43,174 @@ class ClassKitTrainingDialog(QDialog):
         scheme=None,
         n_labeled: int = 0,
         class_choices: Optional[List[str]] = None,
+        initial_settings: Optional[dict] = None,
+        recent_model_paths: Optional[List[str]] = None,
+        average_image_size: Optional[Tuple[float, float]] = None,
         parent=None,
     ):
         super().__init__(parent)
         self._scheme = scheme
         self._n_labeled = n_labeled
         self._class_choices = self._resolve_class_choices(class_choices)
+        self._initial_settings = (
+            dict(initial_settings) if isinstance(initial_settings, dict) else {}
+        )
+        self._recent_model_paths = self._normalize_recent_model_paths(
+            recent_model_paths
+        )
+        self._average_image_size = average_image_size
         self._train_results = None
         self._worker = None
         self.setWindowTitle("Train Classifier")
         self.setMinimumWidth(640)
         self.setMinimumHeight(560)
         self._build_ui()
+        self._apply_average_image_size_defaults()
+        self._apply_initial_settings()
+
+    @staticmethod
+    def _nearest_computer_friendly_size(value: object) -> int:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 224
+        rounded = int(round(numeric / 32.0) * 32)
+        return max(32, min(512, rounded))
+
+    @staticmethod
+    def _set_combo_value(combo: QComboBox, value: object) -> None:
+        if value is None:
+            return
+        idx = combo.findData(value)
+        if idx < 0:
+            idx = combo.findText(str(value))
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    @staticmethod
+    def _set_spin_value(widget, settings: dict, key: str) -> None:
+        if key not in settings:
+            return
+        try:
+            widget.setValue(settings[key])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _normalize_path_text(value: object) -> str:
+        return str(value or "").strip()
+
+    def _normalize_recent_model_paths(
+        self, values: Optional[List[str]] = None
+    ) -> List[str]:
+        ordered: List[str] = []
+        seen = set()
+        for value in values or []:
+            text = self._normalize_path_text(value)
+            if not text:
+                continue
+            try:
+                normalized = str(Path(text).expanduser().resolve())
+            except Exception:
+                normalized = text
+            if normalized not in seen:
+                seen.add(normalized)
+                ordered.append(normalized)
+        return ordered
+
+    def _apply_average_image_size_defaults(self) -> None:
+        if not self._average_image_size:
+            return
+
+        avg_width, avg_height = self._average_image_size
+        width = self._nearest_computer_friendly_size(avg_width)
+        height = self._nearest_computer_friendly_size(avg_height)
+        square = self._nearest_computer_friendly_size((avg_width + avg_height) / 2.0)
+
+        self.tiny_width_spin.setValue(width)
+        self.tiny_height_spin.setValue(height)
+        self._tiny_in_custom_width_spin.setValue(width)
+        self._tiny_in_custom_height_spin.setValue(height)
+        self._custom_input_size_spin.setValue(square)
+
+    def _apply_initial_settings(self) -> None:
+        settings = self._initial_settings
+        if not settings:
+            self._on_mode_changed()
+            self._on_rebalance_mode_changed()
+            self._on_custom_backbone_changed()
+            return
+
+        self._set_combo_value(
+            self.mode_combo, self._normalize_mode_key(settings.get("mode"))
+        )
+        self._set_combo_value(self.device_combo, settings.get("device"))
+        self._set_combo_value(
+            self.compute_runtime_combo, settings.get("compute_runtime")
+        )
+        self._set_combo_value(self.base_model_combo, settings.get("base_model"))
+        self._initial_model_path_edit.setText(
+            self._normalize_path_text(settings.get("initial_model_path"))
+        )
+        self._set_combo_value(
+            self.tiny_rebalance_combo, settings.get("tiny_rebalance_mode")
+        )
+        self._set_combo_value(
+            self._custom_backbone_combo, settings.get("custom_backbone")
+        )
+        self._set_combo_value(
+            self._custom_fine_tune_method_combo,
+            settings.get("custom_fine_tune_method"),
+        )
+
+        for widget, key in (
+            (self.epochs_spin, "epochs"),
+            (self._custom_epochs_spin, "epochs"),
+            (self.batch_spin, "batch"),
+            (self._custom_batch_spin, "batch"),
+            (self.lr_spin, "lr"),
+            (self._custom_lr_spin, "lr"),
+            (self.val_fraction_spin, "val_fraction"),
+            (self.patience_spin, "patience"),
+            (self._custom_patience_spin, "patience"),
+            (self.tiny_layers_spin, "tiny_layers"),
+            (self.tiny_dim_spin, "tiny_dim"),
+            (self.tiny_dropout_spin, "tiny_dropout"),
+            (self.tiny_width_spin, "tiny_width"),
+            (self.tiny_height_spin, "tiny_height"),
+            (self.tiny_rebalance_power_spin, "tiny_rebalance_power"),
+            (self.tiny_label_smoothing_spin, "tiny_label_smoothing"),
+            (self._tiny_in_custom_width_spin, "tiny_width"),
+            (self._tiny_in_custom_height_spin, "tiny_height"),
+            (self._tiny_in_custom_layers_spin, "tiny_layers"),
+            (self._tiny_in_custom_dim_spin, "tiny_dim"),
+            (self._tiny_in_custom_dropout_spin, "tiny_dropout"),
+            (self._custom_trainable_layers_spin, "custom_trainable_layers"),
+            (self._custom_backbone_lr_spin, "custom_backbone_lr_scale"),
+            (self._custom_layerwise_decay_spin, "custom_layerwise_lr_decay"),
+            (
+                self._custom_gradual_unfreeze_interval_spin,
+                "custom_gradual_unfreeze_interval",
+            ),
+            (self._custom_input_size_spin, "custom_input_size"),
+            (self.brightness_spin, "brightness"),
+            (self.contrast_spin, "contrast"),
+            (self.flip_ud_spin, "flipud"),
+            (self.flip_lr_spin, "fliplr"),
+        ):
+            self._set_spin_value(widget, settings, key)
+
+        label_expansion = settings.get("label_expansion")
+        if isinstance(label_expansion, dict) and label_expansion:
+            self._exp_group.setChecked(True)
+            for src_name, dst_name in label_expansion.get("fliplr", {}).items():
+                self._add_lr_row(src_name, dst_name)
+            for src_name, dst_name in label_expansion.get("flipud", {}).items():
+                self._add_ud_row(src_name, dst_name)
+
+        self._on_mode_changed()
+        self._on_rebalance_mode_changed()
+        self._on_custom_backbone_changed()
 
     def _resolve_class_choices(
         self, class_choices: Optional[List[str]] = None
@@ -69,12 +233,20 @@ class ClassKitTrainingDialog(QDialog):
 
         return ordered
 
+    @staticmethod
+    def _normalize_mode_key(value: object) -> str:
+        mode = str(value or "").strip()
+        if mode == "flat_tiny":
+            return "flat_custom"
+        if mode == "multihead_tiny":
+            return "multihead_custom"
+        return mode
+
     def _build_general_tab(self):
         """Build the General settings tab and return its widget."""
         self.general_tab = QWidget()
         form = QFormLayout()
         form.setSpacing(8)
-
         self.mode_combo = QComboBox()
         self._populate_modes()
         form.addRow("<b>Training Mode:</b>", self.mode_combo)
@@ -82,17 +254,14 @@ class ClassKitTrainingDialog(QDialog):
         self.device_combo = QComboBox()
         self.device_combo.addItem("CPU", "cpu")
         try:
-            from hydra_suite.utils.gpu_utils import (
-                MPS_AVAILABLE,
-                ROCM_AVAILABLE,
-                TORCH_CUDA_AVAILABLE,
-            )
+            import torch
 
-            if TORCH_CUDA_AVAILABLE:
-                self.device_combo.addItem("CUDA GPU", "cuda")
-            if ROCM_AVAILABLE:
-                self.device_combo.addItem("ROCm GPU", "rocm")
-            if MPS_AVAILABLE:
+            if torch.cuda.is_available():
+                if getattr(torch.version, "hip", None):
+                    self.device_combo.addItem("ROCm GPU", "rocm")
+                else:
+                    self.device_combo.addItem("CUDA GPU", "cuda")
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 self.device_combo.addItem("Apple Silicon (MPS)", "mps")
                 self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
         except Exception:
@@ -104,18 +273,18 @@ class ClassKitTrainingDialog(QDialog):
 
         self._build_compute_runtime_combo(form)
         self._build_base_model_combo(form)
+        self._build_initial_model_selector(form)
         self._build_hyperparams_widgets(form)
 
         self._mode_desc_label = QLabel("")
         self._mode_desc_label.setWordWrap(True)
         self._mode_desc_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 4px 8px; "
-            "border-left: 2px solid #3e3e42; margin-top: 2px;"
+            "color: #888; font-size: 11px; padding: 4px 8px; background: #1e1e1e; border-radius: 4px;"
         )
+        form.addRow("", self._mode_desc_label)
 
         layout_gen = QVBoxLayout(self.general_tab)
         layout_gen.addLayout(form)
-        layout_gen.addWidget(self._mode_desc_label)
         layout_gen.addStretch()
         return self.general_tab
 
@@ -171,6 +340,85 @@ class ClassKitTrainingDialog(QDialog):
         )
         self._base_model_row_label = QLabel("<b>Base Model (YOLO):</b>")
         form.addRow(self._base_model_row_label, self.base_model_combo)
+
+    def _build_initial_model_selector(self, form) -> None:
+        self._initial_model_row_label = QLabel("<b>Start From Previous Model:</b>")
+        self._initial_model_path_edit = QLineEdit()
+        self._initial_model_path_edit.setReadOnly(True)
+
+        self._initial_model_browse_btn = QPushButton("Browse...")
+        self._initial_model_recent_btn = QPushButton("Recent")
+        self._initial_model_clear_btn = QPushButton("Clear")
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(self._initial_model_path_edit, 1)
+        row_layout.addWidget(self._initial_model_browse_btn)
+        row_layout.addWidget(self._initial_model_recent_btn)
+        row_layout.addWidget(self._initial_model_clear_btn)
+
+        self._initial_model_browse_btn.clicked.connect(self._browse_initial_model)
+        self._initial_model_recent_btn.clicked.connect(
+            self._choose_recent_initial_model
+        )
+        self._initial_model_clear_btn.clicked.connect(
+            lambda: self._initial_model_path_edit.clear()
+        )
+
+        form.addRow(self._initial_model_row_label, row)
+
+    def _compatible_initial_model_suffixes(self) -> tuple[str, ...]:
+        mode = self._normalize_mode_key(self.mode_combo.currentData())
+        if "yolo" in mode:
+            return (".pt",)
+        return (".pth",)
+
+    def _compatible_recent_model_paths(self) -> List[str]:
+        suffixes = self._compatible_initial_model_suffixes()
+        return [
+            path for path in self._recent_model_paths if path.lower().endswith(suffixes)
+        ]
+
+    def _browse_initial_model(self) -> None:
+        mode = self._normalize_mode_key(self.mode_combo.currentData())
+        if "yolo" in mode:
+            title = "Select YOLO Starting Weights"
+            filter_text = "YOLO Weights (*.pt);;All Files (*)"
+        else:
+            title = "Select ClassKit Starting Checkpoint"
+            filter_text = "ClassKit Checkpoints (*.pth);;All Files (*)"
+
+        start_dir = self._normalize_path_text(self._initial_model_path_edit.text())
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            title,
+            start_dir,
+            filter_text,
+        )
+        if path:
+            self._initial_model_path_edit.setText(path)
+
+    def _choose_recent_initial_model(self) -> None:
+        choices = self._compatible_recent_model_paths()
+        if not choices:
+            QMessageBox.information(
+                self,
+                "No Recent Models",
+                "No compatible trainable model artifacts were found in this project's history.",
+            )
+            return
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "Recent Project Models",
+            "Choose a previous exported model to use as the starting point:",
+            choices,
+            0,
+            False,
+        )
+        if accepted and selected:
+            self._initial_model_path_edit.setText(str(selected))
 
     def _build_hyperparams_widgets(self, form):
         """Build epoch, batch, lr, val fraction, and patience widgets."""
@@ -482,50 +730,80 @@ class ClassKitTrainingDialog(QDialog):
         custom_form.setSpacing(8)
 
         self._custom_backbone_combo = QComboBox()
-        for key in TORCHVISION_BACKBONES:
-            if key == "tinyclassifier":
-                self._custom_backbone_combo.addItem("TinyClassifier (scratch)", key)
-                self._custom_backbone_combo.insertSeparator(
-                    self._custom_backbone_combo.count()
-                )
-            else:
-                self._custom_backbone_combo.addItem(BACKBONE_DISPLAY_NAMES[key], key)
+        self._reload_custom_backbone_choices(selected="tinyclassifier")
         custom_form.addRow("Backbone:", self._custom_backbone_combo)
 
+        self._custom_add_timm_btn = QPushButton("Add from TIMM...")
+        self._custom_add_timm_btn.setToolTip(
+            "Browse valid pretrained TIMM image-classification backbones and add them to this picker."
+        )
+        custom_form.addRow("", self._custom_add_timm_btn)
+
+        self._tiny_in_custom_width_label = QLabel("Input width")
         self._tiny_in_custom_width_spin = QSpinBox()
         self._tiny_in_custom_width_spin.setRange(32, 512)
         self._tiny_in_custom_width_spin.setValue(128)
-        custom_form.addRow("Input width (px):", self._tiny_in_custom_width_spin)
+        custom_form.addRow(
+            self._tiny_in_custom_width_label, self._tiny_in_custom_width_spin
+        )
 
+        self._tiny_in_custom_height_label = QLabel("Input height")
         self._tiny_in_custom_height_spin = QSpinBox()
         self._tiny_in_custom_height_spin.setRange(32, 512)
         self._tiny_in_custom_height_spin.setValue(64)
-        custom_form.addRow("Input height (px):", self._tiny_in_custom_height_spin)
+        custom_form.addRow(
+            self._tiny_in_custom_height_label, self._tiny_in_custom_height_spin
+        )
 
+        self._tiny_in_custom_layers_label = QLabel("Hidden layers")
         self._tiny_in_custom_layers_spin = QSpinBox()
         self._tiny_in_custom_layers_spin.setRange(0, 4)
         self._tiny_in_custom_layers_spin.setValue(1)
-        custom_form.addRow("Hidden layers:", self._tiny_in_custom_layers_spin)
+        custom_form.addRow(
+            self._tiny_in_custom_layers_label, self._tiny_in_custom_layers_spin
+        )
 
+        self._tiny_in_custom_dim_label = QLabel("Hidden dim")
         self._tiny_in_custom_dim_spin = QSpinBox()
         self._tiny_in_custom_dim_spin.setRange(16, 512)
         self._tiny_in_custom_dim_spin.setValue(64)
-        custom_form.addRow("Hidden dim:", self._tiny_in_custom_dim_spin)
+        custom_form.addRow(
+            self._tiny_in_custom_dim_label, self._tiny_in_custom_dim_spin
+        )
 
+        self._tiny_in_custom_dropout_label = QLabel("Dropout")
         self._tiny_in_custom_dropout_spin = QDoubleSpinBox()
         self._tiny_in_custom_dropout_spin.setRange(0.0, 0.9)
         self._tiny_in_custom_dropout_spin.setSingleStep(0.05)
         self._tiny_in_custom_dropout_spin.setValue(0.2)
-        custom_form.addRow("Dropout:", self._tiny_in_custom_dropout_spin)
-
-        self._custom_trainable_layers_label = QLabel(
-            "Trainable layers (0=frozen, -1=all):"
+        custom_form.addRow(
+            self._tiny_in_custom_dropout_label, self._tiny_in_custom_dropout_spin
         )
+
+        self._custom_fine_tune_method_label = QLabel("Fine-tuning")
+        self._custom_fine_tune_method_combo = QComboBox()
+        self._custom_fine_tune_method_combo.addItem("Head only", "head_only")
+        self._custom_fine_tune_method_combo.addItem("Full fine-tune", "full_finetune")
+        self._custom_fine_tune_method_combo.addItem(
+            "Partial unfreezing", "partial_unfreezing"
+        )
+        self._custom_fine_tune_method_combo.addItem(
+            "Layerwise LR decay", "layerwise_lr_decay"
+        )
+        self._custom_fine_tune_method_combo.addItem(
+            "Gradual unfreezing", "gradual_unfreezing"
+        )
+        custom_form.addRow(
+            self._custom_fine_tune_method_label,
+            self._custom_fine_tune_method_combo,
+        )
+
+        self._custom_trainable_layers_label = QLabel("Unfreeze last N stages")
         self._custom_trainable_layers_spin = QSpinBox()
-        self._custom_trainable_layers_spin.setRange(-1, 8)
-        self._custom_trainable_layers_spin.setValue(0)
+        self._custom_trainable_layers_spin.setRange(1, 16)
+        self._custom_trainable_layers_spin.setValue(1)
         self._custom_trainable_layers_spin.setToolTip(
-            "0=frozen backbone, -1=all layers, N=last N layer groups unfrozen"
+            "For partial unfreezing, train the head plus the last N backbone stages."
         )
         custom_form.addRow(
             self._custom_trainable_layers_label, self._custom_trainable_layers_spin
@@ -542,6 +820,33 @@ class ClassKitTrainingDialog(QDialog):
         )
         custom_form.addRow(
             self._custom_backbone_lr_label, self._custom_backbone_lr_spin
+        )
+
+        self._custom_layerwise_decay_label = QLabel("Layerwise LR decay:")
+        self._custom_layerwise_decay_spin = QDoubleSpinBox()
+        self._custom_layerwise_decay_spin.setRange(0.1, 1.0)
+        self._custom_layerwise_decay_spin.setSingleStep(0.05)
+        self._custom_layerwise_decay_spin.setDecimals(2)
+        self._custom_layerwise_decay_spin.setValue(0.75)
+        self._custom_layerwise_decay_spin.setToolTip(
+            "Multiplier applied per stage from head to stem when layerwise LR decay is enabled."
+        )
+        custom_form.addRow(
+            self._custom_layerwise_decay_label, self._custom_layerwise_decay_spin
+        )
+
+        self._custom_gradual_unfreeze_interval_label = QLabel(
+            "Unfreeze interval (epochs):"
+        )
+        self._custom_gradual_unfreeze_interval_spin = QSpinBox()
+        self._custom_gradual_unfreeze_interval_spin.setRange(1, 100)
+        self._custom_gradual_unfreeze_interval_spin.setValue(5)
+        self._custom_gradual_unfreeze_interval_spin.setToolTip(
+            "For gradual unfreezing, add one more backbone stage every N epochs."
+        )
+        custom_form.addRow(
+            self._custom_gradual_unfreeze_interval_label,
+            self._custom_gradual_unfreeze_interval_spin,
         )
 
         self._custom_input_size_label = QLabel("Input size (px, square):")
@@ -579,10 +884,43 @@ class ClassKitTrainingDialog(QDialog):
         self._custom_tab_idx = self.tabs.addTab(self.custom_tab, "Custom CNN")
 
         self._custom_backbone_combo.activated.connect(self._on_custom_backbone_changed)
+        self._custom_add_timm_btn.clicked.connect(self._on_add_timm_backbones)
+        self._custom_fine_tune_method_combo.currentIndexChanged.connect(
+            self._on_custom_backbone_changed
+        )
         self._custom_trainable_layers_spin.valueChanged.connect(
             self._on_custom_backbone_changed
         )
         self._on_custom_backbone_changed()
+
+    def _reload_custom_backbone_choices(self, selected: object = None) -> None:
+        current = str(selected or self._custom_backbone_combo.currentData() or "")
+        self._custom_backbone_combo.blockSignals(True)
+        self._custom_backbone_combo.clear()
+        for key in get_custom_backbone_choices():
+            self._custom_backbone_combo.addItem(custom_backbone_display_name(key), key)
+        if current and self._custom_backbone_combo.findData(current) < 0:
+            self._custom_backbone_combo.addItem(
+                custom_backbone_display_name(current), current
+            )
+        self._set_combo_value(self._custom_backbone_combo, current or "tinyclassifier")
+        self._custom_backbone_combo.blockSignals(False)
+
+    def _on_add_timm_backbones(self) -> None:
+        dialog = TimmBackboneBrowserDialog(self)
+        if not dialog.exec():
+            return
+        selected = dialog.selected_backbones()
+        if not selected:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "No TIMM backbones were selected.",
+            )
+            return
+        register_user_timm_backbones(selected)
+        active = self._custom_backbone_combo.currentData()
+        self._reload_custom_backbone_choices(selected=active)
 
     def _build_space_and_augmentations_tab(self) -> None:
         self.aug_tab = QWidget()
@@ -608,10 +946,23 @@ class ClassKitTrainingDialog(QDialog):
         self.flip_ud_spin.setValue(0.0)
         aug_form.addRow("<b>Vertical Flip Prob:</b>", self.flip_ud_spin)
 
-        self.rotate_spin = QDoubleSpinBox()
-        self.rotate_spin.setRange(0.0, 180.0)
-        self.rotate_spin.setValue(0.0)
-        aug_form.addRow("<b>Max Rotation (deg):</b>", self.rotate_spin)
+        self.brightness_spin = QDoubleSpinBox()
+        self.brightness_spin.setRange(0.0, 1.0)
+        self.brightness_spin.setSingleStep(0.05)
+        self.brightness_spin.setValue(0.1)
+        self.brightness_spin.setToolTip(
+            "Photometric brightness jitter. Useful for lighting variation while preserving canonical pose."
+        )
+        aug_form.addRow("<b>Brightness Jitter:</b>", self.brightness_spin)
+
+        self.contrast_spin = QDoubleSpinBox()
+        self.contrast_spin.setRange(0.0, 1.0)
+        self.contrast_spin.setSingleStep(0.05)
+        self.contrast_spin.setValue(0.1)
+        self.contrast_spin.setToolTip(
+            "Photometric contrast jitter. Preferred over rotation for canonicalized crops."
+        )
+        aug_form.addRow("<b>Contrast Jitter:</b>", self.contrast_spin)
 
         self._exp_group = self._build_expansion_group()
         aug_layout.addWidget(self._exp_group)
@@ -691,42 +1042,57 @@ class ClassKitTrainingDialog(QDialog):
     def _populate_modes(self):
         self.mode_combo.clear()
         if self._scheme is None:
-            self.mode_combo.addItem("Flat - Tiny CNN", "flat_tiny")
-            self.mode_combo.addItem("Flat - YOLO-classify", "flat_yolo")
             self.mode_combo.addItem("Flat - Custom CNN", "flat_custom")
+            self.mode_combo.addItem("Flat - YOLO-classify", "flat_yolo")
             return
         labels = {
-            "flat_tiny": "Flat - Tiny CNN",
             "flat_yolo": "Flat - YOLO-classify",
             "flat_custom": "Flat - Custom CNN",
-            "multihead_tiny": "Multi-head - Tiny CNN (one model per factor)",
             "multihead_yolo": "Multi-head - YOLO-classify (one model per factor)",
             "multihead_custom": "Multi-head - Custom CNN (one model per factor)",
         }
+        seen = set()
         for key in [
-            "flat_tiny",
-            "flat_yolo",
             "flat_custom",
-            "multihead_tiny",
+            "flat_yolo",
             "multihead_yolo",
             "multihead_custom",
         ]:
-            if key in self._scheme.training_modes:
+            normalized_modes = {
+                self._normalize_mode_key(mode)
+                for mode in getattr(self._scheme, "training_modes", [])
+            }
+            if key in normalized_modes and key not in seen:
                 self.mode_combo.addItem(labels[key], key)
+                seen.add(key)
 
     def _on_mode_changed(self):
         mode = self.mode_combo.currentData() or ""
         is_yolo = "yolo" in mode
-        is_tiny = "tiny" in mode
         is_custom = "custom" in mode
 
         self.base_model_combo.setVisible(is_yolo)
         if hasattr(self, "_base_model_row_label"):
             self._base_model_row_label.setVisible(is_yolo)
 
+        expected_suffix = ".pt" if is_yolo else ".pth"
+        expected_label = (
+            "YOLO weights (.pt)" if is_yolo else "ClassKit checkpoint (.pth)"
+        )
+        self._initial_model_path_edit.setPlaceholderText(
+            f"Optional: choose previous {expected_label} to continue training from it"
+        )
+        self._initial_model_path_edit.setToolTip(
+            "Optional warm start for further training. "
+            f"Choose a trainable {expected_suffix} artifact; inference exports like .onnx are not supported."
+        )
+        self._initial_model_recent_btn.setVisible(
+            bool(self._compatible_recent_model_paths())
+        )
+
         if hasattr(self, "_tiny_tab_idx"):
-            self.tabs.setTabVisible(self._tiny_tab_idx, is_tiny)
-            if not is_tiny and self.tabs.currentIndex() == self._tiny_tab_idx:
+            self.tabs.setTabVisible(self._tiny_tab_idx, False)
+            if self.tabs.currentIndex() == self._tiny_tab_idx:
                 self.tabs.setCurrentIndex(0)
 
         if hasattr(self, "_custom_tab_idx"):
@@ -735,30 +1101,20 @@ class ClassKitTrainingDialog(QDialog):
                 self.tabs.setCurrentIndex(0)
 
         _desc = {
-            "flat_tiny": (
-                "Tiny CNN \u2014 lightweight MLP trained on image crops. Fast to train; "
-                "ideal for rapid iteration and CPU-only environments."
-            ),
             "flat_yolo": (
                 "YOLO Classify \u2014 fine-tuned pretrained backbone. Higher accuracy; "
                 "GPU strongly recommended. Slower to train."
-            ),
-            "multihead_tiny": (
-                "Multi-head Tiny CNN \u2014 one independent model per factor in the labeling scheme. "
-                "Each factor is trained separately."
             ),
             "multihead_yolo": (
                 "Multi-head YOLO Classify \u2014 one fine-tuned backbone per factor. "
                 "Highest accuracy; GPU required."
             ),
             "flat_custom": (
-                "Custom CNN \u2014 TinyClassifier or pretrained torchvision backbone "
-                "(ConvNeXt, EfficientNet, ResNet, ViT). Configurable layer freezing "
-                "for linear-probe or full fine-tuning."
+                "Custom CNN — TinyClassifier plus curated torchvision backbones, with optional TIMM additions. "
+                "Supports head-only, full, partial, layerwise-decay, and gradual-unfreezing fine-tuning."
             ),
             "multihead_custom": (
-                "Multi-head Custom CNN \u2014 one backbone per factor, with configurable "
-                "layer freezing. GPU recommended for torchvision backbones."
+                "Multi-head Custom CNN — one backbone per factor with the same fine-tuning controls as single-head custom training."
             ),
         }
         if hasattr(self, "_mode_desc_label"):
@@ -767,27 +1123,55 @@ class ClassKitTrainingDialog(QDialog):
     def _on_custom_backbone_changed(self) -> None:
         backbone = self._custom_backbone_combo.currentData()
         is_tiny = backbone == "tinyclassifier"
+        method = str(self._custom_fine_tune_method_combo.currentData() or "head_only")
 
         for w in (
+            self._tiny_in_custom_width_label,
             self._tiny_in_custom_width_spin,
+            self._tiny_in_custom_height_label,
             self._tiny_in_custom_height_spin,
+            self._tiny_in_custom_layers_label,
             self._tiny_in_custom_layers_spin,
+            self._tiny_in_custom_dim_label,
             self._tiny_in_custom_dim_spin,
+            self._tiny_in_custom_dropout_label,
             self._tiny_in_custom_dropout_spin,
         ):
             w.setVisible(is_tiny)
 
         for w in (
+            self._custom_fine_tune_method_combo,
+            self._custom_fine_tune_method_label,
             self._custom_trainable_layers_spin,
             self._custom_trainable_layers_label,
             self._custom_input_size_spin,
             self._custom_input_size_label,
+            self._custom_layerwise_decay_label,
+            self._custom_layerwise_decay_spin,
+            self._custom_gradual_unfreeze_interval_label,
+            self._custom_gradual_unfreeze_interval_spin,
         ):
             w.setVisible(not is_tiny)
 
-        show_lr = not is_tiny and self._custom_trainable_layers_spin.value() != 0
+        show_partial = not is_tiny and method == "partial_unfreezing"
+        self._custom_trainable_layers_spin.setVisible(show_partial)
+        self._custom_trainable_layers_label.setVisible(show_partial)
+
+        show_lr = not is_tiny and method in {"partial_unfreezing", "gradual_unfreezing"}
         self._custom_backbone_lr_spin.setVisible(show_lr)
         self._custom_backbone_lr_label.setVisible(show_lr)
+        self._custom_layerwise_decay_label.setVisible(
+            not is_tiny and method == "layerwise_lr_decay"
+        )
+        self._custom_layerwise_decay_spin.setVisible(
+            not is_tiny and method == "layerwise_lr_decay"
+        )
+        self._custom_gradual_unfreeze_interval_label.setVisible(
+            not is_tiny and method == "gradual_unfreezing"
+        )
+        self._custom_gradual_unfreeze_interval_spin.setVisible(
+            not is_tiny and method == "gradual_unfreezing"
+        )
 
     def _on_cancel(self):
         if self._worker is not None:
@@ -801,13 +1185,19 @@ class ClassKitTrainingDialog(QDialog):
     def _sync_expansion_constraints(self) -> None:
         expansion_enabled = bool(self._exp_group.isChecked())
 
-        for widget in (self.flip_lr_spin, self.flip_ud_spin, self.rotate_spin):
+        for widget in (
+            self.flip_lr_spin,
+            self.flip_ud_spin,
+            self.brightness_spin,
+            self.contrast_spin,
+        ):
             widget.setEnabled(not expansion_enabled)
 
         if expansion_enabled:
             self.flip_lr_spin.setValue(0.0)
             self.flip_ud_spin.setValue(0.0)
-            self.rotate_spin.setValue(0.0)
+            self.brightness_spin.setValue(0.0)
+            self.contrast_spin.setValue(0.0)
             self._exp_constraints_label.setText(
                 "Label expansion ON: all random augmentations are disabled."
             )
@@ -851,7 +1241,8 @@ class ClassKitTrainingDialog(QDialog):
 
         flipud_value = 0.0 if expansion_enabled else self.flip_ud_spin.value()
         fliplr_value = 0.0 if expansion_enabled else self.flip_lr_spin.value()
-        rotate_value = 0.0 if expansion_enabled else self.rotate_spin.value()
+        brightness_value = 0.0 if expansion_enabled else self.brightness_spin.value()
+        contrast_value = 0.0 if expansion_enabled else self.contrast_spin.value()
 
         _rt = str(self.compute_runtime_combo.currentData() or "cpu")
         _train_device = str(self.device_combo.currentData() or "cpu")
@@ -860,12 +1251,18 @@ class ClassKitTrainingDialog(QDialog):
 
         _mode = self.mode_combo.currentData() or ""
         _is_custom = _mode in ("flat_custom", "multihead_custom")
+        fine_tune_method = self._custom_fine_tune_method_combo.currentData()
+        custom_backbone = self._custom_backbone_combo.currentData()
+        custom_is_tiny = _is_custom and custom_backbone == "tinyclassifier"
 
         return {
-            "mode": self.mode_combo.currentData(),
+            "mode": self._normalize_mode_key(self.mode_combo.currentData()),
             "compute_runtime": _rt,
             "device": _train_device,
             "base_model": self.base_model_combo.currentData(),
+            "initial_model_path": self._normalize_path_text(
+                self._initial_model_path_edit.text()
+            ),
             "epochs": (
                 self._custom_epochs_spin.value()
                 if _is_custom
@@ -885,20 +1282,44 @@ class ClassKitTrainingDialog(QDialog):
                 if _is_custom
                 else self.patience_spin.value()
             ),
-            "tiny_layers": self.tiny_layers_spin.value(),
-            "tiny_dim": self.tiny_dim_spin.value(),
-            "tiny_dropout": self.tiny_dropout_spin.value(),
-            "tiny_width": self.tiny_width_spin.value(),
-            "tiny_height": self.tiny_height_spin.value(),
+            "tiny_layers": (
+                self._tiny_in_custom_layers_spin.value()
+                if custom_is_tiny
+                else self.tiny_layers_spin.value()
+            ),
+            "tiny_dim": (
+                self._tiny_in_custom_dim_spin.value()
+                if custom_is_tiny
+                else self.tiny_dim_spin.value()
+            ),
+            "tiny_dropout": (
+                self._tiny_in_custom_dropout_spin.value()
+                if custom_is_tiny
+                else self.tiny_dropout_spin.value()
+            ),
+            "tiny_width": (
+                self._tiny_in_custom_width_spin.value()
+                if custom_is_tiny
+                else self.tiny_width_spin.value()
+            ),
+            "tiny_height": (
+                self._tiny_in_custom_height_spin.value()
+                if custom_is_tiny
+                else self.tiny_height_spin.value()
+            ),
             "tiny_rebalance_mode": self.tiny_rebalance_combo.currentData(),
             "tiny_rebalance_power": self.tiny_rebalance_power_spin.value(),
             "tiny_label_smoothing": self.tiny_label_smoothing_spin.value(),
-            "custom_backbone": self._custom_backbone_combo.currentData(),
+            "custom_backbone": custom_backbone,
+            "custom_fine_tune_method": fine_tune_method,
             "custom_trainable_layers": self._custom_trainable_layers_spin.value(),
             "custom_backbone_lr_scale": self._custom_backbone_lr_spin.value(),
+            "custom_layerwise_lr_decay": self._custom_layerwise_decay_spin.value(),
+            "custom_gradual_unfreeze_interval": self._custom_gradual_unfreeze_interval_spin.value(),
             "custom_input_size": self._custom_input_size_spin.value(),
             "flipud": flipud_value,
             "fliplr": fliplr_value,
-            "rotate": rotate_value,
+            "brightness": brightness_value,
+            "contrast": contrast_value,
             "label_expansion": label_expansion,
         }

@@ -7,8 +7,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .constants import DEFAULT_PROJECT_FILENAME
-from .models import DetectKitProject
+from .constants import DEFAULT_PROJECT_FILENAME, DEFAULT_PROJECTS_ROOT_NAME
+from .models import DetectKitProject, normalize_class_names
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,18 @@ def project_file_path(project_dir: Path) -> Path:
     return project_dir / DEFAULT_PROJECT_FILENAME
 
 
+def default_project_parent_dir() -> Path:
+    """Return the default parent directory for new DetectKit projects."""
+    from hydra_suite.paths import get_projects_dir
+
+    parent = get_projects_dir() / DEFAULT_PROJECTS_ROOT_NAME
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass
+    return parent
+
+
 def open_project(project_dir: Path) -> Optional[DetectKitProject]:
     """Open an existing project from *project_dir*."""
     pf = project_file_path(project_dir)
@@ -85,10 +97,15 @@ def open_project(project_dir: Path) -> Optional[DetectKitProject]:
 def create_project(
     project_dir: Path,
     class_name: str = "object",
+    *,
+    class_names: list[str] | None = None,
 ) -> DetectKitProject:
     """Create a new project in *project_dir* and persist defaults."""
     project_dir.mkdir(parents=True, exist_ok=True)
-    proj = DetectKitProject(project_dir=project_dir, class_name=class_name)
+    resolved_class_names = normalize_class_names(
+        class_names if class_names is not None else [class_name]
+    )
+    proj = DetectKitProject(project_dir=project_dir, class_names=resolved_class_names)
     save_project(proj)
     add_to_recent(str(project_dir))
     return proj

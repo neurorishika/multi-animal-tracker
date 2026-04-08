@@ -268,6 +268,40 @@ class ClassKitDB:
             c.execute("SELECT file_path FROM images ORDER BY id")
             return [r[0] for r in c.fetchall()]
 
+    @staticmethod
+    def _resolve_path_string(path: Path | str) -> str:
+        """Return a canonical absolute string path for DB/cache comparisons."""
+        return str(Path(path).resolve())
+
+    @staticmethod
+    def _decode_meta_json(meta_json: Optional[str]) -> Dict[str, Any]:
+        """Safely decode a metadata JSON blob into a dictionary."""
+        if not meta_json:
+            return {}
+        try:
+            value = json.loads(meta_json)
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def get_image_ids_for_paths(self, paths: List[Path | str]) -> List[int]:
+        """Resolve image row ids for the provided paths, preserving input order."""
+        resolved_paths = [self._resolve_path_string(path) for path in paths]
+        if not resolved_paths:
+            return []
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            placeholders = ",".join("?" for _ in resolved_paths)
+            c.execute(
+                f"SELECT id, file_path FROM images WHERE file_path IN ({placeholders})",  # noqa: S608
+                resolved_paths,
+            )
+            rows = c.fetchall()
+
+        id_by_path = {str(file_path): int(row_id) for row_id, file_path in rows}
+        return [id_by_path[path] for path in resolved_paths if path in id_by_path]
+
     def save_embeddings(
         self,
         embeddings: np.ndarray,
@@ -275,6 +309,7 @@ class ClassKitDB:
         device: str = "cpu",
         batch_size: int = 32,
         meta: Optional[Dict[str, Any]] = None,
+        image_paths: Optional[List[Path | str]] = None,
     ) -> int:
         """
         Save embeddings to disk and metadata to database.
@@ -301,6 +336,12 @@ class ClassKitDB:
         # Save embeddings to disk
         np.save(file_path, embeddings)
 
+        metadata = dict(meta or {})
+        if image_paths is not None:
+            image_ids = self.get_image_ids_for_paths(image_paths)
+            if len(image_ids) == len(image_paths):
+                metadata["image_ids"] = image_ids
+
         # Save metadata to database
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
@@ -317,7 +358,7 @@ class ClassKitDB:
                     embeddings.shape[0],
                     embeddings.shape[1],
                     str(file_path),
-                    json.dumps(meta) if meta else None,
+                    json.dumps(metadata) if metadata else None,
                 ),
             )
             conn.commit()
@@ -343,7 +384,7 @@ class ClassKitDB:
             if device:
                 c.execute(
                     """
-                    SELECT file_path, num_images, dimension, device, batch_size,
+                    SELECT id, file_path, num_images, dimension, device, batch_size,
                            timestamp, meta_json
                     FROM embeddings
                     WHERE model_name = ? AND device = ?
@@ -355,7 +396,7 @@ class ClassKitDB:
             else:
                 c.execute(
                     """
-                    SELECT file_path, num_images, dimension, device, batch_size,
+                    SELECT id, file_path, num_images, dimension, device, batch_size,
                            timestamp, meta_json
                     FROM embeddings
                     WHERE model_name = ?
@@ -370,9 +411,16 @@ class ClassKitDB:
             if not result:
                 return None
 
-            file_path, num_images, dimension, dev, batch_size, timestamp, meta_json = (
-                result
-            )
+            (
+                embedding_id,
+                file_path,
+                num_images,
+                dimension,
+                dev,
+                batch_size,
+                timestamp,
+                meta_json,
+            ) = result
 
             # Check if file exists
             if not Path(file_path).exists():
@@ -389,6 +437,7 @@ class ClassKitDB:
 
             # Build metadata
             metadata = {
+                "id": embedding_id,
                 "model_name": model_name,
                 "device": dev,
                 "batch_size": batch_size,
@@ -399,16 +448,86 @@ class ClassKitDB:
             }
 
             if meta_json:
-                metadata.update(json.loads(meta_json))
+                metadata.update(self._decode_meta_json(meta_json))
 
             return embeddings, metadata
+
+    def get_incremental_embedding_prefix(
+        self,
+        model_name: str,
+        device: str,
+        image_paths: List[Path | str],
+    ) -> Optional[Tuple[np.ndarray, Dict[str, Any], List[str]]]:
+        """Return a reusable cached prefix for an additions-only image set."""
+        current_paths = [self._resolve_path_string(path) for path in image_paths]
+        current_ids = self.get_image_ids_for_paths(current_paths)
+        if len(current_ids) != len(current_paths):
+            return None
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT id, file_path, num_images, dimension, batch_size, timestamp, meta_json
+                FROM embeddings
+                WHERE model_name = ? AND device = ?
+                ORDER BY timestamp DESC
+                LIMIT 10
+                """,
+                (model_name, device),
+            )
+            rows = c.fetchall()
+
+        for row in rows:
+            (
+                embedding_id,
+                file_path,
+                num_images,
+                dimension,
+                batch_size,
+                timestamp,
+                meta_json,
+            ) = row
+            metadata = self._decode_meta_json(meta_json)
+            cached_ids = metadata.get("image_ids")
+            if not isinstance(cached_ids, list):
+                continue
+
+            cached_ids = [int(value) for value in cached_ids]
+            if len(cached_ids) >= len(current_ids):
+                continue
+            if current_ids[: len(cached_ids)] != cached_ids:
+                continue
+
+            cache_path = Path(file_path)
+            if not cache_path.exists():
+                continue
+
+            embeddings = np.load(cache_path)
+            if embeddings.shape[0] != len(cached_ids):
+                continue
+
+            payload = {
+                "id": embedding_id,
+                "model_name": model_name,
+                "device": device,
+                "batch_size": batch_size,
+                "num_images": num_images,
+                "dimension": dimension,
+                "timestamp": timestamp,
+                "file_path": file_path,
+            }
+            payload.update(metadata)
+            return embeddings, payload, current_paths[len(cached_ids) :]
+
+        return None
 
     def get_most_recent_embeddings(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
         """Load most recently cached embeddings regardless of model/device."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
-                SELECT model_name, device, batch_size, num_images, dimension,
+                SELECT id, model_name, device, batch_size, num_images, dimension,
                        file_path, timestamp, meta_json
                 FROM embeddings
                 ORDER BY timestamp DESC
@@ -419,6 +538,7 @@ class ClassKitDB:
                 return None
 
             (
+                embedding_id,
                 model_name,
                 device,
                 batch_size,
@@ -437,6 +557,7 @@ class ClassKitDB:
                 return None
 
             metadata = {
+                "id": embedding_id,
                 "model_name": model_name,
                 "device": device,
                 "batch_size": batch_size,
@@ -446,7 +567,7 @@ class ClassKitDB:
                 "file_path": file_path,
             }
             if meta_json:
-                metadata.update(json.loads(meta_json))
+                metadata.update(self._decode_meta_json(meta_json))
             return embeddings, metadata
 
     def save_cluster_cache(
@@ -491,7 +612,9 @@ class ClassKitDB:
             conn.commit()
             return c.lastrowid
 
-    def get_most_recent_cluster_cache(self) -> Optional[Dict[str, Any]]:
+    def get_most_recent_cluster_cache(
+        self, embedding_cache_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
         """Load most recently cached cluster assignments and optional centers."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
@@ -500,12 +623,10 @@ class ClassKitDB:
                        assignments_path, centers_path, timestamp, meta_json
                 FROM cluster_cache
                 ORDER BY timestamp DESC
-                LIMIT 1
                 """)
-            row = c.fetchone()
-            if not row:
-                return None
+            rows = c.fetchall()
 
+        for row in rows:
             (
                 num_images,
                 num_embeddings,
@@ -517,11 +638,16 @@ class ClassKitDB:
                 meta_json,
             ) = row
             if num_images != self.count_images():
-                return None
+                continue
+
+            meta = self._decode_meta_json(meta_json)
+            if embedding_cache_id is not None:
+                if int(meta.get("embedding_cache_id", -1)) != int(embedding_cache_id):
+                    continue
 
             assign_path = Path(assignments_path)
             if not assign_path.exists():
-                return None
+                continue
 
             assignments = np.load(assign_path)
             centers = None
@@ -538,9 +664,11 @@ class ClassKitDB:
                 "timestamp": timestamp,
                 "num_embeddings": num_embeddings,
             }
-            if meta_json:
-                payload.update(json.loads(meta_json))
+            if meta:
+                payload.update(meta)
             return payload
+
+        return None
 
     def save_umap_cache(
         self,
@@ -579,7 +707,9 @@ class ClassKitDB:
             return c.lastrowid
 
     def get_most_recent_umap_cache(
-        self, kind: str = "embedding"
+        self,
+        kind: str = "embedding",
+        embedding_cache_id: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """Load most recent cached UMAP projection of the given kind if still valid."""
         with sqlite3.connect(self.db_path) as conn:
@@ -590,21 +720,24 @@ class ClassKitDB:
                 FROM umap_cache
                 WHERE kind = ?
                 ORDER BY timestamp DESC
-                LIMIT 1
                 """,
                 (kind,),
             )
-            row = c.fetchone()
-            if not row:
-                return None
+            rows = c.fetchall()
 
+        for row in rows:
             num_images, n_neighbors, min_dist, coords_path, timestamp, meta_json = row
             if num_images != self.count_images():
-                return None
+                continue
+
+            meta = self._decode_meta_json(meta_json)
+            if embedding_cache_id is not None:
+                if int(meta.get("embedding_cache_id", -1)) != int(embedding_cache_id):
+                    continue
 
             path = Path(coords_path)
             if not path.exists():
-                return None
+                continue
 
             coords = np.load(path)
             payload = {
@@ -613,9 +746,11 @@ class ClassKitDB:
                 "min_dist": min_dist,
                 "timestamp": timestamp,
             }
-            if meta_json:
-                payload.update(json.loads(meta_json))
+            if meta:
+                payload.update(meta)
             return payload
+
+        return None
 
     def save_candidate_cache(
         self,

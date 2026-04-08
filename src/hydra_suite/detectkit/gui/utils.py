@@ -7,6 +7,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from hydra_suite.training.class_mapping import build_class_id_map, read_classes_txt
+
 from .constants import IMG_EXTS, OBB_LABEL_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,33 @@ def list_images_in_source(source_path: str) -> list[Path]:
     return results
 
 
+def ensure_detectkit_source_structure(source_path: str | Path) -> Path:
+    """Ensure a DetectKit source has ``images/``, ``labels/``, and ``classes.txt``."""
+    root = Path(source_path).expanduser().resolve()
+    missing: list[str] = []
+    if not (root / "images").is_dir():
+        missing.append("images/")
+    if not (root / "labels").is_dir():
+        missing.append("labels/")
+    if not (root / "classes.txt").is_file():
+        missing.append("classes.txt")
+    if missing:
+        missing_text = ", ".join(missing)
+        raise RuntimeError(
+            f"{root} is missing required DetectKit source entries: {missing_text}."
+        )
+    return root
+
+
+def source_class_id_map(
+    source_path: str | Path,
+    project_class_names: list[str],
+) -> dict[int, int]:
+    """Build a source->project class-id map by class name."""
+    source_class_names = read_classes_txt(source_path)
+    return build_class_id_map(source_class_names, project_class_names)
+
+
 def find_label_for_image(
     image_path: Path,
     source_path: str,
@@ -114,6 +143,7 @@ def parse_obb_label(
     label_path: Path,
     img_w: int,
     img_h: int,
+    class_id_map: dict[int, int] | None = None,
 ) -> list[dict]:
     """Parse an OBB label file and return pixel-coordinate polygons.
 
@@ -135,6 +165,11 @@ def parse_obb_label(
             continue
         try:
             class_id = int(parts[0])
+            if class_id_map is not None:
+                mapped_class_id = class_id_map.get(class_id)
+                if mapped_class_id is None:
+                    continue
+                class_id = int(mapped_class_id)
             coords = [float(v) for v in parts[1:]]
             polygon_px = [
                 (coords[i] * img_w, coords[i + 1] * img_h) for i in range(0, 8, 2)

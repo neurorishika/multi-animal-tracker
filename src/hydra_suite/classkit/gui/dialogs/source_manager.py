@@ -18,9 +18,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from hydra_suite.classkit.gui.dialogs.source_validation import (
+    count_classkit_images,
+    resolve_classkit_images_dir,
+)
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
-CLASSKIT_IMAGES_SUBDIR = "images"
 CLASSKIT_SIEVE_THRESHOLD = 5000
 
 _DARK_STYLE = """
@@ -73,6 +76,7 @@ class SourceManagerDialog(QDialog):
         header = QLabel(
             "<b>Image Sources</b><br>"
             "Manage the folders that supply images to this project. "
+            "Each source folder must contain an images/ subdirectory. "
             "Adding a folder will ingest its images; removing one will "
             "delete those images from the database."
         )
@@ -175,20 +179,18 @@ class SourceManagerDialog(QDialog):
             return
 
         d = Path(path).expanduser().resolve()
-        candidate = d / CLASSKIT_IMAGES_SUBDIR
-        if candidate.is_dir() and self._has_images(candidate):
-            resolved = candidate
-        else:
-            resolved = d
 
-        count = self._count_images(resolved)
-        if count == 0:
+        try:
+            resolved = resolve_classkit_images_dir(d)
+        except ValueError as exc:
             QMessageBox.warning(
                 self,
-                "No Images Found",
-                f"No images found in:\n{resolved}\n\nSelect a folder containing .jpg / .jpeg / .png files.",
+                "Invalid Source Folder",
+                str(exc),
             )
             return
+
+        count = count_classkit_images(resolved)
 
         existing_folders = {s["folder"] for s in self._existing}
         pending_add_folders = {str(p) for p in self._to_add}
@@ -217,7 +219,7 @@ class SourceManagerDialog(QDialog):
             if clicked == btn_sieve:
                 try:
                     subprocess.Popen(
-                        [sys.executable, "-m", "hydra_suite.filterkit.gui", str(d)],
+                        [sys.executable, "-m", "hydra_suite.filterkit", str(d)],
                         start_new_session=True,
                     )
                 except Exception as exc:
@@ -245,18 +247,6 @@ class SourceManagerDialog(QDialog):
                 if folder not in self._to_remove:
                     self._to_remove.append(folder)
         self._rebuild_list()
-
-    @staticmethod
-    def _has_images(folder: Path) -> bool:
-        exts = {".jpg", ".jpeg", ".png"}
-        return any(p.suffix.lower() in exts for p in folder.iterdir() if p.is_file())
-
-    @staticmethod
-    def _count_images(folder: Path) -> int:
-        exts = {".jpg", ".jpeg", ".png"}
-        return sum(
-            1 for p in folder.iterdir() if p.is_file() and p.suffix.lower() in exts
-        )
 
     @property
     def folders_to_add(self) -> List[Path]:

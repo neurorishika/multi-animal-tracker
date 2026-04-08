@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -22,14 +23,17 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+from hydra_suite.widgets.dialogs import BaseDialog
 
 from ..constants import DEFAULT_DATASET_IMAGES_DIR, DEFAULT_POSEKIT_PROJECT_DIR
 from ..models import Project
+from ..project import default_project_parent_dir
 from ..utils import get_default_skeleton_dir, list_images
 from .skeleton import SkeletonEditorDialog
 
@@ -38,7 +42,7 @@ from .skeleton import SkeletonEditorDialog
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class NewProjectDialog(QDialog):
+class NewProjectDialog(BaseDialog):
     """
     Guides the user through creating a brand-new PoseKit project:
       1. Choose where to save the project (any folder — independent of datasets)
@@ -47,25 +51,38 @@ class NewProjectDialog(QDialog):
     """
 
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("New PoseKit Project")
+        super().__init__("Create New Project", parent=parent)
         self.setMinimumSize(QSize(820, 600))
 
-        self._parent_dir: Optional[Path] = None
+        self._parent_dir: Optional[Path] = default_project_parent_dir()
         self._sources: List[Tuple[Path, str]] = []  # (dataset_dir, description)
         self._edges: List[Tuple[int, int]] = []
         self._kpt_names: List[str] = ["kp1", "kp2"]
 
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(16)
+
+        header = QLabel("<h2 style='margin:0;'>Create New Project</h2>")
+        intro = QLabel(
+            "Set the project folder first, then define annotation defaults and add the dataset sources the project should manage."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #aaaaaa;")
+        layout.addWidget(header)
+        layout.addWidget(intro)
 
         # ── 1. Project location ─────────────────────────────────────────
-        loc_group = QGroupBox("Project Location")
-        loc_form = QFormLayout(loc_group)
+        loc_group = QGroupBox("Project Details")
+        loc_layout = QVBoxLayout(loc_group)
+        loc_layout.setSpacing(10)
+        loc_form = QFormLayout()
 
         parent_row = QHBoxLayout()
         self._le_parent = QLineEdit()
         self._le_parent.setReadOnly(True)
         self._le_parent.setPlaceholderText("Choose a parent folder…")
+        self._le_parent.setText(str(self._parent_dir))
         btn_loc = QPushButton("Browse…")
         btn_loc.clicked.connect(self._pick_location)
         parent_row.addWidget(self._le_parent, 1)
@@ -76,24 +93,38 @@ class NewProjectDialog(QDialog):
         self._le_name.setPlaceholderText("e.g. my_ants_project")
         self._le_name.textChanged.connect(self._on_location_changed)
         loc_form.addRow("Project name", self._le_name)
+        loc_layout.addLayout(loc_form)
 
-        self._lbl_preview = QLabel(
-            "<i>Select a parent folder and enter a name above</i>"
-        )
+        preview_label = QLabel("Project Folder")
+        preview_label.setStyleSheet("color: #cfcfcf;")
+        loc_layout.addWidget(preview_label)
+
+        self._lbl_preview = QLabel()
         self._lbl_preview.setWordWrap(True)
-        loc_form.addRow("Will be created at", self._lbl_preview)
+        self._lbl_preview.setStyleSheet(
+            "padding: 10px; background-color: #252526; border-radius: 6px; "
+            "border-left: 3px solid #0e639c;"
+        )
+        loc_layout.addWidget(self._lbl_preview)
 
         layout.addWidget(loc_group)
 
-        # ── 2. Classes ──────────────────────────────────────────────────
-        cls_group = QGroupBox("Classes  (one per line)")
-        cls_layout = QVBoxLayout(cls_group)
+        # ── 2. Classes + Skeleton ───────────────────────────────────────
+        setup_group = QGroupBox("Annotation Setup")
+        setup_layout = QVBoxLayout(setup_group)
+        setup_layout.setSpacing(12)
+
+        classes_help = QLabel(
+            "Add one pose class per line, then confirm the keypoint names and skeleton used by the project."
+        )
+        classes_help.setWordWrap(True)
+        classes_help.setStyleSheet("color: #aaaaaa;")
+        setup_layout.addWidget(classes_help)
+
         self._classes_edit = QPlainTextEdit("object")
         self._classes_edit.setMaximumHeight(72)
-        cls_layout.addWidget(self._classes_edit)
-        layout.addWidget(cls_group)
+        setup_layout.addWidget(self._classes_edit)
 
-        # ── 3. Keypoints & Skeleton ─────────────────────────────────────
         skel_group = QGroupBox("Keypoints & Skeleton")
         skel_layout = QHBoxLayout(skel_group)
         self._skel_lbl = QLabel(self._get_skeleton_summary())
@@ -102,11 +133,18 @@ class NewProjectDialog(QDialog):
         btn_skel.clicked.connect(self._edit_skeleton)
         skel_layout.addWidget(self._skel_lbl, 1)
         skel_layout.addWidget(btn_skel)
-        layout.addWidget(skel_group)
+        setup_layout.addWidget(skel_group)
+        layout.addWidget(setup_group)
 
         # ── 4. Dataset Sources ──────────────────────────────────────────
-        src_group = QGroupBox("Dataset Sources  (at least one required)")
+        src_group = QGroupBox("Dataset Sources")
         sg_layout = QVBoxLayout(src_group)
+        src_help = QLabel(
+            "Add at least one source. You can add more sources later from the project workspace."
+        )
+        src_help.setWordWrap(True)
+        src_help.setStyleSheet("color: #aaaaaa;")
+        sg_layout.addWidget(src_help)
         self._sources_lw = QListWidget()
         self._sources_lw.setMaximumHeight(110)
         self._sources_lw.setSelectionMode(QListWidget.NoSelection)
@@ -130,25 +168,35 @@ class NewProjectDialog(QDialog):
         opt_form.addRow("Keypoint → bbox padding", self._pad_spin)
         layout.addWidget(opt_group)
 
-        # ── Buttons ─────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        self._btn_create = QPushButton("Create Project")
-        self._btn_create.setEnabled(False)
-        self._btn_create.setDefault(True)
-        btn_cancel = QPushButton("Cancel")
-        btn_row.addWidget(self._btn_create)
-        btn_row.addWidget(btn_cancel)
-        layout.addLayout(btn_row)
+        info = QLabel(
+            "PoseKit creates a standalone project folder with labels, annotation defaults, and per-source metadata at the selected location."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            "padding: 10px; background-color: #252526; border-radius: 6px; "
+            "border-left: 3px solid #0e639c; color: #aaaaaa;"
+        )
+        layout.addWidget(info)
 
-        self._btn_create.clicked.connect(self._do_accept)
-        btn_cancel.clicked.connect(self.reject)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        self.add_content(scroll)
+
+        self._buttons.accepted.disconnect()
+        self._buttons.accepted.connect(self._do_accept)
+        create_button = self._buttons.button(QDialogButtonBox.Ok)
+        create_button.setText("Create Project")
+        create_button.setDefault(True)
+
+        self._on_location_changed()
 
     # ── internal helpers ────────────────────────────────────────────────
 
     def _refresh_create_btn(self):
         name = self._le_name.text().strip()
-        self._btn_create.setEnabled(
+        create_button = self._buttons.button(QDialogButtonBox.Ok)
+        create_button.setEnabled(
             self._parent_dir is not None and bool(name) and len(self._sources) > 0
         )
 
@@ -174,12 +222,12 @@ class NewProjectDialog(QDialog):
     def _on_location_changed(self):
         name = self._le_name.text().strip()
         if self._parent_dir and name:
-            self._lbl_preview.setText(str(self._parent_dir / name))
+            self._lbl_preview.setText(f"Project folder: {self._parent_dir / name}")
         elif self._parent_dir:
-            self._lbl_preview.setText("<i>Enter a project name above</i>")
+            self._lbl_preview.setText("Project folder: enter a project name.")
         else:
             self._lbl_preview.setText(
-                "<i>Select a parent folder and enter a name above</i>"
+                "Project folder: choose a parent folder and enter a project name."
             )
         self._refresh_create_btn()
 

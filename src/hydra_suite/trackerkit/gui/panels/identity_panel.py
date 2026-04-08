@@ -123,7 +123,6 @@ class IdentityPanel(QWidget):
             "Cost bonus (subtracted) when an identity observation matches the track.\n"
             "Divided equally across all active identity sources (AprilTags + each CNN)."
         )
-        fl_identity_cost.addRow("Identity match bonus", self.spin_identity_match_bonus)
         self.spin_identity_mismatch_penalty = QDoubleSpinBox()
         self.spin_identity_mismatch_penalty.setRange(0.0, 500.0)
         self.spin_identity_mismatch_penalty.setSingleStep(5.0)
@@ -132,9 +131,13 @@ class IdentityPanel(QWidget):
             "Cost penalty (added) when an identity observation conflicts with the track.\n"
             "Divided equally across all active identity sources (AprilTags + each CNN)."
         )
-        fl_identity_cost.addRow(
-            "Identity mismatch penalty", self.spin_identity_mismatch_penalty
+        self.identity_cost_row_widget = self._build_inline_fields_row(
+            [
+                ("Match bonus", self.spin_identity_match_bonus, 0),
+                ("Mismatch penalty", self.spin_identity_mismatch_penalty, 0),
+            ]
         )
+        fl_identity_cost.addRow("Identity costs", self.identity_cost_row_widget)
         identity_content_layout.addLayout(fl_identity_cost)
 
         # --- AprilTags group ---
@@ -154,7 +157,6 @@ class IdentityPanel(QWidget):
             "AprilTag family to detect.\n"
             "The list is populated from your installed apriltag library."
         )
-        fl_apriltags.addRow("AprilTag family", self.combo_apriltag_family)
         self.spin_apriltag_decimate = QDoubleSpinBox()
         self.spin_apriltag_decimate.setRange(1.0, 4.0)
         self.spin_apriltag_decimate.setValue(1.0)
@@ -162,7 +164,13 @@ class IdentityPanel(QWidget):
         self.spin_apriltag_decimate.setToolTip(
             "Decimation factor for faster detection (higher = faster but less accurate)"
         )
-        fl_apriltags.addRow("AprilTag downsampling", self.spin_apriltag_decimate)
+        self.apriltag_row_widget = self._build_inline_fields_row(
+            [
+                ("Family", self.combo_apriltag_family, 1),
+                ("Downsampling", self.spin_apriltag_decimate, 0),
+            ]
+        )
+        fl_apriltags.addRow("AprilTag settings", self.apriltag_row_widget)
         vl_apriltags_outer.addWidget(self.apriltag_settings_widget)
         self.g_apriltags.toggled.connect(self.apriltag_settings_widget.setVisible)
         identity_content_layout.addWidget(self.g_apriltags)
@@ -280,6 +288,26 @@ class IdentityPanel(QWidget):
             "Pose contamination suppression", self.chk_suppress_foreign_obb
         )
 
+        form.addWidget(self.g_individual_pipeline_common)
+
+        self.g_headtail = QGroupBox("Enable Head-Tail Orientation")
+        self.g_headtail.setCheckable(True)
+        self.g_headtail.setChecked(False)
+        self.g_headtail.toggled.connect(self._on_headtail_analysis_toggled)
+        self._main_window._set_compact_section_widget(self.g_headtail)
+        vl_headtail = QVBoxLayout(self.g_headtail)
+        self.headtail_content = QWidget()
+        self.headtail_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        headtail_content_layout = QVBoxLayout(self.headtail_content)
+        headtail_content_layout.setContentsMargins(0, 0, 0, 0)
+        headtail_content_layout.setSpacing(8)
+        self.lbl_headtail_help = self._main_window._create_help_label(
+            "Optional orientation classifier that resolves head vs. tail along the OBB major axis."
+        )
+        headtail_content_layout.addWidget(self.lbl_headtail_help)
+        fl_headtail = QFormLayout()
+        fl_headtail.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
         # Head-tail orientation classifier
         self.combo_yolo_headtail_model_type = QComboBox()
         self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
@@ -298,10 +326,24 @@ class IdentityPanel(QWidget):
         self.combo_yolo_headtail_model.activated.connect(
             self._main_window.on_yolo_headtail_model_changed
         )
+        self.combo_yolo_headtail_model.currentIndexChanged.connect(
+            lambda _index: self._sync_headtail_model_remove_button()
+        )
         self.combo_yolo_headtail_model.setFixedHeight(30)
         self.combo_yolo_headtail_model.setToolTip(
             "Optional classifier to resolve head vs. tail orientation along the OBB major axis.\n"
             "Runs during tracking and post-hoc individual analysis."
+        )
+        self.btn_remove_yolo_headtail_model = self._create_model_remove_button(
+            "Remove the selected head-tail model from the local repository."
+        )
+        self.btn_remove_yolo_headtail_model.clicked.connect(
+            lambda: self._main_window._handle_remove_selected_yolo_model(
+                combo=self.combo_yolo_headtail_model,
+                refresh_callback=self._refresh_yolo_headtail_model_combo,
+                selection_callback=self._main_window._set_yolo_headtail_model_selection,
+                model_kind="head-tail model",
+            )
         )
 
         self.headtail_model_row_widget = QWidget()
@@ -310,7 +352,8 @@ class IdentityPanel(QWidget):
         _headtail_row.setSpacing(4)
         _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
         _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
-        fl_common.addRow("Head-tail model", self.headtail_model_row_widget)
+        _headtail_row.addWidget(self.btn_remove_yolo_headtail_model, 0)
+        fl_headtail.addRow("Head-tail model", self.headtail_model_row_widget)
 
         self.spin_yolo_headtail_conf = QDoubleSpinBox()
         self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
@@ -321,7 +364,7 @@ class IdentityPanel(QWidget):
             "Minimum classifier confidence for a head-tail assignment to be accepted (0–1).\n"
             "Lower = more assignments accepted; higher = fewer but more reliable."
         )
-        fl_common.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
+        fl_headtail.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
 
         self.chk_pose_overrides_headtail = QCheckBox(
             "Pose orientation overrides head-tail"
@@ -330,9 +373,12 @@ class IdentityPanel(QWidget):
         self.chk_pose_overrides_headtail.setToolTip(
             "When enabled, valid pose heading takes precedence over head-tail heading."
         )
-        fl_common.addRow("", self.chk_pose_overrides_headtail)
+        fl_headtail.addRow("", self.chk_pose_overrides_headtail)
 
-        form.addWidget(self.g_individual_pipeline_common)
+        headtail_content_layout.addLayout(fl_headtail)
+        vl_headtail.addWidget(self.headtail_content)
+
+        form.addWidget(self.g_headtail)
         form.addWidget(self.g_identity)
 
         self.g_pose_runtime = QGroupBox("Enable Pose Extraction")
@@ -370,7 +416,6 @@ class IdentityPanel(QWidget):
         self.combo_pose_model_type.currentIndexChanged.connect(
             self._main_window._sync_pose_backend_ui
         )
-        fl_pose.addRow("Pose model type", self.combo_pose_model_type)
 
         self.combo_pose_runtime_flavor = QComboBox()
         self.combo_pose_runtime_flavor.setToolTip(
@@ -395,8 +440,29 @@ class IdentityPanel(QWidget):
         self.combo_pose_model.currentIndexChanged.connect(
             self._main_window.on_pose_model_changed
         )
+        self.combo_pose_model.currentIndexChanged.connect(
+            lambda _index: self._sync_pose_model_remove_button()
+        )
         # Note: combo_pose_model will be populated post-construction
-        fl_pose.addRow("Pose model", self.combo_pose_model)
+        self.btn_remove_pose_model = self._create_model_remove_button(
+            "Remove the selected pose model from the local repository."
+        )
+        self.btn_remove_pose_model.clicked.connect(
+            self._main_window._handle_remove_selected_pose_model
+        )
+        self.pose_model_row_widget = QWidget()
+        pose_model_row_layout = QHBoxLayout(self.pose_model_row_widget)
+        pose_model_row_layout.setContentsMargins(0, 0, 0, 0)
+        pose_model_row_layout.setSpacing(4)
+        pose_model_row_layout.addWidget(self.combo_pose_model, 1)
+        pose_model_row_layout.addWidget(self.btn_remove_pose_model, 0)
+        self.pose_model_inline_row_widget = self._build_inline_fields_row(
+            [
+                ("Type", self.combo_pose_model_type, 0),
+                ("Model", self.pose_model_row_widget, 1),
+            ]
+        )
+        fl_pose.addRow("Pose model", self.pose_model_inline_row_widget)
 
         self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
         self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
@@ -406,7 +472,6 @@ class IdentityPanel(QWidget):
         self.spin_pose_min_kpt_conf_valid.setToolTip(
             "Minimum per-keypoint confidence to consider a keypoint valid."
         )
-        fl_pose.addRow("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid)
 
         self.spin_pose_batch = QSpinBox()
         self.spin_pose_batch.setRange(1, 256)
@@ -416,7 +481,13 @@ class IdentityPanel(QWidget):
         self.spin_pose_batch.setToolTip(
             "Shared batch size for pose inference across YOLO and SLEAP backends."
         )
-        fl_pose.addRow("Pose batch size", self.spin_pose_batch)
+        self.pose_runtime_thresholds_row_widget = self._build_inline_fields_row(
+            [
+                ("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid, 0),
+                ("Pose batch size", self.spin_pose_batch, 0),
+            ]
+        )
+        fl_pose.addRow("Pose inference", self.pose_runtime_thresholds_row_widget)
 
         h_pose_skeleton = QHBoxLayout()
         self.line_pose_skeleton_file = QLineEdit()
@@ -551,6 +622,8 @@ class IdentityPanel(QWidget):
         self._main_window._set_form_row_visible(
             fl_pose, self.pose_sleap_experimental_row_widget, False
         )
+        self._sync_headtail_model_remove_button()
+        self._sync_pose_model_remove_button()
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -560,6 +633,8 @@ class IdentityPanel(QWidget):
         self.g_identity.setEnabled(False)
         self.g_individual_pipeline_common.setVisible(False)
         self.g_individual_pipeline_common.setEnabled(False)
+        self.g_headtail.setVisible(False)
+        self.g_headtail.setEnabled(False)
         self.g_pose_runtime.setVisible(False)
         self.g_pose_runtime.setEnabled(False)
         # Note: _refresh_pose_direction_keypoint_lists and _sync_pose_backend_ui
@@ -588,6 +663,25 @@ class IdentityPanel(QWidget):
     def _on_pose_analysis_toggled(self, state):
         """Enable/disable pose-extraction controls inside individual analysis."""
         self._sync_pose_analysis_ui()
+
+    def _on_headtail_analysis_toggled(self, state):
+        """Enable/disable head-tail controls inside individual analysis."""
+        self._sync_headtail_analysis_ui()
+        self._main_window._sync_individual_analysis_mode_ui()
+
+    @staticmethod
+    def _build_inline_fields_row(fields):
+        """Build a compact row containing multiple labeled controls."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for label_text, field_widget, stretch in fields:
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #cccccc;")
+            layout.addWidget(label)
+            layout.addWidget(field_widget, stretch)
+        return widget
 
     @staticmethod
     def _get_apriltag_families() -> list:
@@ -692,7 +786,6 @@ class IdentityPanel(QWidget):
             header_row = QHBoxLayout()
             self.combo_model = QComboBox()
             self.combo_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self._populate_model_combo()
             self.combo_model.activated.connect(self._on_model_selected)
             header_row.addWidget(self.combo_model)
             self.btn_remove = QPushButton("\u2715")
@@ -700,6 +793,14 @@ class IdentityPanel(QWidget):
             self.btn_remove.setToolTip("Remove this CNN classifier")
             self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
             header_row.addWidget(self.btn_remove)
+            self.btn_remove_model = QPushButton("-")
+            self.btn_remove_model.setObjectName("SecondaryBtn")
+            self.btn_remove_model.setFixedSize(28, 28)
+            self.btn_remove_model.setToolTip(
+                "Remove the selected classification model from the local repository."
+            )
+            self.btn_remove_model.clicked.connect(self._handle_remove_selected_model)
+            header_row.addWidget(self.btn_remove_model)
             outer.addLayout(header_row)
             form = QFormLayout()
             form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
@@ -727,6 +828,10 @@ class IdentityPanel(QWidget):
             line.setFrameShape(QFrame.HLine)
             line.setFrameShadow(QFrame.Sunken)
             outer.addWidget(line)
+            self.combo_model.currentIndexChanged.connect(
+                lambda _index: self._sync_model_ui()
+            )
+            self._populate_model_combo()
 
         def _populate_model_combo(self):
             """Populate combo from model_registry.json (usage_role == 'cnn_identity')."""
@@ -759,6 +864,7 @@ class IdentityPanel(QWidget):
             if idx >= 0:
                 self.combo_model.setCurrentIndex(idx)
             self.combo_model.blockSignals(False)
+            self._sync_model_ui()
 
         def _on_model_selected(self, index: int):
             rel_path = self.combo_model.itemData(index)
@@ -766,7 +872,19 @@ class IdentityPanel(QWidget):
                 self._main_window._handle_add_new_cnn_identity_model()
                 self._populate_model_combo()
                 return
-            self._update_verification_labels(rel_path)
+            self._sync_model_ui()
+
+        def _handle_remove_selected_model(self) -> None:
+            """Remove the currently selected CNN identity model from the repository."""
+            rel_path = self.combo_model.currentData()
+            if not self._has_selected_model(rel_path):
+                return
+            if not self._main_window._confirm_and_remove_repository_model(
+                rel_path,
+                model_kind="classification model",
+            ):
+                return
+            self._main_window._identity_panel._refresh_cnn_classifier_model_rows()
 
         def _update_verification_labels(self, rel_path: str):
             from hydra_suite.trackerkit.gui.main_window import (
@@ -851,9 +969,22 @@ class IdentityPanel(QWidget):
             if "window" in cfg:
                 self.spin_window.setValue(int(cfg["window"]))
 
+        @staticmethod
+        def _has_selected_model(rel_path: object) -> bool:
+            """Return True when the current row points to a removable model."""
+            return bool(rel_path and rel_path not in ("__add_new__", "__none__"))
+
+        def _sync_model_ui(self) -> None:
+            """Keep verification labels and the remove button in sync with selection."""
+            rel_path = self.combo_model.currentData()
+            self.btn_remove_model.setEnabled(self._has_selected_model(rel_path))
+            self._update_verification_labels(
+                rel_path if self._has_selected_model(rel_path) else ""
+            )
+
     def _add_cnn_classifier_row(self) -> "IdentityPanel.CNNClassifierRow":
         """Add a new CNN classifier row and return it."""
-        row = self.CNNClassifierRow(self)
+        row = self.CNNClassifierRow(self._main_window, self)
         row.remove_requested.connect(self._remove_cnn_classifier_row)
         self.cnn_rows_layout.addWidget(row)
         self.cnn_scroll_area.setVisible(True)
@@ -874,6 +1005,12 @@ class IdentityPanel(QWidget):
             if item and isinstance(item.widget(), self.CNNClassifierRow):
                 rows.append(item.widget())
         return rows
+
+    def _refresh_cnn_classifier_model_rows(self) -> None:
+        """Refresh the shared CNN model store and all visible classifier rows."""
+        self._refresh_cnn_identity_model_combo()
+        for row in self._cnn_classifier_rows():
+            row._populate_model_combo()
 
     def _refresh_cnn_identity_model_combo(self) -> None:
         """Populate the CNN identity model combo from model_registry.json."""
@@ -1052,6 +1189,15 @@ class IdentityPanel(QWidget):
         self.pose_runtime_content.setVisible(pose_enabled)
         self.pose_runtime_content.setEnabled(pose_enabled)
 
+    def _sync_headtail_analysis_ui(self):
+        """Show head-tail controls only when the section is enabled."""
+        headtail_enabled = bool(self.g_headtail.isChecked())
+        configured_model = bool(self._get_configured_yolo_headtail_model_path().strip())
+        self.headtail_content.setVisible(headtail_enabled)
+        self.headtail_content.setEnabled(headtail_enabled)
+        self.spin_yolo_headtail_conf.setEnabled(headtail_enabled and configured_model)
+        self.chk_pose_overrides_headtail.setEnabled(headtail_enabled)
+
     def _refresh_pose_direction_keypoint_lists(self):
         """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
         prev_ignore = self._main_window._selected_pose_group_keypoints(
@@ -1152,10 +1298,44 @@ class IdentityPanel(QWidget):
             usage_role="headtail",
             repository_dir=repo_dir,
         )
+        self._sync_headtail_model_remove_button()
 
     def _get_selected_yolo_headtail_model_path(self) -> object:
-        """Return currently selected head-tail model path."""
+        """Return the effective head-tail model path for runtime use."""
+        if not getattr(self, "g_headtail", None) or not self.g_headtail.isChecked():
+            return ""
+        return self._get_configured_yolo_headtail_model_path()
+
+    def _get_configured_yolo_headtail_model_path(self) -> object:
+        """Return the configured head-tail model path regardless of enable state."""
         return self._main_window._get_selected_model_path_from_selector(
             self.combo_yolo_headtail_model,
             default_path="",
+        )
+
+    @staticmethod
+    def _create_model_remove_button(tooltip: str) -> QPushButton:
+        """Create a compact remove button for model-selector rows."""
+        button = QPushButton("-")
+        button.setObjectName("SecondaryBtn")
+        button.setFixedSize(28, 30)
+        button.setToolTip(tooltip)
+        return button
+
+    @staticmethod
+    def _combo_has_selected_model(combo: QComboBox) -> bool:
+        """Return True when the combo currently points to a removable model."""
+        selected_data = combo.currentData()
+        return bool(selected_data and selected_data not in ("__add_new__", "__none__"))
+
+    def _sync_headtail_model_remove_button(self) -> None:
+        """Enable head-tail model removal only for a real current selection."""
+        self.btn_remove_yolo_headtail_model.setEnabled(
+            self._combo_has_selected_model(self.combo_yolo_headtail_model)
+        )
+
+    def _sync_pose_model_remove_button(self) -> None:
+        """Enable pose-model removal only for a real current selection."""
+        self.btn_remove_pose_model.setEnabled(
+            self._combo_has_selected_model(self.combo_pose_model)
         )

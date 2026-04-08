@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
     def __init__(self, project: Project, image_paths: List[Path]) -> None:
         super().__init__()
         self.config = PoseKitConfig()
-        self.setWindowTitle("PoseKit Labeler")
+        self.setWindowTitle("PoseKit")
         self.apply_stylesheet()
 
         self.project = project
@@ -760,6 +760,12 @@ class MainWindow(QMainWindow):
         self.lbl_info.setText("Select a frame to display.")
         self._show_canvas_logo_placeholder()
         self._content_stack.setCurrentIndex(1 if self.image_paths else 0)
+
+        # Hide the menu bar and toolbar on the welcome page; show them in the main view.
+        on_welcome = not bool(self.image_paths)
+        self.menuBar().setVisible(not on_welcome)
+        for tb in self.findChildren(QToolBar):
+            tb.setVisible(not on_welcome)
 
     def _make_welcome_page(self) -> QWidget:
         """Logo/welcome screen shown when PoseKit starts without a loaded project."""

@@ -11,6 +11,5 @@
   "tensorrt_build_workspace_gb": 4.0,
   "tensorrt_build_batch_size": null,
   "dataset_yolo_confidence_threshold": 0.05,
-  "dataset_yolo_iou_threshold": 0.5,
-  "xanylabeling_env": "x-anylabeling-cpu"
+  "dataset_yolo_iou_threshold": 0.5
 }

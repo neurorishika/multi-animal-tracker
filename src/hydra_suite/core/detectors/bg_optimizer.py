@@ -19,6 +19,7 @@ can run *before* body-size calibration.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -35,19 +36,181 @@ from PySide6.QtCore import QThread, Signal
 logger = logging.getLogger(__name__)
 
 
-def _suggest_trial_params(trial, tune, params):
+def _expected_body_area(params: Dict[str, Any]) -> float:
+    """Return the one-animal area implied by the current body-size settings."""
+    reference_body_size = float(params.get("REFERENCE_BODY_SIZE", 0.0) or 0.0)
+    resize_factor = float(params.get("RESIZE_FACTOR", 1.0) or 1.0)
+    if reference_body_size <= 0.0 or resize_factor <= 0.0:
+        return 0.0
+    return float(np.pi * (reference_body_size / 2.0) ** 2 * (resize_factor**2))
+
+
+def _prime_frame_search_upper_bound(params: Dict[str, Any], total_frames: int) -> int:
+    """Choose a practical upper bound when tuning background priming frames."""
+    if total_frames <= 0:
+        return 0
+    current = max(0, int(params.get("BACKGROUND_PRIME_FRAMES", 30) or 0))
+    return min(total_frames, max(current * 4, current + 24, 120))
+
+
+def _build_prime_frame_indices(total_frames: int, max_prime_frames: int) -> np.ndarray:
+    """Build deterministic prime-frame indices for repeatable background priming."""
+    if total_frames <= 0 or max_prime_frames <= 0:
+        return np.array([], dtype=int)
+    if max_prime_frames >= total_frames:
+        return np.arange(total_frames, dtype=int)
+    return np.unique(np.linspace(0, total_frames - 1, max_prime_frames, dtype=int))
+
+
+def _suggest_object_size_params(trial, tune, params):
+    """Suggest size-filter bounds while preserving the GUI's multiplier semantics."""
+    body_area = _expected_body_area(params)
+    current_min_px = float(
+        params.get("MIN_OBJECT_SIZE", max(body_area * 0.3, 1.0))
+        or max(body_area * 0.3, 1.0)
+    )
+    current_max_px = float(
+        params.get("MAX_OBJECT_SIZE", max(body_area * 3.0, current_min_px + 1.0))
+        or max(body_area * 3.0, current_min_px + 1.0)
+    )
+
+    if body_area > 0.0:
+        current_min_mult = max(0.05, current_min_px / body_area)
+        current_max_mult = max(current_min_mult + 0.05, current_max_px / body_area)
+
+        if "MIN_OBJECT_SIZE" in tune:
+            min_mult = trial.suggest_float("MIN_OBJECT_SIZE_MULTIPLIER", 0.05, 2.0)
+        else:
+            min_mult = current_min_mult
+
+        if "MAX_OBJECT_SIZE" in tune:
+            max_mult = trial.suggest_float(
+                "MAX_OBJECT_SIZE_MULTIPLIER",
+                max(min_mult + 0.05, 0.5),
+                10.0,
+            )
+        else:
+            max_mult = max(current_max_mult, min_mult + 0.05)
+
+        return int(round(min_mult * body_area)), int(round(max_mult * body_area))
+
+    min_low = 1
+    min_high = max(min_low + 1, int(round(max(current_min_px * 3.0, 250.0))))
+    if "MIN_OBJECT_SIZE" in tune:
+        min_px = trial.suggest_int("MIN_OBJECT_SIZE", min_low, min_high)
+    else:
+        min_px = int(round(current_min_px))
+
+    max_low = max(min_px + 1, int(round(max(current_max_px * 0.5, min_px + 1))))
+    max_high = max(max_low + 1, int(round(max(current_max_px * 3.0, 500.0))))
+    if "MAX_OBJECT_SIZE" in tune:
+        max_px = trial.suggest_int("MAX_OBJECT_SIZE", max_low, max_high)
+    else:
+        max_px = int(round(max(current_max_px, min_px + 1)))
+    return min_px, max_px
+
+
+def _suggest_trial_params(trial, tune, params, total_frames):
     """Suggest or inherit each BG-sub detection parameter for an Optuna trial."""
     trial_params: Dict[str, Any] = {}
 
+    # Image adjustments / polarity
+    if "BRIGHTNESS" in tune:
+        trial_params["BRIGHTNESS"] = trial.suggest_int("BRIGHTNESS", -255, 255)
+    else:
+        trial_params["BRIGHTNESS"] = int(params.get("BRIGHTNESS", 0))
+
+    if "CONTRAST" in tune:
+        trial_params["CONTRAST"] = trial.suggest_float("CONTRAST", 0.1, 3.0)
+    else:
+        trial_params["CONTRAST"] = float(params.get("CONTRAST", 1.0))
+
+    if "GAMMA" in tune:
+        trial_params["GAMMA"] = trial.suggest_float("GAMMA", 0.1, 3.0)
+    else:
+        trial_params["GAMMA"] = float(params.get("GAMMA", 1.0))
+
+    if "DARK_ON_LIGHT_BACKGROUND" in tune:
+        trial_params["DARK_ON_LIGHT_BACKGROUND"] = trial.suggest_categorical(
+            "DARK_ON_LIGHT_BACKGROUND",
+            [True, False],
+        )
+    else:
+        trial_params["DARK_ON_LIGHT_BACKGROUND"] = bool(
+            params.get("DARK_ON_LIGHT_BACKGROUND", True)
+        )
+
+    # Background model
+    if "BACKGROUND_PRIME_FRAMES" in tune:
+        trial_params["BACKGROUND_PRIME_FRAMES"] = trial.suggest_int(
+            "BACKGROUND_PRIME_FRAMES",
+            0,
+            _prime_frame_search_upper_bound(params, total_frames),
+        )
+    else:
+        trial_params["BACKGROUND_PRIME_FRAMES"] = int(
+            params.get("BACKGROUND_PRIME_FRAMES", 30)
+        )
+
+    if "ENABLE_ADAPTIVE_BACKGROUND" in tune:
+        enable_adaptive = trial.suggest_categorical(
+            "ENABLE_ADAPTIVE_BACKGROUND",
+            [True, False],
+        )
+    else:
+        enable_adaptive = bool(params.get("ENABLE_ADAPTIVE_BACKGROUND", True))
+    trial_params["ENABLE_ADAPTIVE_BACKGROUND"] = enable_adaptive
+
+    if "BACKGROUND_LEARNING_RATE" in tune:
+        trial_params["BACKGROUND_LEARNING_RATE"] = trial.suggest_float(
+            "BACKGROUND_LEARNING_RATE",
+            1e-5,
+            0.1,
+            log=True,
+        )
+    else:
+        trial_params["BACKGROUND_LEARNING_RATE"] = float(
+            params.get("BACKGROUND_LEARNING_RATE", 0.001)
+        )
+
+    # Lighting stabilization
+    if "ENABLE_LIGHTING_STABILIZATION" in tune:
+        enable_lighting = trial.suggest_categorical(
+            "ENABLE_LIGHTING_STABILIZATION",
+            [True, False],
+        )
+    else:
+        enable_lighting = bool(params.get("ENABLE_LIGHTING_STABILIZATION", True))
+    trial_params["ENABLE_LIGHTING_STABILIZATION"] = enable_lighting
+
+    if "LIGHTING_SMOOTH_FACTOR" in tune:
+        trial_params["LIGHTING_SMOOTH_FACTOR"] = trial.suggest_float(
+            "LIGHTING_SMOOTH_FACTOR",
+            0.8,
+            0.999,
+        )
+    else:
+        trial_params["LIGHTING_SMOOTH_FACTOR"] = float(
+            params.get("LIGHTING_SMOOTH_FACTOR", 0.95)
+        )
+
+    if "LIGHTING_MEDIAN_WINDOW" in tune:
+        median_half = trial.suggest_int("LIGHTING_MEDIAN_HALF", 1, 7)
+        trial_params["LIGHTING_MEDIAN_WINDOW"] = median_half * 2 + 1
+    else:
+        trial_params["LIGHTING_MEDIAN_WINDOW"] = int(
+            params.get("LIGHTING_MEDIAN_WINDOW", 5)
+        )
+
     # THRESHOLD_VALUE
     if "THRESHOLD_VALUE" in tune:
-        trial_params["THRESHOLD_VALUE"] = trial.suggest_int("THRESHOLD_VALUE", 5, 80)
+        trial_params["THRESHOLD_VALUE"] = trial.suggest_int("THRESHOLD_VALUE", 0, 255)
     else:
         trial_params["THRESHOLD_VALUE"] = params["THRESHOLD_VALUE"]
 
     # MORPH_KERNEL_SIZE (odd)
     if "MORPH_KERNEL_SIZE" in tune:
-        morph_half = trial.suggest_int("MORPH_KERNEL_HALF", 1, 7)
+        morph_half = trial.suggest_int("MORPH_KERNEL_HALF", 0, 12)
         trial_params["MORPH_KERNEL_SIZE"] = morph_half * 2 + 1
     else:
         trial_params["MORPH_KERNEL_SIZE"] = params["MORPH_KERNEL_SIZE"]
@@ -60,6 +223,35 @@ def _suggest_trial_params(trial, tune, params):
     else:
         trial_params["MIN_CONTOUR_AREA"] = params["MIN_CONTOUR_AREA"]
 
+    if "MAX_CONTOUR_MULTIPLIER" in tune:
+        trial_params["MAX_CONTOUR_MULTIPLIER"] = trial.suggest_int(
+            "MAX_CONTOUR_MULTIPLIER",
+            5,
+            100,
+        )
+    else:
+        trial_params["MAX_CONTOUR_MULTIPLIER"] = int(
+            params.get("MAX_CONTOUR_MULTIPLIER", 20)
+        )
+
+    # ENABLE_SIZE_FILTERING group
+    if "ENABLE_SIZE_FILTERING" in tune:
+        enable_size_filter = trial.suggest_categorical(
+            "ENABLE_SIZE_FILTERING",
+            [True, False],
+        )
+    else:
+        enable_size_filter = bool(params.get("ENABLE_SIZE_FILTERING", False))
+    trial_params["ENABLE_SIZE_FILTERING"] = enable_size_filter
+
+    min_object_size, max_object_size = _suggest_object_size_params(
+        trial,
+        tune,
+        params,
+    )
+    trial_params["MIN_OBJECT_SIZE"] = min_object_size
+    trial_params["MAX_OBJECT_SIZE"] = max_object_size
+
     # ENABLE_ADDITIONAL_DILATION group
     if "ENABLE_ADDITIONAL_DILATION" in tune:
         enable_dil = trial.suggest_categorical(
@@ -70,22 +262,18 @@ def _suggest_trial_params(trial, tune, params):
         enable_dil = params.get("ENABLE_ADDITIONAL_DILATION", False)
     trial_params["ENABLE_ADDITIONAL_DILATION"] = enable_dil
 
-    if enable_dil:
-        if "DILATION_KERNEL_SIZE" in tune:
-            dil_half = trial.suggest_int("DILATION_KERNEL_HALF", 1, 5)
-            trial_params["DILATION_KERNEL_SIZE"] = dil_half * 2 + 1
-        else:
-            trial_params["DILATION_KERNEL_SIZE"] = params.get("DILATION_KERNEL_SIZE", 3)
-        if "DILATION_ITERATIONS" in tune:
-            trial_params["DILATION_ITERATIONS"] = trial.suggest_int(
-                "DILATION_ITERATIONS",
-                1,
-                5,
-            )
-        else:
-            trial_params["DILATION_ITERATIONS"] = params.get("DILATION_ITERATIONS", 1)
+    if "DILATION_KERNEL_SIZE" in tune:
+        dil_half = trial.suggest_int("DILATION_KERNEL_HALF", 0, 7)
+        trial_params["DILATION_KERNEL_SIZE"] = dil_half * 2 + 1
     else:
         trial_params["DILATION_KERNEL_SIZE"] = params.get("DILATION_KERNEL_SIZE", 3)
+    if "DILATION_ITERATIONS" in tune:
+        trial_params["DILATION_ITERATIONS"] = trial.suggest_int(
+            "DILATION_ITERATIONS",
+            1,
+            5,
+        )
+    else:
         trial_params["DILATION_ITERATIONS"] = params.get("DILATION_ITERATIONS", 1)
 
     # ENABLE_CONSERVATIVE_SPLIT group
@@ -98,34 +286,21 @@ def _suggest_trial_params(trial, tune, params):
         enable_split = params.get("ENABLE_CONSERVATIVE_SPLIT", False)
     trial_params["ENABLE_CONSERVATIVE_SPLIT"] = enable_split
 
-    if enable_split:
-        if "CONSERVATIVE_KERNEL_SIZE" in tune:
-            trial_params["CONSERVATIVE_KERNEL_SIZE"] = trial.suggest_int(
-                "CONSERVATIVE_KERNEL_SIZE",
-                1,
-                11,
-            )
-        else:
-            trial_params["CONSERVATIVE_KERNEL_SIZE"] = params.get(
-                "CONSERVATIVE_KERNEL_SIZE",
-                3,
-            )
-        if "CONSERVATIVE_ERODE_ITER" in tune:
-            trial_params["CONSERVATIVE_ERODE_ITER"] = trial.suggest_int(
-                "CONSERVATIVE_ERODE_ITER",
-                1,
-                5,
-            )
-        else:
-            trial_params["CONSERVATIVE_ERODE_ITER"] = params.get(
-                "CONSERVATIVE_ERODE_ITER",
-                1,
-            )
+    if "CONSERVATIVE_KERNEL_SIZE" in tune:
+        split_half = trial.suggest_int("CONSERVATIVE_KERNEL_HALF", 0, 7)
+        trial_params["CONSERVATIVE_KERNEL_SIZE"] = split_half * 2 + 1
     else:
         trial_params["CONSERVATIVE_KERNEL_SIZE"] = params.get(
             "CONSERVATIVE_KERNEL_SIZE",
             3,
         )
+    if "CONSERVATIVE_ERODE_ITER" in tune:
+        trial_params["CONSERVATIVE_ERODE_ITER"] = trial.suggest_int(
+            "CONSERVATIVE_ERODE_ITER",
+            1,
+            5,
+        )
+    else:
         trial_params["CONSERVATIVE_ERODE_ITER"] = params.get(
             "CONSERVATIVE_ERODE_ITER",
             1,
@@ -134,33 +309,177 @@ def _suggest_trial_params(trial, tune, params):
     return trial_params
 
 
-def _score_single_frame(
-    diff,
-    gray,
-    bg_u8,
-    trial_params,
-    detector,
-    morph_ker,
-    dil_ker,
-    roi_mask,
-):
-    """Run BG-sub pipeline on a single diff image and return (n_det, sizes)."""
-    threshold = trial_params["THRESHOLD_VALUE"]
-    enable_dil = trial_params["ENABLE_ADDITIONAL_DILATION"]
-    enable_split = trial_params["ENABLE_CONSERVATIVE_SPLIT"]
-    dil_iter = trial_params["DILATION_ITERATIONS"]
+@dataclass
+class _BgFrameCache:
+    """Video frames cached once so trials can rerun the full BG pipeline cheaply."""
 
-    _, fg = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, morph_ker)
-    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, morph_ker)
-    if dil_ker is not None and enable_dil:
-        fg = cv2.dilate(fg, dil_ker, iterations=dil_iter)
+    prime_frames: List[np.ndarray]
+    sample_frames: List[np.ndarray]
+    sample_indices: List[int]
+    roi_mask: Optional[np.ndarray]
+
+
+def _read_gray_frames(cap, frame_indices, resize_f, stop_check):
+    """Read raw grayscale frames once; trial-specific adjustments happen later."""
+    frames: List[np.ndarray] = []
+    for idx in frame_indices:
+        if stop_check():
+            cap.release()
+            return None
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        if resize_f < 1.0:
+            frame = cv2.resize(
+                frame,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+    return frames
+
+
+def _resize_roi_mask(roi_mask, frame_shape):
+    """Resize ROI mask once to match the cached frame dimensions."""
+    if roi_mask is None or frame_shape is None:
+        return roi_mask
+    if roi_mask.shape[:2] == frame_shape:
+        return roi_mask
+    return cv2.resize(
+        roi_mask,
+        (frame_shape[1], frame_shape[0]),
+        interpolation=cv2.INTER_NEAREST,
+    )
+
+
+def _prime_background_from_frames(prime_frames, trial_params, roi_mask):
+    """Prime the lightest-pixel background model from cached raw frames."""
+    from ...utils.image_processing import apply_image_adjustments
+    from ..background.model import BackgroundModel
+
+    if not prime_frames:
+        return None, None, None
+
+    brightness = trial_params.get("BRIGHTNESS", 0)
+    contrast = trial_params.get("CONTRAST", 1.0)
+    gamma = trial_params.get("GAMMA", 1.0)
+
+    bg_temp = None
+    intensity_samples: List[float] = []
+    for raw_gray in prime_frames:
+        gray = apply_image_adjustments(
+            raw_gray,
+            brightness,
+            contrast,
+            gamma,
+            use_gpu=False,
+        )
+        pixels = gray[roi_mask > 0] if roi_mask is not None else gray.ravel()
+        sample = BackgroundModel._iqr_mean_intensity(pixels)
+        if sample is not None:
+            intensity_samples.append(sample)
+
+        gray_f32 = gray.astype(np.float32)
+        if bg_temp is None:
+            bg_temp = gray_f32
+        else:
+            bg_temp = np.maximum(bg_temp, gray_f32)
+
+    if bg_temp is None:
+        return None, None, None
+
+    if intensity_samples:
+        reference_intensity = float(np.median(intensity_samples))
+    elif roi_mask is not None:
+        roi_pixels = bg_temp[roi_mask > 0]
+        reference_intensity = (
+            float(np.mean(roi_pixels))
+            if len(roi_pixels) > 0
+            else float(np.mean(bg_temp))
+        )
+    else:
+        reference_intensity = float(np.mean(bg_temp))
+
+    return bg_temp, bg_temp.copy(), reference_intensity
+
+
+def _init_trial_pipeline(trial_params, frame_cache):
+    """Create a fresh BG-sub pipeline state for one trial evaluation."""
+    from ..background.model import BackgroundModel
+    from .engine import ObjectDetector
+
+    bg_model = BackgroundModel(trial_params)
+    prime_count = max(0, int(trial_params.get("BACKGROUND_PRIME_FRAMES", 0) or 0))
+    lightest_bg, adaptive_bg, reference_intensity = _prime_background_from_frames(
+        frame_cache.prime_frames[:prime_count],
+        trial_params,
+        frame_cache.roi_mask,
+    )
+    if lightest_bg is not None:
+        bg_model.lightest_background = lightest_bg
+        bg_model.adaptive_background = adaptive_bg
+        bg_model.reference_intensity = reference_intensity
+
+    return (
+        bg_model,
+        ObjectDetector(trial_params),
+        deque(maxlen=50),
+        {},
+    )
+
+
+def _run_bg_trial_frame(
+    raw_gray,
+    frame_index,
+    trial_params,
+    bg_model,
+    detector,
+    roi_mask,
+    intensity_history,
+    lighting_state,
+):
+    """Run one cached frame through the full BG-subtraction detection pipeline."""
+    from ...utils.image_processing import apply_image_adjustments, stabilize_lighting
+
+    gray = apply_image_adjustments(
+        raw_gray,
+        trial_params.get("BRIGHTNESS", 0),
+        trial_params.get("CONTRAST", 1.0),
+        trial_params.get("GAMMA", 1.0),
+        use_gpu=False,
+    )
+
+    if trial_params.get("ENABLE_LIGHTING_STABILIZATION", True):
+        gray, intensity_history, _ = stabilize_lighting(
+            gray,
+            bg_model.reference_intensity,
+            intensity_history,
+            trial_params.get("LIGHTING_SMOOTH_FACTOR", 0.95),
+            roi_mask,
+            trial_params.get("LIGHTING_MEDIAN_WINDOW", 5),
+            lighting_state,
+            use_gpu=False,
+        )
+
+    bg_u8 = bg_model.update_and_get_background(
+        gray,
+        roi_mask,
+        tracking_stabilized=True,
+    )
+    if bg_u8 is None:
+        return gray, None, None, [], [], []
+
+    fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
     if roi_mask is not None:
-        fg = cv2.bitwise_and(fg, fg, mask=roi_mask)
-    if enable_split:
-        fg = detector.apply_conservative_split(fg, gray, bg_u8)
-    meas, sizes, _shapes, _yolo, _conf = detector.detect_objects(fg, 0)
-    return len(meas), sizes
+        fg_mask = cv2.bitwise_and(fg_mask, fg_mask, mask=roi_mask)
+    if trial_params.get("ENABLE_CONSERVATIVE_SPLIT", True):
+        fg_mask = detector.apply_conservative_split(fg_mask, gray, bg_u8)
+
+    meas, sizes, shapes, _yolo, _conf = detector.detect_objects(fg_mask, frame_index)
+    return gray, bg_u8, fg_mask, meas, sizes, shapes
 
 
 def _aggregate_trial_scores(count_scores, consistency_scores, frame_medians):
@@ -181,66 +500,34 @@ def _aggregate_trial_scores(count_scores, consistency_scores, frame_medians):
     return s_count, s_consistency, s_stability
 
 
-def _read_sample_frames(
-    cap,
-    sample_indices,
-    resize_f,
-    dark_on_light,
-    bg_u8,
-    params,
-    apply_image_adjustments,
-    stop_check,
-):
-    """Read and pre-compute diff images for sample frames."""
-    diffs: List[np.ndarray] = []
-    grays: List[np.ndarray] = []
-    for idx in sample_indices:
-        if stop_check():
-            cap.release()
-            return None, None
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-        ret, frame = cap.read()
-        if not ret:
-            continue
-        if resize_f < 1.0:
-            frame = cv2.resize(
-                frame,
-                (0, 0),
-                fx=resize_f,
-                fy=resize_f,
-                interpolation=cv2.INTER_AREA,
-            )
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = apply_image_adjustments(
-            gray,
-            params.get("BRIGHTNESS", 0),
-            params.get("CONTRAST", 1.0),
-            params.get("GAMMA", 1.0),
-            use_gpu=False,
-        )
-        if dark_on_light:
-            diff = cv2.subtract(bg_u8, gray)
-        else:
-            diff = cv2.subtract(gray, bg_u8)
-        grays.append(gray)
-        diffs.append(diff)
-    return diffs, grays
-
-
 # ---------------------------------------------------------------------------
 # Parameter ranges  (mirrors _PARAM_RANGES in tracking/optimizer.py)
 # ---------------------------------------------------------------------------
 
 _BG_PARAM_RANGES: Dict[str, tuple] = {
-    "THRESHOLD_VALUE": (5, 80, "int"),
-    "MORPH_KERNEL_SIZE": (3, 15, "odd"),
+    "BRIGHTNESS": (-255, 255, "int"),
+    "CONTRAST": (0.1, 3.0, "float"),
+    "GAMMA": (0.1, 3.0, "float"),
+    "DARK_ON_LIGHT_BACKGROUND": (False, True, "bool"),
+    "BACKGROUND_PRIME_FRAMES": (0, 120, "int"),
+    "ENABLE_ADAPTIVE_BACKGROUND": (False, True, "bool"),
+    "BACKGROUND_LEARNING_RATE": (1e-5, 0.1, "float"),
+    "ENABLE_LIGHTING_STABILIZATION": (False, True, "bool"),
+    "LIGHTING_SMOOTH_FACTOR": (0.8, 0.999, "float"),
+    "LIGHTING_MEDIAN_WINDOW": (3, 15, "odd"),
+    "THRESHOLD_VALUE": (0, 255, "int"),
+    "MORPH_KERNEL_SIZE": (1, 25, "odd"),
     "MIN_CONTOUR_AREA": (10, 500, "int"),
+    "MAX_CONTOUR_MULTIPLIER": (5, 100, "int"),
+    "ENABLE_SIZE_FILTERING": (False, True, "bool"),
+    "MIN_OBJECT_SIZE": (0.05, 2.0, "multiplier"),
+    "MAX_OBJECT_SIZE": (0.5, 10.0, "multiplier"),
     "ENABLE_ADDITIONAL_DILATION": (False, True, "bool"),
-    "DILATION_KERNEL_SIZE": (3, 11, "odd"),
-    "DILATION_ITERATIONS": (1, 5, "int"),
+    "DILATION_KERNEL_SIZE": (1, 15, "odd"),
+    "DILATION_ITERATIONS": (1, 10, "int"),
     "ENABLE_CONSERVATIVE_SPLIT": (False, True, "bool"),
-    "CONSERVATIVE_KERNEL_SIZE": (1, 11, "int"),
-    "CONSERVATIVE_ERODE_ITER": (1, 5, "int"),
+    "CONSERVATIVE_KERNEL_SIZE": (1, 15, "odd"),
+    "CONSERVATIVE_ERODE_ITER": (1, 10, "int"),
 }
 
 # ---------------------------------------------------------------------------
@@ -369,10 +656,6 @@ class BgSubtractionOptimizer(QThread):
             self.progress_signal.emit(0, "Error: optuna is not installed")
             return
 
-        from ...utils.image_processing import apply_image_adjustments
-        from ..background.model import BackgroundModel
-        from .engine import ObjectDetector
-
         params = self.base_params
 
         # --- 1. open video -------------------------------------------------
@@ -384,70 +667,64 @@ class BgSubtractionOptimizer(QThread):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         start = params.get("START_FRAME", 0)
         end = min(params.get("END_FRAME", total_frames - 1), total_frames - 1)
-        prime_n = params.get("BACKGROUND_PRIME_FRAMES", 30)
+        max_prime_frames = _prime_frame_search_upper_bound(params, total_frames)
 
-        # --- 2. prime background model -------------------------------------
-        self.progress_signal.emit(0, "Priming background model …")
-        bg_model = BackgroundModel(params)
-        bg_model.prime_background(cap)
-
-        if bg_model.lightest_background is None:
-            cap.release()
-            self.progress_signal.emit(0, "Error: background priming failed")
-            return
-
-        bg_float = bg_model.lightest_background  # float32
-        bg_u8 = cv2.convertScaleAbs(bg_float)
-
-        # --- 3. choose sample frames --------------------------------------
-        first_valid = start + prime_n
+        # --- 2. choose sample frames --------------------------------------
+        base_prime_frames = int(params.get("BACKGROUND_PRIME_FRAMES", 30) or 0)
+        first_valid = start + base_prime_frames
         if first_valid >= end:
             first_valid = start
         n_available = end - first_valid + 1
         n_sample = min(self.n_sample_frames, max(n_available, 1))
-        sample_indices = np.linspace(first_valid, end, n_sample, dtype=int)
+        sample_indices = np.linspace(first_valid, end, n_sample, dtype=int).tolist()
+        prime_indices = _build_prime_frame_indices(
+            total_frames, max_prime_frames
+        ).tolist()
 
         resize_f = params.get("RESIZE_FACTOR", 1.0)
-        dark_on_light = params.get("DARK_ON_LIGHT_BACKGROUND", True)
 
-        # --- 4. pre-compute diff images ------------------------------------
-        self.progress_signal.emit(5, "Reading sample frames …")
-        result = _read_sample_frames(
+        # --- 3. cache raw frames once --------------------------------------
+        self.progress_signal.emit(5, "Caching optimization frames …")
+        prime_frames = _read_gray_frames(
+            cap,
+            prime_indices,
+            resize_f,
+            lambda: self._stop_requested,
+        )
+        if prime_frames is None:
+            return
+        sample_frames = _read_gray_frames(
             cap,
             sample_indices,
             resize_f,
-            dark_on_light,
-            bg_u8,
-            params,
-            apply_image_adjustments,
             lambda: self._stop_requested,
         )
         cap.release()
-        if result[0] is None:
-            return
-        diffs, grays = result
 
-        if not diffs:
+        if not sample_frames:
             self.progress_signal.emit(0, "Error: no frames could be read")
             return
 
-        # --- 5. scoring setup -----------------------------------------------
+        # --- 4. scoring setup -----------------------------------------------
         max_targets = params.get("MAX_TARGETS", 5)
 
         # Pre-resize ROI mask
-        roi_mask = params.get("ROI_MASK")
-        if roi_mask is not None and resize_f < 1.0:
-            roi_mask = cv2.resize(
-                roi_mask,
-                (grays[0].shape[1], grays[0].shape[0]),
-                interpolation=cv2.INTER_NEAREST,
-            )
+        roi_mask = _resize_roi_mask(
+            params.get("ROI_MASK"),
+            sample_frames[0].shape if sample_frames else None,
+        )
+        frame_cache = _BgFrameCache(
+            prime_frames=prime_frames,
+            sample_frames=sample_frames,
+            sample_indices=list(sample_indices),
+            roi_mask=roi_mask,
+        )
 
-        # --- 6. run Optuna -------------------------------------------------
+        # --- 5. run Optuna -------------------------------------------------
         self.progress_signal.emit(10, "Starting optimisation \u2026")
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         n_active = sum(1 for v in self.tuning_config.values() if v)
-        n_frames = len(diffs)
+        n_frames = len(sample_frames)
 
         # Pruning: report intermediate count scores and let Optuna kill
         # obviously-bad trials early (e.g. wrong threshold → 0 detections).
@@ -487,23 +764,15 @@ class BgSubtractionOptimizer(QThread):
             if self._stop_requested:
                 raise optuna.TrialPruned()
 
-            trial_params = _suggest_trial_params(trial, tune, params)
+            trial_params = _suggest_trial_params(trial, tune, params, total_frames)
 
             det_params = dict(params)
             det_params.update(trial_params)
-            detector = ObjectDetector(det_params)
-
-            morph_k = trial_params["MORPH_KERNEL_SIZE"]
-            dil_k = trial_params["DILATION_KERNEL_SIZE"]
-            enable_dil = trial_params["ENABLE_ADDITIONAL_DILATION"]
-            morph_ker = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (morph_k, morph_k),
-            )
-            dil_ker = (
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_k, dil_k))
-                if enable_dil
-                else None
+            bg_model, detector, intensity_history, lighting_state = (
+                _init_trial_pipeline(
+                    det_params,
+                    frame_cache,
+                )
             )
 
             count_scores: List[float] = []
@@ -511,20 +780,21 @@ class BgSubtractionOptimizer(QThread):
             frame_medians: List[float] = []
             prune_step = 0
 
-            for fi, diff in enumerate(diffs):
+            for fi, raw_gray in enumerate(frame_cache.sample_frames):
                 if self._stop_requested:
                     raise optuna.TrialPruned()
 
-                n_det, sizes = _score_single_frame(
-                    diff,
-                    grays[fi],
-                    bg_u8,
-                    trial_params,
+                _gray, _bg_u8, _fg_mask, meas, sizes, _shapes = _run_bg_trial_frame(
+                    raw_gray,
+                    frame_cache.sample_indices[fi],
+                    det_params,
+                    bg_model,
                     detector,
-                    morph_ker,
-                    dil_ker,
-                    roi_mask,
+                    frame_cache.roi_mask,
+                    intensity_history,
+                    lighting_state,
                 )
+                n_det = len(meas)
 
                 if max_targets > 0:
                     err = abs(n_det - max_targets) / max_targets
@@ -586,8 +856,13 @@ class BgSubtractionOptimizer(QThread):
 
         study.optimize(objective, n_trials=self.n_trials)
 
-        # Store bg_u8 so the preview worker can reuse it
-        self._cached_bg_u8 = bg_u8
+        # Store cached raw frames so the preview worker can reuse the same sample set.
+        self._cached_prime_frames = list(frame_cache.prime_frames)
+        self._cached_sample_frames = list(frame_cache.sample_frames)
+        self._cached_sample_indices = list(frame_cache.sample_indices)
+        self._cached_roi_mask = (
+            frame_cache.roi_mask.copy() if frame_cache.roi_mask is not None else None
+        )
 
         results.sort(key=lambda r: -r.score)
         self.progress_signal.emit(100, "Optimisation complete!")
@@ -617,7 +892,10 @@ class BgDetectionPreviewWorker(QThread):
         base_params: Dict[str, Any],
         trial_params: Dict[str, Any],
         n_sample_frames: int = 30,
-        bg_u8: Optional[np.ndarray] = None,
+        cached_prime_frames: Optional[List[np.ndarray]] = None,
+        cached_sample_frames: Optional[List[np.ndarray]] = None,
+        cached_sample_indices: Optional[List[int]] = None,
+        roi_mask: Optional[np.ndarray] = None,
         parent: Optional[Any] = None,
     ) -> None:
         super().__init__(parent)
@@ -625,7 +903,20 @@ class BgDetectionPreviewWorker(QThread):
         self.base_params = dict(base_params)
         self.trial_params = dict(trial_params)
         self.n_sample_frames = n_sample_frames
-        self._cached_bg_u8 = bg_u8
+        self._cached_prime_frames = (
+            [frame.copy() for frame in cached_prime_frames]
+            if cached_prime_frames
+            else None
+        )
+        self._cached_sample_frames = (
+            [frame.copy() for frame in cached_sample_frames]
+            if cached_sample_frames
+            else None
+        )
+        self._cached_sample_indices = (
+            list(cached_sample_indices) if cached_sample_indices else None
+        )
+        self._cached_roi_mask = roi_mask.copy() if roi_mask is not None else None
         self._stop_requested = False
 
     def stop(self) -> None:
@@ -640,116 +931,83 @@ class BgDetectionPreviewWorker(QThread):
             self.finished_signal.emit()
 
     def _generate_previews(self) -> None:
-        from ...utils.image_processing import apply_image_adjustments
-        from .engine import ObjectDetector
-
         params = self.base_params
         det_params = dict(params)
         det_params.update(self.trial_params)
 
-        cap = cv2.VideoCapture(self.video_path)
-        if not cap.isOpened():
-            return
+        sample_frames = self._cached_sample_frames
+        sample_indices = self._cached_sample_indices
+        prime_frames = self._cached_prime_frames
+        roi_mask = self._cached_roi_mask
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        start = params.get("START_FRAME", 0)
-        end = min(params.get("END_FRAME", total_frames - 1), total_frames - 1)
-        prime_n = params.get("BACKGROUND_PRIME_FRAMES", 30)
-
-        # Reuse cached background if available; otherwise prime from scratch
-        if self._cached_bg_u8 is not None:
-            bg_u8 = self._cached_bg_u8
-        else:
-            from ..background.model import BackgroundModel
-
-            bg_model = BackgroundModel(params)
-            bg_model.prime_background(cap)
-            if bg_model.lightest_background is None:
-                cap.release()
+        if sample_frames is None or sample_indices is None:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
                 return
-            bg_u8 = cv2.convertScaleAbs(bg_model.lightest_background)
 
-        first_valid = start + prime_n
-        if first_valid >= end:
-            first_valid = start
-        n_available = end - first_valid + 1
-        n_sample = min(self.n_sample_frames, max(n_available, 1))
-        sample_indices = np.linspace(first_valid, end, n_sample, dtype=int)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            start = params.get("START_FRAME", 0)
+            end = min(params.get("END_FRAME", total_frames - 1), total_frames - 1)
+            prime_n = int(params.get("BACKGROUND_PRIME_FRAMES", 30) or 0)
+            first_valid = start + prime_n
+            if first_valid >= end:
+                first_valid = start
+            n_available = end - first_valid + 1
+            n_sample = min(self.n_sample_frames, max(n_available, 1))
+            sample_indices = np.linspace(first_valid, end, n_sample, dtype=int).tolist()
+            resize_f = params.get("RESIZE_FACTOR", 1.0)
+            sample_frames = _read_gray_frames(
+                cap,
+                sample_indices,
+                resize_f,
+                lambda: self._stop_requested,
+            )
+            max_prime_frames = _prime_frame_search_upper_bound(params, total_frames)
+            prime_indices = _build_prime_frame_indices(
+                total_frames, max_prime_frames
+            ).tolist()
+            prime_frames = _read_gray_frames(
+                cap,
+                prime_indices,
+                resize_f,
+                lambda: self._stop_requested,
+            )
+            cap.release()
+            if sample_frames is None or not sample_frames:
+                return
+            roi_mask = _resize_roi_mask(
+                params.get("ROI_MASK"),
+                sample_frames[0].shape if sample_frames else None,
+            )
 
-        resize_f = params.get("RESIZE_FACTOR", 1.0)
-        dark_on_light = params.get("DARK_ON_LIGHT_BACKGROUND", True)
-
-        threshold = det_params.get("THRESHOLD_VALUE", 25)
-        morph_k = det_params.get("MORPH_KERNEL_SIZE", 5)
-        enable_dil = det_params.get("ENABLE_ADDITIONAL_DILATION", False)
-        dil_k = det_params.get("DILATION_KERNEL_SIZE", 3)
-        dil_iter = det_params.get("DILATION_ITERATIONS", 1)
-        enable_split = det_params.get("ENABLE_CONSERVATIVE_SPLIT", False)
-
-        morph_ker = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (morph_k, morph_k),
+        frame_cache = _BgFrameCache(
+            prime_frames=prime_frames or [],
+            sample_frames=sample_frames,
+            sample_indices=sample_indices,
+            roi_mask=roi_mask,
         )
-        detector = ObjectDetector(det_params)
+        bg_model, detector, intensity_history, lighting_state = _init_trial_pipeline(
+            det_params,
+            frame_cache,
+        )
 
-        roi_mask = params.get("ROI_MASK")
-
-        for fi, idx in enumerate(sample_indices):
+        for fi, idx in enumerate(frame_cache.sample_indices):
             if self._stop_requested:
                 break
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            if resize_f < 1.0:
-                frame = cv2.resize(
-                    frame,
-                    (0, 0),
-                    fx=resize_f,
-                    fy=resize_f,
-                    interpolation=cv2.INTER_AREA,
-                )
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = apply_image_adjustments(
-                gray,
-                params.get("BRIGHTNESS", 0),
-                params.get("CONTRAST", 1.0),
-                params.get("GAMMA", 1.0),
-                use_gpu=False,
+            raw_gray = frame_cache.sample_frames[fi]
+            gray, _bg_u8, _fg, meas, sizes, shapes = _run_bg_trial_frame(
+                raw_gray,
+                idx,
+                det_params,
+                bg_model,
+                detector,
+                frame_cache.roi_mask,
+                intensity_history,
+                lighting_state,
             )
-            if dark_on_light:
-                diff = cv2.subtract(bg_u8, gray)
-            else:
-                diff = cv2.subtract(gray, bg_u8)
-
-            if roi_mask is not None and resize_f < 1.0:
-                roi_r = cv2.resize(
-                    roi_mask,
-                    (gray.shape[1], gray.shape[0]),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-            else:
-                roi_r = roi_mask
-
-            # detection pipeline
-            _, fg = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
-            fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, morph_ker)
-            fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, morph_ker)
-            if enable_dil:
-                dk = cv2.getStructuringElement(
-                    cv2.MORPH_ELLIPSE,
-                    (dil_k, dil_k),
-                )
-                fg = cv2.dilate(fg, dk, iterations=dil_iter)
-            if roi_r is not None:
-                fg = cv2.bitwise_and(fg, fg, mask=roi_r)
-            if enable_split:
-                fg = detector.apply_conservative_split(fg, gray, bg_u8)
-
-            meas, sizes, shapes, _yolo, _conf = detector.detect_objects(fg, fi)
+            display = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
             # draw detections on frame
-            display = frame.copy()
             for j, (m, sz) in enumerate(zip(meas, sizes)):
                 cx, cy = int(m[0]), int(m[1])
                 radius = max(int((sz / 3.14159) ** 0.5), 3)
@@ -785,5 +1043,3 @@ class BgDetectionPreviewWorker(QThread):
 
             rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
             self.frame_signal.emit(fi, rgb)
-
-        cap.release()

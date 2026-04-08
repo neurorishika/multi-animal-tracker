@@ -45,13 +45,14 @@ from .widgets.color_utils import best_text_color, build_category_color_map, to_h
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("ClassKit: Active Learning Dataset Builder")
+        self.setWindowTitle("ClassKit")
         self.resize(1600, 1000)
 
         # Project state
         self.project_path = None
         self.db_path = None
         self.embeddings = None
+        self._current_embedding_cache_id = None
         self.umap_coords = None
         self.cluster_assignments = None
         self.image_paths = []
@@ -144,6 +145,10 @@ class MainWindow(QMainWindow):
         self.setup_toolbar()
         self.setup_central_widget()
         self.setup_statusbar()
+
+        # Hide the menu bar and toolbar while on the welcome page.
+        self.menuBar().hide()
+        self.toolbar.hide()
 
     def apply_stylesheet(self):
         """Apply modern dark theme."""
@@ -663,16 +668,26 @@ class MainWindow(QMainWindow):
         self.explorer.set_uncertainty_outline_threshold(self._outline_threshold)
         self.explorer.point_clicked.connect(self.on_explorer_point_clicked)
         self.explorer.point_hovered.connect(self.on_explorer_point_hovered)
+        self.explorer.empty_hovered.connect(self.on_explorer_empty_hover)
         self.explorer.empty_double_clicked.connect(
             self.on_explorer_background_double_click
         )
-        explorer_layout.addWidget(self.explorer, 1)
 
-        # UMAP space toggle row (embedding vs model logits)
-        umap_toggle_row = QHBoxLayout()
-        umap_toggle_row.setSpacing(8)
-        umap_toggle_label = QLabel("<b>UMAP Space:</b>")
-        umap_toggle_row.addWidget(umap_toggle_label)
+        # Top controls row: mode + projection space
+        top_controls_row = QHBoxLayout()
+        top_controls_row.setSpacing(8)
+        self.mode_toggle_lbl = QLabel("Mode:")
+        top_controls_row.addWidget(self.mode_toggle_lbl)
+
+        self.view_mode_combo = QComboBox()
+        self.view_mode_combo.addItem("Explore (clusters)", "explore")
+        self.view_mode_combo.addItem("Labeling (labels)", "labeling")
+        self.view_mode_combo.addItem("Predictions", "predictions")
+        self.view_mode_combo.currentIndexChanged.connect(self.on_view_mode_changed)
+        top_controls_row.addWidget(self.view_mode_combo)
+
+        top_controls_row.addSpacing(12)
+        top_controls_row.addWidget(QLabel("<b>Projection:</b>"))
         self.btn_umap_embedding = QPushButton("Embeddings")
         self.btn_umap_embedding.setCheckable(True)
         self.btn_umap_embedding.setChecked(True)
@@ -680,7 +695,7 @@ class MainWindow(QMainWindow):
         self.btn_umap_embedding.clicked.connect(
             lambda: self._switch_projection_space("embedding")
         )
-        umap_toggle_row.addWidget(self.btn_umap_embedding)
+        top_controls_row.addWidget(self.btn_umap_embedding)
         self.btn_umap_model = QPushButton("Model UMAP")
         self.btn_umap_model.setCheckable(True)
         self.btn_umap_model.setChecked(False)
@@ -692,7 +707,7 @@ class MainWindow(QMainWindow):
         self.btn_umap_model.clicked.connect(
             lambda: self._switch_projection_space("model_umap")
         )
-        umap_toggle_row.addWidget(self.btn_umap_model)
+        top_controls_row.addWidget(self.btn_umap_model)
 
         self.btn_pca_model = QPushButton("Model PCA")
         self.btn_pca_model.setCheckable(True)
@@ -705,10 +720,11 @@ class MainWindow(QMainWindow):
         self.btn_pca_model.clicked.connect(
             lambda: self._switch_projection_space("model_pca")
         )
-        umap_toggle_row.addWidget(self.btn_pca_model)
+        top_controls_row.addWidget(self.btn_pca_model)
 
-        umap_toggle_row.addStretch(1)
-        explorer_layout.addLayout(umap_toggle_row)
+        top_controls_row.addStretch(1)
+        explorer_layout.addLayout(top_controls_row)
+        explorer_layout.addWidget(self.explorer, 1)
 
         # Labeling controls row
         self.label_controls_row = QHBoxLayout()
@@ -737,18 +753,9 @@ class MainWindow(QMainWindow):
 
         self.label_controls_row.addStretch(1)
 
-        self.mode_toggle_lbl = QLabel("Mode:")
-        self.label_controls_row.addWidget(self.mode_toggle_lbl)
-
-        self.view_mode_combo = QComboBox()
-        self.view_mode_combo.addItem("Explore (clusters)", "explore")
-        self.view_mode_combo.addItem("Labeling (labels)", "labeling")
-        self.view_mode_combo.addItem("Predictions", "predictions")
-        self.view_mode_combo.currentIndexChanged.connect(self.on_view_mode_changed)
-        self.label_controls_row.addWidget(self.view_mode_combo)
-
         self.label_controls_row.addSpacing(8)
-        self.label_controls_row.addWidget(QLabel("Outline <"))
+        self.outline_threshold_label = QLabel("outline = confidence <")
+        self.label_controls_row.addWidget(self.outline_threshold_label)
         self.outline_threshold_spin = QDoubleSpinBox()
         self.outline_threshold_spin.setRange(0.0, 1.0)
         self.outline_threshold_spin.setSingleStep(0.05)
@@ -763,6 +770,8 @@ class MainWindow(QMainWindow):
             self.on_outline_threshold_changed
         )
         self.label_controls_row.addWidget(self.outline_threshold_spin)
+        self.outline_threshold_label.setVisible(False)
+        self.outline_threshold_spin.setVisible(False)
 
         explorer_layout.addLayout(self.label_controls_row)
 
@@ -948,10 +957,22 @@ class MainWindow(QMainWindow):
         self.preview_canvas.setMinimumHeight(320)
         preview_layout.addWidget(self.preview_canvas, 1)
 
+        enhance_row = QHBoxLayout()
+        enhance_row.setSpacing(8)
+
         self.cb_enhance = QCheckBox("Enhance contrast (CLAHE)")
         self.cb_enhance.setStyleSheet("color: #aaa; font-size: 11px;")
         self.cb_enhance.toggled.connect(self.on_enhance_toggled)
-        preview_layout.addWidget(self.cb_enhance)
+        enhance_row.addWidget(self.cb_enhance)
+
+        self.btn_contrast_settings = QPushButton("CLAHE Settings…")
+        self.btn_contrast_settings.setStyleSheet(
+            "background: #3e3e42; color: #d4d4d4; padding: 4px 10px;"
+        )
+        self.btn_contrast_settings.clicked.connect(self.open_contrast_settings)
+        enhance_row.addWidget(self.btn_contrast_settings)
+        enhance_row.addStretch(1)
+        preview_layout.addLayout(enhance_row)
 
         self.preview_info = QLabel(
             "<div style='line-height:1.55; color:#aaaaaa;'>"
@@ -1060,6 +1081,8 @@ class MainWindow(QMainWindow):
                     self._recents_store.add(str(self.project_path))
                 if hasattr(self, "_stacked"):
                     self._stacked.setCurrentIndex(1)  # reveal working UI
+                    self.menuBar().show()
+                    self.toolbar.show()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create project:\\n{e}")
 
@@ -1114,6 +1137,9 @@ class MainWindow(QMainWindow):
     def _apply_project_config(self, config: dict) -> None:
         """Apply persisted project settings to the current UI state."""
         self.classes = config.get("classes", []) or ["class_1", "class_2"]
+        stored_training_settings = config.get("last_training_settings")
+        if isinstance(stored_training_settings, dict) and stored_training_settings:
+            self._last_training_settings = dict(stored_training_settings)
 
         autosave_interval = int(
             config.get("autosave_interval_ms", self._autosave_interval_ms)
@@ -1133,6 +1159,15 @@ class MainWindow(QMainWindow):
         self.clahe_grid = tuple(config.get("clahe_grid", [8, 8]))
         if hasattr(self, "preview_canvas"):
             self.preview_canvas.set_clahe_params(self.clahe_clip, self.clahe_grid)
+            self.preview_canvas.use_clahe = bool(config.get("enhance_enabled", False))
+        if hasattr(self, "cb_enhance"):
+            self.cb_enhance.blockSignals(True)
+            self.cb_enhance.setChecked(bool(config.get("enhance_enabled", False)))
+            self.cb_enhance.blockSignals(False)
+        if hasattr(self, "act_enhance"):
+            self.act_enhance.blockSignals(True)
+            self.act_enhance.setChecked(bool(config.get("enhance_enabled", False)))
+            self.act_enhance.blockSignals(False)
 
     def _finalize_project_load(self, db) -> None:
         """Refresh derived UI state after database-backed project data loads."""
@@ -1152,6 +1187,8 @@ class MainWindow(QMainWindow):
             self._recents_store.add(str(self.project_path))
         if hasattr(self, "_stacked"):
             self._stacked.setCurrentIndex(1)
+            self.menuBar().show()
+            self.toolbar.show()
 
     def load_project_data(self):
         """Load project data from database."""
@@ -1315,6 +1352,64 @@ class MainWindow(QMainWindow):
         self._autosave_heartbeat_on = not self._autosave_heartbeat_on
         self._update_autosave_heartbeat_text()
 
+    def _clear_candidate_state(self, persist: bool = False) -> None:
+        """Reset candidate and current labeling-batch state."""
+        self.candidate_indices = []
+        self.round_labeled_indices = []
+
+        if self.explorer_mode == "labeling":
+            self.set_explorer_mode("explore")
+
+        if not persist or not self.db_path:
+            return
+
+        try:
+            from ..core.store.db import ClassKitDB
+
+            ClassKitDB(self.db_path).save_candidate_cache([])
+        except Exception:
+            pass
+
+    def _clear_embedding_projection_view(self) -> None:
+        """Clear the visible explorer plot when embedding-space data is stale."""
+        if not hasattr(self, "explorer"):
+            return
+        if self._show_model_umap or self._show_model_pca:
+            return
+        self.explorer.clear_data()
+
+    def _invalidate_embedding_downstream_state(
+        self, persist_candidates: bool = True
+    ) -> None:
+        """Invalidate analysis artifacts derived from embeddings."""
+        self.cluster_assignments = None
+        self.umap_coords = None
+        self._clear_candidate_state(persist=persist_candidates)
+        self._clear_embedding_projection_view()
+
+    def _invalidate_image_set_dependent_state(self) -> None:
+        """Invalidate in-memory state tied to the current project image set."""
+        self.embeddings = None
+        self._current_embedding_cache_id = None
+        self._invalidate_embedding_downstream_state(persist_candidates=True)
+        self._model_probs = None
+        self._model_class_names = None
+        self.umap_model_coords = None
+        self.pca_model_coords = None
+        self._al_candidates = None
+        self.image_confidences = [None] * len(self.image_paths)
+        self._show_model_umap = False
+        self._show_model_pca = False
+        if self.explorer_mode == "predictions":
+            self.set_explorer_mode("explore")
+        if hasattr(self, "btn_umap_embedding"):
+            self.btn_umap_embedding.setChecked(True)
+        if hasattr(self, "btn_umap_model"):
+            self.btn_umap_model.setChecked(False)
+            self._set_model_projection_buttons_enabled(False)
+        if hasattr(self, "btn_pca_model"):
+            self.btn_pca_model.setChecked(False)
+
     def _update_autosave_heartbeat_text(self):
         """Render autosave status in bottom-right status bar indicator."""
         indicator = "●" if self._autosave_heartbeat_on else "○"
@@ -1345,6 +1440,163 @@ class MainWindow(QMainWindow):
         config["autosave_interval_ms"] = int(self._autosave_interval_ms)
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
+
+    def _save_last_training_settings(self) -> None:
+        """Persist the most recent training dialog settings into the project config."""
+        if not self.project_path or not isinstance(self._last_training_settings, dict):
+            return
+        project_config_path = self.project_path / "project.json"
+        config = {}
+        if project_config_path.exists():
+            with open(project_config_path, "r") as f:
+                config = json.load(f)
+        config["last_training_settings"] = dict(self._last_training_settings)
+        with open(project_config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+    @staticmethod
+    def _nearest_computer_friendly_size(value: object) -> int:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 224
+        rounded = int(round(numeric / 32.0) * 32)
+        return max(32, min(512, rounded))
+
+    def _estimate_average_image_dimensions(
+        self, max_samples: int = 128
+    ) -> tuple[float, float] | None:
+        """Estimate average image dimensions from a bounded sample of project images."""
+        if not self.image_paths:
+            return None
+
+        sample_paths = list(self.image_paths)
+        if len(sample_paths) > max_samples:
+            indices = np.linspace(0, len(sample_paths) - 1, num=max_samples, dtype=int)
+            sample_paths = [sample_paths[int(idx)] for idx in indices]
+
+        widths = []
+        heights = []
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+
+        for path in sample_paths:
+            try:
+                with Image.open(path) as image:
+                    width, height = image.size
+            except Exception:
+                continue
+            if width > 0 and height > 0:
+                widths.append(float(width))
+                heights.append(float(height))
+
+        if not widths or not heights:
+            return None
+        return float(np.mean(widths)), float(np.mean(heights))
+
+    def _default_training_settings_from_project(self) -> dict:
+        """Build training-dialog defaults from the current project's image sizes."""
+        average_dims = self._estimate_average_image_dimensions()
+        if average_dims is None:
+            return {}
+
+        avg_width, avg_height = average_dims
+        return {
+            "tiny_width": self._nearest_computer_friendly_size(avg_width),
+            "tiny_height": self._nearest_computer_friendly_size(avg_height),
+            "custom_input_size": self._nearest_computer_friendly_size(
+                (avg_width + avg_height) / 2.0
+            ),
+        }
+
+    def _get_recent_project_training_settings(self) -> dict:
+        """Return the most recent persisted training settings for this project."""
+        if (
+            isinstance(self._last_training_settings, dict)
+            and self._last_training_settings
+        ):
+            return dict(self._last_training_settings)
+
+        if self.db_path:
+            try:
+                from ..core.store.db import ClassKitDB
+
+                recent_model = ClassKitDB(self.db_path).get_most_recent_model_cache()
+                meta = (
+                    recent_model.get("meta") if isinstance(recent_model, dict) else None
+                )
+                training_settings = (
+                    meta.get("training_settings") if isinstance(meta, dict) else None
+                )
+                if isinstance(training_settings, dict) and training_settings:
+                    self._last_training_settings = dict(training_settings)
+                    return dict(self._last_training_settings)
+            except Exception:
+                pass
+
+        return self._default_training_settings_from_project()
+
+    def _list_recent_trainable_model_paths(self) -> list[str]:
+        """Return project-history model artifacts usable as training warm starts."""
+        if not self.db_path:
+            return []
+
+        try:
+            from ..core.store.db import ClassKitDB
+
+            ordered: list[str] = []
+            seen = set()
+            for entry in ClassKitDB(self.db_path).list_model_caches():
+                for raw_path in entry.get("artifact_paths") or []:
+                    try:
+                        artifact = Path(str(raw_path)).expanduser().resolve()
+                    except Exception:
+                        continue
+                    if not artifact.exists() or artifact.suffix.lower() not in {
+                        ".pt",
+                        ".pth",
+                    }:
+                        continue
+                    artifact_text = str(artifact)
+                    if artifact_text not in seen:
+                        seen.add(artifact_text)
+                        ordered.append(artifact_text)
+            return ordered
+        except Exception:
+            return []
+
+    def _save_preview_enhancement_settings(self) -> None:
+        """Persist preview enhancement settings into the project config."""
+        if not self.project_path:
+            return
+        project_config_path = self.project_path / "project.json"
+        config = {}
+        if project_config_path.exists():
+            with open(project_config_path, "r") as f:
+                config = json.load(f)
+        config["enhance_enabled"] = bool(
+            getattr(self.preview_canvas, "use_clahe", False)
+            if hasattr(self, "preview_canvas")
+            else False
+        )
+        config["clahe_clip"] = float(self.clahe_clip)
+        config["clahe_grid"] = list(self.clahe_grid)
+        with open(project_config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+    def _reset_analysis_view(self) -> None:
+        """Return the explorer to embedding-space Explore mode for analysis runs."""
+        self.set_explorer_mode("explore")
+        self._show_model_umap = False
+        self._show_model_pca = False
+        if hasattr(self, "btn_umap_embedding"):
+            self.btn_umap_embedding.setChecked(True)
+        if hasattr(self, "btn_umap_model"):
+            self.btn_umap_model.setChecked(False)
+        if hasattr(self, "btn_pca_model"):
+            self.btn_pca_model.setChecked(False)
 
     def on_autosave_interval_changed(self, seconds: int):
         """Handle autosave interval changes from the UI."""
@@ -1413,8 +1665,11 @@ class MainWindow(QMainWindow):
                 f"Shape: {embeddings.shape[0]:,} × {embeddings.shape[1]}",
             ):
                 self.embeddings = embeddings
+                self._current_embedding_cache_id = metadata.get("id")
 
-        cached_cluster = db.get_most_recent_cluster_cache()
+        cached_cluster = db.get_most_recent_cluster_cache(
+            self._current_embedding_cache_id
+        )
         if (
             cached_cluster is not None
             and self.cluster_assignments is None
@@ -1428,7 +1683,9 @@ class MainWindow(QMainWindow):
         ):
             self.cluster_assignments = cached_cluster["assignments"]
 
-        cached_umap = db.get_most_recent_umap_cache()
+        cached_umap = db.get_most_recent_umap_cache(
+            embedding_cache_id=self._current_embedding_cache_id,
+        )
         if (
             cached_umap is not None
             and self.umap_coords is None
@@ -2188,6 +2445,11 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.setEnabled(labels_enabled)
 
+        if hasattr(self, "outline_threshold_label"):
+            self.outline_threshold_label.setVisible(labels_enabled)
+        if hasattr(self, "outline_threshold_spin"):
+            self.outline_threshold_spin.setVisible(labels_enabled)
+
         if hasattr(self, "view_mode_combo"):
             idx = self.view_mode_combo.findData(mode)
             if idx >= 0 and self.view_mode_combo.currentIndex() != idx:
@@ -2370,6 +2632,27 @@ class MainWindow(QMainWindow):
         if knn_anchor is None and source in {"click", "next", "prev", "undo", "label"}:
             knn_anchor = index
         self.update_knn_panel(knn_anchor)
+
+    def clear_preview_display(self) -> None:
+        """Clear the preview panel when no point is actively hovered or selected."""
+        self.last_preview_index = None
+        if hasattr(self, "preview_canvas"):
+            self.preview_canvas.clear_image()
+        self.preview_info.setText(
+            "<div style='line-height:1.55; color:#aaaaaa;'>"
+            "Hover a point to preview the source image.<br>"
+            "Select a point, then label using 1-9 or buttons."
+            "</div>"
+        )
+        self.selection_info.setText(
+            "<div style='line-height:1.5;'>"
+            "<b>Selected Point:</b> none<br>"
+            "<b>Hovered Point:</b> none<br>"
+            "<b>Current Label:</b> unlabeled<br>"
+            "Hover candidates to preview; click one to select for labeling."
+            "</div>"
+        )
+        self.update_knn_panel(None)
 
     def _compute_knn_neighbors(self, anchor_index: int, k: int = 8):
         """Compute nearest neighbors from embedding space for a selected point."""
@@ -2735,10 +3018,8 @@ class MainWindow(QMainWindow):
             self._flush_pending_label_updates(force=True)
             self.load_project_data()
             self.update_context_panel()
-            # Caches are now stale (image count changed) — offer auto-redo
-            self.embeddings = None
-            self.cluster_assignments = None
-            self.umap_coords = None
+            # Caches are now stale (image set changed) — offer auto-redo.
+            self._invalidate_image_set_dependent_state()
             QTimer.singleShot(200, self._auto_pipeline_after_source_change)
 
     # keep legacy name as alias for internal callers
@@ -2789,10 +3070,8 @@ class MainWindow(QMainWindow):
             )
             self.load_project_data()
             self.update_context_panel()
-            # Caches are now stale — invalidate and offer to redo
-            self.embeddings = None
-            self.cluster_assignments = None
-            self.umap_coords = None
+            # Caches are now stale — invalidate and offer to redo.
+            self._invalidate_image_set_dependent_state()
             QTimer.singleShot(200, self._auto_pipeline_after_source_change)
 
     # ── auto-pipeline after source changes ─────────────────────────────
@@ -2914,6 +3193,8 @@ class MainWindow(QMainWindow):
         """Start embeddings computation with given settings, then chain cluster + UMAP."""
         from ..jobs.task_workers import EmbeddingWorker
 
+        self._reset_analysis_view()
+
         worker = EmbeddingWorker(
             self.image_paths,
             model_name,
@@ -2955,6 +3236,8 @@ class MainWindow(QMainWindow):
 
         from ..jobs.task_workers import ClusteringWorker
 
+        self._reset_analysis_view()
+
         worker = ClusteringWorker(self.embeddings, n_clusters, method)
         worker.signals.started.connect(
             lambda: self.status.showMessage("Re-clustering data…")
@@ -2984,6 +3267,7 @@ class MainWindow(QMainWindow):
 
         from ..jobs.task_workers import UMAPWorker
 
+        self._reset_analysis_view()
         self.last_umap_params = {"n_neighbors": n_neighbors, "min_dist": min_dist}
         worker = UMAPWorker(self.embeddings, n_neighbors, min_dist)
         worker.signals.started.connect(
@@ -3135,11 +3419,14 @@ class MainWindow(QMainWindow):
                 f"Model: {metadata.get('model_name', 'unknown')}\n"
                 f"Timestamp: {metadata.get('timestamp', 'unknown')}",
             ):
-                self.embeddings = embeddings
-                self.status.showMessage(
-                    f"Loaded {embeddings.shape[0]:,} cached embeddings"
+                self._reset_analysis_view()
+                self.on_embedding_success(
+                    {
+                        "embeddings": embeddings,
+                        "cached": True,
+                        "metadata": metadata,
+                    }
                 )
-                self.update_context_panel()
                 if callback:
                     QTimer.singleShot(200, callback)
                 return
@@ -3150,6 +3437,7 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         model_name, device, batch_size, force_recompute = dialog.get_settings()
+        self._reset_analysis_view()
 
         from ..jobs.task_workers import EmbeddingWorker
 
@@ -3187,14 +3475,18 @@ class MainWindow(QMainWindow):
         from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
-        cached_cluster = db.get_most_recent_cluster_cache()
+        cached_cluster = db.get_most_recent_cluster_cache(
+            self._current_embedding_cache_id
+        )
         if cached_cluster is not None and self._ask_yes_no(
             "Use Cached Clusters",
             "Cached cluster assignments found. Load them?\n\n"
             f"Method: {cached_cluster.get('method', 'unknown')}\n"
             f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}",
         ):
+            self._reset_analysis_view()
             self.cluster_assignments = cached_cluster["assignments"]
+            self._clear_candidate_state(persist=True)
             self.status.showMessage("Loaded cached cluster assignments")
             self.update_explorer_plot()
             self.update_context_panel()
@@ -3208,6 +3500,7 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         n_clusters, method = dialog.get_settings()
+        self._reset_analysis_view()
 
         from ..jobs.task_workers import ClusteringWorker
 
@@ -3372,17 +3665,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "preview_canvas"):
                 self.preview_canvas.set_clahe_params(self.clahe_clip, self.clahe_grid)
 
-            # Persist to project
-            if self.project_path:
-                config_path = self.project_path / "project.json"
-                config = {}
-                if config_path.exists():
-                    with open(config_path) as _f:
-                        config = json.load(_f)
-                config["clahe_clip"] = self.clahe_clip
-                config["clahe_grid"] = list(self.clahe_grid)
-                with open(config_path, "w") as _f:
-                    json.dump(config, _f, indent=2)
+            self._save_preview_enhancement_settings()
 
             self.status.showMessage("Contrast enhancement settings updated")
 
@@ -3461,11 +3744,14 @@ class MainWindow(QMainWindow):
                 f"Model: {metadata.get('model_name', 'unknown')}\n"
                 f"Timestamp: {metadata.get('timestamp', 'unknown')}",
             ):
-                self.embeddings = embeddings
-                self.status.showMessage(
-                    f"Loaded {embeddings.shape[0]:,} cached embeddings"
+                self._reset_analysis_view()
+                self.on_embedding_success(
+                    {
+                        "embeddings": embeddings,
+                        "cached": True,
+                        "metadata": metadata,
+                    }
                 )
-                self.update_context_panel()
                 return
 
         from .dialogs import EmbeddingDialog
@@ -3473,6 +3759,7 @@ class MainWindow(QMainWindow):
         dialog = EmbeddingDialog(self)
         if dialog.exec():
             model_name, device, batch_size, force_recompute = dialog.get_settings()
+            self._reset_analysis_view()
 
             from ..jobs.task_workers import EmbeddingWorker
 
@@ -3509,14 +3796,18 @@ class MainWindow(QMainWindow):
         from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
-        cached_cluster = db.get_most_recent_cluster_cache()
+        cached_cluster = db.get_most_recent_cluster_cache(
+            self._current_embedding_cache_id
+        )
         if cached_cluster is not None and self._ask_yes_no(
             "Use Cached Clusters",
             "Most recent cluster assignments are available. Load them instead of reclustering?\n\n"
             f"Method: {cached_cluster.get('method', 'unknown')}\n"
             f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}",
         ):
+            self._reset_analysis_view()
             self.cluster_assignments = cached_cluster["assignments"]
+            self._clear_candidate_state(persist=True)
             self.status.showMessage("Loaded cached cluster assignments")
             self.update_explorer_plot()
             self.update_context_panel()
@@ -3527,6 +3818,7 @@ class MainWindow(QMainWindow):
         dialog = ClusterDialog(self)
         if dialog.exec():
             n_clusters, method = dialog.get_settings()
+            self._reset_analysis_view()
 
             from ..jobs.task_workers import ClusteringWorker
 
@@ -3556,7 +3848,9 @@ class MainWindow(QMainWindow):
         from ..core.store.db import ClassKitDB
 
         db = ClassKitDB(self.db_path)
-        cached_umap = db.get_most_recent_umap_cache()
+        cached_umap = db.get_most_recent_umap_cache(
+            embedding_cache_id=self._current_embedding_cache_id,
+        )
         if cached_umap is not None and self._ask_yes_no(
             "Use Cached UMAP",
             "Most recent UMAP projection is available. Load it instead of recomputing?\n\n"
@@ -3564,6 +3858,7 @@ class MainWindow(QMainWindow):
             f"n_neighbors: {cached_umap.get('n_neighbors', 'unknown')}\n"
             f"min_dist: {cached_umap.get('min_dist', 'unknown')}",
         ):
+            self._reset_analysis_view()
             self.umap_coords = cached_umap["coords"]
             self.last_umap_params = {
                 "n_neighbors": cached_umap.get("n_neighbors", 15),
@@ -3575,6 +3870,8 @@ class MainWindow(QMainWindow):
             return
 
         from ..jobs.task_workers import UMAPWorker
+
+        self._reset_analysis_view()
 
         worker = UMAPWorker(self.embeddings)
         worker.signals.started.connect(
@@ -3625,7 +3922,18 @@ class MainWindow(QMainWindow):
             enabled=True,
             flipud=settings.get("flipud", 0.0),
             fliplr=settings.get("fliplr", 0.5),
-            rotate=settings.get("rotate", 0.0),
+            brightness=settings.get("brightness", 0.0),
+            contrast=settings.get("contrast", 0.0),
+            args={
+                key: value
+                for key, value in {
+                    "flipud": settings.get("flipud", 0.0),
+                    "fliplr": settings.get("fliplr", 0.5),
+                    "hsv_v": settings.get("brightness", 0.0),
+                    "hsv_s": settings.get("contrast", 0.0),
+                }.items()
+                if float(value) > 0.0
+            },
             label_expansion=settings.get("label_expansion") or {},
         )
 
@@ -3633,7 +3941,11 @@ class MainWindow(QMainWindow):
             role=role,
             source_datasets=[],
             derived_dataset_dir=str(dataset_dir),
-            base_model=settings.get("base_model", "") if is_yolo else "",
+            base_model=(
+                settings.get("initial_model_path") or settings.get("base_model", "")
+                if is_yolo
+                else ""
+            ),
             hyperparams=TrainingHyperParams(
                 epochs=settings.get("epochs", 50),
                 batch=settings.get("batch", 32),
@@ -3656,6 +3968,11 @@ class MainWindow(QMainWindow):
             ),
             device=settings.get("device", "cpu"),
             training_space="original",
+            resume_from=(
+                settings.get("initial_model_path", "")
+                if mode in ("flat_custom", "multihead_custom")
+                else ""
+            ),
             augmentation_profile=aug,
         )
         if mode in ("flat_custom", "multihead_custom"):
@@ -3710,6 +4027,7 @@ class MainWindow(QMainWindow):
                 class_names=all_classes,
                 best_val_acc=best_acc,
                 num_classes=len(all_classes),
+                meta={"training_settings": dict(self._last_training_settings or {})},
             )
         except Exception:
             pass  # non-fatal
@@ -3779,7 +4097,7 @@ class MainWindow(QMainWindow):
         """Publish trained model artifacts to the models directory."""
         results = getattr(dialog, "_train_results", None) or []
         settings = dialog.get_settings()
-        mode = settings.get("mode") or "flat_tiny"
+        mode = settings.get("mode") or "flat_custom"
         is_yolo = "yolo" in mode
         multi_head = mode.startswith("multihead")
         role_map = {
@@ -3793,7 +4111,7 @@ class MainWindow(QMainWindow):
         from ...training.contracts import TrainingRole
         from ...training.model_publish import publish_trained_model
 
-        role_val = role_map.get(mode, "classify_flat_tiny")
+        role_val = role_map.get(mode, "classify_flat_custom")
         role = TrainingRole(role_val)
         for fi, result in enumerate(results):
             artifact = result.get("artifact_path", "")
@@ -3873,7 +4191,7 @@ class MainWindow(QMainWindow):
             "flat_custom": TrainingRole.CLASSIFY_FLAT_CUSTOM,
             "multihead_custom": TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
         }
-        return role_map.get(mode, TrainingRole.CLASSIFY_FLAT_TINY)
+        return role_map.get(mode, TrainingRole.CLASSIFY_FLAT_CUSTOM)
 
     @staticmethod
     def _prepare_training_labels(labeled_pairs):
@@ -3888,13 +4206,14 @@ class MainWindow(QMainWindow):
         class_names_int = {i: label for label, i in label_map_int.items()}
         return images, labels_str, int_labels, class_names_int
 
-    def _build_training_context(self, dialog, labeled_pairs):
+    def _build_training_context(self, dialog, labeled_pairs, settings=None):
         """Build the immutable context used across export, train, and inference."""
         from pathlib import Path
 
-        settings = dialog.get_settings()
+        settings = dict(settings or dialog.get_settings())
         self._last_training_settings = dict(settings)
-        mode = settings.get("mode") or "flat_tiny"
+        self._save_last_training_settings()
+        mode = settings.get("mode") or "flat_custom"
         timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
         project_path = Path(self.project_path) if self.project_path else Path.cwd()
         run_dir = project_path / ".classkit_runs" / f"{mode}_{timestamp}"
@@ -3915,6 +4234,33 @@ class MainWindow(QMainWindow):
             "int_labels": int_labels,
             "class_names_int": class_names_int,
         }
+
+    def _validate_training_start_model(self, settings: dict) -> bool:
+        """Validate any optional warm-start checkpoint before export/training begins."""
+        mode = str(settings.get("mode") or "").strip()
+        path_text = str(settings.get("initial_model_path") or "").strip()
+        if not path_text:
+            return True
+
+        model_path = Path(path_text).expanduser()
+        if not model_path.exists():
+            QMessageBox.warning(
+                self,
+                "Missing Starting Model",
+                f"The selected starting model was not found:\n{model_path}",
+            )
+            return False
+
+        expected_suffix = ".pt" if "yolo" in mode else ".pth"
+        if model_path.suffix.lower() != expected_suffix:
+            QMessageBox.warning(
+                self,
+                "Unsupported Starting Model",
+                "The selected starting model does not match the current training mode.\n\n"
+                f"Expected a {expected_suffix} artifact for mode '{mode}', got '{model_path.suffix or 'no extension'}'.",
+            )
+            return False
+        return True
 
     def _build_training_specs(self, context, scheme):
         """Build one or more training specs for the chosen training mode."""
@@ -4088,7 +4434,11 @@ class MainWindow(QMainWindow):
 
     def _start_training_from_dialog(self, dialog, labeled_pairs, scheme) -> None:
         """Start dataset export for the training dialog's current settings."""
-        context = self._build_training_context(dialog, labeled_pairs)
+        settings = dialog.get_settings()
+        if not self._validate_training_start_model(settings):
+            return
+
+        context = self._build_training_context(dialog, labeled_pairs, settings=settings)
         worker = self._create_training_export_worker(context, scheme)
         dialog._worker = worker
         worker.signals.progress.connect(
@@ -4126,6 +4476,9 @@ class MainWindow(QMainWindow):
             scheme=scheme,
             n_labeled=len(labeled_pairs),
             class_choices=project_class_choices,
+            initial_settings=self._get_recent_project_training_settings(),
+            recent_model_paths=self._list_recent_trainable_model_paths(),
+            average_image_size=self._estimate_average_image_dimensions(),
             parent=self,
         )
 
@@ -4464,6 +4817,14 @@ class MainWindow(QMainWindow):
             return
         self.request_preview_for_index(index, source="hover")
 
+    def on_explorer_empty_hover(self) -> None:
+        """Clear stale preview when the cursor leaves points in labeling hover mode."""
+        if self.explorer_mode != "labeling":
+            return
+        if self.selected_point_index is not None or self.hover_locked:
+            return
+        self.clear_preview_display()
+
     def on_label_assigned(self, label):
         """Handle label assignment."""
         idx = (
@@ -4589,6 +4950,7 @@ class MainWindow(QMainWindow):
         """Handle CLAHE enhancement toggle."""
         if hasattr(self, "preview_canvas"):
             self.preview_canvas.use_clahe = checked
+            self._save_preview_enhancement_settings()
             # Refresh status
             status = "enabled" if checked else "disabled"
             self.status.showMessage(f"Contrast enhancement {status}", 2000)
@@ -4642,7 +5004,11 @@ class MainWindow(QMainWindow):
 
     def on_embedding_success(self, result):
         """Handle successful embedding computation."""
+        self._reset_analysis_view()
         self.embeddings = result["embeddings"]
+        metadata = result.get("metadata") or {}
+        self._current_embedding_cache_id = metadata.get("id")
+        self._invalidate_embedding_downstream_state(persist_candidates=True)
         cached = result.get("cached", False)
 
         if cached:
@@ -4669,8 +5035,9 @@ class MainWindow(QMainWindow):
 
     def on_clustering_success(self, result):
         """Handle successful clustering."""
+        self._reset_analysis_view()
         self.cluster_assignments = result["assignments"]
-        self.candidate_indices = []
+        self._clear_candidate_state(persist=True)
         n_clusters = len(set(self.cluster_assignments))
 
         if self.db_path:
@@ -4683,6 +5050,7 @@ class MainWindow(QMainWindow):
                     result.get("centers"),
                     n_clusters,
                     result.get("method", "unknown"),
+                    meta={"embedding_cache_id": self._current_embedding_cache_id},
                 )
             except Exception:
                 pass
@@ -4706,6 +5074,7 @@ class MainWindow(QMainWindow):
 
     def on_umap_success(self, result):
         """Handle successful UMAP computation."""
+        self._reset_analysis_view()
         self.umap_coords = result["coords"]
 
         if self.db_path:
@@ -4717,6 +5086,7 @@ class MainWindow(QMainWindow):
                     self.umap_coords,
                     self.last_umap_params.get("n_neighbors", 15),
                     self.last_umap_params.get("min_dist", 0.1),
+                    meta={"embedding_cache_id": self._current_embedding_cache_id},
                 )
             except Exception:
                 pass

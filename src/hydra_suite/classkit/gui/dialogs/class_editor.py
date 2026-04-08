@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -19,6 +20,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.classkit.config.presets import (
+    describe_scheme,
+    get_available_scheme_presets,
+    save_scheme_preset,
+)
 from hydra_suite.classkit.gui.dialogs._helpers import _LabelRow
 
 _DARK_STYLE = """
@@ -67,32 +73,6 @@ _BTN_NEUTRAL = (
 class ClassEditorDialog(QDialog):
     """Polished two-panel labeling class / multi-factor scheme editor."""
 
-    _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
-    _PRESETS = {
-        "head_tail": [
-            {
-                "name": "direction",
-                "labels": ["left", "right", "up", "down"],
-                "shortcuts": ["A", "D", "W", "S"],
-            },
-        ],
-        "color_tag_1": [
-            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
-        ],
-        "color_tag_2": [
-            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
-            {"name": "tag_2", "labels": _DEFAULT_COLORS, "shortcuts": []},
-        ],
-        "color_tag_3": [
-            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
-            {"name": "tag_2", "labels": _DEFAULT_COLORS, "shortcuts": []},
-            {"name": "tag_3", "labels": _DEFAULT_COLORS, "shortcuts": []},
-        ],
-        "age": [
-            {"name": "age", "labels": ["young", "old"], "shortcuts": []},
-        ],
-    }
-
     def __init__(
         self,
         classes: Optional[List[str]] = None,
@@ -107,6 +87,7 @@ class ClassEditorDialog(QDialog):
         self.setStyleSheet(_DARK_STYLE)
 
         self._factors: List[dict] = []
+        self._preset_lookup: dict[str, object] = {}
 
         if scheme_dict and scheme_dict.get("factors"):
             self._factors = [
@@ -135,25 +116,16 @@ class ClassEditorDialog(QDialog):
         preset_bar.addWidget(lbl_preset)
         self._preset_combo = QComboBox()
         self._preset_combo.setMaximumWidth(320)
-        self._preset_combo.addItem("\u2014 choose preset \u2014", None)
-        self._preset_combo.addItem(
-            "Head / Tail  (4 directions \u00b7 A D W S)", "head_tail"
-        )
-        self._preset_combo.addItem(
-            "Color tag \u2014 1 factor  (5 colors)", "color_tag_1"
-        )
-        self._preset_combo.addItem(
-            "Color tag \u2014 2 factors  (25 composites)", "color_tag_2"
-        )
-        self._preset_combo.addItem(
-            "Color tag \u2014 3 factors  (125 composites)", "color_tag_3"
-        )
-        self._preset_combo.addItem("Age  (young / old)", "age")
+        self._reload_presets()
         preset_bar.addWidget(self._preset_combo)
         btn_apply_preset = QPushButton("Apply")
         btn_apply_preset.setMaximumWidth(70)
         btn_apply_preset.clicked.connect(self._apply_preset)
         preset_bar.addWidget(btn_apply_preset)
+        btn_save_preset = QPushButton("Save As Preset…")
+        btn_save_preset.setStyleSheet(_BTN_NEUTRAL)
+        btn_save_preset.clicked.connect(self._save_current_as_preset)
+        preset_bar.addWidget(btn_save_preset)
         preset_bar.addStretch(1)
         outer.addLayout(preset_bar)
 
@@ -356,25 +328,102 @@ class ClassEditorDialog(QDialog):
 
     def _apply_preset(self):
         key = self._preset_combo.currentData()
-        if key is None:
-            return
-        preset = self._PRESETS.get(key)
+        preset = self._preset_lookup.get(key)
         if preset is None:
             return
         reply = QMessageBox.question(
             self,
             "Apply Preset",
-            f"Replace current scheme with the '{key}' preset?",
+            f"Replace current scheme with the '{preset.label}' preset?",
             QMessageBox.Yes | QMessageBox.Cancel,
         )
         if reply != QMessageBox.Yes:
             return
         self._current_factor_idx = -1
-        self._factors = [dict(f) for f in preset]
+        self._factors = [
+            {
+                "name": factor.name,
+                "labels": list(factor.labels),
+                "shortcuts": list(factor.shortcut_keys),
+            }
+            for factor in preset.scheme.factors
+        ]
         self._populate_factor_list()
         self._clear_label_rows()
         if self._factors:
             self._factor_list.setCurrentRow(0)
+
+    def _reload_presets(self, selected_key: str | None = None) -> None:
+        current_key = selected_key or self._preset_combo.currentData()
+        self._preset_lookup = {}
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        self._preset_combo.addItem("— choose preset —", None)
+        for preset in get_available_scheme_presets():
+            self._preset_lookup[preset.key] = preset
+            self._preset_combo.addItem(preset.label, preset.key)
+        if current_key is not None:
+            index = self._preset_combo.findData(current_key)
+            if index >= 0:
+                self._preset_combo.setCurrentIndex(index)
+        self._preset_combo.blockSignals(False)
+
+    def _save_current_as_preset(self):
+        self._flush_current_factor()
+        scheme_dict = self.get_scheme_dict()
+        if not scheme_dict:
+            QMessageBox.warning(
+                self,
+                "Nothing to Save",
+                "Define at least one factor and label before saving a preset.",
+            )
+            return
+
+        default_name = scheme_dict.get("name", "custom_scheme")
+        preset_name, ok = QInputDialog.getText(
+            self,
+            "Save Scheme Preset",
+            "Preset name:",
+            text=default_name,
+        )
+        if not ok:
+            return
+
+        normalized_name = preset_name.strip()
+        if not normalized_name:
+            QMessageBox.warning(self, "Invalid Name", "Preset name cannot be empty.")
+            return
+
+        overwrite = False
+        while True:
+            try:
+                preset_path = save_scheme_preset(
+                    normalized_name,
+                    scheme_dict,
+                    overwrite=overwrite,
+                )
+                break
+            except FileExistsError:
+                reply = QMessageBox.question(
+                    self,
+                    "Overwrite Preset?",
+                    f"A preset named '{normalized_name}' already exists. Overwrite it?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+                overwrite = True
+            except ValueError as exc:
+                QMessageBox.warning(self, "Invalid Preset", str(exc))
+                return
+
+        selected_key = f"custom:{preset_path.stem}"
+        self._reload_presets(selected_key=selected_key)
+        QMessageBox.information(
+            self,
+            "Preset Saved",
+            f"Saved preset '{normalized_name}'.\n\n{describe_scheme(scheme_dict)}",
+        )
 
     def _do_accept(self):
         self._flush_current_factor()
@@ -409,9 +458,9 @@ class ClassEditorDialog(QDialog):
                         "shortcut_keys": f.get("shortcuts", []),
                     }
                 ],
-                "training_modes": ["flat_tiny", "flat_yolo"],
+                "training_modes": ["flat_custom", "flat_yolo"],
             }
-        modes = ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]
+        modes = ["flat_custom", "flat_yolo", "multihead_custom", "multihead_yolo"]
         return {
             "name": "_".join(f.get("name", "f") for f in factors),
             "description": f"{len(factors)}-factor labeling scheme",

@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
+import math
 import os
-import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from hydra_suite.trackerkit.gui.main_window import MainWindow
 
@@ -24,20 +25,6 @@ def qapp() -> QApplication:
     return app
 
 
-def _fake_conda_env_list(*_args, **_kwargs) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=["conda", "env", "list"],
-        returncode=0,
-        stdout=(
-            "# conda environments:\n"
-            "base                  *  /fake/base\n"
-            "x-anylabeling-alpha      /fake/alpha\n"
-            "x-anylabeling-beta       /fake/beta\n"
-        ),
-        stderr="",
-    )
-
-
 def _make_main_window(
     monkeypatch: pytest.MonkeyPatch,
     advanced_config: dict[str, object] | None = None,
@@ -48,7 +35,6 @@ def _make_main_window(
         "_load_advanced_config",
         lambda self: dict(advanced_config or {}),
     )
-    monkeypatch.setattr(subprocess, "run", _fake_conda_env_list)
     return MainWindow()
 
 
@@ -61,12 +47,165 @@ def _select_first_model_with_suffix(combo, suffix: str) -> str:
     raise AssertionError(f"No model ending with {suffix!r} was available in the combo")
 
 
+def _select_first_model_with_suffixes(combo, suffixes: tuple[str, ...]) -> str:
+    for suffix in suffixes:
+        try:
+            return _select_first_model_with_suffix(combo, suffix)
+        except AssertionError:
+            continue
+    raise AssertionError(
+        f"No model ending with {suffixes!r} was available in the combo"
+    )
+
+
+def _seed_trackerkit_model_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    data_dir = tmp_path / "hydra-data"
+    monkeypatch.setenv("HYDRA_DATA_DIR", str(data_dir))
+    models_root = data_dir / "models"
+    registry: dict[str, object] = {}
+
+    def add_file(rel_path: str, metadata: dict[str, object] | None = None) -> None:
+        path = models_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stub model", encoding="utf-8")
+        if metadata is not None:
+            registry[rel_path] = metadata
+
+    def add_dir(rel_path: str) -> None:
+        path = models_root / rel_path
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "config.json").write_text("{}", encoding="utf-8")
+
+    add_file(
+        "obb/direct_remove.pt",
+        {
+            "task_family": "obb",
+            "usage_role": "obb_direct",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "direct_remove",
+        },
+    )
+    add_file(
+        "obb/direct_keep.pt",
+        {
+            "task_family": "obb",
+            "usage_role": "obb_direct",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "direct_keep",
+        },
+    )
+    add_file(
+        "detection/seq_detect_remove.pt",
+        {
+            "task_family": "detect",
+            "usage_role": "seq_detect",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "seq_detect_remove",
+        },
+    )
+    add_file(
+        "detection/seq_detect_keep.pt",
+        {
+            "task_family": "detect",
+            "usage_role": "seq_detect",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "seq_detect_keep",
+        },
+    )
+    add_file(
+        "obb/cropped/seq_crop_remove.pt",
+        {
+            "task_family": "obb",
+            "usage_role": "seq_crop_obb",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "seq_crop_remove",
+        },
+    )
+    add_file(
+        "obb/cropped/seq_crop_keep.pt",
+        {
+            "task_family": "obb",
+            "usage_role": "seq_crop_obb",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "seq_crop_keep",
+        },
+    )
+    add_file(
+        "classification/orientation/YOLO/headtail_remove.pt",
+        {
+            "task_family": "classify",
+            "usage_role": "headtail",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "headtail_remove",
+        },
+    )
+    add_file(
+        "classification/orientation/YOLO/headtail_keep.pt",
+        {
+            "task_family": "classify",
+            "usage_role": "headtail",
+            "size": "26s",
+            "species": "ant",
+            "model_info": "headtail_keep",
+        },
+    )
+    add_file(
+        "classification/identity/cnn_remove.pt",
+        {
+            "task_family": "classify",
+            "usage_role": "cnn_identity",
+            "arch": "tinyclassifier",
+            "num_classes": 2,
+            "class_names": ["worker", "queen"],
+            "factor_names": [],
+            "input_size": [224, 224],
+            "classification_label": "colony",
+            "species": "ant",
+            "model_info": "cnn_remove",
+        },
+    )
+    add_file(
+        "classification/identity/cnn_keep.pt",
+        {
+            "task_family": "classify",
+            "usage_role": "cnn_identity",
+            "arch": "tinyclassifier",
+            "num_classes": 2,
+            "class_names": ["worker", "queen"],
+            "factor_names": [],
+            "input_size": [224, 224],
+            "classification_label": "colony",
+            "species": "ant",
+            "model_info": "cnn_keep",
+        },
+    )
+    add_file("pose/YOLO/pose_remove.pt")
+    add_file("pose/YOLO/pose_keep.pt")
+    add_dir("pose/SLEAP/sleap_remove")
+    add_dir("pose/SLEAP/sleap_keep")
+
+    registry_path = models_root / "model_registry.json"
+    registry_path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+    return models_root
+
+
 def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     monkeypatch: pytest.MonkeyPatch,
     qapp: QApplication,
     tmp_path: Path,
 ) -> None:
     window = _make_main_window(monkeypatch)
+    window._identity_panel.g_headtail.setChecked(True)
     window._identity_panel.combo_yolo_headtail_model_type.setCurrentText("tiny")
     window._identity_panel._refresh_yolo_headtail_model_combo()
 
@@ -79,6 +218,7 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     config_path = tmp_path / "headtail_roundtrip.json"
     assert window.save_config(preset_mode=True, preset_path=str(config_path))
     saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["enable_headtail_orientation"] is True
     assert saved_cfg["yolo_headtail_model_type"] == "tiny"
     window.close()
 
@@ -89,6 +229,7 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
         reloaded_window._identity_panel.combo_yolo_headtail_model_type.currentText()
         == "tiny"
     )
+    assert reloaded_window._identity_panel.g_headtail.isChecked() is True
     assert (
         reloaded_window._identity_panel._get_selected_yolo_headtail_model_path()
         == selected_model
@@ -96,36 +237,358 @@ def test_headtail_model_type_roundtrip_preserves_tiny_selection(
     reloaded_window.close()
 
 
-def test_xanylabeling_env_preference_restores_and_updates(
+def test_headtail_toggle_roundtrip_preserves_selection_but_disables_runtime_use(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    selected_model = _select_first_model_with_suffixes(
+        window._identity_panel.combo_yolo_headtail_model,
+        (".pt", ".pth"),
+    )
+    window._identity_panel.g_headtail.setChecked(False)
+
+    config_path = tmp_path / "headtail_toggle_roundtrip.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert saved_cfg["enable_headtail_orientation"] is False
+    assert saved_cfg["yolo_headtail_model_path"]
+    assert window.get_parameters_dict()["YOLO_HEADTAIL_MODEL_PATH"] == ""
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+    reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert reloaded_window._identity_panel.g_headtail.isChecked() is False
+    assert (
+        reloaded_window._identity_panel._get_configured_yolo_headtail_model_path()
+        == selected_model
+    )
+    assert reloaded_window.get_parameters_dict()["YOLO_HEADTAIL_MODEL_PATH"] == ""
+    reloaded_window.close()
+
+
+def test_refinekit_prompt_toggle_roundtrip_and_batch_mode_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    window._postprocess_panel.chk_prompt_open_refinekit.setChecked(True)
+
+    config_path = tmp_path / "refinekit_prompt_roundtrip.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert saved_cfg["prompt_open_refinekit_on_tracking_complete"] is True
+    assert window._postprocess_panel.g_refinekit.isHidden() is False
+
+    window._setup_panel.g_batch.setChecked(True)
+    assert window._postprocess_panel.g_refinekit.isHidden() is True
+    assert window._postprocess_panel.chk_prompt_open_refinekit.isChecked() is False
+
+    window._setup_panel.g_batch.setChecked(False)
+    assert window._postprocess_panel.g_refinekit.isHidden() is False
+    assert window._postprocess_panel.chk_prompt_open_refinekit.isChecked() is False
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+    reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert reloaded_window._postprocess_panel.g_refinekit.isHidden() is False
+    assert (
+        reloaded_window._postprocess_panel.chk_prompt_open_refinekit.isChecked() is True
+    )
+    reloaded_window.close()
+
+
+def test_video_autoload_restores_pose_keypoint_groups_and_headtail_type(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"")
+    skeleton_path = tmp_path / "skeleton.json"
+    skeleton_path.write_text(
+        json.dumps(
+            {
+                "keypoint_names": ["head", "thorax", "abdomen", "tail"],
+                "skeleton_edges": [[0, 1], [1, 2], [2, 3]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    window = _make_main_window(monkeypatch)
+    window.current_video_path = str(video_path)
+    window._setup_panel.file_line.setText(str(video_path))
+    window._identity_panel.g_headtail.setChecked(True)
+    window._identity_panel.combo_yolo_headtail_model_type.setCurrentText("tiny")
+    window._identity_panel._refresh_yolo_headtail_model_combo()
+    _select_first_model_with_suffix(
+        window._identity_panel.combo_yolo_headtail_model,
+        ".pth",
+    )
+    window._identity_panel.chk_enable_pose_extractor.setChecked(True)
+    window._identity_panel.line_pose_skeleton_file.setText(str(skeleton_path))
+    window._identity_panel._refresh_pose_direction_keypoint_lists()
+    window._set_pose_group_selection(
+        window._identity_panel.list_pose_direction_anterior,
+        ["head", "thorax"],
+    )
+    window._set_pose_group_selection(
+        window._identity_panel.list_pose_direction_posterior,
+        ["tail"],
+    )
+    window._apply_pose_keypoint_selection_constraints("anterior")
+
+    config_path = tmp_path / "sample_config.json"
+    assert window.save_config(preset_mode=False, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["pose_direction_anterior_keypoints"] == ["head", "thorax"]
+    assert saved_cfg["pose_direction_posterior_keypoints"] == ["tail"]
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+
+    def _fake_init_video_player(_path: str) -> None:
+        reloaded_window.video_total_frames = 120
+        reloaded_window._setup_panel.spin_start_frame.setMaximum(119)
+        reloaded_window._setup_panel.spin_end_frame.setMaximum(119)
+        reloaded_window._setup_panel.spin_start_frame.setEnabled(True)
+        reloaded_window._setup_panel.spin_end_frame.setEnabled(True)
+
+    monkeypatch.setattr(reloaded_window, "_init_video_player", _fake_init_video_player)
+
+    reloaded_window._setup_video_file(str(video_path))
+
+    assert (
+        reloaded_window._identity_panel.combo_yolo_headtail_model_type.currentText()
+        == "tiny"
+    )
+    assert reloaded_window._parse_pose_direction_anterior_keypoints() == [
+        "head",
+        "thorax",
+    ]
+    assert reloaded_window._parse_pose_direction_posterior_keypoints() == ["tail"]
+    reloaded_window.close()
+
+
+def test_remove_buttons_delete_only_the_selected_tracker_models(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    models_root = _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.warning",
+        lambda *_args, **_kwargs: None,
+    )
+
+    window = _make_main_window(monkeypatch)
+    window._set_yolo_model_selection("obb/direct_remove.pt")
+    window._detection_panel.btn_remove_yolo_model.click()
+
+    registry = json.loads(
+        (models_root / "model_registry.json").read_text(encoding="utf-8")
+    )
+    assert not (models_root / "obb/direct_remove.pt").exists()
+    assert "obb/direct_remove.pt" not in registry
+    assert (models_root / "obb/direct_keep.pt").exists()
+    assert "obb/direct_keep.pt" in registry
+
+    window._set_yolo_detect_model_selection("detection/seq_detect_remove.pt")
+    window._detection_panel.btn_remove_yolo_detect_model.click()
+    registry = json.loads(
+        (models_root / "model_registry.json").read_text(encoding="utf-8")
+    )
+    assert not (models_root / "detection/seq_detect_remove.pt").exists()
+    assert "detection/seq_detect_remove.pt" not in registry
+    assert (models_root / "detection/seq_detect_keep.pt").exists()
+
+    window._set_yolo_crop_obb_model_selection("obb/cropped/seq_crop_remove.pt")
+    window._detection_panel.btn_remove_yolo_crop_obb_model.click()
+    registry = json.loads(
+        (models_root / "model_registry.json").read_text(encoding="utf-8")
+    )
+    assert not (models_root / "obb/cropped/seq_crop_remove.pt").exists()
+    assert "obb/cropped/seq_crop_remove.pt" not in registry
+    assert (models_root / "obb/cropped/seq_crop_keep.pt").exists()
+
+    window._identity_panel.g_headtail.setChecked(True)
+    window._identity_panel.combo_yolo_headtail_model_type.setCurrentText("YOLO")
+    window._set_yolo_headtail_model_selection(
+        "classification/orientation/YOLO/headtail_remove.pt"
+    )
+    window._identity_panel.btn_remove_yolo_headtail_model.click()
+    registry = json.loads(
+        (models_root / "model_registry.json").read_text(encoding="utf-8")
+    )
+    assert not (
+        models_root / "classification/orientation/YOLO/headtail_remove.pt"
+    ).exists()
+    assert "classification/orientation/YOLO/headtail_remove.pt" not in registry
+    assert (models_root / "classification/orientation/YOLO/headtail_keep.pt").exists()
+    window.close()
+
+
+def test_remove_buttons_delete_selected_pose_and_sleap_models_only(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    models_root = _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.warning",
+        lambda *_args, **_kwargs: None,
+    )
+
+    window = _make_main_window(monkeypatch)
+    window._identity_panel.g_pose_runtime.setChecked(True)
+    window._identity_panel.combo_pose_model_type.setCurrentText("YOLO")
+    window._set_pose_model_path_for_backend(
+        "pose/YOLO/pose_remove.pt",
+        backend="yolo",
+        update_combo=True,
+    )
+    window._identity_panel.btn_remove_pose_model.click()
+    assert not (models_root / "pose/YOLO/pose_remove.pt").exists()
+    assert (models_root / "pose/YOLO/pose_keep.pt").exists()
+
+    window._identity_panel.combo_pose_model_type.setCurrentText("SLEAP")
+    window._set_pose_model_path_for_backend(
+        "pose/SLEAP/sleap_remove",
+        backend="sleap",
+        update_combo=True,
+    )
+    window._identity_panel.btn_remove_pose_model.click()
+    assert not (models_root / "pose/SLEAP/sleap_remove").exists()
+    assert (models_root / "pose/SLEAP/sleap_keep").exists()
+    window.close()
+
+
+def test_remove_button_deletes_only_selected_cnn_identity_model(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    models_root = _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.warning",
+        lambda *_args, **_kwargs: None,
+    )
+
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._sync_individual_analysis_mode_ui()
+    window._identity_panel.g_identity.setChecked(True)
+    row = window._identity_panel._add_cnn_classifier_row()
+    idx = row.combo_model.findData("classification/identity/cnn_remove.pt")
+    assert idx >= 0
+    row.combo_model.setCurrentIndex(idx)
+    assert row.btn_remove_model.isEnabled() is True
+    row.btn_remove_model.click()
+
+    registry = json.loads(
+        (models_root / "model_registry.json").read_text(encoding="utf-8")
+    )
+    assert not (models_root / "classification/identity/cnn_remove.pt").exists()
+    assert "classification/identity/cnn_remove.pt" not in registry
+    assert (models_root / "classification/identity/cnn_keep.pt").exists()
+    assert row.combo_model.findData("classification/identity/cnn_remove.pt") == -1
+    assert row.combo_model.findData("classification/identity/cnn_keep.pt") >= 0
+    window.close()
+
+
+def test_preview_detection_restores_analyze_individual_controls(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+
+    window = _make_main_window(monkeypatch)
+    window.preview_frame_original = np.zeros((24, 24, 3), dtype=np.uint8)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._sync_individual_analysis_mode_ui()
+
+    window._identity_panel.g_identity.setChecked(True)
+    window._identity_panel.g_apriltags.setChecked(True)
+    window._identity_panel.g_headtail.setChecked(True)
+    window._identity_panel.g_pose_runtime.setChecked(True)
+    window._set_yolo_headtail_model_selection(
+        "classification/orientation/YOLO/headtail_keep.pt"
+    )
+    window._set_pose_model_path_for_backend(
+        "pose/YOLO/pose_keep.pt",
+        backend="yolo",
+        update_combo=True,
+    )
+
+    assert window._identity_panel.spin_identity_match_bonus.isEnabled() is True
+    assert window._identity_panel.spin_identity_mismatch_penalty.isEnabled() is True
+    assert window._identity_panel.combo_apriltag_family.isEnabled() is True
+    assert window._identity_panel.spin_apriltag_decimate.isEnabled() is True
+    assert window._identity_panel.combo_pose_model_type.isEnabled() is True
+    assert window._identity_panel.combo_pose_model.isEnabled() is True
+    assert window._identity_panel.spin_pose_min_kpt_conf_valid.isEnabled() is True
+    assert window._identity_panel.spin_pose_batch.isEnabled() is True
+    assert window._identity_panel.btn_remove_pose_model.isEnabled() is True
+    assert window._identity_panel.btn_remove_yolo_headtail_model.isEnabled() is True
+
+    window._session_orch._set_preview_test_running(True)
+
+    assert window._identity_panel.spin_identity_match_bonus.isEnabled() is False
+    assert window._identity_panel.btn_remove_pose_model.isEnabled() is False
+
+    window._session_orch._set_preview_test_running(False)
+
+    assert window._identity_panel.spin_identity_match_bonus.isEnabled() is True
+    assert window._identity_panel.spin_identity_mismatch_penalty.isEnabled() is True
+    assert window._identity_panel.combo_apriltag_family.isEnabled() is True
+    assert window._identity_panel.spin_apriltag_decimate.isEnabled() is True
+    assert window._identity_panel.combo_pose_model_type.isEnabled() is True
+    assert window._identity_panel.combo_pose_model.isEnabled() is True
+    assert window._identity_panel.spin_pose_min_kpt_conf_valid.isEnabled() is True
+    assert window._identity_panel.spin_pose_batch.isEnabled() is True
+    assert window._identity_panel.btn_remove_pose_model.isEnabled() is True
+    assert window._identity_panel.btn_remove_yolo_headtail_model.isEnabled() is True
+    assert window.btn_test_detection.isEnabled() is True
+    window.close()
+
+
+def test_pose_video_overlay_customization_controls_remain_visible(
     monkeypatch: pytest.MonkeyPatch,
     qapp: QApplication,
 ) -> None:
-    saved_preferences: list[dict[str, object]] = []
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._identity_panel.chk_enable_pose_extractor.setChecked(True)
+    window._postprocess_panel.check_video_output.setChecked(True)
+    window._postprocess_panel.check_video_show_pose.setChecked(True)
 
-    def _record_advanced_config(self: MainWindow) -> None:
-        saved_preferences.append(dict(self.advanced_config))
+    window._sync_video_pose_overlay_controls()
 
-    monkeypatch.setattr(MainWindow, "_save_advanced_config", _record_advanced_config)
-    monkeypatch.setattr(
-        MainWindow,
-        "_load_advanced_config",
-        lambda self: {"xanylabeling_env": "x-anylabeling-beta"},
-    )
-    monkeypatch.setattr(subprocess, "run", _fake_conda_env_list)
-
-    window = MainWindow()
-
-    assert (
-        window._dataset_panel.combo_xanylabeling_env.currentText()
-        == "x-anylabeling-beta"
-    )
-
-    window._dataset_panel.combo_xanylabeling_env.setCurrentText("x-anylabeling-alpha")
-
-    assert window._dataset_panel._selected_xanylabeling_env() == "x-anylabeling-alpha"
-    assert window.advanced_config["xanylabeling_env"] == "x-anylabeling-alpha"
-    assert saved_preferences
-    assert saved_preferences[-1]["xanylabeling_env"] == "x-anylabeling-alpha"
+    assert window._postprocess_panel.combo_video_pose_color_mode.isHidden() is False
+    assert window._postprocess_panel.spin_video_pose_point_radius.isHidden() is False
+    assert window._postprocess_panel.spin_video_pose_point_thickness.isHidden() is False
+    assert window._postprocess_panel.spin_video_pose_line_thickness.isHidden() is False
+    assert window._postprocess_panel.lbl_video_pose_disabled_hint.isHidden() is False
     window.close()
 
 
@@ -162,3 +625,279 @@ def test_confidence_density_toggle_roundtrip_updates_visibility(
 
     assert not reloaded_window._tracking_panel.g_density.isHidden()
     reloaded_window.close()
+
+
+def test_oriented_video_paths_are_split_from_individual_crop_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"")
+
+    window = _make_main_window(monkeypatch)
+    window.current_video_path = str(video_path)
+    window._setup_panel.file_line.setText(str(video_path))
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._dataset_panel.chk_enable_individual_dataset.setChecked(False)
+    window._sync_individual_analysis_mode_ui()
+
+    params = window.get_parameters_dict()
+
+    assert window._dataset_panel.g_individual_dataset.isHidden() is False
+    assert window._dataset_panel.g_oriented_videos.isHidden() is False
+    assert window._dataset_panel.ind_output_group.isHidden() is True
+    assert params["INDIVIDUAL_DATASET_OUTPUT_DIR"] == str(
+        tmp_path / "sample_datasets" / "individual_crops"
+    )
+    assert params["ORIENTED_TRACK_VIDEO_OUTPUT_DIR"] == str(
+        tmp_path / "sample_datasets" / "oriented_videos"
+    )
+    window.close()
+
+
+def test_oriented_video_postprocess_controls_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._sync_individual_analysis_mode_ui()
+
+    window._dataset_panel.chk_enable_individual_dataset.setChecked(True)
+    window._dataset_panel.chk_suppress_foreign_obb_individual_dataset.setChecked(True)
+    window._dataset_panel.chk_generate_individual_track_videos.setChecked(True)
+    window._dataset_panel.chk_suppress_foreign_obb_oriented_videos.setChecked(False)
+    window._dataset_panel.chk_fix_oriented_video_direction_flips.setChecked(True)
+    window._dataset_panel.spin_oriented_video_heading_flip_burst.setValue(7)
+    window._dataset_panel.chk_enable_oriented_video_affine_stabilization.setChecked(
+        True
+    )
+    window._dataset_panel.spin_oriented_video_stabilization_window.setValue(9)
+
+    params = window.get_parameters_dict()
+    assert params["SUPPRESS_FOREIGN_OBB_DATASET"] is True
+    assert params["SUPPRESS_FOREIGN_OBB_ORIENTED_VIDEO"] is False
+    assert params["ORIENTED_VIDEO_FIX_DIRECTION_FLIPS"] is True
+    assert params["ORIENTED_VIDEO_HEADING_FLIP_MAX_BURST"] == 7
+    assert params["ORIENTED_VIDEO_ENABLE_AFFINE_STABILIZATION"] is True
+    assert params["ORIENTED_VIDEO_STABILIZATION_WINDOW"] == 9
+
+    config_path = tmp_path / "oriented_video_postprocess_roundtrip.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["suppress_foreign_obb_individual_dataset"] is True
+    assert saved_cfg["suppress_foreign_obb_oriented_videos"] is False
+    assert saved_cfg["fix_oriented_video_direction_flips"] is True
+    assert saved_cfg["oriented_video_heading_flip_burst"] == 7
+    assert saved_cfg["enable_oriented_video_affine_stabilization"] is True
+    assert saved_cfg["oriented_video_stabilization_window"] == 9
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+    reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert (
+        reloaded_window._dataset_panel.chk_fix_oriented_video_direction_flips.isChecked()
+        is True
+    )
+    assert (
+        reloaded_window._dataset_panel.chk_suppress_foreign_obb_individual_dataset.isChecked()
+        is True
+    )
+    assert (
+        reloaded_window._dataset_panel.chk_suppress_foreign_obb_oriented_videos.isChecked()
+        is False
+    )
+    assert (
+        reloaded_window._dataset_panel.spin_oriented_video_heading_flip_burst.value()
+        == 7
+    )
+    assert (
+        reloaded_window._dataset_panel.chk_enable_oriented_video_affine_stabilization.isChecked()
+        is True
+    )
+    assert (
+        reloaded_window._dataset_panel.spin_oriented_video_stabilization_window.value()
+        == 9
+    )
+    reloaded_window.close()
+
+
+def test_legacy_shared_suppress_setting_populates_both_export_toggles(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "legacy_shared_suppress.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "suppress_foreign_obb_dataset": True,
+                "enable_individual_image_save": False,
+                "generate_oriented_track_videos": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    window = _make_main_window(monkeypatch)
+    window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert (
+        window._dataset_panel.chk_suppress_foreign_obb_individual_dataset.isChecked()
+        is True
+    )
+    assert (
+        window._dataset_panel.chk_suppress_foreign_obb_oriented_videos.isChecked()
+        is True
+    )
+    window.close()
+
+
+def test_session_summary_refinekit_prompt_respects_toggle_and_batch_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    window.current_video_path = "/tmp/video.mp4"
+
+    prompt_calls: list[str] = []
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.tracking.QMessageBox.information",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.tracking.QMessageBox.question",
+        lambda *_args, **_kwargs: prompt_calls.append("asked") or QMessageBox.No,
+    )
+
+    window._postprocess_panel.chk_prompt_open_refinekit.setChecked(False)
+    window._tracking_orch._show_session_summary()
+    assert prompt_calls == []
+
+    window._postprocess_panel.chk_prompt_open_refinekit.setChecked(True)
+    window._tracking_orch._show_session_summary()
+    assert prompt_calls == ["asked"]
+
+    window._setup_panel.g_batch.setChecked(True)
+    window._tracking_orch._show_session_summary()
+    assert prompt_calls == ["asked"]
+    window.close()
+
+
+def test_get_parameters_dict_commits_pending_frame_range_edit(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    window._setup_panel.spin_start_frame.setEnabled(True)
+    window._setup_panel.spin_end_frame.setEnabled(True)
+    window._setup_panel.spin_start_frame.setMaximum(500)
+    window._setup_panel.spin_end_frame.setMaximum(500)
+    window._setup_panel.spin_start_frame.setValue(40)
+    window._setup_panel.spin_end_frame.setValue(80)
+
+    window._setup_panel.spin_end_frame.lineEdit().setText("25")
+    params = window.get_parameters_dict()
+
+    assert params["START_FRAME"] == 25
+    assert params["END_FRAME"] == 25
+    window.close()
+
+
+def test_trail_history_special_values_update_overlay_toggle_and_clamp(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    window.video_total_frames = 240
+    window._session_orch._sync_trail_history_bounds()
+
+    window._setup_panel.chk_show_trajectories.setChecked(True)
+    window._setup_panel.spin_traj_hist.setValue(0)
+    assert window._setup_panel.chk_show_trajectories.isChecked() is False
+
+    window._setup_panel.spin_traj_hist.setValue(-1)
+    assert window._setup_panel.chk_show_trajectories.isChecked() is True
+
+    window._setup_panel.spin_traj_hist.setValue(999)
+    params = window.get_parameters_dict()
+
+    assert params["TRAJECTORY_HISTORY_SECONDS"] == 240
+    assert params["SHOW_TRAJECTORIES"] is True
+    window.close()
+
+
+def test_bg_parameter_helper_applies_extended_detection_params(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"")
+
+    class _FakeDialog:
+        def __init__(self, _video_path: str, _params: dict[str, object], _parent=None):
+            pass
+
+        def exec(self) -> int:
+            return QDialog.Accepted
+
+        def get_selected_params(self) -> dict[str, object]:
+            return {
+                "BRIGHTNESS": 12,
+                "CONTRAST": 1.35,
+                "GAMMA": 0.8,
+                "DARK_ON_LIGHT_BACKGROUND": False,
+                "BACKGROUND_PRIME_FRAMES": 60,
+                "ENABLE_ADAPTIVE_BACKGROUND": False,
+                "BACKGROUND_LEARNING_RATE": 0.02,
+                "ENABLE_LIGHTING_STABILIZATION": False,
+                "LIGHTING_SMOOTH_FACTOR": 0.91,
+                "LIGHTING_MEDIAN_WINDOW": 9,
+                "MAX_CONTOUR_MULTIPLIER": 33,
+                "ENABLE_SIZE_FILTERING": True,
+                "MIN_OBJECT_SIZE": 400,
+                "MAX_OBJECT_SIZE": 1200,
+            }
+
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.dialogs.bg_parameter_helper.BgParameterHelperDialog",
+        _FakeDialog,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.trackerkit.gui.orchestrators.config.QMessageBox.information",
+        lambda *_args, **_kwargs: None,
+    )
+
+    window = _make_main_window(monkeypatch)
+    window._setup_panel.file_line.setText(str(video_path))
+    window._setup_panel.spin_fps.setValue(20.0)
+    window._setup_panel.spin_resize.setValue(0.5)
+    window._detection_panel.spin_reference_body_size.setValue(40.0)
+
+    window._config_orch._open_bg_parameter_helper()
+
+    scaled_body_area = math.pi * (40.0 / 2.0) ** 2 * (0.5**2)
+
+    assert window._detection_panel.slider_brightness.value() == 12
+    assert window._detection_panel.slider_contrast.value() == 135
+    assert window._detection_panel.slider_gamma.value() == 80
+    assert window._detection_panel.chk_dark_on_light.isChecked() is False
+    assert window._detection_panel.spin_bg_prime.value() == pytest.approx(3.0)
+    assert window._detection_panel.chk_adaptive_bg.isChecked() is False
+    assert window._detection_panel.spin_bg_learning.value() == pytest.approx(0.02)
+    assert window._detection_panel.chk_lighting_stab.isChecked() is False
+    assert window._detection_panel.spin_lighting_smooth.value() == pytest.approx(0.91)
+    assert window._detection_panel.spin_lighting_median.value() == 9
+    assert window._detection_panel.spin_max_contour_multiplier.value() == 33
+    assert window._detection_panel.chk_size_filtering.isChecked() is True
+    assert window._detection_panel.spin_min_object_size.value() == pytest.approx(
+        round(400.0 / scaled_body_area, 2)
+    )
+    assert window._detection_panel.spin_max_object_size.value() == pytest.approx(
+        round(1200.0 / scaled_body_area, 2)
+    )
+    window.close()
