@@ -167,8 +167,7 @@ def test_open_parameter_helper_uses_main_window_parent(monkeypatch) -> None:
             return config_module.QDialog.Rejected
 
     monkeypatch.setattr(
-        config_module,
-        "ParameterHelperDialog",
+        "hydra_suite.trackerkit.gui.dialogs.parameter_helper.ParameterHelperDialog",
         FakeDialog,
     )
     monkeypatch.setattr(
@@ -184,6 +183,7 @@ def test_open_parameter_helper_uses_main_window_parent(monkeypatch) -> None:
             True,
         ),
     )
+    monkeypatch.setattr(config_module.os.path, "exists", lambda path: True)
 
     orchestrator._open_parameter_helper()
 
