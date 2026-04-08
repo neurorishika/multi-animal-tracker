@@ -8,7 +8,7 @@ This page documents the conda environment files and Makefile targets used in the
 |------|----------|----------|-------------------|
 | `environment.yml` | `hydra` | All | Python, NumPy, SciPy, PySide6, Qt6, OpenCV, Numba |
 | `environment-mps.yml` | `hydra-mps` | macOS M1-M4 | Same as CPU |
-| `environment-cuda.yml` | `hydra-cuda` | Linux/Windows (NVIDIA) | Same + CUDA 12 runtime libs (cublas, cudnn, cufft) |
+| `environment-cuda.yml` | `hydra-cuda` | Linux/Windows (NVIDIA) | Same + CUDA 12 runtime libs (cublas, cudnn, curand, cufft) |
 | `environment-rocm.yml` | `hydra-rocm` | Linux (AMD) | Same as CPU (ROCm is system-level) |
 
 The conda environments provide **system libraries only** (Qt, OpenGL, CUDA runtime). Python packages are installed separately via `make install-*`, which runs `uv pip install -r requirements-*.txt`.
@@ -29,10 +29,10 @@ All requirements files include `-e .` which installs the package in editable mod
 
 ## ONNX Runtime and CUDA compatibility
 
-`onnxruntime-gpu==1.24.1` links against CUDA 12 user-space libraries (`libcublasLt.so.12`, `libcudart.so.12`). This is handled differently by each install path:
+`onnxruntime-gpu==1.24.1` links against CUDA 12 user-space libraries (`libcublasLt.so.12`, `libcudart.so.12`, `libcurand.so.10`). This is handled differently by each install path:
 
 - **pip path:** PyTorch's CUDA wheel installs `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc. as pip dependencies and preloads them via `ctypes` at import time. ONNX Runtime finds them in the same process.
-- **conda path:** `environment-cuda.yml` installs CUDA 12 runtime libs via conda packages. `make install-cuda` writes `LD_LIBRARY_PATH` activation hooks.
+- **conda path:** `environment-cuda.yml` installs CUDA 12 runtime libs via conda packages, including `libcurand`. `make install-cuda` writes `LD_LIBRARY_PATH` activation hooks.
 
 Both approaches work on CUDA 13 systems — CUDA 12 user-space libs coexist with a CUDA 13 driver.
 

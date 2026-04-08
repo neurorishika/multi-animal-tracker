@@ -17,6 +17,8 @@ Key Features:
 - Configurable tracking parameters with persistence
 """
 
+from importlib import import_module
+
 try:
     from importlib.metadata import version as _version
 
@@ -27,19 +29,34 @@ except Exception:
 __author__ = "Rishika Mohanta"
 __email__ = "neurorishika@gmail.com"
 
-from .trackerkit.app import main, parse_arguments, setup_logging
+__all__ = [
+    "main",
+    "parse_arguments",
+    "setup_logging",
+    "TrackingWorker",
+    "MainWindow",
+]
 
-try:
-    from .core.tracking.worker import TrackingWorker
-    from .trackerkit.gui.main_window import MainWindow
 
-    __all__ = [
-        "main",
-        "parse_arguments",
-        "setup_logging",
-        "TrackingWorker",
-        "MainWindow",
-    ]
-except ImportError:
-    # During development, some modules might not be available yet
-    __all__ = ["main", "parse_arguments", "setup_logging"]
+def main(*args, **kwargs):
+    """Lazy proxy for the TrackerKit entrypoint."""
+    return import_module("hydra_suite.trackerkit.app").main(*args, **kwargs)
+
+
+def parse_arguments(*args, **kwargs):
+    """Lazy proxy for TrackerKit CLI argument parsing."""
+    return import_module("hydra_suite.trackerkit.app").parse_arguments(*args, **kwargs)
+
+
+def setup_logging(*args, **kwargs):
+    """Lazy proxy for TrackerKit logging setup."""
+    return import_module("hydra_suite.trackerkit.app").setup_logging(*args, **kwargs)
+
+
+def __getattr__(name: str):
+    """Lazy-load heavyweight symbols for backwards compatibility."""
+    if name == "TrackingWorker":
+        return import_module("hydra_suite.core.tracking.worker").TrackingWorker
+    if name == "MainWindow":
+        return import_module("hydra_suite.trackerkit.gui.main_window").MainWindow
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

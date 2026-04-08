@@ -71,7 +71,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install "hydra-suite[cuda13]"
 ```
 
-**You do not need the CUDA toolkit installed.** PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.
+**You do not need the CUDA toolkit installed.** PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, `nvidia-curand-cu12`, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.
 
 ### AMD GPU / ROCm (Linux only)
 
@@ -327,7 +327,9 @@ make install-mps                                  # reinstall pip packages
 - Ensure you installed with `[cuda]` or `[cuda13]` extra
 - Ensure PyTorch is imported before ONNX Runtime (PyTorch preloads CUDA libs)
 - Verify: `python -c "import torch; import onnxruntime as ort; print(ort.get_available_providers())"`
-- **conda path:** re-run `make install-cuda CUDA_MAJOR=13` to refresh hooks
+- For a direct ONNX Runtime session check, use: `python -c "import onnxruntime as ort; s=ort.InferenceSession('model.onnx', providers=['CUDAExecutionProvider']); print(s.get_providers())"`
+- If you see `libcurand.so.10: cannot open shared object file`, update the conda env: `conda install -n hydra-cuda -c nvidia -c conda-forge libcurand=10.*`
+- **conda path:** re-run `make install-cuda CUDA_MAJOR=13` (or `CUDA_MAJOR=12`) and reactivate the environment to refresh hooks; the Makefile now runs a CUDA runtime self-check and fails fast if ONNX Runtime libraries are still missing
 
 ### PySide6 / Qt errors on Linux (pip only)
 

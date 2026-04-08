@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check techref-build techref-clean pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit benchmark benchmark-quick benchmark-obb benchmark-pose benchmark-classify build publish publish-test help
+.PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev configure-cuda-ort setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check techref-build techref-clean pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit benchmark benchmark-quick benchmark-obb benchmark-pose benchmark-classify build publish publish-test help
 
 # Environment names for different platforms
 ENV_NAME = hydra
@@ -7,6 +7,10 @@ ENV_NAME_MPS = hydra-mps
 ENV_NAME_ROCM = hydra-rocm
 CUDA_MAJOR ?= 13
 PYTEST ?= pytest
+PYTHON_BIN = $(if $(CONDA_PREFIX),$(CONDA_PREFIX)/bin/python,python)
+UV_PIP = uv pip
+UV_PIP_PYTHON = $(if $(CONDA_PREFIX),--python "$(CONDA_PREFIX)/bin/python",)
+PRE_COMMIT = $(if $(CONDA_PREFIX),env LD_LIBRARY_PATH="$(CONDA_PREFIX)/targets/x86_64-linux/lib:$(CONDA_PREFIX)/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" "$(CONDA_PREFIX)/bin/pre-commit",pre-commit)
 
 # =============================================================================
 # ENVIRONMENT SETUP
@@ -31,17 +35,7 @@ env-create-rocm:
 
 
 # Step 2: Install pip packages (run after activating environment)
-install:
-	@echo "Installing CPU packages..."
-	uv pip install -v -r requirements.txt
-
-install-cuda:
-	@echo "Installing NVIDIA GPU (CUDA) packages..."
-	@if [ "$(CUDA_MAJOR)" != "12" ] && [ "$(CUDA_MAJOR)" != "13" ]; then \
-		echo "ERROR: CUDA_MAJOR must be 12 or 13"; \
-		exit 1; \
-	fi
-	uv pip install -v -r requirements-cuda$(CUDA_MAJOR).txt
+configure-cuda-ort:
 	@if [ -z "$$CONDA_PREFIX" ]; then \
 		echo "ERROR: activate the CUDA conda env first (conda activate $(ENV_NAME_GPU))"; \
 		exit 1; \
@@ -60,14 +54,28 @@ install-cuda:
 		'fi' \
 		> "$$CONDA_PREFIX/etc/conda/deactivate.d/onnxruntime-cuda12-paths.sh"
 	@echo "Configured CUDA 12 runtime library path hook for ONNX Runtime GPU."
+	@"$(PYTHON_BIN)" verify_cuda_runtime.py
+
+install:
+	@echo "Installing CPU packages..."
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements.txt
+
+install-cuda:
+	@echo "Installing NVIDIA GPU (CUDA) packages..."
+	@if [ "$(CUDA_MAJOR)" != "12" ] && [ "$(CUDA_MAJOR)" != "13" ]; then \
+		echo "ERROR: CUDA_MAJOR must be 12 or 13"; \
+		exit 1; \
+	fi
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements-cuda$(CUDA_MAJOR).txt
+	@$(MAKE) configure-cuda-ort
 
 install-mps:
 	@echo "Installing Apple Silicon (MPS) packages..."
-	uv pip install -v -r requirements-mps.txt
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements-mps.txt
 
 install-rocm:
 	@echo "Installing AMD GPU (ROCm) packages..."
-	uv pip install -v -r requirements-rocm.txt
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements-rocm.txt
 
 # =============================================================================
 # ENVIRONMENT MAINTENANCE
@@ -77,7 +85,7 @@ install-rocm:
 env-update:
 	@echo "Updating CPU environment..."
 	mamba env update -f environment.yml --prune
-	uv pip install -v -r requirements.txt --upgrade
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements.txt --upgrade
 
 env-update-cuda:
 	@echo "Updating NVIDIA GPU (CUDA) environment..."
@@ -86,17 +94,22 @@ env-update-cuda:
 		echo "ERROR: CUDA_MAJOR must be 12 or 13"; \
 		exit 1; \
 	fi
-	uv pip install -v -r requirements-cuda$(CUDA_MAJOR).txt --upgrade
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements-cuda$(CUDA_MAJOR).txt --upgrade
+	@if [ -n "$$CONDA_PREFIX" ]; then \
+		$(MAKE) configure-cuda-ort; \
+	else \
+		echo "NOTE: activate the CUDA conda env and run 'make install-cuda CUDA_MAJOR=$(CUDA_MAJOR)' to refresh ONNX Runtime hooks and run the CUDA self-check."; \
+	fi
 
 env-update-mps:
 	@echo "Updating Apple Silicon (MPS) environment..."
 	mamba env update -f environment-mps.yml --prune
-	uv pip install -v -r requirements-mps.txt --upgrade
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements-mps.txt --upgrade
 
 env-update-rocm:
 	@echo "Updating AMD GPU (ROCm) environment..."
 	mamba env update -f environment-rocm.yml --prune
-	uv pip install -v -r requirements-rocm.txt --upgrade
+	$(UV_PIP) install $(UV_PIP_PYTHON) -v -r requirements-rocm.txt --upgrade
 
 # Remove environments
 env-remove:
@@ -292,11 +305,11 @@ publish: build
 # =============================================================================
 
 docs-install:
-	uv pip install -r requirements-docs.txt
+	$(UV_PIP) install $(UV_PIP_PYTHON) -r requirements-docs.txt
 
 install-dev:
 	@echo "🔧 Installing dev & code-quality tools..."
-	uv pip install -r requirements-dev.txt
+	$(UV_PIP) install $(UV_PIP_PYTHON) -r requirements-dev.txt
 	@echo ""
 	@echo "⚠️  graphviz dot binary is not pip-installable."
 	@echo "   If you need dep-graph, run once in your active conda env:"
@@ -337,7 +350,7 @@ techref-clean:
 
 # Pre-commit hooks
 pre-commit-install:
-	pre-commit install
+	$(PRE_COMMIT) install
 	@echo "Pre-commit hooks installed. They will run automatically on git commit."
 
 pre-commit-autopep8:
@@ -353,15 +366,15 @@ pre-commit-autopep8:
 pre-commit-run:
 	@$(MAKE) format
 	@echo "🔎 Running pre-commit hooks (pass 1 — auto-fix)..."
-	pre-commit run --all-files || true
+	$(PRE_COMMIT) run --all-files || true
 	@echo "adding unstaged changes after auto-fix..."
 	git add -u
 	@echo "🔎 Running pre-commit hooks (pass 2 — verify all pass)..."
-	pre-commit run --all-files
+	$(PRE_COMMIT) run --all-files
 	@echo "✅ All pre-commit hooks passed. Ready to commit!"
 
 pre-commit-update:
-	pre-commit autoupdate
+	$(PRE_COMMIT) autoupdate
 
 # =============================================================================
 # CODE QUALITY

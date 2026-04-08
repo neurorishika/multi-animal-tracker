@@ -45,6 +45,7 @@ dependencies:
 - cuda-cudart=12.*
 - cuda-nvrtc=12.*
 - libcublas=12.*
+- libcurand=10.*
 - libcufft=11.*
 - libcudnn=9.*
 
