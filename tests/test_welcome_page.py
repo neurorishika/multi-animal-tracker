@@ -68,6 +68,23 @@ class TestRecentItemsStore:
         store._json_path().write_text("NOT JSON", encoding="utf-8")
         assert store.load() == []
 
+    def test_ignores_transient_pytest_temp_paths(self, store, tmp_path):
+        transient = str(tmp_path / "test_load_project_data_clears_0")
+        store.add(transient)
+        store.add("/Users/example/projects/real-project")
+
+        assert store.load() == ["/Users/example/projects/real-project"]
+
+    def test_load_scrubs_existing_transient_pytest_entries(self, store, tmp_path):
+        transient = str(tmp_path / "test_open_project_0")
+        payload = [transient, "/Users/example/projects/real-project"]
+        store._json_path().parent.mkdir(parents=True, exist_ok=True)
+        store._json_path().write_text(json.dumps(payload), encoding="utf-8")
+
+        assert store.load() == ["/Users/example/projects/real-project"]
+        saved = json.loads(store._json_path().read_text(encoding="utf-8"))
+        assert saved == ["/Users/example/projects/real-project"]
+
 
 # Guard Qt tests — skip if display not available
 pytest.importorskip("PySide6")

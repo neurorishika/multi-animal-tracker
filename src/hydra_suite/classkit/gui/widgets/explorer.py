@@ -55,6 +55,7 @@ class ExplorerView(QGraphicsView):
         self._point_centers = []
         self._zoom_redraw_limit = 4000
         self.uncertainty_outline_threshold = 0.6
+        self.prediction_mode = False
 
         # Interaction state
         self._zoom_factor = 1.0
@@ -77,6 +78,7 @@ class ExplorerView(QGraphicsView):
         self._base_colors = []
         self._base_radii = []
         self._point_centers = []
+        self.prediction_mode = False
 
     def _radius_scale(self) -> float:
         view_scale = self.transform().m11()
@@ -109,6 +111,7 @@ class ExplorerView(QGraphicsView):
         round_labeled_indices,
         selected_index,
         labeling_mode,
+        prediction_mode,
         point_count: int,
     ) -> None:
         """Apply the current interaction state shared by update and rebuild flows."""
@@ -118,12 +121,37 @@ class ExplorerView(QGraphicsView):
         self.candidate_indices = set(candidate_indices or [])
         self.round_labeled_indices = set(round_labeled_indices or [])
         self.labeling_mode = labeling_mode
+        self.prediction_mode = prediction_mode
         if self.labeling_mode:
-            self.interactive_indices = set(self.candidate_indices)
-            if self.selected_index is not None:
-                self.interactive_indices.add(self.selected_index)
+            if self._has_active_labeling_batch():
+                self.interactive_indices = set(self.candidate_indices)
+                if self.selected_index is not None:
+                    self.interactive_indices.add(self.selected_index)
+            else:
+                self.interactive_indices = set(range(point_count))
         else:
             self.interactive_indices = set(range(point_count))
+
+    def _has_active_labeling_batch(self) -> bool:
+        """Return True when labeling mode should restrict emphasis to a sampled batch."""
+        return bool(self.candidate_indices or self.round_labeled_indices)
+
+    @staticmethod
+    def _is_missing_label_value(value) -> bool:
+        """Return True when a point should be treated as unlabeled for styling."""
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip() == ""
+        if isinstance(value, float):
+            return np.isnan(value)
+        return False
+
+    def _point_is_unlabeled(self, index: int, labels) -> bool:
+        """Return True when the point has no explicit label in the current label view."""
+        if labels is None or index < 0 or index >= len(labels):
+            return False
+        return self._is_missing_label_value(labels[index])
 
     def _compute_base_style(
         self, index: int, labels, category_colors, radius_scale: float
@@ -133,8 +161,12 @@ class ExplorerView(QGraphicsView):
         if labels is not None and len(labels) > index:
             color = color_for_value(labels[index], category_colors, default=color)
 
+        if self._point_is_unlabeled(index, labels):
+            color = QColor(95, 95, 95)
+
         if (
             self.labeling_mode
+            and self._has_active_labeling_batch()
             and index not in self.candidate_indices
             and index not in self.round_labeled_indices
         ):
@@ -281,6 +313,11 @@ class ExplorerView(QGraphicsView):
             )
             item.setBrush(QBrush(base_color))
 
+            if self._point_is_unlabeled(idx, self._labels):
+                item.setPen(QPen(Qt.NoPen))
+                item.setZValue(0)
+                return
+
             # Highlight low confidence (uncertain) points
             confidence = (
                 self._confidences[idx]
@@ -289,7 +326,7 @@ class ExplorerView(QGraphicsView):
             )
             threshold = float(self.uncertainty_outline_threshold)
             if (
-                not self.labeling_mode
+                self.prediction_mode
                 and confidence is not None
                 and threshold > 0.0
                 and float(confidence) < threshold
@@ -340,6 +377,7 @@ class ExplorerView(QGraphicsView):
         round_labeled_indices: list = None,
         selected_index: int = None,
         labeling_mode: bool = False,
+        prediction_mode: bool = False,
     ) -> bool:
         """Update point styling/labels without rebuilding scene geometry.
 
@@ -359,6 +397,7 @@ class ExplorerView(QGraphicsView):
             round_labeled_indices,
             selected_index,
             labeling_mode,
+            prediction_mode,
             point_count,
         )
 
@@ -383,6 +422,7 @@ class ExplorerView(QGraphicsView):
         round_labeled_indices: list = None,
         selected_index: int = None,
         labeling_mode: bool = False,
+        prediction_mode: bool = False,
         preserve_view: bool = True,
     ):
         """
@@ -397,13 +437,18 @@ class ExplorerView(QGraphicsView):
             round_labeled_indices,
             selected_index,
             labeling_mode,
+            prediction_mode,
             len(coords),
         )
         self.candidate_indices = set(candidate_indices or [])
         self.round_labeled_indices = set(round_labeled_indices or [])
         self.labeling_mode = labeling_mode
+        self.prediction_mode = prediction_mode
         if self.labeling_mode:
-            self.interactive_indices = set(self.candidate_indices)
+            if self._has_active_labeling_batch():
+                self.interactive_indices = set(self.candidate_indices)
+            else:
+                self.interactive_indices = set(range(len(coords)))
         self._coords = np.asarray(coords)
         norm_coords = self._normalize_coords(self._coords)
         self.scene.clear()
@@ -479,5 +524,6 @@ class ExplorerView(QGraphicsView):
                 round_labeled_indices=list(self.round_labeled_indices),
                 selected_index=self.selected_index,
                 labeling_mode=self.labeling_mode,
+                prediction_mode=self.prediction_mode,
                 preserve_view=True,
             )

@@ -482,6 +482,7 @@ class MainWindow(QMainWindow):
         """Open a project from the recent items list."""
         from pathlib import Path
 
+        self._flush_pending_label_updates(force=True)
         project_path = Path(path)
         if project_path.exists():
             self.project_path = project_path
@@ -763,7 +764,7 @@ class MainWindow(QMainWindow):
         self.outline_threshold_spin.setValue(self._outline_threshold)
         self.outline_threshold_spin.setFixedWidth(72)
         self.outline_threshold_spin.setToolTip(
-            "Confidence threshold for white uncertainty outlines in Explorer mode.\n"
+            "Confidence threshold for white uncertainty outlines in Predictions mode.\n"
             "Set to 0 to disable uncertainty outlines."
         )
         self.outline_threshold_spin.valueChanged.connect(
@@ -1171,6 +1172,12 @@ class MainWindow(QMainWindow):
 
     def _finalize_project_load(self, db) -> None:
         """Refresh derived UI state after database-backed project data loads."""
+        self.label_history = []
+        self.last_assigned_stack = []
+        self.selected_point_index = None
+        self.hover_locked = False
+        self.candidate_indices = []
+        self.round_labeled_indices = []
         self.rebuild_label_buttons()
         self.setup_label_shortcuts()
         self._refresh_shortcut_help()
@@ -1216,6 +1223,8 @@ class MainWindow(QMainWindow):
                 self._apply_project_config(config)
             else:
                 self.classes = ["class_1", "class_2"]
+
+            self._invalidate_image_set_dependent_state()
 
             self._finalize_project_load(db)
 
@@ -1402,6 +1411,7 @@ class MainWindow(QMainWindow):
         self._show_model_pca = False
         if self.explorer_mode == "predictions":
             self.set_explorer_mode("explore")
+        self._clear_metrics_display()
         if hasattr(self, "btn_umap_embedding"):
             self.btn_umap_embedding.setChecked(True)
         if hasattr(self, "btn_umap_model"):
@@ -1653,70 +1663,65 @@ class MainWindow(QMainWindow):
         self._update_autosave_heartbeat_text()
 
     def _autoload_cached_analysis(self, db):
-        """Offer to load cached embeddings, clusters, UMAP, and candidates."""
+        """Restore the latest valid cached embeddings, clusters, UMAP, and candidates."""
+        restored = []
         cached_embeddings = db.get_most_recent_embeddings()
         if cached_embeddings is not None and self.embeddings is None:
             embeddings, metadata = cached_embeddings
-            if self._ask_yes_no(
-                "Load Cached Embeddings",
-                "Most recent embeddings cache found. Load it now?\n\n"
-                f"Model: {metadata.get('model_name', 'unknown')}\n"
-                f"Timestamp: {metadata.get('timestamp', 'unknown')}\n"
-                f"Shape: {embeddings.shape[0]:,} × {embeddings.shape[1]}",
-            ):
-                self.embeddings = embeddings
-                self._current_embedding_cache_id = metadata.get("id")
+            self.embeddings = embeddings
+            self._current_embedding_cache_id = metadata.get("id")
+            restored.append("embeddings")
 
         cached_cluster = db.get_most_recent_cluster_cache(
             self._current_embedding_cache_id
         )
-        if (
-            cached_cluster is not None
-            and self.cluster_assignments is None
-            and self._ask_yes_no(
-                "Load Cached Clusters",
-                "Most recent cluster cache found. Load it now?\n\n"
-                f"Method: {cached_cluster.get('method', 'unknown')}\n"
-                f"Timestamp: {cached_cluster.get('timestamp', 'unknown')}\n"
-                f"Clusters: {cached_cluster.get('n_clusters', 'unknown')}",
-            )
-        ):
+        if cached_cluster is not None and self.cluster_assignments is None:
             self.cluster_assignments = cached_cluster["assignments"]
+            restored.append("clusters")
 
         cached_umap = db.get_most_recent_umap_cache(
             embedding_cache_id=self._current_embedding_cache_id,
         )
-        if (
-            cached_umap is not None
-            and self.umap_coords is None
-            and self._ask_yes_no(
-                "Load Cached UMAP",
-                "Most recent UMAP cache found. Load it now?\n\n"
-                f"Timestamp: {cached_umap.get('timestamp', 'unknown')}\n"
-                f"n_neighbors: {cached_umap.get('n_neighbors', 'unknown')}\n"
-                f"min_dist: {cached_umap.get('min_dist', 'unknown')}",
-            )
-        ):
+        if cached_umap is not None and self.umap_coords is None:
             self.umap_coords = cached_umap["coords"]
             self.last_umap_params = {
                 "n_neighbors": cached_umap.get("n_neighbors", 15),
                 "min_dist": cached_umap.get("min_dist", 0.1),
             }
+            restored.append("UMAP")
 
         cached_candidates = db.get_most_recent_candidate_cache()
-        if (
-            cached_candidates is not None
-            and not self.candidate_indices
-            and self._ask_yes_no(
-                "Load Cached Candidates",
-                "Most recent labeling candidate set found. Load it now?\n\n"
-                f"Timestamp: {cached_candidates.get('timestamp', 'unknown')}\n"
-                f"Count: {len(cached_candidates['candidate_indices'])} images",
+        if cached_candidates is not None and not self.candidate_indices:
+            self._restore_cached_candidate_batch(
+                cached_candidates.get("candidate_indices", [])
             )
-        ):
-            self.candidate_indices = cached_candidates["candidate_indices"]
             self.set_explorer_mode("labeling")
-            self.status.showMessage(f"Loaded {len(self.candidate_indices)} candidates")
+            restored.append("candidates")
+
+        if restored:
+            self.status.showMessage(f"Restored cached {', '.join(restored)}", 5000)
+
+    def _restore_cached_candidate_batch(self, candidate_indices) -> None:
+        """Restore a cached candidate set while honoring labels already stored in the DB."""
+        labels = self.image_labels or []
+        restored_candidates = []
+        restored_labeled = []
+        seen = set()
+
+        for raw_index in candidate_indices or []:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            if index < 0 or index >= len(self.image_paths) or index in seen:
+                continue
+            seen.add(index)
+            restored_candidates.append(index)
+            if index < len(labels) and labels[index]:
+                restored_labeled.append(index)
+
+        self.candidate_indices = restored_candidates
+        self.round_labeled_indices = restored_labeled
 
     def _apply_cached_predictions(self, cached_preds, db):
         """Apply cached prediction data and restore model-space projections."""
@@ -1732,9 +1737,57 @@ class MainWindow(QMainWindow):
         cached_mpca = db.get_most_recent_umap_cache(kind="model_pca")
         if cached_mpca:
             self.pca_model_coords = cached_mpca["coords"]
+        self._activate_predictions_view_if_available()
+        self._evaluate_model_on_labeled(activate_metrics_tab=False)
+
+    def _activate_predictions_view_if_available(self) -> None:
+        """Show prediction coloring after startup restore when no labeling batch is active."""
+        if self._model_probs is None or self.candidate_indices:
+            return
+        if self.explorer_mode != "predictions":
+            self.set_explorer_mode("predictions")
+        else:
+            self.update_explorer_plot(force_fit=True)
+            self.update_context_panel()
+
+    @staticmethod
+    def _predictions_cover_latest_model(cached_preds, recent_model) -> bool:
+        """Return True when a cached prediction set is fresh enough for the latest model."""
+        if not cached_preds:
+            return False
+        if not recent_model:
+            return True
+
+        cached_model_id = cached_preds.get("model_cache_id")
+        recent_model_id = recent_model.get("id")
+        if cached_model_id is not None and recent_model_id is not None:
+            try:
+                return int(cached_model_id) == int(recent_model_id)
+            except (TypeError, ValueError):
+                return False
+
+        cached_ts = str(cached_preds.get("timestamp") or "")
+        recent_ts = str(recent_model.get("timestamp") or "")
+        if not recent_ts:
+            return True
+        if not cached_ts:
+            return False
+        return cached_ts >= recent_ts
+
+    def _activate_saved_labels_view_if_available(self) -> None:
+        """Show saved label coloring after project load when no batch or predictions override it."""
+        if self._model_probs is not None or self.candidate_indices:
+            return
+        if not any(label for label in self.image_labels or []):
+            return
+        if self.explorer_mode != "labeling":
+            self.set_explorer_mode("labeling")
+        else:
+            self.update_explorer_plot(force_fit=True)
+            self.update_context_panel()
 
     def _autoload_yolo_classifier(self, db):
-        """Offer to load a published YOLO classifier from the project directory."""
+        """Restore recent YOLO predictions or rerun the published classifier."""
         if not self.project_path:
             return False
         yolo_ckpt = self.project_path / "models" / "yolo_classifier_latest.pt"
@@ -1744,59 +1797,47 @@ class MainWindow(QMainWindow):
             return False
 
         cached_preds = db.get_most_recent_prediction_cache()
-        if cached_preds and self._ask_yes_no(
-            "Load Cached Predictions",
-            f"Cached predictions found from last session.\n"
-            f"Mode: {cached_preds.get('active_model_mode', '?')}  |  "
-            f"Classes: {len(cached_preds.get('class_names', []))}\n"
-            f"Saved: {str(cached_preds.get('timestamp', ''))[:19]}\n\n"
-            "Load predictions without re-running inference?",
-        ):
+        if cached_preds:
             self._apply_cached_predictions(cached_preds, db)
+            self.status.showMessage("Restored cached predictions", 5000)
             return False
 
-        if self._ask_yes_no(
-            "Load Trained YOLO Model",
-            f"A published YOLO classifier was found.\n"
-            f"Load it and run inference?\n\n{yolo_ckpt}",
-        ):
-            self._yolo_model_path = yolo_ckpt
-            self._active_model_mode = "yolo"
-            QTimer.singleShot(200, lambda p=yolo_ckpt: self._run_yolo_inference(p))
-            return True  # signal caller to skip DB model check
-        return False
+        self._yolo_model_path = yolo_ckpt
+        self._active_model_mode = "yolo"
+        self.status.showMessage(
+            f"Restoring published YOLO classifier: {yolo_ckpt.name}", 5000
+        )
+        QTimer.singleShot(
+            200,
+            lambda p=yolo_ckpt: self._run_yolo_inference(
+                p,
+                on_success=lambda _result: self._activate_predictions_view_if_available(),
+            ),
+        )
+        return True  # signal caller to skip DB model check
 
     def _autoload_model_from_db(self):
-        """Offer to load the most recent model or predictions from the project DB."""
+        """Restore the most recent model predictions or trained model from the project DB."""
         if not self.db_path or self._model_probs is not None:
             return
         try:
             from ..core.store.db import ClassKitDB as _CKDb
 
             _db2 = _CKDb(self.db_path)
+            _recent = _db2.get_most_recent_model_cache()
             cached_preds = _db2.get_most_recent_prediction_cache()
-            if cached_preds and self._ask_yes_no(
-                "Load Cached Predictions",
-                f"Cached predictions found from last session.\n"
-                f"Mode: {cached_preds.get('active_model_mode', '?')}  |  "
-                f"Classes: {len(cached_preds.get('class_names', []))}\n"
-                f"Saved: {str(cached_preds.get('timestamp', ''))[:19]}\n\n"
-                "Load predictions without re-running inference?",
-            ):
+            if self._predictions_cover_latest_model(cached_preds, _recent):
                 self._apply_cached_predictions(cached_preds, _db2)
+                self.status.showMessage("Restored cached predictions", 5000)
             else:
-                _recent = _db2.get_most_recent_model_cache()
-                if _recent and self._ask_yes_no(
-                    "Load Trained Model",
-                    f"A trained model was found in the project records.\n"
-                    f"Mode: {_recent.get('mode', '?')}  |  "
-                    f"Classes: {', '.join(_recent.get('class_names') or [])}\n"
-                    f"Trained: {str(_recent.get('timestamp', ''))[:19]}\n\n"
-                    "Load it and run inference?",
-                ):
+                if _recent:
+                    self.status.showMessage("Restoring most recent trained model", 5000)
                     QTimer.singleShot(
                         200,
-                        lambda e=_recent: self._load_model_from_cache_entry(e),
+                        lambda e=_recent: self._load_model_from_cache_entry(
+                            e,
+                            on_success=lambda: self._activate_predictions_view_if_available(),
+                        ),
                     )
         except Exception:
             pass
@@ -1818,6 +1859,7 @@ class MainWindow(QMainWindow):
                 return  # skip DB check after filesystem hit
 
             self._autoload_model_from_db()
+            self._activate_saved_labels_view_if_available()
 
             self.update_explorer_plot(force_fit=True)
             self.update_context_panel()
@@ -2440,15 +2482,16 @@ class MainWindow(QMainWindow):
 
         # Label assignment is only allowed in labeling mode.
         labels_enabled = mode == "labeling"
+        outlines_enabled = mode == "predictions"
         for i in range(self.label_buttons_layout.count()):
             widget = self.label_buttons_layout.itemAt(i).widget()
             if widget is not None:
                 widget.setEnabled(labels_enabled)
 
         if hasattr(self, "outline_threshold_label"):
-            self.outline_threshold_label.setVisible(labels_enabled)
+            self.outline_threshold_label.setVisible(outlines_enabled)
         if hasattr(self, "outline_threshold_spin"):
-            self.outline_threshold_spin.setVisible(labels_enabled)
+            self.outline_threshold_spin.setVisible(outlines_enabled)
 
         if hasattr(self, "view_mode_combo"):
             idx = self.view_mode_combo.findData(mode)
@@ -2474,7 +2517,7 @@ class MainWindow(QMainWindow):
             self.explorer.set_uncertainty_outline_threshold(self._outline_threshold)
             self.request_update_explorer_plot()
         self.status.showMessage(
-            f"Uncertainty outline threshold: {self._outline_threshold:.2f}"
+            f"Prediction outline threshold: {self._outline_threshold:.2f}"
         )
 
     def on_sample_next_triggered(self):
@@ -2635,6 +2678,10 @@ class MainWindow(QMainWindow):
 
     def clear_preview_display(self) -> None:
         """Clear the preview panel when no point is actively hovered or selected."""
+        self._pending_preview_index = None
+        self._pending_preview_source = "hover"
+        if self._preview_refresh_timer.isActive():
+            self._preview_refresh_timer.stop()
         self.last_preview_index = None
         if hasattr(self, "preview_canvas"):
             self.preview_canvas.clear_image()
@@ -2959,6 +3006,7 @@ class MainWindow(QMainWindow):
             round_labeled_indices=self.round_labeled_indices,
             selected_index=self.selected_point_index,
             labeling_mode=(self.explorer_mode == "labeling"),
+            prediction_mode=(self.explorer_mode == "predictions"),
         ):
             return
 
@@ -2970,6 +3018,7 @@ class MainWindow(QMainWindow):
             round_labeled_indices=self.round_labeled_indices,
             selected_index=self.selected_point_index,
             labeling_mode=(self.explorer_mode == "labeling"),
+            prediction_mode=(self.explorer_mode == "predictions"),
             preserve_view=(not force_fit),
         )
 
@@ -4818,11 +4867,7 @@ class MainWindow(QMainWindow):
         self.request_preview_for_index(index, source="hover")
 
     def on_explorer_empty_hover(self) -> None:
-        """Clear stale preview when the cursor leaves points in labeling hover mode."""
-        if self.explorer_mode != "labeling":
-            return
-        if self.selected_point_index is not None or self.hover_locked:
-            return
+        """Clear the preview whenever the cursor is not over an explorer point."""
         self.clear_preview_display()
 
     def on_label_assigned(self, label):
@@ -5369,7 +5414,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() and dlg.selected_entry():
             self._load_model_from_cache_entry(dlg.selected_entry())
 
-    def _load_model_from_cache_entry(self, entry: dict):
+    def _load_model_from_cache_entry(self, entry: dict, on_success=None):
         """Load a model from a DB cache entry and run inference + UMAP."""
         mode = entry.get("mode", "")
         paths = entry.get("artifact_paths") or []
@@ -5385,6 +5430,8 @@ class MainWindow(QMainWindow):
         def _after(r):
             self._evaluate_model_on_labeled()
             QTimer.singleShot(100, self._replot_umap_model_space)
+            if on_success is not None:
+                on_success()
 
         if "yolo" in mode:
             if mode.startswith("multihead"):
@@ -5444,7 +5491,7 @@ class MainWindow(QMainWindow):
             probs_subset[:, :usable_cols] = probs_rows[:, :usable_cols]
         return probs_subset
 
-    def _evaluate_model_on_labeled(self):
+    def _evaluate_model_on_labeled(self, activate_metrics_tab: bool = True):
         """Compute metrics from _model_probs on all labeled images and update Metrics tab."""
         if self._model_probs is None:
             return
@@ -5461,16 +5508,19 @@ class MainWindow(QMainWindow):
             probs_subset = self._aligned_eval_probs(idx_arr, probs_rows)
             y_pred = probs_subset.argmax(axis=1)
             metrics = compute_metrics(y_pred, y_true, class_names=self.classes)
-            self._update_metrics_display(metrics)
+            self._update_metrics_display(
+                metrics, activate_metrics_tab=activate_metrics_tab
+            )
         except Exception as e:
             self.metrics_view.setPlainText(f"Evaluation error: {e}")
 
-    def _update_metrics_display(self, metrics):
+    def _update_metrics_display(self, metrics, activate_metrics_tab: bool = True):
         """Update Metrics tab: text report + matplotlib confusion matrix / per-class bars."""
         from ..core.train.metrics import format_metrics_report
 
         self.metrics_view.setPlainText(format_metrics_report(metrics))
-        self.tabs.setCurrentWidget(self.metrics_page)
+        if activate_metrics_tab:
+            self.tabs.setCurrentWidget(self.metrics_page)
 
         try:
             import io
@@ -5588,6 +5638,16 @@ class MainWindow(QMainWindow):
             self.metrics_figure_label.setFixedSize(pixmap.size())
         except Exception as fig_exc:
             self.metrics_figure_label.setText(f"Figure error: {fig_exc}")
+
+    def _clear_metrics_display(self) -> None:
+        """Reset the Metrics tab to its empty project state."""
+        if hasattr(self, "metrics_view"):
+            self.metrics_view.clear()
+        if hasattr(self, "metrics_figure_label"):
+            self.metrics_figure_label.clear()
+            self.metrics_figure_label.setPixmap(QPixmap())
+            self.metrics_figure_label.setFixedSize(self.metrics_figure_label.sizeHint())
+            self.metrics_figure_label.setText("(Train a model to see visualizations)")
 
     # ================== Model-Space Projections ==================
 
