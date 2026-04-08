@@ -4309,7 +4309,85 @@ class MainWindow(QMainWindow):
                 f"Expected a {expected_suffix} artifact for mode '{mode}', got '{model_path.suffix or 'no extension'}'.",
             )
             return False
+
+        checkpoint_kind, checkpoint_arch, checkpoint_error = (
+            self._inspect_training_start_model(model_path)
+        )
+
+        if "yolo" in mode:
+            if checkpoint_kind == "classkit_custom":
+                QMessageBox.warning(
+                    self,
+                    "Unsupported Starting Model",
+                    "The selected starting model is a ClassKit CNN checkpoint, not a YOLO model.\n\n"
+                    f"Selected file: {model_path}",
+                )
+                return False
+            if checkpoint_kind == "invalid":
+                QMessageBox.warning(
+                    self,
+                    "Unsupported Starting Model",
+                    "ClassKit could not confirm that the selected starting model is a YOLO checkpoint.\n\n"
+                    f"{checkpoint_error or model_path}",
+                )
+                return False
+            return True
+
+        if checkpoint_kind != "classkit_custom":
+            QMessageBox.warning(
+                self,
+                "Unsupported Starting Model",
+                "The selected starting model is not a compatible ClassKit CNN checkpoint.\n\n"
+                f"Selected file: {model_path}",
+            )
+            return False
+
+        selected_backbone = str(settings.get("custom_backbone") or "").strip()
+        if (
+            selected_backbone
+            and checkpoint_arch
+            and checkpoint_arch != selected_backbone
+        ):
+            QMessageBox.warning(
+                self,
+                "Backbone Mismatch",
+                "The selected starting model was trained with a different backbone.\n\n"
+                f"Checkpoint backbone: {checkpoint_arch}\n"
+                f"Selected backbone: {selected_backbone}",
+            )
+            return False
         return True
+
+    @staticmethod
+    def _inspect_training_start_model(
+        model_path: Path,
+    ) -> tuple[str, str | None, str | None]:
+        """Classify a warm-start checkpoint as YOLO, ClassKit CNN, or invalid."""
+        suffix = model_path.suffix.lower()
+        try:
+            import torch
+
+            checkpoint = torch.load(
+                str(model_path), map_location="cpu", weights_only=False
+            )
+        except Exception as exc:
+            return "invalid", None, str(exc)
+
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            arch = (
+                str(checkpoint.get("arch") or "tinyclassifier").strip()
+                or "tinyclassifier"
+            )
+            return "classkit_custom", arch, None
+
+        if suffix == ".pt":
+            return "yolo", None, None
+
+        return (
+            "invalid",
+            None,
+            "Checkpoint format did not match a ClassKit CNN artifact.",
+        )
 
     def _build_training_specs(self, context, scheme):
         """Build one or more training specs for the chosen training mode."""
@@ -4528,6 +4606,7 @@ class MainWindow(QMainWindow):
             initial_settings=self._get_recent_project_training_settings(),
             recent_model_paths=self._list_recent_trainable_model_paths(),
             average_image_size=self._estimate_average_image_dimensions(),
+            image_paths=list(self.image_paths),
             parent=self,
         )
 

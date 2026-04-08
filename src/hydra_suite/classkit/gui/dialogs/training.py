@@ -1,6 +1,7 @@
 """ClassKitTrainingDialog — training dialog for ClassKit."""
 
 from pathlib import Path
+from statistics import median
 from typing import List, Optional, Tuple
 
 from PySide6.QtWidgets import (
@@ -46,6 +47,7 @@ class ClassKitTrainingDialog(QDialog):
         initial_settings: Optional[dict] = None,
         recent_model_paths: Optional[List[str]] = None,
         average_image_size: Optional[Tuple[float, float]] = None,
+        image_paths: Optional[List[Path]] = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -59,6 +61,7 @@ class ClassKitTrainingDialog(QDialog):
             recent_model_paths
         )
         self._average_image_size = average_image_size
+        self._image_paths = [Path(path) for path in (image_paths or [])]
         self._train_results = None
         self._worker = None
         self.setWindowTitle("Train Classifier")
@@ -76,6 +79,68 @@ class ClassKitTrainingDialog(QDialog):
             return 224
         rounded = int(round(numeric / 32.0) * 32)
         return max(32, min(512, rounded))
+
+    @staticmethod
+    def _max_computer_friendly_size_without_upscale(value: object) -> int:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 224
+        if numeric <= 32:
+            return 32
+        rounded = int(numeric // 32.0) * 32
+        return max(32, min(512, rounded))
+
+    @classmethod
+    def _suggest_auto_input_sizes_for_dimensions(
+        cls, dimensions: List[Tuple[float, float]]
+    ) -> Optional[dict]:
+        cleaned: List[Tuple[float, float]] = []
+        for width, height in dimensions:
+            try:
+                width_f = float(width)
+                height_f = float(height)
+            except (TypeError, ValueError):
+                continue
+            if width_f > 0 and height_f > 0:
+                cleaned.append((width_f, height_f))
+
+        if not cleaned:
+            return None
+
+        widths = [width for width, _ in cleaned]
+        heights = [height for _, height in cleaned]
+        aspect_ratio = median(width / height for width, height in cleaned)
+        max_width = max(widths)
+        max_height = max(heights)
+
+        if aspect_ratio >= 1.0:
+            raw_width = max_width
+            raw_height = min(max_height, raw_width / aspect_ratio)
+        else:
+            raw_height = max_height
+            raw_width = min(max_width, raw_height * aspect_ratio)
+
+        if raw_width <= 0:
+            raw_width = max_width
+        if raw_height <= 0:
+            raw_height = max_height
+
+        tiny_width = cls._max_computer_friendly_size_without_upscale(raw_width)
+        tiny_height = cls._max_computer_friendly_size_without_upscale(raw_height)
+        # TIMM backbones currently use a square resize, so preserve the
+        # recommended long side to avoid over-downscaling elongated crops.
+        square_size = cls._max_computer_friendly_size_without_upscale(
+            max(tiny_width, tiny_height)
+        )
+
+        return {
+            "tiny_width": tiny_width,
+            "tiny_height": tiny_height,
+            "custom_input_size": square_size,
+            "aspect_ratio": float(aspect_ratio),
+            "sample_count": len(cleaned),
+        }
 
     @staticmethod
     def _set_combo_value(combo: QComboBox, value: object) -> None:
@@ -132,6 +197,73 @@ class ClassKitTrainingDialog(QDialog):
         self._tiny_in_custom_width_spin.setValue(width)
         self._tiny_in_custom_height_spin.setValue(height)
         self._custom_input_size_spin.setValue(square)
+
+    def _sample_image_dimensions(
+        self, max_samples: int = 1024
+    ) -> List[Tuple[float, float]]:
+        sample_paths = list(self._image_paths)
+        if not sample_paths:
+            return []
+        if len(sample_paths) > max_samples:
+            step = (len(sample_paths) - 1) / float(max_samples - 1)
+            sample_paths = [
+                sample_paths[int(round(idx * step))] for idx in range(max_samples)
+            ]
+
+        dimensions: List[Tuple[float, float]] = []
+        try:
+            from PIL import Image
+        except Exception:
+            return []
+
+        for path in sample_paths:
+            try:
+                with Image.open(path) as image:
+                    width, height = image.size
+            except Exception:
+                continue
+            if width > 0 and height > 0:
+                dimensions.append((float(width), float(height)))
+        return dimensions
+
+    def _apply_auto_input_sizes(self, sizes: dict) -> None:
+        tiny_width = int(sizes["tiny_width"])
+        tiny_height = int(sizes["tiny_height"])
+        custom_input_size = int(sizes["custom_input_size"])
+
+        self.tiny_width_spin.setValue(tiny_width)
+        self.tiny_height_spin.setValue(tiny_height)
+        self._tiny_in_custom_width_spin.setValue(tiny_width)
+        self._tiny_in_custom_height_spin.setValue(tiny_height)
+        self._custom_input_size_spin.setValue(custom_input_size)
+
+    def _auto_set_sizes_from_images(self) -> None:
+        dimensions = self._sample_image_dimensions()
+        if not dimensions:
+            QMessageBox.warning(
+                self,
+                "Auto Size Unavailable",
+                "ClassKit could not read any valid image dimensions from this project.",
+            )
+            return
+
+        sizes = self._suggest_auto_input_sizes_for_dimensions(dimensions)
+        if not sizes:
+            QMessageBox.warning(
+                self,
+                "Auto Size Unavailable",
+                "ClassKit could not derive input sizes from the sampled images.",
+            )
+            return
+
+        self._apply_auto_input_sizes(sizes)
+        self.append_log(
+            "Auto-sized inputs from "
+            f"{sizes['sample_count']:,} image(s): "
+            f"Tiny {sizes['tiny_width']}x{sizes['tiny_height']}, "
+            f"TIMM {sizes['custom_input_size']} square, "
+            f"aspect ratio {sizes['aspect_ratio']:.2f}."
+        )
 
     def _apply_initial_settings(self) -> None:
         settings = self._initial_settings
@@ -287,6 +419,37 @@ class ClassKitTrainingDialog(QDialog):
         layout_gen.addLayout(form)
         layout_gen.addStretch()
         return self.general_tab
+
+    def _build_auto_size_row(self, layout) -> None:
+        self._auto_size_btn = QPushButton("Auto Set Size From Images")
+        self._auto_size_btn.setToolTip(
+            "Inspect the current project's image sizes and choose computer-friendly "
+            "Tiny CNN width/height plus a square TIMM size based on the dataset's "
+            "maximum extent and typical aspect ratio."
+        )
+        self._auto_size_btn.setEnabled(bool(self._image_paths))
+        self._auto_size_btn.clicked.connect(self._auto_set_sizes_from_images)
+
+        self._auto_size_helper_label = QLabel(
+            "Uses sampled project images to minimize resizing loss without unnecessary upscaling."
+        )
+        self._auto_size_helper_label.setWordWrap(True)
+        self._auto_size_helper_label.setStyleSheet("color: #888; font-size: 11px;")
+
+        self._auto_size_controls = QWidget()
+        row_layout = QVBoxLayout(self._auto_size_controls)
+        row_layout.setContentsMargins(0, 6, 0, 0)
+        row_layout.setSpacing(4)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.addWidget(self._auto_size_btn)
+        button_row.addStretch()
+
+        row_layout.addWidget(QLabel("<b>Input Size Helper</b>"))
+        row_layout.addLayout(button_row)
+        row_layout.addWidget(self._auto_size_helper_label)
+        layout.addWidget(self._auto_size_controls)
 
     def _build_compute_runtime_combo(self, form):
         """Build the inference runtime combo box."""
@@ -738,6 +901,9 @@ class ClassKitTrainingDialog(QDialog):
             "Browse valid pretrained TIMM image-classification backbones and add them to this picker."
         )
         custom_form.addRow("", self._custom_add_timm_btn)
+
+        custom_layout = self.custom_tab.layout()
+        self._build_auto_size_row(custom_layout)
 
         self._tiny_in_custom_width_label = QLabel("Input width")
         self._tiny_in_custom_width_spin = QSpinBox()

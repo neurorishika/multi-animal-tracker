@@ -74,7 +74,9 @@ def test_add_source_dialog_rejects_folder_without_images_subdir(
     assert warnings == [
         (
             "Invalid Source Folder",
-            f"Selected source folder must contain an images/ subdirectory.\n\n{source_root}",
+            "Selected source folder must contain an images/ subdirectory, or the "
+            "folder itself must contain compatible .jpg / .jpeg / .png files.\n\n"
+            f"{source_root}",
         )
     ]
 
@@ -98,6 +100,64 @@ def test_add_source_dialog_uses_images_subdir_when_present(
     assert dialog.sources == [
         (source_root.resolve(), images_dir.resolve(), source_root.name)
     ]
+
+
+def test_add_source_dialog_standardizes_flat_image_folder_when_user_accepts(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "dataset_root"
+    source_root.mkdir()
+    image_path = source_root / "frame001.jpg"
+    image_path.write_bytes(b"not-an-image")
+
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.add_source.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(source_root),
+    )
+    monkeypatch.setattr(
+        AddSourceDialog,
+        "_confirm_standardization",
+        lambda self, inspection: True,
+    )
+
+    dialog = AddSourceDialog()
+    dialog._browse()
+
+    images_dir = source_root / "images"
+    copied_image = images_dir / image_path.name
+    assert copied_image.exists() is True
+    assert copied_image.read_bytes() == image_path.read_bytes()
+    assert dialog.sources == [
+        (source_root.resolve(), images_dir.resolve(), source_root.name)
+    ]
+
+
+def test_add_source_dialog_does_not_standardize_when_user_declines(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "dataset_root"
+    source_root.mkdir()
+    (source_root / "frame001.jpg").write_bytes(b"not-an-image")
+
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.add_source.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(source_root),
+    )
+    monkeypatch.setattr(
+        AddSourceDialog,
+        "_confirm_standardization",
+        lambda self, inspection: False,
+    )
+    warnings = _capture_warning(
+        monkeypatch, "hydra_suite.classkit.gui.dialogs.add_source"
+    )
+
+    dialog = AddSourceDialog()
+    dialog._browse()
+
+    assert dialog.sources == []
+    assert (source_root / "images").exists() is False
+    assert warnings == []
 
 
 def test_source_manager_dialog_rejects_folder_without_images_subdir(
@@ -127,6 +187,70 @@ def test_source_manager_dialog_rejects_folder_without_images_subdir(
     assert warnings == [
         (
             "Invalid Source Folder",
-            f"Selected source folder must contain an images/ subdirectory.\n\n{source_root}",
+            "Selected source folder must contain an images/ subdirectory, or the "
+            "folder itself must contain compatible .jpg / .jpeg / .png files.\n\n"
+            f"{source_root}",
         )
     ]
+
+
+def test_source_manager_dialog_standardizes_flat_image_folder_when_user_accepts(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "dataset_root"
+    source_root.mkdir()
+    image_path = source_root / "frame001.jpg"
+    image_path.write_bytes(b"not-an-image")
+
+    monkeypatch.setattr(
+        SourceManagerDialog, "_load_existing_sources", lambda self: None
+    )
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.source_manager.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(source_root),
+    )
+    monkeypatch.setattr(
+        SourceManagerDialog,
+        "_confirm_standardization",
+        lambda self, inspection: True,
+    )
+
+    dialog = SourceManagerDialog(db_path=tmp_path / "classkit.db")
+    dialog._browse_add()
+
+    images_dir = source_root / "images"
+    copied_image = images_dir / image_path.name
+    assert copied_image.exists() is True
+    assert copied_image.read_bytes() == image_path.read_bytes()
+    assert dialog.folders_to_add == [images_dir.resolve()]
+
+
+def test_source_manager_dialog_does_not_standardize_when_user_declines(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "dataset_root"
+    source_root.mkdir()
+    (source_root / "frame001.jpg").write_bytes(b"not-an-image")
+
+    monkeypatch.setattr(
+        SourceManagerDialog, "_load_existing_sources", lambda self: None
+    )
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.source_manager.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(source_root),
+    )
+    monkeypatch.setattr(
+        SourceManagerDialog,
+        "_confirm_standardization",
+        lambda self, inspection: False,
+    )
+    warnings = _capture_warning(
+        monkeypatch, "hydra_suite.classkit.gui.dialogs.source_manager"
+    )
+
+    dialog = SourceManagerDialog(db_path=tmp_path / "classkit.db")
+    dialog._browse_add()
+
+    assert dialog.folders_to_add == []
+    assert (source_root / "images").exists() is False
+    assert warnings == []

@@ -4,8 +4,6 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from .gui.main_window import MainWindow
-
 
 def main():
     """Launch the ClassKit application, showing the main window maximized."""
@@ -23,6 +21,8 @@ def main():
             app.setWindowIcon(icon)
     except Exception:
         pass
+
+    from .gui.main_window import MainWindow
 
     window = MainWindow()
     try:

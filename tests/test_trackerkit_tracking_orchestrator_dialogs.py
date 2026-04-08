@@ -126,6 +126,77 @@ def test_load_config_uses_main_window_parent(monkeypatch) -> None:
     }
 
 
+def test_open_parameter_helper_uses_main_window_parent(monkeypatch) -> None:
+    main_window = object()
+    panels = SimpleNamespace(
+        setup=SimpleNamespace(
+            file_line=SimpleNamespace(text=lambda: "video.mp4"),
+            spin_start_frame=SimpleNamespace(value=lambda: 0),
+            spin_end_frame=SimpleNamespace(value=lambda: 100),
+        )
+    )
+    orchestrator = ConfigOrchestrator(
+        main_window=main_window,
+        config=object(),
+        panels=panels,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeDialog:
+        def __init__(
+            self,
+            video_path: str,
+            cache_path: str,
+            start_frame: int,
+            end_frame: int,
+            params: dict[str, object],
+            parent=None,
+        ) -> None:
+            captured.update(
+                {
+                    "video_path": video_path,
+                    "cache_path": cache_path,
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "params": params,
+                    "parent": parent,
+                }
+            )
+
+        def exec(self) -> int:
+            return config_module.QDialog.Rejected
+
+    monkeypatch.setattr(
+        config_module,
+        "ParameterHelperDialog",
+        FakeDialog,
+    )
+    monkeypatch.setattr(
+        ConfigOrchestrator,
+        "get_parameters_dict",
+        lambda self: {"YOLO_CONFIDENCE_THRESHOLD": 0.5},
+    )
+    monkeypatch.setattr(
+        ConfigOrchestrator,
+        "_find_or_plan_optimizer_cache_path",
+        lambda self, video_path, params, start_frame, end_frame: (
+            "/tmp/cache.npz",
+            True,
+        ),
+    )
+
+    orchestrator._open_parameter_helper()
+
+    assert captured == {
+        "video_path": "video.mp4",
+        "cache_path": "/tmp/cache.npz",
+        "start_frame": 0,
+        "end_frame": 100,
+        "params": {"YOLO_CONFIDENCE_THRESHOLD": 0.5},
+        "parent": main_window,
+    }
+
+
 def test_start_tracking_on_video_restores_csv_and_worker_imports(
     monkeypatch,
     tmp_path: Path,

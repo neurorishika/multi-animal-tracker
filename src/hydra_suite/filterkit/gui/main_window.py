@@ -38,7 +38,7 @@ from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noq
 from hydra_suite.widgets.workers import BaseWorker
 
 
-class SieveWorker(BaseWorker):
+class FilterWorker(BaseWorker):
     status = Signal(str)
     progress = Signal(int, str)
     finished = Signal(object)
@@ -921,7 +921,7 @@ class FilterKitWindow(QMainWindow):
         group = QGroupBox("3) Run & Review")
         layout = QVBoxLayout(group)
 
-        btn_run = QPushButton("Run Sieve")
+        btn_run = QPushButton("Run Filter")
         btn_run.setStyleSheet("font-weight: 700; padding: 8px;")
         btn_run.clicked.connect(self.run_sieve)
         layout.addWidget(btn_run)
@@ -1320,7 +1320,7 @@ class FilterKitWindow(QMainWindow):
         self.lbl_progress_details.setText("Initializing pipeline...")
         self.lbl_status.setText("Running sieve pipeline...")
 
-        self.worker = SieveWorker(self.dataset_path, config)
+        self.worker = FilterWorker(self.dataset_path, config)
         self.worker.status.connect(self.lbl_status.setText)
         self.worker.progress.connect(self.on_sieve_progress)
         self.worker.finished.connect(self.on_sieve_finished)

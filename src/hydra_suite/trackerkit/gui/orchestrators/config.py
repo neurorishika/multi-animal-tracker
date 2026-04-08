@@ -3234,7 +3234,7 @@ class ConfigOrchestrator:
             return  # dialog opens via _on_optimizer_cache_built when ready
 
         dialog = ParameterHelperDialog(
-            video_path, cache_path, start_frame, end_frame, params, self
+            video_path, cache_path, start_frame, end_frame, params, self._mw
         )
 
         if dialog.exec() == QDialog.Accepted:

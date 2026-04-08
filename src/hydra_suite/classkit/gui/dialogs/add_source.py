@@ -20,7 +20,9 @@ from PySide6.QtWidgets import (
 from hydra_suite.classkit.gui.dialogs.source_validation import (
     CLASSKIT_IMAGES_SUBDIR,
     count_classkit_images,
+    inspect_classkit_source_dir,
     resolve_classkit_images_dir,
+    standardize_classkit_source_dir,
 )
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
@@ -86,7 +88,9 @@ class AddSourceDialog(QDialog):
 
         info = QLabel(
             "Add one or more dataset root folders. Each source must contain an "
-            f"<b>{CLASSKIT_IMAGES_SUBDIR}/</b> subdirectory with images."
+            f"<b>{CLASSKIT_IMAGES_SUBDIR}/</b> subdirectory with images. If a "
+            "selected folder contains images directly, ClassKit can standardize "
+            "it by creating an images/ folder and copying those files."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -132,13 +136,15 @@ class AddSourceDialog(QDialog):
         d = Path(path).expanduser().resolve()
 
         try:
-            resolved = resolve_classkit_images_dir(d)
+            resolved = self._resolve_selected_source(d)
         except ValueError as exc:
             QMessageBox.warning(
                 self,
                 "Invalid Source Folder",
                 str(exc),
             )
+            return
+        if resolved is None:
             return
 
         count = count_classkit_images(resolved)
@@ -194,6 +200,39 @@ class AddSourceDialog(QDialog):
             f"{d.name}  \u2014  {count:,} images  (using {CLASSKIT_IMAGES_SUBDIR}/)\n{d}"
         )
         self._list.addItem(item)
+
+    def _resolve_selected_source(self, dataset_root: Path) -> Path | None:
+        """Resolve or standardize a selected source folder into dataset_root/images."""
+        inspection = inspect_classkit_source_dir(dataset_root)
+        if not inspection.needs_standardization:
+            return resolve_classkit_images_dir(dataset_root)
+
+        if not self._confirm_standardization(inspection):
+            return None
+
+        try:
+            return standardize_classkit_source_dir(dataset_root)
+        except Exception as exc:
+            raise ValueError(f"Failed to standardize source folder:\n{exc}") from exc
+
+    def _confirm_standardization(self, inspection) -> bool:
+        """Ask whether a flat image folder should be converted into dataset_root/images."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Standardize Source Folder")
+        msg.setText(
+            "This folder contains compatible images directly in the selected "
+            "directory instead of inside images/."
+        )
+        msg.setInformativeText(
+            f"ClassKit can create {CLASSKIT_IMAGES_SUBDIR}/ and copy "
+            f"{inspection.images_count:,} image(s) into it before import.\n\n"
+            "This may require additional disk space. Continue?"
+        )
+        btn_standardize = msg.addButton("Standardize and Add", QMessageBox.AcceptRole)
+        msg.addButton("Cancel", QMessageBox.RejectRole)
+        msg.exec()
+        return msg.clickedButton() == btn_standardize
 
     def _remove_selected(self):
         for item in self._list.selectedItems():
