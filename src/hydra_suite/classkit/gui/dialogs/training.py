@@ -836,21 +836,6 @@ class ClassKitTrainingDialog(QDialog):
         self.tiny_height_spin.setSingleStep(32)
         tiny_form.addRow("<b>Input Height:</b>", self.tiny_height_spin)
 
-        self.tiny_rebalance_combo = QComboBox()
-        self.tiny_rebalance_combo.addItem("None", "none")
-        self.tiny_rebalance_combo.addItem("Weighted Loss", "weighted_loss")
-        self.tiny_rebalance_combo.addItem("Weighted Sampler", "weighted_sampler")
-        self.tiny_rebalance_combo.addItem("Weighted Loss + Sampler", "both")
-        self.tiny_rebalance_combo.setCurrentIndex(1)
-        tiny_form.addRow("<b>Class Rebalancing:</b>", self.tiny_rebalance_combo)
-
-        self.tiny_rebalance_power_spin = QDoubleSpinBox()
-        self.tiny_rebalance_power_spin.setRange(0.0, 3.0)
-        self.tiny_rebalance_power_spin.setSingleStep(0.1)
-        self.tiny_rebalance_power_spin.setValue(1.0)
-        self.tiny_rebalance_power_spin.setDecimals(2)
-        tiny_form.addRow("<b>Rebalance Power:</b>", self.tiny_rebalance_power_spin)
-
         self.tiny_label_smoothing_spin = QDoubleSpinBox()
         self.tiny_label_smoothing_spin.setRange(0.0, 0.4)
         self.tiny_label_smoothing_spin.setSingleStep(0.01)
@@ -870,14 +855,6 @@ class ClassKitTrainingDialog(QDialog):
         )
         self.tiny_height_spin.setToolTip(
             "Input image height (px). Match to your typical crop size."
-        )
-        self.tiny_rebalance_combo.setToolTip(
-            "Class imbalance handling for Tiny CNN training.\n"
-            "Weighted Loss improves minority-class gradients.\n"
-            "Weighted Sampler oversamples minority classes per mini-batch."
-        )
-        self.tiny_rebalance_power_spin.setToolTip(
-            "Strength of rebalancing (0 disables effect, 1 = inverse-frequency baseline)."
         )
         self.tiny_label_smoothing_spin.setToolTip(
             "Cross-entropy label smoothing for Tiny CNN training (0.0 = disabled)."
@@ -1047,6 +1024,29 @@ class ClassKitTrainingDialog(QDialog):
         self._custom_patience_spin.setValue(10)
         custom_form.addRow("Patience:", self._custom_patience_spin)
 
+        self.tiny_rebalance_combo = QComboBox()
+        self.tiny_rebalance_combo.addItem("None", "none")
+        self.tiny_rebalance_combo.addItem("Weighted Loss", "weighted_loss")
+        self.tiny_rebalance_combo.addItem("Weighted Sampler", "weighted_sampler")
+        self.tiny_rebalance_combo.addItem("Weighted Loss + Sampler", "both")
+        self.tiny_rebalance_combo.setCurrentIndex(0)
+        self.tiny_rebalance_combo.setToolTip(
+            "Class imbalance handling for Custom CNN training.\n"
+            "Weighted Loss improves minority-class gradients.\n"
+            "Weighted Sampler oversamples minority classes per mini-batch."
+        )
+        custom_form.addRow("Class Rebalancing:", self.tiny_rebalance_combo)
+
+        self.tiny_rebalance_power_spin = QDoubleSpinBox()
+        self.tiny_rebalance_power_spin.setRange(0.0, 3.0)
+        self.tiny_rebalance_power_spin.setSingleStep(0.1)
+        self.tiny_rebalance_power_spin.setValue(1.0)
+        self.tiny_rebalance_power_spin.setDecimals(2)
+        self.tiny_rebalance_power_spin.setToolTip(
+            "Strength of rebalancing (0 disables effect, 1 = inverse-frequency baseline)."
+        )
+        custom_form.addRow("Rebalance Power:", self.tiny_rebalance_power_spin)
+
         self._custom_tab_idx = self.tabs.addTab(self.custom_tab, "Custom CNN")
 
         self._custom_backbone_combo.activated.connect(self._on_custom_backbone_changed)
@@ -1104,7 +1104,7 @@ class ClassKitTrainingDialog(QDialog):
 
         self.flip_lr_spin = QDoubleSpinBox()
         self.flip_lr_spin.setRange(0.0, 1.0)
-        self.flip_lr_spin.setValue(0.5)
+        self.flip_lr_spin.setValue(0.0)
         aug_form.addRow("<b>Horizontal Flip Prob:</b>", self.flip_lr_spin)
 
         self.flip_ud_spin = QDoubleSpinBox()
@@ -1115,7 +1115,7 @@ class ClassKitTrainingDialog(QDialog):
         self.brightness_spin = QDoubleSpinBox()
         self.brightness_spin.setRange(0.0, 1.0)
         self.brightness_spin.setSingleStep(0.05)
-        self.brightness_spin.setValue(0.1)
+        self.brightness_spin.setValue(0.0)
         self.brightness_spin.setToolTip(
             "Photometric brightness jitter. Useful for lighting variation while preserving canonical pose."
         )
@@ -1124,7 +1124,7 @@ class ClassKitTrainingDialog(QDialog):
         self.contrast_spin = QDoubleSpinBox()
         self.contrast_spin.setRange(0.0, 1.0)
         self.contrast_spin.setSingleStep(0.05)
-        self.contrast_spin.setValue(0.1)
+        self.contrast_spin.setValue(0.0)
         self.contrast_spin.setToolTip(
             "Photometric contrast jitter. Preferred over rotation for canonicalized crops."
         )

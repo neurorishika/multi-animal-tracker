@@ -57,7 +57,7 @@ from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noq
 from .canvas import FrameListDelegate, PoseCanvas
 
 # Local refactored modules
-from .constants import DEFAULT_AUTOSAVE_DELAY_MS
+from .constants import DEFAULT_AUTOSAVE_DELAY_MS, DEFAULT_PROJECT_NAME
 from .dialogs.project_wizard import ProjectWizard
 from .dialogs.skeleton import SkeletonEditorDialog
 from .io import load_yolo_pose_label, migrate_labels_keypoints, save_yolo_pose_label
@@ -68,6 +68,7 @@ from .project import (
     find_project,
     load_project_with_repairs,
     open_project_from_path,
+    save_project_state,
 )
 from .runtimes import (
     CANONICAL_RUNTIMES,
@@ -792,9 +793,24 @@ class MainWindow(QMainWindow):
             recents_label="Recent Projects",
             recents_store=store,
             on_recent_clicked=self._open_recent_project,
+            recent_display_name=self._recent_project_display_name,
         )
         self._welcome_page = WelcomePage(config)
         return self._welcome_page
+
+    @staticmethod
+    def _recent_project_display_name(path: str) -> str:
+        """Return the label to show for a recent PoseKit project entry."""
+        project_path = Path(str(path).strip()).expanduser()
+        if (
+            project_path.name == DEFAULT_PROJECT_NAME
+            and project_path.parent.name == "state"
+            and project_path.parent.parent.name
+        ):
+            return project_path.parent.parent.name
+        if project_path.name == DEFAULT_PROJECT_NAME and project_path.parent.name:
+            return project_path.parent.name
+        return project_path.name or str(path)
 
     def _open_recent_project(self, path: str):
         """Open a project from the recent items list."""
@@ -802,8 +818,6 @@ class MainWindow(QMainWindow):
 
         project_path = Path(path)
         if project_path.exists():
-            from hydra_suite.posekit.project import open_project_from_path
-
             proj = open_project_from_path(project_path)
             if proj is not None:
                 self._switch_project_window(proj)
@@ -1739,9 +1753,7 @@ class MainWindow(QMainWindow):
                 {int(i) for i in self.labeling_frames}
             )
         self.project.last_index = self.current_index
-        self.project.project_path.write_text(
-            json.dumps(self.project.to_json(), indent=2), encoding="utf-8"
-        )
+        save_project_state(self.project)
 
     # ----- list / info -----
     def _populate_frames(self):
@@ -1998,6 +2010,11 @@ class MainWindow(QMainWindow):
                         item, color, item_text, pred_conf, pred_kpt_count, cluster_id
                     )
                     return
+
+    def _schedule_frame_item_refresh(self, idx: int) -> None:
+        """Defer frame-list mutations until after Qt finishes selection handling."""
+
+        QTimer.singleShot(0, lambda frame_idx=idx: self._update_frame_item(frame_idx))
 
     def _clear_conf_display(self) -> None:
         if self._list_items:
@@ -2436,9 +2453,10 @@ class MainWindow(QMainWindow):
         self._load_metadata_ui()
 
         # If the previous frame was saved above, update its entry in the frame lists
-        # so it moves from the unlabeled set to the labeling set without a full rebuild.
+        # after the selection event unwinds. Moving list items inline from a
+        # currentRowChanged handler can crash PySide/Qt on macOS/Python 3.13.
         if _was_dirty:
-            self._update_frame_item(_prev_index)
+            self._schedule_frame_item_refresh(_prev_index)
 
         return
 

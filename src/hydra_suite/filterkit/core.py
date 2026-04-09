@@ -13,6 +13,114 @@ import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 
 
+class _HashBKTreeNode:
+    def __init__(self, signature: int, kept_index: int) -> None:
+        self.signature = signature
+        self.kept_indices = [kept_index]
+        self.children: Dict[int, "_HashBKTreeNode"] = {}
+
+
+class _HashBKTree:
+    def __init__(self) -> None:
+        self.root: Optional[_HashBKTreeNode] = None
+
+    @staticmethod
+    def _distance(sig1: int, sig2: int) -> int:
+        return int((sig1 ^ sig2) & ((1 << 64) - 1)).bit_count()
+
+    def add(self, signature: int, kept_index: int) -> None:
+        if self.root is None:
+            self.root = _HashBKTreeNode(signature, kept_index)
+            return
+
+        node = self.root
+        while True:
+            distance = self._distance(signature, node.signature)
+            if distance == 0:
+                node.kept_indices.append(kept_index)
+                return
+
+            child = node.children.get(distance)
+            if child is None:
+                node.children[distance] = _HashBKTreeNode(signature, kept_index)
+                return
+            node = child
+
+    def query(self, signature: int, max_distance: int) -> List[int]:
+        if self.root is None:
+            return []
+
+        matches: List[int] = []
+
+        def _walk(node: _HashBKTreeNode) -> None:
+            distance = self._distance(signature, node.signature)
+            if distance <= max_distance:
+                matches.extend(node.kept_indices)
+
+            lower = max(0, distance - max_distance)
+            upper = distance + max_distance
+            for child_distance, child in node.children.items():
+                if lower <= child_distance <= upper:
+                    _walk(child)
+
+        _walk(self.root)
+        return matches
+
+
+class _HistogramSignatureIndex:
+    def __init__(self, bins: int = 32, initial_capacity: int = 256) -> None:
+        self._bins = bins
+        self._matrix = np.empty((initial_capacity, bins), dtype=np.float32)
+        self._means = np.empty((initial_capacity,), dtype=np.float32)
+        self._size = 0
+
+    def add(self, signature: np.ndarray) -> None:
+        if self._size >= self._matrix.shape[0]:
+            new_capacity = max(1, self._matrix.shape[0] * 2)
+            new_matrix = np.empty((new_capacity, self._bins), dtype=np.float32)
+            new_means = np.empty((new_capacity,), dtype=np.float32)
+            new_matrix[: self._size] = self._matrix[: self._size]
+            new_means[: self._size] = self._means[: self._size]
+            self._matrix = new_matrix
+            self._means = new_means
+
+        self._matrix[self._size] = signature
+        self._means[self._size] = float(signature.mean())
+        self._size += 1
+
+    def query(self, signature: np.ndarray, threshold: float) -> np.ndarray:
+        if self._size == 0:
+            return np.empty((0,), dtype=np.int64)
+
+        signatures = self._matrix[: self._size]
+        kept_means = self._means[: self._size].astype(np.float64, copy=False)
+        signature = np.asarray(signature, dtype=np.float32)
+        signature_mean = float(signature.mean())
+
+        coeff = np.sqrt(signatures * signature).sum(axis=1, dtype=np.float64)
+        denominator = np.sqrt(
+            kept_means * signature_mean * float(self._bins * self._bins)
+        )
+
+        ratio = np.zeros((self._size,), dtype=np.float64)
+        valid = denominator > 0
+        ratio[valid] = np.clip(coeff[valid] / denominator[valid], 0.0, 1.0)
+
+        if np.any(~valid):
+            invalid_indices = np.flatnonzero(~valid)
+            for idx in invalid_indices:
+                ratio[idx] = 1.0 - float(
+                    cv2.compareHist(
+                        signatures[idx],
+                        signature,
+                        cv2.HISTCMP_BHATTACHARYYA,
+                    )
+                )
+
+        distances = np.sqrt(np.maximum(0.0, 1.0 - ratio))
+        return np.flatnonzero(distances <= threshold)
+
+
 class FilterKitCore:
     @staticmethod
     def _should_report_progress(idx: int, total: int) -> bool:
@@ -31,6 +139,10 @@ class FilterKitCore:
             and threshold <= 0
             and color_threshold is None
         )
+
+    @staticmethod
+    def _is_hash_method(method: str) -> bool:
+        return method in {"phash", "dhash", "ahash"}
 
     @staticmethod
     def _filter_duplicate_groups(
@@ -145,6 +257,64 @@ class FilterKitCore:
             ):
                 continue
             return sig_idx
+
+        return -1
+
+    def _find_matching_hash_index(
+        self,
+        signature: int,
+        current_color_signature,
+        hash_index: _HashBKTree,
+        kept_color_signatures: List[Optional[np.ndarray]],
+        threshold: float,
+        color_threshold: Optional[float],
+    ) -> int:
+        candidate_indices = sorted(
+            hash_index.query(int(signature), max(0, int(threshold)))
+        )
+        for sig_idx in candidate_indices:
+            if color_threshold is None:
+                return sig_idx
+
+            existing_color_signature = kept_color_signatures[sig_idx]
+            if (
+                current_color_signature is not None
+                and existing_color_signature is not None
+                and self.color_distance(
+                    current_color_signature, existing_color_signature
+                )
+                > color_threshold
+            ):
+                continue
+            return sig_idx
+
+        return -1
+
+    def _find_matching_histogram_index(
+        self,
+        signature: np.ndarray,
+        current_color_signature,
+        histogram_index: _HistogramSignatureIndex,
+        kept_color_signatures: List[Optional[np.ndarray]],
+        threshold: float,
+        color_threshold: Optional[float],
+    ) -> int:
+        candidate_indices = histogram_index.query(signature, threshold)
+        for sig_idx in candidate_indices:
+            if color_threshold is None:
+                return int(sig_idx)
+
+            existing_color_signature = kept_color_signatures[int(sig_idx)]
+            if (
+                current_color_signature is not None
+                and existing_color_signature is not None
+                and self.color_distance(
+                    current_color_signature, existing_color_signature
+                )
+                > color_threshold
+            ):
+                continue
+            return int(sig_idx)
 
         return -1
 
@@ -301,12 +471,7 @@ class FilterKitCore:
 
     def hamming_distance(self, hash1: int, hash2: int) -> int:
         """Compute Hamming distance between two 64-bit hashes."""
-        x = (hash1 ^ hash2) & ((1 << 64) - 1)
-        dist = 0
-        while x:
-            dist += 1
-            x &= x - 1
-        return dist
+        return int((hash1 ^ hash2) & ((1 << 64) - 1)).bit_count()
 
     def load_dataset(self, folder_path: str) -> List[Dict[str, Any]]:
         """
@@ -421,6 +586,8 @@ class FilterKitCore:
         kept_color_signatures = []
         sig_to_cluster_index = {}
         duplicate_groups = []
+        hash_index = _HashBKTree() if self._is_hash_method(method) else None
+        histogram_index = _HistogramSignatureIndex() if method == "histogram" else None
 
         dataset_sorted = sorted(dataset, key=lambda x: (x["frame_idx"], x["det_id"]))
 
@@ -447,15 +614,36 @@ class FilterKitCore:
                 self._maybe_report_progress(progress_callback, idx, total)
                 continue
 
-            matched_index = self._find_matching_signature_index(
-                signature,
-                current_color_signature,
-                kept_signatures,
-                kept_color_signatures,
-                float(threshold),
-                method,
-                color_threshold,
-            )
+            if self._is_hash_method(method) and hash_index is not None:
+                matched_index = self._find_matching_hash_index(
+                    int(signature),
+                    current_color_signature,
+                    hash_index,
+                    kept_color_signatures,
+                    float(threshold),
+                    color_threshold,
+                )
+            elif method == "histogram" and histogram_index is not None:
+                matched_index = self._find_matching_histogram_index(
+                    signature,
+                    current_color_signature,
+                    histogram_index,
+                    kept_color_signatures,
+                    float(threshold),
+                    color_threshold,
+                )
+            else:
+                matched_index = self._find_matching_signature_index(
+                    signature,
+                    current_color_signature,
+                    kept_signatures,
+                    kept_color_signatures,
+                    float(threshold),
+                    method,
+                    color_threshold,
+                )
+
+            is_new_signature = matched_index == -1
             self._record_signature_item(
                 item,
                 signature,
@@ -467,6 +655,11 @@ class FilterKitCore:
                 kept_color_signatures,
                 duplicate_groups,
             )
+            if is_new_signature:
+                if self._is_hash_method(method) and hash_index is not None:
+                    hash_index.add(int(signature), len(kept_items) - 1)
+                elif method == "histogram" and histogram_index is not None:
+                    histogram_index.add(signature)
             self._maybe_report_progress(progress_callback, idx, total)
 
         if return_groups:

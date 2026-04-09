@@ -73,14 +73,18 @@ def test_update_labels_with_confidence_batch_writes_label_and_confidence(tmp_pat
         {
             "/img/a.jpg": ("tag_3", 0.8),
             "/img/b.jpg": ("no_tag", 1.0),
-        }
+        },
+        label_source="auto_apriltag",
+        verified=False,
     )
     with sqlite3.connect(db.db_path) as conn:
-        rows = conn.execute(
-            "SELECT file_path, label, confidence FROM images ORDER BY file_path"
-        ).fetchall()
-    assert rows[0] == ("/img/a.jpg", "tag_3", 0.8)
-    assert rows[1] == ("/img/b.jpg", "no_tag", 1.0)
+        rows = conn.execute("""
+            SELECT file_path, label, confidence, label_source, verified
+            FROM images
+            ORDER BY file_path
+            """).fetchall()
+    assert rows[0] == ("/img/a.jpg", "tag_3", 0.8, "auto_apriltag", 0)
+    assert rows[1] == ("/img/b.jpg", "no_tag", 1.0, "auto_apriltag", 0)
 
 
 def test_update_labels_with_confidence_batch_empty_is_noop(tmp_path):
@@ -99,8 +103,72 @@ def test_clear_all_labels_sets_null(tmp_path):
     )
     db.clear_all_labels()
     with sqlite3.connect(db.db_path) as conn:
-        rows = conn.execute("SELECT label, confidence FROM images").fetchall()
-    assert all(row[0] is None and row[1] is None for row in rows)
+        rows = conn.execute(
+            "SELECT label, confidence, label_source, verified FROM images"
+        ).fetchall()
+    assert all(
+        row[0] is None and row[1] is None and row[2] is None and row[3] == 0
+        for row in rows
+    )
+
+
+def test_update_labels_batch_marks_human_labels_verified(tmp_path):
+    db = _make_db(tmp_path)
+    db.update_labels_with_confidence_batch(
+        {
+            "/img/a.jpg": ("tag_3", 0.8),
+        },
+        label_source="auto_apriltag",
+        verified=False,
+    )
+
+    db.update_labels_batch({"/img/a.jpg": "tag_7"})
+
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute("""
+            SELECT label, confidence, label_source, verified, verified_at,
+                   auto_label_metadata_json
+            FROM images
+            WHERE file_path = '/img/a.jpg'
+            """).fetchone()
+
+    assert row[0] == "tag_7"
+    assert row[1] is None
+    assert row[2] == "human"
+    assert row[3] == 1
+    assert row[4] is not None
+    assert row[5] is None
+
+
+def test_get_labeled_pairs_verified_only_excludes_machine_labels(tmp_path):
+    db = _make_db(tmp_path)
+    db.update_labels_batch({"/img/a.jpg": "tag_1"})
+    db.update_labels_with_confidence_batch(
+        {"/img/b.jpg": ("tag_2", 0.9)},
+        label_source="auto_apriltag",
+        verified=False,
+    )
+
+    assert db.get_labeled_pairs() == [("/img/a.jpg", "tag_1"), ("/img/b.jpg", "tag_2")]
+    assert db.get_labeled_pairs(verified_only=True) == [("/img/a.jpg", "tag_1")]
+
+
+def test_mark_labels_verified_preserves_machine_provenance(tmp_path):
+    db = _make_db(tmp_path)
+    db.update_labels_with_confidence_batch(
+        {"/img/a.jpg": ("tag_4", 0.87)},
+        label_source="auto_model",
+        verified=False,
+    )
+
+    updated = db.mark_labels_verified(["/img/a.jpg"])
+    status = db.get_label_review_status_by_path()["/img/a.jpg"]
+
+    assert updated == 1
+    assert status["label"] == "tag_4"
+    assert status["label_source"] == "auto_model"
+    assert status["verified"] is True
+    assert status["verified_at"] is not None
 
 
 def test_clear_all_labels_on_empty_db_is_noop(tmp_path):

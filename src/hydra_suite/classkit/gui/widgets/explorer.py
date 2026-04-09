@@ -124,7 +124,9 @@ class ExplorerView(QGraphicsView):
         self.prediction_mode = prediction_mode
         if self.labeling_mode:
             if self._has_active_labeling_batch():
-                self.interactive_indices = set(self.candidate_indices)
+                self.interactive_indices = set(self.candidate_indices) | set(
+                    self.round_labeled_indices
+                )
                 if self.selected_index is not None:
                     self.interactive_indices.add(self.selected_index)
             else:
@@ -169,6 +171,7 @@ class ExplorerView(QGraphicsView):
             and self._has_active_labeling_batch()
             and index not in self.candidate_indices
             and index not in self.round_labeled_indices
+            and self._point_is_unlabeled(index, labels)
         ):
             color = QColor(90, 90, 90)
 
@@ -353,7 +356,9 @@ class ExplorerView(QGraphicsView):
 
         self.selected_index = selected_index
         if self.labeling_mode:
-            self.interactive_indices = set(self.candidate_indices)
+            self.interactive_indices = set(self.candidate_indices) | set(
+                self.round_labeled_indices
+            )
             if self.selected_index is not None:
                 self.interactive_indices.add(self.selected_index)
 
@@ -446,7 +451,9 @@ class ExplorerView(QGraphicsView):
         self.prediction_mode = prediction_mode
         if self.labeling_mode:
             if self._has_active_labeling_batch():
-                self.interactive_indices = set(self.candidate_indices)
+                self.interactive_indices = set(self.candidate_indices) | set(
+                    self.round_labeled_indices
+                )
             else:
                 self.interactive_indices = set(range(len(coords)))
         self._coords = np.asarray(coords)

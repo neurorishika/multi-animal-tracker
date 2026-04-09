@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtWidgets import QDialog, QMessageBox
+
+from hydra_suite.data.project_bundle import (
+    DEFAULT_BUNDLE_HISTORY_DIRNAME,
+    DEFAULT_BUNDLE_MANIFEST_FILENAME,
+    DEFAULT_BUNDLE_STATE_DIRNAME,
+    ProjectBundleManifest,
+    bundle_paths,
+    ensure_bundle_subdirectories,
+    ensure_project_bundle_layout,
+    load_project_bundle_manifest,
+    save_project_bundle_manifest,
+    write_json_atomic,
+)
 
 from .constants import (
     DEFAULT_DATASET_IMAGES_DIR,
@@ -18,6 +32,12 @@ from .constants import (
 )
 from .models import DataSource, Project
 from .utils import _resolve_project_path, list_images
+
+_KIT_NAME = "posekit"
+_POSEKIT_ARTIFACT_DIRS = {
+    "cache": "artifacts/cache",
+    "exports": "artifacts/exports",
+}
 
 # -----------------------------
 # Bootstrap / project discovery
@@ -57,22 +77,128 @@ def resolve_dataset_paths(dataset_dir: Path) -> Tuple[Path, Path, Path, Path, Pa
       dataset_dir/
         images/
         posekit_project/
-          pose_project.json
+          state/
+            pose_project.json
           labels/
     """
     ds = dataset_dir.expanduser().resolve()
     images_dir = ds / DEFAULT_DATASET_IMAGES_DIR
     out_root = ds / DEFAULT_POSEKIT_PROJECT_DIR
     labels_dir = out_root / "labels"
-    project_path = out_root / DEFAULT_PROJECT_NAME
+    project_path = canonical_project_path(out_root)
     return ds, images_dir, out_root, labels_dir, project_path
+
+
+def canonical_project_path(project_root: Path) -> Path:
+    """Return the canonical bundle state file path for a PoseKit project."""
+    return bundle_paths(project_root).state_dir / DEFAULT_PROJECT_NAME
+
+
+def posekit_artifact_paths(project_root: Path) -> dict[str, Path]:
+    """Return typed artifact directories for a PoseKit bundle."""
+    created = ensure_bundle_subdirectories(
+        project_root,
+        tuple(_POSEKIT_ARTIFACT_DIRS.values()),
+    )
+    return {
+        name: created[relative] for name, relative in _POSEKIT_ARTIFACT_DIRS.items()
+    }
+
+
+def _manifest_for_project(
+    project_root: Path, labels_dir: Path
+) -> ProjectBundleManifest:
+    """Build the shared bundle manifest for a PoseKit project."""
+    return ProjectBundleManifest(
+        kit=_KIT_NAME,
+        display_name=Path(project_root).name,
+        state_path=str(Path(DEFAULT_BUNDLE_STATE_DIRNAME) / DEFAULT_PROJECT_NAME),
+        artifacts_dir="artifacts",
+        history_dir=DEFAULT_BUNDLE_HISTORY_DIRNAME,
+        meta={
+            "labels_dir": str(labels_dir.relative_to(project_root)),
+            "artifact_dirs": dict(_POSEKIT_ARTIFACT_DIRS),
+        },
+    )
+
+
+def _project_root_from_selection(path: Path) -> Path:
+    """Infer the PoseKit project root from a selected file or directory."""
+    path = path.expanduser().resolve()
+    if path.is_dir():
+        return path
+    if path.name == DEFAULT_BUNDLE_MANIFEST_FILENAME:
+        return path.parent
+    if (
+        path.name == DEFAULT_PROJECT_NAME
+        and path.parent.name == DEFAULT_BUNDLE_STATE_DIRNAME
+    ):
+        return path.parent.parent
+    if path.name == DEFAULT_PROJECT_NAME and path.parent.name == "labels":
+        return path.parent.parent
+    return path.parent
+
+
+def _archive_legacy_project_file(project_root: Path, legacy_path: Path) -> None:
+    """Move a legacy PoseKit project JSON into history after migration."""
+    if not legacy_path.exists() or legacy_path == canonical_project_path(project_root):
+        return
+    history_dir = ensure_project_bundle_layout(project_root).history_dir
+    archive_path = history_dir / f"legacy_{legacy_path.name}"
+    if archive_path.exists():
+        legacy_path.unlink()
+        return
+    shutil.move(str(legacy_path), str(archive_path))
+
+
+def _find_legacy_project_file(project_root: Path) -> Path | None:
+    """Return the first legacy PoseKit project JSON inside *project_root*."""
+    candidates = [
+        project_root / DEFAULT_PROJECT_NAME,
+        project_root / "labels" / DEFAULT_PROJECT_NAME,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def save_project_state(
+    project: Project, *, legacy_source_path: Path | None = None
+) -> Path:
+    """Persist a PoseKit project into the canonical bundle layout."""
+    project_root = project.out_root.expanduser().resolve()
+    ensure_project_bundle_layout(project_root)
+    posekit_artifact_paths(project_root)
+    project.project_path = canonical_project_path(project_root)
+    write_json_atomic(project.project_path, project.to_json())
+    save_project_bundle_manifest(
+        project_root,
+        _manifest_for_project(project_root, project.labels_dir),
+    )
+    if legacy_source_path is not None:
+        _archive_legacy_project_file(project_root, legacy_source_path)
+    return project.project_path
+
+
+def _load_bundle_project(project_root: Path) -> Optional[Project]:
+    """Load a PoseKit project from the shared bundle layout if present."""
+    manifest = load_project_bundle_manifest(project_root)
+    if manifest is None:
+        return None
+    if manifest.kit and manifest.kit != _KIT_NAME:
+        return None
+    state_path = project_root / Path(manifest.state_path)
+    if not state_path.exists():
+        return None
+    return Project.from_json(state_path)
 
 
 def find_project(dataset_dir: Path) -> Optional[Path]:
     """Find an existing project for a dataset root.
 
-    Primary location:
-      dataset_dir/posekit_project/pose_project.json
+        Primary location:
+            dataset_dir/posekit_project/state/pose_project.json
 
     The primary location is trusted by virtue of its path — if the file
     exists there it belongs to this dataset even if the stored ``images_dir``
@@ -146,10 +272,9 @@ def _repair_project_paths(proj: Project, dataset_dir: Path) -> bool:
 def load_project_with_repairs(project_path: Path, dataset_dir: Path) -> Project:
     """Load a project and repair any stale paths for the current machine."""
     proj = Project.from_json(project_path)
-    if _repair_project_paths(proj, dataset_dir):
-        proj.project_path.write_text(
-            json.dumps(proj.to_json(), indent=2), encoding="utf-8"
-        )
+    changed = _repair_project_paths(proj, dataset_dir)
+    if changed or project_path != canonical_project_path(proj.out_root):
+        save_project_state(proj, legacy_source_path=project_path)
     return proj
 
 
@@ -237,7 +362,7 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
         autosave=autosave,
         bbox_pad_frac=pad,
     )
-    project_path.write_text(json.dumps(proj.to_json(), indent=2), encoding="utf-8")
+    save_project_state(proj)
     return proj
 
 
@@ -310,7 +435,7 @@ def create_standalone_project_via_wizard(parent_widget=None) -> Optional[Project
         bbox_pad_frac=pad,
         sources=sources,
     )
-    project_path.write_text(json.dumps(proj.to_json(), indent=2), encoding="utf-8")
+    save_project_state(proj)
 
     return proj
 
@@ -322,7 +447,20 @@ def open_project_from_path(project_path: Path) -> Optional[Project]:
     are skipped because the project location is trusted as-is.
     """
     try:
-        proj = Project.from_json(project_path)
+        project_root = _project_root_from_selection(project_path)
+        proj = _load_bundle_project(project_root)
+        if proj is None:
+            selected = project_path.expanduser().resolve()
+            if selected.name == DEFAULT_BUNDLE_MANIFEST_FILENAME:
+                legacy_path = _find_legacy_project_file(project_root)
+                if legacy_path is None:
+                    raise FileNotFoundError(
+                        f"PoseKit bundle manifest does not reference a valid {DEFAULT_PROJECT_NAME}"
+                    )
+                selected = legacy_path
+            proj = Project.from_json(selected)
+            if selected != canonical_project_path(proj.out_root):
+                save_project_state(proj, legacy_source_path=selected)
         return proj
     except Exception as exc:
         QMessageBox.critical(
@@ -392,9 +530,7 @@ def add_source_to_project(
         description=description or dataset_dir.name,
     )
     project.sources.append(src)
-    project.project_path.write_text(
-        json.dumps(project.to_json(), indent=2), encoding="utf-8"
-    )
+    save_project_state(project)
     return src
 
 
@@ -406,11 +542,13 @@ def create_empty_startup_project() -> Project:
     labels_dir = out_root / "labels"
     images_dir.mkdir(parents=True, exist_ok=True)
     labels_dir.mkdir(parents=True, exist_ok=True)
+    ensure_project_bundle_layout(out_root)
+    posekit_artifact_paths(out_root)
     return Project(
         images_dir=images_dir,
         out_root=out_root,
         labels_dir=labels_dir,
-        project_path=out_root / DEFAULT_PROJECT_NAME,
+        project_path=canonical_project_path(out_root),
         class_names=["object"],
         keypoint_names=["kp1", "kp2"],
         skeleton_edges=[(0, 1)],

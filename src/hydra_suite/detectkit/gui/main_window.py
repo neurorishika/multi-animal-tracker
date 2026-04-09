@@ -34,7 +34,7 @@ from .project import (
     create_project,
     default_project_parent_dir,
     open_project,
-    project_file_path,
+    project_exists,
     save_project,
 )
 from .utils import find_label_for_image, parse_obb_label, source_class_id_map
@@ -292,10 +292,9 @@ class MainWindow(QMainWindow):
 
         project_info = dialog.get_project_info()
         proj_dir = Path(project_info["path"]).expanduser()
-        pf = project_file_path(proj_dir)
 
         # If a project already exists, offer to open it instead.
-        if pf.exists():
+        if project_exists(proj_dir):
             ans = QMessageBox.question(
                 self,
                 "Project Exists",

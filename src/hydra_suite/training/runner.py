@@ -1002,8 +1002,35 @@ def _train_custom_classify(
     val_ds = datasets.ImageFolder(str(dataset_dir / "val"), transform=val_tf)
     class_names = train_ds.classes
 
+    rebalance_mode = (
+        str(getattr(params, "class_rebalance_mode", "none") or "none").strip().lower()
+    )
+    rebalance_power = float(max(0.0, getattr(params, "class_rebalance_power", 1.0)))
+
+    class_weight_values = _compute_class_weights(
+        [(p, lbl) for (p, _), lbl in zip(train_ds.imgs, train_ds.targets)],
+        len(class_names),
+        rebalance_mode,
+        rebalance_power,
+    )
+
+    from torch.utils.data import WeightedRandomSampler
+
+    train_sampler = None
+    if rebalance_mode in {"weighted_sampler", "both"}:
+        sample_weights = [class_weight_values[lbl] for lbl in train_ds.targets]
+        train_sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(sample_weights, dtype=torch.double),
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
     train_loader = DataLoader(
-        train_ds, batch_size=params.batch, shuffle=True, num_workers=0, pin_memory=True
+        train_ds,
+        batch_size=params.batch,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        num_workers=0,
+        pin_memory=True,
     )
     val_loader = DataLoader(
         val_ds, batch_size=params.batch, shuffle=False, num_workers=0, pin_memory=True
@@ -1044,7 +1071,14 @@ def _train_custom_classify(
         torch,
         get_layer_groups,
     )
-    criterion = nn.CrossEntropyLoss(label_smoothing=params.label_smoothing)
+    criterion = nn.CrossEntropyLoss(
+        weight=(
+            torch.tensor(class_weight_values, dtype=torch.float).to(device)
+            if rebalance_mode in {"weighted_loss", "both"}
+            else None
+        ),
+        label_smoothing=params.label_smoothing,
+    )
 
     best_ckpt_path = (
         weights_dir / f"classkit_custom_{params.backbone}_{len(class_names)}cls.pth"

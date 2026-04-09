@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from hydra_suite.data.project_bundle import ensure_bundle_state_subdirectory
+
 
 class ClassKitDB:
     """SQLite-backed store for ClassKit project state.
@@ -20,6 +22,10 @@ class ClassKitDB:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._init_db()
+
+    def _cache_dir(self, cache_name: str) -> Path:
+        """Return the canonical bundle-aware cache directory for *cache_name*."""
+        return ensure_bundle_state_subdirectory(self.db_path, cache_name)
 
     def _init_db(self):
         """Create tables if not exist."""
@@ -34,11 +40,17 @@ class ClassKitDB:
                     file_hash TEXT,
                     label TEXT,
                     confidence REAL,
+                    label_source TEXT,
+                    verified INTEGER DEFAULT 0,
+                    verified_at TEXT,
+                    auto_label_metadata_json TEXT,
                     embedding_idx INTEGER,
                     split TEXT DEFAULT 'train', -- train, val, test, unassigned
                     meta_json TEXT
                 )
             """)
+
+            self._ensure_image_review_columns(c, conn)
 
             # Clusters table
             c.execute("""
@@ -151,6 +163,46 @@ class ClassKitDB:
             """)
             conn.commit()
 
+    @staticmethod
+    def _ensure_image_review_columns(c, conn) -> None:
+        """Migrate image review/provenance columns into existing DBs."""
+        image_column_migrations = (
+            ("label_source", "TEXT"),
+            ("verified", "INTEGER DEFAULT 0"),
+            ("verified_at", "TEXT"),
+            ("auto_label_metadata_json", "TEXT"),
+        )
+        for column_name, column_def in image_column_migrations:
+            try:
+                c.execute(
+                    f"ALTER TABLE images ADD COLUMN {column_name} {column_def}"  # noqa: S608
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        c.execute("""
+            UPDATE images
+            SET label_source = CASE
+                    WHEN label IS NOT NULL AND (label_source IS NULL OR label_source = '')
+                        THEN 'human'
+                    ELSE label_source
+                END,
+                verified = CASE
+                    WHEN label IS NOT NULL AND verified IS NULL THEN 1
+                    WHEN verified IS NULL THEN 0
+                    ELSE verified
+                END,
+                verified_at = CASE
+                    WHEN label IS NOT NULL
+                        AND (verified = 1 OR verified IS NULL)
+                        AND verified_at IS NULL
+                        THEN CURRENT_TIMESTAMP
+                    ELSE verified_at
+                END
+            """)
+        conn.commit()
+
     def add_images(self, paths: List[Path], hashes: List[str] = None):
         """Batch insert images, storing resolved absolute paths."""
         if hashes is None:
@@ -207,15 +259,33 @@ class ClassKitDB:
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             for path, label in updates.items():
+                is_verified = int(label is not None)
+                label_source = "human" if label is not None else None
+                verified_at = "CURRENT_TIMESTAMP" if label is not None else None
                 c.execute(
-                    "UPDATE images SET label = ? WHERE file_path = ?", (label, path)
+                    """
+                    UPDATE images
+                    SET label = ?,
+                        confidence = NULL,
+                        label_source = ?,
+                        verified = ?,
+                        verified_at = CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END,
+                        auto_label_metadata_json = NULL
+                    WHERE file_path = ?
+                    """,
+                    (label, label_source, is_verified, verified_at, path),
                 )
                 updated_count += c.rowcount
             conn.commit()
         return updated_count
 
     def update_labels_with_confidence_batch(
-        self, updates: Dict[str, Tuple[str, float]]
+        self,
+        updates: Dict[str, Tuple[str, float]],
+        *,
+        label_source: str = "auto",
+        verified: bool = False,
+        metadata_by_path: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> None:
         """Write label and confidence for multiple images in one transaction.
 
@@ -224,12 +294,35 @@ class ClassKitDB:
         """
         if not updates:
             return
-        rows = [
-            (label, confidence, path) for path, (label, confidence) in updates.items()
-        ]
+        rows = []
+        metadata_by_path = metadata_by_path or {}
+        verified_value = int(bool(verified))
+        verified_marker = "verified" if verified else None
+        for path, (label, confidence) in updates.items():
+            payload = metadata_by_path.get(path)
+            rows.append(
+                (
+                    label,
+                    confidence,
+                    label_source,
+                    verified_value,
+                    verified_marker,
+                    json.dumps(payload) if payload is not None else None,
+                    path,
+                )
+            )
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
-                "UPDATE images SET label = ?, confidence = ? WHERE file_path = ?",
+                """
+                UPDATE images
+                SET label = ?,
+                    confidence = ?,
+                    label_source = ?,
+                    verified = ?,
+                    verified_at = CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    auto_label_metadata_json = ?
+                WHERE file_path = ?
+                """,
                 rows,
             )
             conn.commit()
@@ -237,7 +330,15 @@ class ClassKitDB:
     def clear_all_labels(self) -> None:
         """Set label=NULL and confidence=NULL for all images."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("UPDATE images SET label = NULL, confidence = NULL")
+            conn.execute("""
+                UPDATE images
+                SET label = NULL,
+                    confidence = NULL,
+                    label_source = NULL,
+                    verified = 0,
+                    verified_at = NULL,
+                    auto_label_metadata_json = NULL
+                """)
             conn.commit()
 
     def get_all_labels(self) -> List[Optional[str]]:
@@ -252,6 +353,74 @@ class ClassKitDB:
                 "SELECT label FROM images ORDER BY id"
             )  # Order must match embeddings
             return [r[0] for r in c.fetchall()]
+
+    def get_labeled_pairs(self, verified_only: bool = False) -> List[Tuple[str, str]]:
+        """Return labeled image-path/label pairs ordered by insertion ID."""
+        query = "SELECT file_path, label FROM images WHERE label IS NOT NULL"
+        params: List[Any] = []
+        if verified_only:
+            query += " AND verified = ?"
+            params.append(1)
+        query += " ORDER BY id"
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(query, params)
+            return [(str(path), str(label)) for path, label in c.fetchall()]
+
+    def get_label_review_status_by_path(self) -> Dict[str, Dict[str, Any]]:
+        """Return label provenance/review metadata keyed by file path."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT file_path, label, confidence, label_source, verified,
+                       verified_at, auto_label_metadata_json
+                FROM images
+                ORDER BY id
+                """)
+            rows = c.fetchall()
+
+        status: Dict[str, Dict[str, Any]] = {}
+        for (
+            file_path,
+            label,
+            confidence,
+            label_source,
+            verified,
+            verified_at,
+            metadata_json,
+        ) in rows:
+            status[str(file_path)] = {
+                "label": label,
+                "confidence": confidence,
+                "label_source": label_source,
+                "verified": bool(verified),
+                "verified_at": verified_at,
+                "auto_label_metadata": self._decode_meta_json(metadata_json),
+            }
+        return status
+
+    def mark_labels_verified(self, paths: List[Path | str]) -> int:
+        """Mark existing labels as verified without changing their provenance."""
+        if not paths:
+            return 0
+
+        updated_count = 0
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            for path in paths:
+                c.execute(
+                    """
+                    UPDATE images
+                    SET verified = 1,
+                        verified_at = CURRENT_TIMESTAMP
+                    WHERE file_path = ? AND label IS NOT NULL
+                    """,
+                    (self._resolve_path_string(path),),
+                )
+                updated_count += c.rowcount
+            conn.commit()
+        return updated_count
 
     def count_images(self) -> int:
         """Return the total number of images registered in the database."""
@@ -325,8 +494,7 @@ class ClassKitDB:
             ID of the saved embedding record
         """
         # Create embeddings directory
-        embeddings_dir = self.db_path.parent / "embeddings"
-        embeddings_dir.mkdir(exist_ok=True)
+        embeddings_dir = self._cache_dir("embeddings")
 
         # Generate filename based on model and timestamp
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -579,8 +747,7 @@ class ClassKitDB:
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Persist clustering outputs for reuse."""
-        cache_dir = self.db_path.parent / "clusters"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = self._cache_dir("clusters")
 
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         assignments_path = cache_dir / f"assignments_{timestamp}.npy"
@@ -679,8 +846,7 @@ class ClassKitDB:
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Persist UMAP coordinates for reuse. kind='embedding' or 'model'."""
-        cache_dir = self.db_path.parent / "umap"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = self._cache_dir("umap")
 
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         coords_path = cache_dir / f"coords_{kind}_{timestamp}.npy"
@@ -821,8 +987,7 @@ class ClassKitDB:
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Persist per-image probability matrix (N, C) to disk and record metadata."""
-        cache_dir = self.db_path.parent / "predictions"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = self._cache_dir("predictions")
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         probs_path = cache_dir / f"probs_{active_model_mode}_{timestamp}.npy"
         np.save(probs_path, probs)

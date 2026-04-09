@@ -81,6 +81,10 @@ class ExportDialog(QDialog):
         self.include_unlabeled_check.setChecked(False)
         form.addRow("", self.include_unlabeled_check)
 
+        self.include_unverified_check = QCheckBox("Include unverified machine labels")
+        self.include_unverified_check.setChecked(False)
+        form.addRow("", self.include_unverified_check)
+
         self.val_fraction_spin = QDoubleSpinBox()
         self.val_fraction_spin.setRange(0.0, 0.6)
         self.val_fraction_spin.setSingleStep(0.05)
@@ -150,6 +154,7 @@ class ExportDialog(QDialog):
             "output_dir": self.output_edit.text().strip(),
             "copy_files": self.copy_check.isChecked(),
             "include_unlabeled": self.include_unlabeled_check.isChecked(),
+            "include_unverified_labels": self.include_unverified_check.isChecked(),
             "val_fraction": float(self.val_fraction_spin.value()),
             "test_fraction": float(self.test_fraction_spin.value()),
         }

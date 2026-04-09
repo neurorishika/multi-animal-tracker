@@ -1699,7 +1699,11 @@ class AprilTagAutoLabelWorker(QRunnable):
                         n_skipped += 1
 
                 if updates:
-                    self.db.update_labels_with_confidence_batch(updates)
+                    self.db.update_labels_with_confidence_batch(
+                        updates,
+                        label_source="auto_apriltag",
+                        verified=False,
+                    )
 
                 done = min(batch_start + batch_size, total)
                 pct = int(done * 100 / total)

@@ -45,6 +45,7 @@ class WelcomeConfig:
     recents_label: str
     recents_store: RecentItemsStore
     on_recent_clicked: Callable[[str], None]
+    recent_display_name: Optional[Callable[[str], str]] = None
     logo_max_height: int = 450
 
 
@@ -263,7 +264,16 @@ class WelcomePage(QWidget):
 
         for path_str in items[:10]:
             p = Path(path_str)
-            display_name = p.name
+            display_name = ""
+            if self._config.recent_display_name is not None:
+                try:
+                    display_name = str(
+                        self._config.recent_display_name(path_str)
+                    ).strip()
+                except Exception:
+                    display_name = ""
+            if not display_name:
+                display_name = p.name or path_str
             row = _RecentItemRow(
                 display_name, path_str, self._config.on_recent_clicked, self
             )

@@ -921,10 +921,18 @@ class FilterKitWindow(QMainWindow):
         group = QGroupBox("3) Run & Review")
         layout = QVBoxLayout(group)
 
-        btn_run = QPushButton("Run Filter")
-        btn_run.setStyleSheet("font-weight: 700; padding: 8px;")
-        btn_run.clicked.connect(self.run_sieve)
-        layout.addWidget(btn_run)
+        self.btn_run = QPushButton("Run Filter")
+        self.btn_run.setStyleSheet("font-weight: 700; padding: 8px;")
+        self.btn_run.clicked.connect(self.run_sieve)
+        layout.addWidget(self.btn_run)
+
+        self.btn_cancel = QPushButton("\u25a0  Stop")
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.setStyleSheet(
+            "background-color: #c0392b; color: white; font-weight: 700; padding: 8px;"
+        )
+        self.btn_cancel.clicked.connect(self._cancel_sieve)
+        layout.addWidget(self.btn_cancel)
 
         self.btn_show_clusters = QPushButton("View Duplicate Clusters")
         self.btn_show_clusters.setEnabled(False)
@@ -1320,6 +1328,9 @@ class FilterKitWindow(QMainWindow):
         self.lbl_progress_details.setText("Initializing pipeline...")
         self.lbl_status.setText("Running sieve pipeline...")
 
+        self.btn_run.setEnabled(False)
+        self.btn_cancel.setEnabled(True)
+
         self.worker = FilterWorker(self.dataset_path, config)
         self.worker.status.connect(self.lbl_status.setText)
         self.worker.progress.connect(self.on_sieve_progress)
@@ -1333,6 +1344,9 @@ class FilterKitWindow(QMainWindow):
         self.lbl_progress_details.setText(details)
 
     def on_sieve_finished(self, payload):
+        self.btn_run.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
 
@@ -1361,12 +1375,25 @@ class FilterKitWindow(QMainWindow):
         self.load_removed_examples()
 
     def on_sieve_error(self, msg):
+        self.btn_run.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setFormat("Error")
         self.lbl_progress_details.setText("Pipeline failed before completion.")
         self.lbl_status.setText("Error occurred.")
         QMessageBox.critical(self, "Error", msg)
+
+    def _cancel_sieve(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.stop()
+        self.btn_run.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+        self.progress.setValue(0)
+        self.progress.setFormat("%p%")
+        self.lbl_status.setText("Cancelled.")
+        self.lbl_progress_details.setText("Filter run cancelled by user.")
 
     def _update_summary_card(self):
         s = self.pipeline_stats

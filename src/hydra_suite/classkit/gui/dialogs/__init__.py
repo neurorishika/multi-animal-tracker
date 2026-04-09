@@ -14,6 +14,7 @@ _DIALOG_MODULES = {
     "ExportDialog": "export",
     "ModelHistoryDialog": "model_history",
     "AprilTagAutoLabelDialog": "apriltag_autolabel",
+    "MachineLabelingDialog": "machine_labeling",
 }
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "ExportDialog",
     "ModelHistoryDialog",
     "AprilTagAutoLabelDialog",
+    "MachineLabelingDialog",
 ]
 
 

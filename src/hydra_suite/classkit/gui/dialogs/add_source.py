@@ -1,10 +1,10 @@
 """AddSourceDialog — pick image source folders for a ClassKit project."""
 
-import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -27,6 +27,18 @@ from hydra_suite.classkit.gui.dialogs.source_validation import (
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 CLASSKIT_SIEVE_THRESHOLD = 5000
+
+_FILTERKIT_TRANSACTION_FILE = ".filterkit_last_transaction.json"
+
+
+def _get_transaction_mtime(dataset_root: Path) -> "float | None":
+    """Return the mtime of FilterKit's transaction file, or None if absent."""
+    p = dataset_root / _FILTERKIT_TRANSACTION_FILE
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return None
+
 
 _DARK_STYLE = """
     QDialog { background-color: #1e1e1e; }
@@ -177,20 +189,22 @@ class AddSourceDialog(QDialog):
             msg.exec()
             clicked = msg.clickedButton()
             if clicked == btn_sieve:
-                try:
-                    subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-m",
-                            "hydra_suite.filterkit",
-                            str(d),
-                        ],
-                        start_new_session=True,
+                pre_mtime = _get_transaction_mtime(d)
+                proc = QProcess(self)
+                self._filterkit_proc = proc
+                proc.finished.connect(
+                    lambda _ec, _es, _d=d, _r=resolved, _m=pre_mtime: (
+                        self._on_filterkit_closed(_d, _r, _m)
+                        if self.isVisible()
+                        else None
                     )
-                except Exception as exc:
-                    QMessageBox.warning(
-                        self, "Launch Failed", f"Could not launch FilterKit:\n{exc}"
+                )
+                proc.errorOccurred.connect(
+                    lambda _err: QMessageBox.warning(
+                        self, "Launch Failed", "Could not launch FilterKit."
                     )
+                )
+                proc.start(sys.executable, ["-m", "hydra_suite.filterkit", str(d)])
                 return
             if clicked != btn_add:
                 return
@@ -200,6 +214,28 @@ class AddSourceDialog(QDialog):
             f"{d.name}  \u2014  {count:,} images  (using {CLASSKIT_IMAGES_SUBDIR}/)\n{d}"
         )
         self._list.addItem(item)
+
+    def _on_filterkit_closed(self, d: Path, resolved: Path, pre_mtime) -> None:
+        """Called when FilterKit exits. Auto-add folder if filtering was applied."""
+        post_mtime = _get_transaction_mtime(d)
+        if post_mtime == pre_mtime:
+            reply = QMessageBox.question(
+                self,
+                "FilterKit Closed",
+                "FilterKit was closed without applying a filter.\n\n"
+                "Add the original folder as-is?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        count = count_classkit_images(resolved)
+        self._sources.append((d, resolved, d.name))
+        self._list.addItem(
+            QListWidgetItem(
+                f"{d.name}  \u2014  {count:,} images  (using {CLASSKIT_IMAGES_SUBDIR}/)\n{d}"
+            )
+        )
 
     def _resolve_selected_source(self, dataset_root: Path) -> Path | None:
         """Resolve or standardize a selected source folder into dataset_root/images."""

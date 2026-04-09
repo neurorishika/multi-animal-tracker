@@ -6,7 +6,15 @@ import json
 from pathlib import Path
 
 from hydra_suite.detectkit.gui.models import DetectKitProject, OBBSource
-from hydra_suite.detectkit.gui.project import default_project_parent_dir
+from hydra_suite.detectkit.gui.project import (
+    create_project,
+    default_project_parent_dir,
+    detectkit_artifact_paths,
+    legacy_project_file_path,
+    open_project,
+    project_exists,
+    project_file_path,
+)
 
 
 def test_project_roundtrip(tmp_path: Path):
@@ -73,3 +81,82 @@ def test_default_project_parent_dir_uses_hydra_projects_root(
     monkeypatch.setenv("HYDRA_PROJECTS_DIR", str(tmp_path / "hydra-projects"))
 
     assert default_project_parent_dir() == tmp_path / "hydra-projects" / "DetectKit"
+
+
+def test_create_project_uses_bundle_layout(tmp_path: Path) -> None:
+    proj = create_project(tmp_path, class_names=["ant", "bee"])
+    artifact_paths = detectkit_artifact_paths(tmp_path)
+
+    assert proj.project_dir == tmp_path.resolve()
+    assert (tmp_path / "hydra_project.json").exists()
+    assert (tmp_path / "state").is_dir()
+    assert (tmp_path / "artifacts").is_dir()
+    assert (tmp_path / "history").is_dir()
+    assert artifact_paths["training_runs"].is_dir()
+    assert artifact_paths["evaluation"].is_dir()
+    assert artifact_paths["exports"].is_dir()
+    assert project_file_path(tmp_path).exists()
+    assert not legacy_project_file_path(tmp_path).exists()
+    assert project_exists(tmp_path) is True
+
+
+def test_open_project_migrates_legacy_root_file_to_bundle(tmp_path: Path) -> None:
+    legacy_path = legacy_project_file_path(tmp_path)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "project_dir": str(tmp_path),
+                "class_names": ["ant", "bee"],
+                "sources": [{"path": "/data/ds1", "name": "ds1"}],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = open_project(tmp_path)
+
+    assert loaded is not None
+    assert loaded.class_names == ["ant", "bee"]
+    assert loaded.sources[0].name == "ds1"
+    assert (tmp_path / "hydra_project.json").exists()
+    assert project_file_path(tmp_path).exists()
+    assert not legacy_path.exists()
+    assert (tmp_path / "history" / "legacy_detectkit_project.json").exists()
+
+
+def test_open_project_reads_bundle_manifest(tmp_path: Path) -> None:
+    created = create_project(tmp_path, class_names=["ant", "bee"])
+
+    loaded = open_project(tmp_path)
+
+    assert loaded is not None
+    assert loaded.project_dir == created.project_dir
+    assert loaded.class_names == ["ant", "bee"]
+
+
+def test_open_project_recovers_from_malformed_manifest_using_legacy_file(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "hydra_project.json").write_text("{bad-manifest", encoding="utf-8")
+    legacy_path = legacy_project_file_path(tmp_path)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "project_dir": str(tmp_path),
+                "class_names": ["ant"],
+                "sources": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = open_project(tmp_path)
+
+    assert loaded is not None
+    assert loaded.class_names == ["ant"]
+    assert project_file_path(tmp_path).exists()
+    assert (tmp_path / "history" / "legacy_detectkit_project.json").exists()

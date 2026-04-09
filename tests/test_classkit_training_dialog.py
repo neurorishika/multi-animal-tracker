@@ -49,6 +49,21 @@ def test_training_dialog_auto_sizes_from_average_image_dimensions(qapp) -> None:
     assert dialog._custom_input_size_spin.value() == 96
 
 
+def test_training_dialog_augmentation_defaults_start_disabled(qapp) -> None:
+    dialog = ClassKitTrainingDialog(n_labeled=8, class_choices=["a", "b"])
+
+    settings = dialog.get_settings()
+
+    assert dialog.flip_ud_spin.value() == pytest.approx(0.0)
+    assert dialog.flip_lr_spin.value() == pytest.approx(0.0)
+    assert dialog.brightness_spin.value() == pytest.approx(0.0)
+    assert dialog.contrast_spin.value() == pytest.approx(0.0)
+    assert settings["flipud"] == pytest.approx(0.0)
+    assert settings["fliplr"] == pytest.approx(0.0)
+    assert settings["brightness"] == pytest.approx(0.0)
+    assert settings["contrast"] == pytest.approx(0.0)
+
+
 def test_training_dialog_restores_initial_settings(qapp) -> None:
     dialog = ClassKitTrainingDialog(
         n_labeled=8,
@@ -95,6 +110,15 @@ def test_training_dialog_exposes_custom_and_yolo_modes_only(qapp) -> None:
     modes = [dialog.mode_combo.itemData(i) for i in range(dialog.mode_combo.count())]
 
     assert modes == ["flat_custom", "flat_yolo"]
+
+
+def test_training_dialog_class_rebalancing_defaults_to_none(qapp) -> None:
+    dialog = ClassKitTrainingDialog(n_labeled=8, class_choices=["a", "b"])
+
+    settings = dialog.get_settings()
+
+    assert settings["tiny_rebalance_mode"] == "none"
+    assert not dialog.tiny_rebalance_power_spin.isEnabled()
 
 
 def test_training_dialog_filters_recent_model_choices_by_mode(qapp) -> None:

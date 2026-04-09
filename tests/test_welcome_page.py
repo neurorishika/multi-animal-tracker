@@ -193,3 +193,30 @@ class TestWelcomePage:
         store.add("/new/path")
         page.refresh_recents()
         page.close()
+
+    def test_recents_use_custom_display_name(self, qapp, store):
+        from PySide6.QtWidgets import QLabel
+
+        from hydra_suite.widgets.welcome_page import (
+            ButtonDef,
+            WelcomeConfig,
+            WelcomePage,
+        )
+
+        store.add("/data/projects/posekit_project/pose_project.json")
+
+        config = WelcomeConfig(
+            logo_svg="hydra.svg",
+            tagline="Test",
+            buttons=[ButtonDef(label="Open", callback=lambda: None)],
+            recents_label="Recent",
+            recents_store=store,
+            on_recent_clicked=lambda p: None,
+            recent_display_name=lambda _path: "posekit_project",
+        )
+        page = WelcomePage(config)
+
+        labels = [label.text() for label in page.findChildren(QLabel)]
+
+        assert "posekit_project" in labels
+        page.close()

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -39,6 +40,15 @@ from PySide6.QtWidgets import (
 
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
+from .project import (
+    classkit_config_path,
+    classkit_export_dir,
+    classkit_model_dir,
+    classkit_scheme_path,
+    ensure_classkit_project_layout,
+    prepare_project_directory,
+    project_exists,
+)
 from .widgets.color_utils import best_text_color, build_category_color_map, to_hex
 
 
@@ -58,6 +68,8 @@ class MainWindow(QMainWindow):
         self.image_paths = []
         self.image_labels = []
         self.image_confidences = []
+        self._image_review_status = {}
+        self._review_candidate_indices = []
         self.classes = ["class_1", "class_2"]
         self.selected_point_index = None
         self.candidate_indices = []
@@ -325,6 +337,11 @@ class MainWindow(QMainWindow):
 
         compute_menu.addSeparator()
 
+        self._machine_label_action = QAction("&Machine Labeling…", self)
+        self._machine_label_action.setEnabled(False)
+        self._machine_label_action.triggered.connect(self.open_machine_labeling_dialog)
+        compute_menu.addAction(self._machine_label_action)
+
         train_action = QAction("&Train Classifier...", self)
         train_action.setShortcut("Ctrl+T")
         train_action.triggered.connect(self.train_classifier)
@@ -347,12 +364,34 @@ class MainWindow(QMainWindow):
         build_al_action.triggered.connect(self._build_al_batch)
         compute_menu.addAction(build_al_action)
 
-        compute_menu.addSeparator()
+        review_menu = menubar.addMenu("&Review")
 
-        self._autolabel_apriltag_action = QAction("Auto-label AprilTags\u2026", self)
-        self._autolabel_apriltag_action.setEnabled(False)
-        self._autolabel_apriltag_action.triggered.connect(self._run_apriltag_autolabel)
-        compute_menu.addAction(self._autolabel_apriltag_action)
+        self._enter_review_mode_action = QAction("Enter &Review Mode", self)
+        self._enter_review_mode_action.triggered.connect(self.enter_review_mode)
+        self._enter_review_mode_action.setEnabled(False)
+        review_menu.addAction(self._enter_review_mode_action)
+
+        review_menu.addSeparator()
+
+        self._approve_selected_review_action = QAction("Approve &Selected", self)
+        self._approve_selected_review_action.triggered.connect(
+            self.approve_selected_review_label
+        )
+        self._approve_selected_review_action.setEnabled(False)
+        review_menu.addAction(self._approve_selected_review_action)
+
+        self._approve_all_review_action = QAction("Approve &All Machine Labels", self)
+        self._approve_all_review_action.triggered.connect(
+            self.approve_all_machine_labels
+        )
+        self._approve_all_review_action.setEnabled(False)
+        review_menu.addAction(self._approve_all_review_action)
+
+        clear_unverified_action = QAction("Clear All &Unverified", self)
+        clear_unverified_action.triggered.connect(
+            self.clear_all_unverified_machine_labels
+        )
+        review_menu.addAction(clear_unverified_action)
 
         # View menu
         view_menu = menubar.addMenu("&View")
@@ -432,6 +471,18 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self._machine_label_toolbar_action = QAction("Machine Label", self)
+        self._machine_label_toolbar_action.setStatusTip(
+            "Configure AprilTag or model-based machine labeling"
+        )
+        self._machine_label_toolbar_action.triggered.connect(
+            self.open_machine_labeling_dialog
+        )
+        self._machine_label_toolbar_action.setEnabled(False)
+        toolbar.addAction(self._machine_label_toolbar_action)
+
+        toolbar.addSeparator()
+
         # Training section
         train_btn = QAction("Train", self)
         train_btn.setStatusTip("Train classifier")
@@ -486,7 +537,7 @@ class MainWindow(QMainWindow):
         project_path = Path(path)
         if project_path.exists():
             self.project_path = project_path
-            self.db_path = project_path / "classkit.db"
+            self.db_path = prepare_project_directory(project_path)
             if self.db_path.exists():
                 self.load_project_data()
                 self.update_context_panel()
@@ -617,6 +668,47 @@ class MainWindow(QMainWindow):
 
         self.context_layout.addWidget(group_labeling)
 
+        group_review = QGroupBox("Review Queue")
+        layout_review = QVBoxLayout(group_review)
+
+        self.review_info = QLabel("No machine review items yet.")
+        self.review_info.setWordWrap(True)
+        self.review_info.setStyleSheet(
+            "color: #cccccc; font-size: 12px; line-height: 1.45;"
+        )
+        layout_review.addWidget(self.review_info)
+
+        self.review_hint = QLabel(
+            "Use Machine Label to generate candidates, then switch to Review mode to approve or reject with the keyboard."
+        )
+        self.review_hint.setWordWrap(True)
+        self.review_hint.setStyleSheet("color:#9a9a9a; font-size:11px;")
+        layout_review.addWidget(self.review_hint)
+
+        review_actions = QHBoxLayout()
+        review_actions.setSpacing(8)
+
+        self.review_selected_btn = QPushButton("Approve")
+        self.review_selected_btn.clicked.connect(self.approve_selected_review_label)
+        self.review_selected_btn.setEnabled(False)
+        review_actions.addWidget(self.review_selected_btn)
+
+        self.review_reject_btn = QPushButton("Reject")
+        self.review_reject_btn.clicked.connect(self.reject_selected_review_label)
+        self.review_reject_btn.setEnabled(False)
+        review_actions.addWidget(self.review_reject_btn)
+
+        self.review_clear_unverified_btn = QPushButton("Clear All Unverified")
+        self.review_clear_unverified_btn.clicked.connect(
+            self.clear_all_unverified_machine_labels
+        )
+        self.review_clear_unverified_btn.setEnabled(False)
+        review_actions.addWidget(self.review_clear_unverified_btn)
+
+        layout_review.addLayout(review_actions)
+
+        self.context_layout.addWidget(group_review)
+
         # ── Actions ───────────────────────────────────────────────────
         edit_row = QHBoxLayout()
         btn_edit_classes = QPushButton("Edit Scheme")
@@ -683,6 +775,7 @@ class MainWindow(QMainWindow):
         self.view_mode_combo = QComboBox()
         self.view_mode_combo.addItem("Explore (clusters)", "explore")
         self.view_mode_combo.addItem("Labeling (labels)", "labeling")
+        self.view_mode_combo.addItem("Review (machine labels)", "review")
         self.view_mode_combo.addItem("Predictions", "predictions")
         self.view_mode_combo.currentIndexChanged.connect(self.on_view_mode_changed)
         top_controls_row.addWidget(self.view_mode_combo)
@@ -764,7 +857,7 @@ class MainWindow(QMainWindow):
         self.outline_threshold_spin.setValue(self._outline_threshold)
         self.outline_threshold_spin.setFixedWidth(72)
         self.outline_threshold_spin.setToolTip(
-            "Confidence threshold for white uncertainty outlines in Predictions mode.\n"
+            "Confidence threshold for white uncertainty outlines in Explorer mode.\n"
             "Set to 0 to disable uncertainty outlines."
         )
         self.outline_threshold_spin.valueChanged.connect(
@@ -978,7 +1071,7 @@ class MainWindow(QMainWindow):
         self.preview_info = QLabel(
             "<div style='line-height:1.55; color:#aaaaaa;'>"
             "Hover a point to preview the source image.<br>"
-            "Select a point, then label using 1-9 or buttons."
+            "Select a point, then label using 1-9 or the left-side controls."
             "</div>"
         )
         self.preview_info.setWordWrap(True)
@@ -991,6 +1084,13 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.center_tabs)
         self.splitter.addWidget(self.preview_panel)
         self.splitter.setSizes([380, 920, 420])
+
+        self.review_all_btn = QPushButton("Approve All Machine")
+        self.review_all_btn.clicked.connect(self.approve_all_machine_labels)
+        self.review_all_btn.hide()
+        self.review_apply_model_btn = QPushButton("Apply Model Predictions")
+        self.review_apply_model_btn.clicked.connect(self.open_machine_labeling_dialog)
+        self.review_apply_model_btn.hide()
 
         self.setup_label_shortcuts()
         self.rebuild_label_buttons()
@@ -1022,7 +1122,7 @@ class MainWindow(QMainWindow):
             if dialog.exec():
                 project_info = dialog.get_project_info()
                 self.project_path = Path(project_info["path"])
-                self.db_path = self.project_path / "classkit.db"
+                self.db_path = ensure_classkit_project_layout(self.project_path)
 
                 # Create project directory
                 self.project_path.mkdir(parents=True, exist_ok=True)
@@ -1039,13 +1139,13 @@ class MainWindow(QMainWindow):
                     "classes": project_info.get("classes", []),
                     "autosave_interval_ms": self._autosave_interval_ms,
                 }
-                with open(self.project_path / "project.json", "w") as f:
+                with open(self._project_config_path(), "w") as f:
                     json.dump(config, f, indent=2)
 
                 # Save labeling scheme if one was selected
                 scheme = project_info.get("scheme")
                 if scheme is not None:
-                    with open(self.project_path / "scheme.json", "w") as f:
+                    with open(self._project_scheme_path(), "w") as f:
                         json.dump(scheme.to_dict(), f, indent=2)
 
                 self.classes = project_info.get("classes", []) or ["class_1", "class_2"]
@@ -1101,14 +1201,21 @@ class MainWindow(QMainWindow):
 
         if project_dir:
             self.project_path = Path(project_dir)
-            self.db_path = self.project_path / "classkit.db"
+            if not project_exists(self.project_path):
+                QMessageBox.warning(
+                    self,
+                    "Invalid Project",
+                    "This directory does not contain a valid ClassKit project.",
+                )
+                return
+
+            self.db_path = prepare_project_directory(self.project_path)
 
             if not self.db_path.exists():
                 QMessageBox.warning(
                     self,
                     "Invalid Project",
-                    "This directory does not contain a valid ClassKit project.\\n\\n"
-                    + "Expected file: classkit.db",
+                    "This directory does not contain a valid ClassKit project.",
                 )
                 return
 
@@ -1129,11 +1236,19 @@ class MainWindow(QMainWindow):
 
     def _load_project_config(self) -> dict:
         """Load project.json if present, otherwise return an empty config."""
-        project_config_path = self.project_path / "project.json"
+        project_config_path = self._project_config_path()
         if not project_config_path.exists():
             return {}
         with open(project_config_path, "r") as f:
             return json.load(f)
+
+    def _project_config_path(self) -> Path:
+        """Return the canonical config path for the current project."""
+        return classkit_config_path(self.project_path)
+
+    def _project_scheme_path(self) -> Path:
+        """Return the canonical scheme path for the current project."""
+        return classkit_scheme_path(self.project_path)
 
     def _apply_project_config(self, config: dict) -> None:
         """Apply persisted project settings to the current UI state."""
@@ -1188,8 +1303,10 @@ class MainWindow(QMainWindow):
         self.try_autoload_cached_artifacts(db)
         self.update_explorer_plot()
 
-        if hasattr(self, "_autolabel_apriltag_action"):
-            self._autolabel_apriltag_action.setEnabled(self.project_path is not None)
+        if hasattr(self, "_machine_label_action"):
+            self._machine_label_action.setEnabled(self.project_path is not None)
+        if hasattr(self, "_machine_label_toolbar_action"):
+            self._machine_label_toolbar_action.setEnabled(self.project_path is not None)
         if hasattr(self, "_recents_store"):
             self._recents_store.add(str(self.project_path))
         if hasattr(self, "_stacked"):
@@ -1215,8 +1332,8 @@ class MainWindow(QMainWindow):
             # Load image paths
             path_strings = db.get_all_image_paths()
             self.image_paths = [Path(p) for p in path_strings]
-            self.image_labels = db.get_all_labels()
             self.image_confidences = [None] * len(self.image_paths)
+            self._reload_label_state_from_db(db)
 
             config = self._load_project_config()
             if config:
@@ -1247,6 +1364,8 @@ class MainWindow(QMainWindow):
                 "• <b>File → Open Project</b> to load<br>"
                 "</div>"
             )
+            if hasattr(self, "review_info"):
+                self.review_info.setText("No machine review items yet.")
             self._update_labeling_progress_indicator()
             return
 
@@ -1305,7 +1424,150 @@ class MainWindow(QMainWindow):
         info_html += "</div>"
 
         self.context_info.setText(info_html)
+        self._update_review_panel()
         self._update_labeling_progress_indicator()
+
+    def _reload_label_state_from_db(self, db=None) -> None:
+        """Refresh labels and review metadata from the project DB."""
+        if not self.db_path:
+            self.image_labels = []
+            self._image_review_status = {}
+            self._review_candidate_indices = []
+            return
+
+        if db is None:
+            from ..core.store.db import ClassKitDB
+
+            db = ClassKitDB(self.db_path)
+
+        self.image_labels = db.get_all_labels()
+        self._image_review_status = db.get_label_review_status_by_path()
+        self._refresh_review_candidate_indices()
+        if len(self.image_confidences) != len(self.image_paths):
+            self.image_confidences = [None] * len(self.image_paths)
+
+    def _review_status_for_path(self, path: Path | str) -> dict:
+        return dict(self._image_review_status.get(str(path), {}))
+
+    def _review_status_for_index(self, index: int) -> dict:
+        if index is None or index < 0 or index >= len(self.image_paths):
+            return {}
+        return self._review_status_for_path(self.image_paths[index])
+
+    @staticmethod
+    def _review_source_label(raw_source: object) -> str:
+        mapping = {
+            None: "human",
+            "human": "human",
+            "auto": "machine",
+            "auto_apriltag": "AprilTag",
+            "auto_model": "model",
+        }
+        source = str(raw_source) if raw_source is not None else None
+        return mapping.get(source, source.replace("_", " ") if source else "human")
+
+    def _pending_machine_review_count(self) -> int:
+        return sum(
+            1
+            for record in self._image_review_status.values()
+            if record.get("label") and not record.get("verified")
+        )
+
+    def _mark_local_review_state(
+        self,
+        path: Path | str,
+        *,
+        label: str | None,
+        label_source: str | None,
+        verified: bool,
+        confidence: float | None = None,
+        auto_label_metadata: dict | None = None,
+        verified_at: str | None = None,
+    ) -> None:
+        self._image_review_status[str(path)] = {
+            "label": label,
+            "confidence": confidence,
+            "label_source": label_source,
+            "verified": bool(verified),
+            "verified_at": verified_at,
+            "auto_label_metadata": auto_label_metadata or {},
+        }
+        self._refresh_review_candidate_indices()
+
+    def _refresh_review_candidate_indices(self) -> None:
+        self._review_candidate_indices = [
+            index
+            for index, path in enumerate(self.image_paths)
+            if self._image_review_status.get(str(path), {}).get("label")
+            and not self._image_review_status.get(str(path), {}).get("verified")
+        ]
+
+    def _update_review_panel(self) -> None:
+        pending = self._pending_machine_review_count()
+        verified_human = sum(
+            1
+            for record in self._image_review_status.values()
+            if record.get("label") and record.get("verified")
+        )
+        selected_status = self._review_status_for_index(self.selected_point_index)
+        selected_label = selected_status.get("label")
+        selected_source = self._review_source_label(selected_status.get("label_source"))
+        selected_confidence = selected_status.get("confidence")
+        selected_state = (
+            "verified" if selected_status.get("verified") else "needs review"
+        )
+        selected_color = "#4ec943" if selected_status.get("verified") else "#ffb454"
+
+        if selected_label:
+            selected_html = (
+                f"<br><br><b>Selected:</b> {selected_label} "
+                f"<span style='color:{selected_color};'>({selected_state})</span><br>"
+                f"<b>Source:</b> {selected_source}"
+            )
+            if selected_confidence is not None:
+                selected_html += (
+                    f"<br><b>Confidence:</b> {float(selected_confidence):.3f}"
+                )
+        else:
+            selected_html = "<br><br><b>Selected:</b> unlabeled"
+
+        self.review_info.setText(
+            "<div style='line-height:1.55;'>"
+            f"<b>Pending machine review:</b> <span style='color:#ffb454;'>{pending:,}</span><br>"
+            f"<b>Verified labels:</b> <span style='color:#4ec943;'>{verified_human:,}</span><br>"
+            f"<b>Model predictions:</b> {'ready' if self._model_probs is not None else 'not loaded'}"
+            f"{selected_html}"
+            "</div>"
+        )
+
+        selected_can_approve = bool(selected_label) and not selected_status.get(
+            "verified"
+        )
+        has_pending = pending > 0
+        has_predictions = self._model_probs is not None and bool(
+            self._model_class_names
+        )
+
+        if hasattr(self, "review_selected_btn"):
+            self.review_selected_btn.setEnabled(selected_can_approve)
+        if hasattr(self, "review_reject_btn"):
+            self.review_reject_btn.setEnabled(selected_can_approve)
+        if hasattr(self, "review_clear_unverified_btn"):
+            self.review_clear_unverified_btn.setEnabled(has_pending)
+        if hasattr(self, "review_all_btn"):
+            self.review_all_btn.setEnabled(has_pending)
+        if hasattr(self, "review_apply_model_btn"):
+            self.review_apply_model_btn.setEnabled(has_predictions)
+        if hasattr(self, "_approve_selected_review_action"):
+            self._approve_selected_review_action.setEnabled(selected_can_approve)
+        if hasattr(self, "_approve_all_review_action"):
+            self._approve_all_review_action.setEnabled(has_pending)
+        if hasattr(self, "_enter_review_mode_action"):
+            self._enter_review_mode_action.setEnabled(has_pending)
+        if hasattr(self, "_machine_label_action"):
+            self._machine_label_action.setEnabled(self.project_path is not None)
+        if hasattr(self, "_machine_label_toolbar_action"):
+            self._machine_label_toolbar_action.setEnabled(self.project_path is not None)
 
     def _update_labeling_progress_indicator(self):
         """Update the status bar progress label and context panel progress bar."""
@@ -1344,6 +1606,20 @@ class MainWindow(QMainWindow):
         pct = int(100 * batch_labeled / batch_total) if batch_total else 0
         self.progress_bar.setFormat(f"Batch: {batch_labeled}/{batch_total} ({pct}%)")
         self.progress_bar.setVisible(True)
+
+    def _has_active_labeling_batch(self) -> bool:
+        """Return True when labeling interactions should stay scoped to a batch."""
+        return bool(self.candidate_indices or self.round_labeled_indices)
+
+    def _clear_explorer_selection_lock(self, clear_preview: bool = False) -> None:
+        """Reset selection state so explorer preview returns to hover-driven behavior."""
+        self.selected_point_index = None
+        self.hover_locked = False
+        self.request_update_explorer_selection(None)
+        if clear_preview:
+            self.clear_preview_display()
+        else:
+            self.update_knn_panel(None)
 
     def _ask_yes_no(self, title: str, text: str) -> bool:
         """Reusable yes/no prompt helper."""
@@ -1442,12 +1718,13 @@ class MainWindow(QMainWindow):
         """Persist runtime settings such as autosave interval into project config."""
         if not self.project_path:
             return
-        project_config_path = self.project_path / "project.json"
+        project_config_path = self._project_config_path()
         config = {}
         if project_config_path.exists():
             with open(project_config_path, "r") as f:
                 config = json.load(f)
         config["autosave_interval_ms"] = int(self._autosave_interval_ms)
+        project_config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
 
@@ -1455,12 +1732,13 @@ class MainWindow(QMainWindow):
         """Persist the most recent training dialog settings into the project config."""
         if not self.project_path or not isinstance(self._last_training_settings, dict):
             return
-        project_config_path = self.project_path / "project.json"
+        project_config_path = self._project_config_path()
         config = {}
         if project_config_path.exists():
             with open(project_config_path, "r") as f:
                 config = json.load(f)
         config["last_training_settings"] = dict(self._last_training_settings)
+        project_config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
 
@@ -1581,7 +1859,7 @@ class MainWindow(QMainWindow):
         """Persist preview enhancement settings into the project config."""
         if not self.project_path:
             return
-        project_config_path = self.project_path / "project.json"
+        project_config_path = self._project_config_path()
         config = {}
         if project_config_path.exists():
             with open(project_config_path, "r") as f:
@@ -1593,6 +1871,7 @@ class MainWindow(QMainWindow):
         )
         config["clahe_clip"] = float(self.clahe_clip)
         config["clahe_grid"] = list(self.clahe_grid)
+        project_config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
 
@@ -1790,7 +2069,7 @@ class MainWindow(QMainWindow):
         """Restore recent YOLO predictions or rerun the published classifier."""
         if not self.project_path:
             return False
-        yolo_ckpt = self.project_path / "models" / "yolo_classifier_latest.pt"
+        yolo_ckpt = classkit_model_dir(self.project_path) / "yolo_classifier_latest.pt"
         if not yolo_ckpt.exists():
             return False
         if self._yolo_model_path is not None or self._model_probs is not None:
@@ -1878,7 +2157,7 @@ class MainWindow(QMainWindow):
         if not self.project_path:
             return scheme_shortcuts
         try:
-            scheme_path = self.project_path / "scheme.json"
+            scheme_path = self._project_scheme_path()
             if scheme_path.exists():
                 with open(scheme_path) as _f:
                     scheme_dict = json.load(_f)
@@ -1935,7 +2214,10 @@ class MainWindow(QMainWindow):
         shortcut_actions = [
             ("Explore mode", lambda: self.set_explorer_mode("explore")),
             ("Labeling mode", lambda: self.set_explorer_mode("labeling")),
+            ("Review mode", self.enter_review_mode),
             ("Predictions mode", lambda: self.set_explorer_mode("predictions")),
+            ("Approve review label", self.approve_selected_review_label),
+            ("Reject review label", self.reject_selected_review_label),
             ("Sample next candidates", self.on_sample_next_triggered),
             ("Previous unlabeled", self.on_prev_image),
             ("Next unlabeled", self.on_next_image),
@@ -2285,9 +2567,7 @@ class MainWindow(QMainWindow):
 
     def on_explorer_background_double_click(self):
         """Return to hover mode when empty region is double-clicked."""
-        self.selected_point_index = None
-        self.hover_locked = False
-        self.update_knn_panel(None)
+        self._clear_explorer_selection_lock(clear_preview=False)
         self.request_update_explorer_plot()
         self.selection_info.setText(
             "<div style='line-height:1.5;'>"
@@ -2301,6 +2581,8 @@ class MainWindow(QMainWindow):
 
     def _get_navigation_pool(self):
         """Return indices eligible for next/prev navigation in labeling context."""
+        if self.explorer_mode == "review" and self._review_candidate_indices:
+            return self._review_candidate_indices
         if self.candidate_indices:
             return self.candidate_indices
         return list(range(len(self.image_paths)))
@@ -2321,7 +2603,7 @@ class MainWindow(QMainWindow):
         try:
             from ..config.schemas import LabelingScheme
 
-            scheme_path = self.project_path / "scheme.json"
+            scheme_path = self._project_scheme_path()
             if scheme_path.exists():
                 with open(scheme_path) as _f:
                     scheme = LabelingScheme.from_dict(json.load(_f))
@@ -2440,6 +2722,7 @@ class MainWindow(QMainWindow):
         return {
             "explore": "Explore",
             "labeling": "Labeling",
+            "review": "Review",
             "predictions": "Predictions",
         }.get(str(mode), str(mode))
 
@@ -2467,8 +2750,10 @@ class MainWindow(QMainWindow):
 
     def set_explorer_mode(self, mode: str):
         """Set explorer mode to cluster, labeling, or prediction coloring."""
-        if mode not in {"explore", "labeling", "predictions"}:
+        if mode not in {"explore", "labeling", "review", "predictions"}:
             return
+
+        previous_mode = self.explorer_mode
 
         if mode == "predictions" and self._model_probs is None:
             QMessageBox.information(
@@ -2478,7 +2763,20 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if mode == "review" and not self._review_candidate_indices:
+            QMessageBox.information(
+                self,
+                "Review Queue Empty",
+                "There are no unverified machine labels to review yet.",
+            )
+            return
+
         self.explorer_mode = mode
+        if previous_mode in {"labeling", "review"} and mode not in {
+            "labeling",
+            "review",
+        }:
+            self._clear_explorer_selection_lock(clear_preview=True)
 
         # Label assignment is only allowed in labeling mode.
         labels_enabled = mode == "labeling"
@@ -2492,6 +2790,20 @@ class MainWindow(QMainWindow):
             self.outline_threshold_label.setVisible(outlines_enabled)
         if hasattr(self, "outline_threshold_spin"):
             self.outline_threshold_spin.setVisible(outlines_enabled)
+
+        if (
+            mode == "review"
+            and self.selected_point_index not in self._review_candidate_indices
+        ):
+            self.selected_point_index = (
+                self._review_candidate_indices[0]
+                if self._review_candidate_indices
+                else self.selected_point_index
+            )
+            if self.selected_point_index is not None:
+                self.request_preview_for_index(
+                    self.selected_point_index, source="selection"
+                )
 
         if hasattr(self, "view_mode_combo"):
             idx = self.view_mode_combo.findData(mode)
@@ -2517,11 +2829,30 @@ class MainWindow(QMainWindow):
             self.explorer.set_uncertainty_outline_threshold(self._outline_threshold)
             self.request_update_explorer_plot()
         self.status.showMessage(
-            f"Prediction outline threshold: {self._outline_threshold:.2f}"
+            f"Uncertainty outline threshold: {self._outline_threshold:.2f}"
         )
 
     def on_sample_next_triggered(self):
         """Action for 'Sample Next' button."""
+        if self.explorer_mode == "review":
+            if not self._review_candidate_indices:
+                self.status.showMessage("No machine-review candidates available")
+                return
+            if self.selected_point_index in self._review_candidate_indices:
+                next_index = self._advance_pool_index(self._review_candidate_indices, 1)
+            else:
+                next_index = self._review_candidate_indices[0]
+            if next_index is not None:
+                self.selected_point_index = int(next_index)
+                self.hover_locked = True
+                self.request_preview_for_index(
+                    self.selected_point_index, source="selection"
+                )
+                self.request_update_explorer_selection(self.selected_point_index)
+                self.status.showMessage(
+                    f"Review candidate {self.selected_point_index + 1}/{len(self._review_candidate_indices)}"
+                )
+            return
         self.sample_candidates_for_labeling()
 
     def on_clear_candidates_triggered(self):
@@ -2688,7 +3019,7 @@ class MainWindow(QMainWindow):
         self.preview_info.setText(
             "<div style='line-height:1.55; color:#aaaaaa;'>"
             "Hover a point to preview the source image.<br>"
-            "Select a point, then label using 1-9 or buttons."
+            "Select a point, then label using 1-9 or the left-side controls."
             "</div>"
         )
         self.selection_info.setText(
@@ -2696,10 +3027,17 @@ class MainWindow(QMainWindow):
             "<b>Selected Point:</b> none<br>"
             "<b>Hovered Point:</b> none<br>"
             "<b>Current Label:</b> unlabeled<br>"
-            "Hover candidates to preview; click one to select for labeling."
+            f"{self._selection_idle_hint()}"
             "</div>"
         )
+        self._update_review_panel()
         self.update_knn_panel(None)
+
+    def _selection_idle_hint(self) -> str:
+        """Return the context-sensitive instruction shown when no point is selected."""
+        if self.explorer_mode in {"labeling", "review"}:
+            return "Hover candidates to preview; click one to select for labeling."
+        return "Hover a point to preview; selection lock is disabled in this mode."
 
     def _compute_knn_neighbors(self, anchor_index: int, k: int = 8):
         """Compute nearest neighbors from embedding space for a selected point."""
@@ -2993,6 +3331,15 @@ class MainWindow(QMainWindow):
             seeded_labels.append("unknown")
             color_values = seeded_labels
             candidate_indices = self.candidate_indices
+        elif self.explorer_mode == "review":
+            review_labels = [
+                self._review_status_for_index(i).get("label")
+                for i in range(len(self.image_paths))
+            ]
+            review_labels.extend(list(self.classes or []))
+            review_labels.append("unknown")
+            color_values = review_labels
+            candidate_indices = self._review_candidate_indices
         else:
             seeded_preds = self._prediction_labels_for_plot()
             seeded_preds.extend(list(self._model_class_names or []))
@@ -3005,7 +3352,7 @@ class MainWindow(QMainWindow):
             candidate_indices=candidate_indices,
             round_labeled_indices=self.round_labeled_indices,
             selected_index=self.selected_point_index,
-            labeling_mode=(self.explorer_mode == "labeling"),
+            labeling_mode=(self.explorer_mode in {"labeling", "review"}),
             prediction_mode=(self.explorer_mode == "predictions"),
         ):
             return
@@ -3017,7 +3364,7 @@ class MainWindow(QMainWindow):
             candidate_indices=candidate_indices,
             round_labeled_indices=self.round_labeled_indices,
             selected_index=self.selected_point_index,
-            labeling_mode=(self.explorer_mode == "labeling"),
+            labeling_mode=(self.explorer_mode in {"labeling", "review"}),
             prediction_mode=(self.explorer_mode == "predictions"),
             preserve_view=(not force_fit),
         )
@@ -3580,7 +3927,7 @@ class MainWindow(QMainWindow):
 
         scheme_dict = None
         if self.project_path:
-            scheme_path = self.project_path / "scheme.json"
+            scheme_path = self._project_scheme_path()
             if scheme_path.exists():
                 try:
                     import json as _json
@@ -3605,17 +3952,20 @@ class MainWindow(QMainWindow):
         if self.project_path:
             import json as _json
 
-            config_path = self.project_path / "project.json"
+            config_path = self._project_config_path()
             config = {}
             if config_path.exists():
                 with open(config_path) as _f:
                     config = _json.load(_f)
             config["classes"] = flat_classes
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, "w") as _f:
                 _json.dump(config, _f, indent=2)
 
             if new_scheme:
-                with open(self.project_path / "scheme.json", "w") as _f:
+                scheme_path = self._project_scheme_path()
+                scheme_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(scheme_path, "w") as _f:
                     _json.dump(new_scheme, _f, indent=2)
 
         self.classes = flat_classes
@@ -3641,12 +3991,13 @@ class MainWindow(QMainWindow):
         if self.project_path:
             import json as _json
 
-            config_path = self.project_path / "project.json"
+            config_path = self._project_config_path()
             config = {}
             if config_path.exists():
                 with open(config_path) as _f:
                     config = _json.load(_f)
             config["custom_shortcuts"] = self._custom_shortcuts
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, "w") as _f:
                 _json.dump(config, _f, indent=2)
 
@@ -3735,7 +4086,7 @@ class MainWindow(QMainWindow):
         else:
             # Check if we have scheme shortcuts
             try:
-                scheme_path = self.project_path / "scheme.json"
+                scheme_path = self._project_scheme_path()
                 if scheme_path.exists():
                     with open(scheme_path) as _f:
                         scheme_dict = json.load(_f)
@@ -3751,9 +4102,10 @@ class MainWindow(QMainWindow):
         lines = [
             "<div style='line-height:1.5; color:#bcbcbc;'>",
             "<b>Controls:</b><br>",
-            f"• <b>{active.get('Explore mode', 'E')}</b> / <b>{active.get('Labeling mode', 'L')}</b> / <b>{active.get('Predictions mode', 'P')}</b>: set mode<br>",
+            f"• <b>{active.get('Explore mode', 'E')}</b> / <b>{active.get('Labeling mode', 'L')}</b> / <b>{active.get('Review mode', 'V')}</b> / <b>{active.get('Predictions mode', 'P')}</b>: set mode<br>",
             f"• <b>{label_instr}</b>: assign class<br>",
             "• <b>0</b>: mark as unknown<br>",
+            f"• <b>{active.get('Approve review label', 'A')}</b> / <b>{active.get('Reject review label', 'X')}</b>: approve or reject selected machine label<br>",
             f"• <b>{active.get('Sample next candidates', 'Space')}</b>: sample candidates<br>",
             f"• <b>{active.get('Previous unlabeled', 'Left')}</b> / <b>{active.get('Next unlabeled', 'Right')}</b>: navigate<br>",
             f"• <b>{active.get('Undo last label (Ctrl+Z)', 'Ctrl+Z')}</b>: undo<br>",
@@ -3942,7 +4294,7 @@ class MainWindow(QMainWindow):
         try:
             from ..config.schemas import LabelingScheme
 
-            scheme_path = self.project_path / "scheme.json"
+            scheme_path = self._project_scheme_path()
             if scheme_path.exists():
                 with open(scheme_path) as _f:
                     return LabelingScheme.from_dict(json.load(_f))
@@ -4193,8 +4545,7 @@ class MainWindow(QMainWindow):
                     try:
                         import shutil
 
-                        model_dir = self.project_path / "models"
-                        model_dir.mkdir(parents=True, exist_ok=True)
+                        model_dir = classkit_model_dir(self.project_path)
                         dest = model_dir / "yolo_classifier_latest.pt"
                         shutil.copy2(artifact, dest)
                         self._yolo_model_path = dest
@@ -4309,85 +4660,7 @@ class MainWindow(QMainWindow):
                 f"Expected a {expected_suffix} artifact for mode '{mode}', got '{model_path.suffix or 'no extension'}'.",
             )
             return False
-
-        checkpoint_kind, checkpoint_arch, checkpoint_error = (
-            self._inspect_training_start_model(model_path)
-        )
-
-        if "yolo" in mode:
-            if checkpoint_kind == "classkit_custom":
-                QMessageBox.warning(
-                    self,
-                    "Unsupported Starting Model",
-                    "The selected starting model is a ClassKit CNN checkpoint, not a YOLO model.\n\n"
-                    f"Selected file: {model_path}",
-                )
-                return False
-            if checkpoint_kind == "invalid":
-                QMessageBox.warning(
-                    self,
-                    "Unsupported Starting Model",
-                    "ClassKit could not confirm that the selected starting model is a YOLO checkpoint.\n\n"
-                    f"{checkpoint_error or model_path}",
-                )
-                return False
-            return True
-
-        if checkpoint_kind != "classkit_custom":
-            QMessageBox.warning(
-                self,
-                "Unsupported Starting Model",
-                "The selected starting model is not a compatible ClassKit CNN checkpoint.\n\n"
-                f"Selected file: {model_path}",
-            )
-            return False
-
-        selected_backbone = str(settings.get("custom_backbone") or "").strip()
-        if (
-            selected_backbone
-            and checkpoint_arch
-            and checkpoint_arch != selected_backbone
-        ):
-            QMessageBox.warning(
-                self,
-                "Backbone Mismatch",
-                "The selected starting model was trained with a different backbone.\n\n"
-                f"Checkpoint backbone: {checkpoint_arch}\n"
-                f"Selected backbone: {selected_backbone}",
-            )
-            return False
         return True
-
-    @staticmethod
-    def _inspect_training_start_model(
-        model_path: Path,
-    ) -> tuple[str, str | None, str | None]:
-        """Classify a warm-start checkpoint as YOLO, ClassKit CNN, or invalid."""
-        suffix = model_path.suffix.lower()
-        try:
-            import torch
-
-            checkpoint = torch.load(
-                str(model_path), map_location="cpu", weights_only=False
-            )
-        except Exception as exc:
-            return "invalid", None, str(exc)
-
-        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            arch = (
-                str(checkpoint.get("arch") or "tinyclassifier").strip()
-                or "tinyclassifier"
-            )
-            return "classkit_custom", arch, None
-
-        if suffix == ".pt":
-            return "yolo", None, None
-
-        return (
-            "invalid",
-            None,
-            "Checkpoint format did not match a ClassKit CNN artifact.",
-        )
 
     def _build_training_specs(self, context, scheme):
         """Build one or more training specs for the chosen training mode."""
@@ -4606,7 +4879,6 @@ class MainWindow(QMainWindow):
             initial_settings=self._get_recent_project_training_settings(),
             recent_model_paths=self._list_recent_trainable_model_paths(),
             average_image_size=self._estimate_average_image_dimensions(),
-            image_paths=list(self.image_paths),
             parent=self,
         )
 
@@ -4634,7 +4906,7 @@ class MainWindow(QMainWindow):
 
         from .dialogs import ExportDialog
 
-        default_output = str(self.project_path / "exports")
+        default_output = str(classkit_export_dir(self.project_path))
         dialog = ExportDialog(default_output=default_output, parent=self)
         if not dialog.exec():
             return
@@ -4701,7 +4973,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        model_dir = self.project_path / "models"
+        model_dir = classkit_model_dir(self.project_path)
         latest_checkpoint = model_dir / "classifier_latest.pt"
         yolo_checkpoint = model_dir / "yolo_classifier_latest.pt"
         selected_path = None
@@ -4729,7 +5001,14 @@ class MainWindow(QMainWindow):
 
         self._load_checkpoint_from_path(selected_path)
 
-    def _load_embedding_head_checkpoint(self, path: Path, ckpt) -> None:
+    def _load_embedding_head_checkpoint(
+        self,
+        path: Path,
+        ckpt,
+        *,
+        on_success=None,
+        show_message_box: bool = True,
+    ) -> None:
         """Load a classic embedding-head checkpoint and recompute predictions."""
         from ..core.train.trainer import EmbeddingHeadTrainer
 
@@ -4764,10 +5043,13 @@ class MainWindow(QMainWindow):
             self._update_al_status()
             self._evaluate_model_on_labeled()
             QTimer.singleShot(100, self._replot_umap_model_space)
+            if on_success is not None:
+                on_success()
 
-        QMessageBox.information(
-            self, "Checkpoint Loaded", f"Loaded embedding head: {path.name}"
-        )
+        if show_message_box:
+            QMessageBox.information(
+                self, "Checkpoint Loaded", f"Loaded embedding head: {path.name}"
+            )
 
     def _cached_model_class_names(self, path: Path):
         """Look up class names stored alongside a cached model artifact in the DB."""
@@ -4783,7 +5065,14 @@ class MainWindow(QMainWindow):
             return None
         return None
 
-    def _load_custom_cnn_checkpoint(self, path: Path, ckpt) -> None:
+    def _load_custom_cnn_checkpoint(
+        self,
+        path: Path,
+        ckpt,
+        *,
+        on_success=None,
+        show_message_box: bool = True,
+    ) -> None:
         """Load a torchvision custom CNN checkpoint and run inference."""
         ckpt_names = ckpt.get("class_names")
         input_size = ckpt.get("input_size", (224, 224))
@@ -4798,24 +5087,36 @@ class MainWindow(QMainWindow):
         resolved = ckpt_names or list(self.classes)
         self._active_model_mode = "custom_cnn"
         self.status.showMessage(f"Loading Custom CNN ({arch}): {path.name}...")
-        self._run_torchvision_inference(
-            path,
-            class_names=resolved,
-            input_size=size,
-            on_success=lambda result: (
-                self._evaluate_model_on_labeled(),
-                QTimer.singleShot(100, self._replot_umap_model_space),
+
+        def _after_load(_result):
+            self._evaluate_model_on_labeled()
+            QTimer.singleShot(100, self._replot_umap_model_space)
+            if show_message_box:
                 QMessageBox.information(
                     self,
                     "Custom CNN Loaded",
                     f"Loaded: {path.name}\n"
                     f"Inference on {len(self.image_paths):,} images complete.\n"
                     "Metrics tab updated. Model UMAP computing...",
-                ),
-            ),
+                )
+            if on_success is not None:
+                on_success()
+
+        self._run_torchvision_inference(
+            path,
+            class_names=resolved,
+            input_size=size,
+            on_success=_after_load,
         )
 
-    def _load_tiny_cnn_checkpoint(self, path: Path, ckpt) -> None:
+    def _load_tiny_cnn_checkpoint(
+        self,
+        path: Path,
+        ckpt,
+        *,
+        on_success=None,
+        show_message_box: bool = True,
+    ) -> None:
         """Load a tiny CNN checkpoint and run inference."""
         ckpt_names = ckpt.get("class_names")
         resolved = (
@@ -4823,42 +5124,64 @@ class MainWindow(QMainWindow):
         )
         self._active_model_mode = "tiny"
         self.status.showMessage(f"Loading tiny CNN: {path.name}...")
-        self._run_tiny_inference(
-            path,
-            class_names=resolved,
-            on_success=lambda result: (
-                self._evaluate_model_on_labeled(),
-                QTimer.singleShot(100, self._replot_umap_model_space),
+
+        def _after_load(_result):
+            self._evaluate_model_on_labeled()
+            QTimer.singleShot(100, self._replot_umap_model_space)
+            if show_message_box:
                 QMessageBox.information(
                     self,
                     "Tiny CNN Loaded",
                     f"Loaded: {path.name}\n"
                     f"Inference on {len(self.image_paths):,} images complete.\n"
                     "Metrics tab updated. Model UMAP computing...",
-                ),
-            ),
+                )
+            if on_success is not None:
+                on_success()
+
+        self._run_tiny_inference(
+            path,
+            class_names=resolved,
+            on_success=_after_load,
         )
 
-    def _load_yolo_checkpoint(self, path: Path) -> None:
+    def _load_yolo_checkpoint(
+        self,
+        path: Path,
+        *,
+        on_success=None,
+        show_message_box: bool = True,
+    ) -> None:
         """Load a YOLO classifier checkpoint and run inference."""
         self._yolo_model_path = path
         self.status.showMessage(f"Loading YOLO model: {path.name}...")
-        self._run_yolo_inference(
-            path,
-            on_success=lambda result: (
-                self._evaluate_model_on_labeled(),
-                QTimer.singleShot(100, self._replot_umap_model_space),
+
+        def _after_load(_result):
+            self._evaluate_model_on_labeled()
+            QTimer.singleShot(100, self._replot_umap_model_space)
+            if show_message_box:
                 QMessageBox.information(
                     self,
                     "YOLO Model Loaded",
                     f"Loaded: {path.name}\n"
                     f"Inference on {len(self.image_paths):,} images complete.\n"
                     "Metrics tab updated. Model UMAP is being computed automatically.",
-                ),
-            ),
+                )
+            if on_success is not None:
+                on_success()
+
+        self._run_yolo_inference(
+            path,
+            on_success=_after_load,
         )
 
-    def _load_checkpoint_from_path(self, path: Path):
+    def _load_checkpoint_from_path(
+        self,
+        path: Path,
+        *,
+        on_success=None,
+        show_message_box: bool = True,
+    ):
         """Load a checkpoint, auto-detecting YOLO vs embedding-head vs tiny CNN format."""
         try:
             import torch
@@ -4869,7 +5192,12 @@ class MainWindow(QMainWindow):
             )
 
             if isinstance(ckpt, dict) and "model_state" in ckpt:
-                self._load_embedding_head_checkpoint(path, ckpt)
+                self._load_embedding_head_checkpoint(
+                    path,
+                    ckpt,
+                    on_success=on_success,
+                    show_message_box=show_message_box,
+                )
             elif is_tiny_cnn:
                 arch = (
                     ckpt.get("arch", "tinyclassifier")
@@ -4877,11 +5205,25 @@ class MainWindow(QMainWindow):
                     else "tinyclassifier"
                 )
                 if arch != "tinyclassifier":
-                    self._load_custom_cnn_checkpoint(path, ckpt)
+                    self._load_custom_cnn_checkpoint(
+                        path,
+                        ckpt,
+                        on_success=on_success,
+                        show_message_box=show_message_box,
+                    )
                 else:
-                    self._load_tiny_cnn_checkpoint(path, ckpt)
+                    self._load_tiny_cnn_checkpoint(
+                        path,
+                        ckpt,
+                        on_success=on_success,
+                        show_message_box=show_message_box,
+                    )
             else:
-                self._load_yolo_checkpoint(path)
+                self._load_yolo_checkpoint(
+                    path,
+                    on_success=on_success,
+                    show_message_box=show_message_box,
+                )
         except Exception as exc:
             QMessageBox.critical(
                 self,
@@ -4926,17 +5268,22 @@ class MainWindow(QMainWindow):
 
     def on_explorer_point_clicked(self, index):
         """Handle point click in explorer."""
-        if self.explorer_mode != "labeling":
+        if self.explorer_mode not in {"labeling", "review"}:
             self.status.showMessage("Selection is disabled outside Labeling mode")
             return
         self.selected_point_index = index
         self.hover_locked = True
         self.request_preview_for_index(index, source="click")
         self.request_update_explorer_selection(index)
-        self.status.showMessage(f"Selected point {index}")
+        self.status.showMessage(
+            f"Selected point {index} for {'review' if self.explorer_mode == 'review' else 'labeling'}"
+        )
 
     def on_explorer_point_hovered(self, index):
         """Handle point hover in explorer."""
+        if self._has_active_labeling_batch():
+            self.request_preview_for_index(index, source="hover")
+            return
         if (
             self.hover_locked
             and self.selected_point_index is not None
@@ -4947,6 +5294,13 @@ class MainWindow(QMainWindow):
 
     def on_explorer_empty_hover(self) -> None:
         """Clear the preview whenever the cursor is not over an explorer point."""
+        if (
+            self._has_active_labeling_batch() or self.explorer_mode == "review"
+        ) and self.selected_point_index is not None:
+            self.request_preview_for_index(
+                self.selected_point_index, source="selection"
+            )
+            return
         self.clear_preview_display()
 
     def on_label_assigned(self, label):
@@ -6066,12 +6420,264 @@ class MainWindow(QMainWindow):
             self.load_preview_for_index(int(idx))
             self.load_preview_for_index(int(idx))
 
+    def enter_review_mode(self) -> None:
+        """Switch explorer into machine-label review mode."""
+        self.set_explorer_mode("review")
+
+    def _machine_label_scope_choices(self) -> list[tuple[str, list[int]]]:
+        """Return supported scope options for machine labeling."""
+        scopes = self._prediction_scope_choices()
+        if self._review_candidate_indices:
+            scopes.insert(
+                0,
+                (
+                    f"Pending review only ({len(self._review_candidate_indices)})",
+                    [int(i) for i in self._review_candidate_indices],
+                ),
+            )
+        return scopes
+
+    def open_machine_labeling_dialog(self) -> None:
+        """Launch the unified machine-labeling dialog and dispatch the selected method."""
+        if self.project_path is None or not self.image_paths:
+            QMessageBox.information(
+                self,
+                "No Project Data",
+                "Open a project with images before running machine labeling.",
+            )
+            return
+
+        model_history_entries = []
+        if self.db_path:
+            from ..core.store.db import ClassKitDB
+
+            model_history_entries = ClassKitDB(self.db_path).list_model_caches()
+
+        from ..gui.dialogs import MachineLabelingDialog
+
+        dlg = MachineLabelingDialog(
+            scope_options=self._machine_label_scope_choices(),
+            predictions_available=(
+                self._model_probs is not None and bool(self._model_class_names)
+            ),
+            image_count=len(self.image_paths),
+            model_history_entries=model_history_entries,
+            project_path=self.project_path,
+            db_path=self.db_path,
+            parent=self,
+        )
+        if dlg.exec() != MachineLabelingDialog.DialogCode.Accepted:
+            return
+
+        settings = dlg.get_settings()
+        if settings["method"] == MachineLabelingDialog.METHOD_MODEL:
+            self._run_machine_labeling_model_source(settings)
+            return
+
+        self._run_apriltag_autolabel_for_scope(
+            indices=settings["scope_indices"],
+            scope_label=settings["scope_label"],
+            config=settings["apriltag_config"],
+            threshold=float(settings["apriltag_threshold"]),
+            replace_scheme=bool(settings.get("replace_scheme", True)),
+            skip_verified=bool(settings.get("skip_verified", True)),
+        )
+
+    def _run_machine_labeling_model_source(self, settings: dict) -> None:
+        """Load the selected model source and apply its predictions as review labels."""
+        from ..gui.dialogs.machine_labeling import MachineLabelingDialog
+
+        indices = [int(i) for i in settings.get("scope_indices") or []]
+        scope_label = str(
+            settings.get("scope_label") or f"Custom scope ({len(indices)})"
+        )
+        skip_verified = bool(settings.get("skip_verified", True))
+        model_source = str(
+            settings.get("model_source") or MachineLabelingDialog.MODEL_SOURCE_LOADED
+        )
+
+        if model_source == MachineLabelingDialog.MODEL_SOURCE_LOADED:
+            self.apply_model_predictions_as_review_labels(
+                indices=indices,
+                scope_label=scope_label,
+                skip_verified=skip_verified,
+                model_provider="loaded_model",
+            )
+            return
+
+        if model_source == MachineLabelingDialog.MODEL_SOURCE_HISTORY:
+            entry = settings.get("model_entry") or {}
+            artifact_paths = entry.get("artifact_paths") or []
+            if not artifact_paths:
+                QMessageBox.warning(
+                    self,
+                    "No Model Selected",
+                    "Choose a model from this project's history before applying machine labels.",
+                )
+                return
+
+            metadata = {
+                "model_name": str(
+                    entry.get("display_name")
+                    or Path(str(artifact_paths[0])).stem
+                    or entry.get("mode")
+                    or "history_model"
+                ),
+                "model_path": str(artifact_paths[0]),
+            }
+            self._load_model_from_cache_entry(
+                entry,
+                on_success=lambda: self.apply_model_predictions_as_review_labels(
+                    indices=indices,
+                    scope_label=scope_label,
+                    skip_verified=skip_verified,
+                    model_provider="project_history_model",
+                    model_metadata=metadata,
+                ),
+            )
+            return
+
+        checkpoint_path = settings.get("checkpoint_path")
+        if not checkpoint_path:
+            QMessageBox.warning(
+                self,
+                "No Checkpoint Selected",
+                "Choose a checkpoint file before applying machine labels.",
+            )
+            return
+
+        checkpoint = Path(str(checkpoint_path))
+        self._load_checkpoint_from_path(
+            checkpoint,
+            on_success=lambda: self.apply_model_predictions_as_review_labels(
+                indices=indices,
+                scope_label=scope_label,
+                skip_verified=skip_verified,
+                model_provider="external_checkpoint",
+                model_metadata={
+                    "model_name": checkpoint.stem,
+                    "model_path": str(checkpoint),
+                },
+            ),
+            show_message_box=False,
+        )
+
+    def _run_apriltag_autolabel_for_scope(
+        self,
+        *,
+        indices: list[int],
+        scope_label: str,
+        config,
+        threshold: float,
+        replace_scheme: bool,
+        skip_verified: bool,
+    ) -> None:
+        """Run AprilTag machine labeling for a specific scope from the unified launcher."""
+        from ..config.presets import apriltag_preset
+        from ..core.store.db import ClassKitDB
+        from ..jobs.task_workers import AprilTagAutoLabelWorker
+
+        if self.project_path is None or not indices:
+            QMessageBox.information(
+                self,
+                "No Images In Scope",
+                "The selected machine-labeling scope does not contain any images.",
+            )
+            return
+
+        db = ClassKitDB(self.db_path)
+        all_paths = [Path(p) for p in db.get_all_image_paths()]
+
+        if replace_scheme:
+            scheme_path = self._project_scheme_path()
+            if scheme_path.exists():
+                reply = QMessageBox.question(
+                    self,
+                    "Replace Existing Scheme?",
+                    "A labeling scheme already exists.\n\n"
+                    "Replacing it will ERASE all existing labels.\n\n"
+                    "Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+            scheme = apriltag_preset(config.family, config.max_tag_id)
+            scheme_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(scheme_path, "w") as f:
+                json.dump(scheme.to_dict(), f, indent=2)
+
+            db.clear_all_labels()
+            self.classes = scheme.factors[0].labels
+            self.rebuild_label_buttons()
+            target_paths = [
+                all_paths[index]
+                for index in indices
+                if 0 <= int(index) < len(all_paths)
+            ]
+        else:
+            target_paths = []
+            for index in indices:
+                if index < 0 or index >= len(all_paths):
+                    continue
+                path = all_paths[index]
+                if skip_verified and self._review_status_for_index(index).get(
+                    "verified"
+                ):
+                    continue
+                target_paths.append(path)
+
+        if not target_paths:
+            QMessageBox.information(
+                self,
+                "No Images To Process",
+                "No images in the selected scope were eligible for AprilTag machine labeling.",
+            )
+            return
+
+        worker = AprilTagAutoLabelWorker(
+            image_paths=target_paths,
+            config=config,
+            threshold=threshold,
+            db=db,
+        )
+
+        def _on_progress(pct: int, msg: str) -> None:
+            self.statusBar().showMessage(f"AprilTag auto-label: {msg} ({pct}%)")
+
+        def _on_success(result: dict) -> None:
+            n_tag = result.get("n_labeled", 0)
+            n_no = result.get("n_no_tag", 0)
+            n_skip = result.get("n_skipped", 0)
+            self.statusBar().showMessage(
+                f"Auto-label complete: {n_tag} tagged, {n_no} no_tag, {n_skip} uncertain"
+            )
+            self._reload_label_state_from_db(db)
+            self.update_explorer_plot()
+            self.update_context_panel()
+            self._update_labeling_progress_indicator()
+            self.enter_review_mode()
+
+        def _on_error(msg: str) -> None:
+            self.statusBar().showMessage(f"Auto-label error: {msg}")
+
+        worker.signals.progress.connect(_on_progress)
+        worker.signals.success.connect(_on_success)
+        worker.signals.error.connect(_on_error)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status.showMessage(
+            f"Running AprilTag machine labeling on {len(target_paths):,} images from {scope_label}"
+        )
+        self._threadpool_start(worker)
+
     def _run_apriltag_autolabel(self) -> None:
         """Open the AprilTag auto-label dialog and start the background worker."""
+        from ..config.presets import apriltag_preset
         from ..core.store.db import ClassKitDB
         from ..gui.dialogs import AprilTagAutoLabelDialog
         from ..jobs.task_workers import AprilTagAutoLabelWorker
-        from ..presets import apriltag_preset
 
         if self.project_path is None:
             return
@@ -6089,7 +6695,7 @@ class MainWindow(QMainWindow):
         max_tag_id = config.max_tag_id
 
         # Warn if existing scheme will be replaced
-        scheme_path = self.project_path / "scheme.json"
+        scheme_path = self._project_scheme_path()
         if scheme_path.exists():
             reply = QMessageBox.question(
                 self,
@@ -6104,6 +6710,7 @@ class MainWindow(QMainWindow):
 
         # 1. Write the new scheme to disk
         scheme = apriltag_preset(config.family, max_tag_id)
+        scheme_path.parent.mkdir(parents=True, exist_ok=True)
         with open(scheme_path, "w") as f:
             json.dump(scheme.to_dict(), f, indent=2)
 
@@ -6142,7 +6749,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Auto-label complete: {n_tag} tagged, {n_no} no_tag, {n_skip} uncertain"
             )
-            self.image_labels = db.get_all_labels()
+            self._reload_label_state_from_db(db)
+            self.update_explorer_plot()
+            self.update_context_panel()
             self._update_labeling_progress_indicator()
 
         def _on_error(msg: str) -> None:
@@ -6155,4 +6764,347 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self._threadpool_start(worker)
-        self._threadpool_start(worker)
+
+    def _prediction_scope_choices(self) -> list[tuple[str, list[int]]]:
+        """Return available scopes for applying model predictions."""
+        scopes: list[tuple[str, list[int]]] = []
+
+        if (
+            self.selected_point_index is not None
+            and 0 <= self.selected_point_index < len(self.image_paths)
+        ):
+            scopes.append(("Selected point", [int(self.selected_point_index)]))
+
+        if self.candidate_indices:
+            scopes.append(
+                (
+                    f"Current candidate set ({len(self.candidate_indices)})",
+                    [int(i) for i in self.candidate_indices],
+                )
+            )
+
+        if self._al_candidates is not None and len(self._al_candidates):
+            scopes.append(
+                (
+                    f"Active-learning batch ({len(self._al_candidates)})",
+                    [int(i) for i in self._al_candidates],
+                )
+            )
+
+        unlabeled = [
+            index for index, label in enumerate(self.image_labels or []) if not label
+        ]
+        if unlabeled:
+            scopes.append((f"Unlabeled only ({len(unlabeled)})", unlabeled))
+
+        scopes.append(
+            (
+                f"Whole dataset ({len(self.image_paths)})",
+                list(range(len(self.image_paths))),
+            )
+        )
+        return scopes
+
+    def approve_selected_review_label(self) -> None:
+        """Mark the currently selected machine label as verified."""
+        if self.selected_point_index is None:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "Select a labeled point before approving it.",
+            )
+            return
+
+        status = self._review_status_for_index(self.selected_point_index)
+        if not status.get("label"):
+            QMessageBox.information(
+                self,
+                "No Label",
+                "The selected point does not have a label to approve.",
+            )
+            return
+        if status.get("verified"):
+            QMessageBox.information(
+                self,
+                "Already Verified",
+                "The selected label is already verified.",
+            )
+            return
+
+        from ..core.store.db import ClassKitDB
+
+        db = ClassKitDB(self.db_path)
+        path = self.image_paths[self.selected_point_index]
+        updated = db.mark_labels_verified([path])
+        if updated:
+            refreshed = db.get_label_review_status_by_path().get(str(path), status)
+            self._mark_local_review_state(
+                path,
+                label=refreshed.get("label"),
+                label_source=refreshed.get("label_source"),
+                verified=bool(refreshed.get("verified")),
+                confidence=refreshed.get("confidence"),
+                auto_label_metadata=refreshed.get("auto_label_metadata"),
+                verified_at=refreshed.get("verified_at"),
+            )
+            self.status.showMessage(f"Approved label for {Path(path).name}", 4000)
+            self.update_context_panel()
+            self.load_preview_for_index(self.selected_point_index, source="selection")
+
+    def reject_selected_review_label(self) -> None:
+        """Clear the currently selected machine label without touching verified labels."""
+        if self.selected_point_index is None:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "Select a labeled point before rejecting it.",
+            )
+            return
+
+        status = self._review_status_for_index(self.selected_point_index)
+        if not status.get("label"):
+            QMessageBox.information(
+                self,
+                "No Label",
+                "The selected point does not have a label to reject.",
+            )
+            return
+        if status.get("verified"):
+            QMessageBox.information(
+                self,
+                "Already Verified",
+                "Verified labels are not cleared by the review reject action.",
+            )
+            return
+
+        from ..core.store.db import ClassKitDB
+
+        db = ClassKitDB(self.db_path)
+        path = self.image_paths[self.selected_point_index]
+        db.update_labels_batch({str(path): None})
+        self._reload_label_state_from_db(db)
+        self.update_explorer_plot()
+        self.update_context_panel()
+
+        if self.explorer_mode == "review":
+            if self._review_candidate_indices:
+                if self.selected_point_index not in self._review_candidate_indices:
+                    self.selected_point_index = self._review_candidate_indices[0]
+                self.load_preview_for_index(
+                    self.selected_point_index, source="selection"
+                )
+            else:
+                self.selected_point_index = None
+                self.set_explorer_mode("explore")
+                self.clear_preview_display()
+        elif self.selected_point_index is not None:
+            self.load_preview_for_index(self.selected_point_index, source="selection")
+
+        self.status.showMessage(f"Rejected machine label for {Path(path).name}", 4000)
+
+    def approve_all_machine_labels(self) -> None:
+        """Bulk-approve every unverified machine-generated label in the project."""
+        pending_paths = [
+            path
+            for path, record in self._image_review_status.items()
+            if record.get("label") and not record.get("verified")
+        ]
+        if not pending_paths:
+            QMessageBox.information(
+                self,
+                "Nothing To Approve",
+                "There are no pending machine labels to approve.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Approve All Machine Labels?",
+            f"Approve {len(pending_paths):,} unverified machine labels for training/export?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        from ..core.store.db import ClassKitDB
+
+        db = ClassKitDB(self.db_path)
+        updated = db.mark_labels_verified(pending_paths)
+        if updated:
+            self._reload_label_state_from_db(db)
+            self.status.showMessage(f"Approved {updated:,} machine labels", 5000)
+            self.update_context_panel()
+            if self.selected_point_index is not None:
+                self.load_preview_for_index(
+                    self.selected_point_index, source="selection"
+                )
+
+    def clear_all_unverified_machine_labels(self) -> None:
+        """Clear every unverified machine-generated label in the project."""
+        pending_paths = [
+            path
+            for path, record in self._image_review_status.items()
+            if record.get("label") and not record.get("verified")
+        ]
+        if not pending_paths:
+            QMessageBox.information(
+                self,
+                "Nothing To Clear",
+                "There are no unverified machine labels to clear.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Clear All Unverified Machine Labels?",
+            f"Remove {len(pending_paths):,} pending machine labels from the project?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        from ..core.store.db import ClassKitDB
+
+        db = ClassKitDB(self.db_path)
+        db.update_labels_batch({str(path): None for path in pending_paths})
+        self._reload_label_state_from_db(db)
+        self.update_explorer_plot()
+        self.update_context_panel()
+
+        if self.explorer_mode == "review" and not self._review_candidate_indices:
+            self.selected_point_index = None
+            self.set_explorer_mode("explore")
+            self.clear_preview_display()
+        elif self.selected_point_index is not None:
+            self.load_preview_for_index(self.selected_point_index, source="selection")
+
+        self.status.showMessage(
+            f"Cleared {len(pending_paths):,} unverified machine labels", 5000
+        )
+
+    def apply_model_predictions_as_review_labels(
+        self,
+        *,
+        indices: list[int] | None = None,
+        scope_label: str | None = None,
+        skip_verified: bool = True,
+        model_provider: str = "project_model",
+        model_metadata: dict | None = None,
+    ) -> None:
+        """Apply current model predictions as unverified review labels."""
+        if self._model_probs is None or not self._model_class_names:
+            QMessageBox.warning(
+                self,
+                "No Predictions",
+                "Load a trained model first so ClassKit has predictions to apply.",
+            )
+            return
+        if not self.db_path or not self.image_paths:
+            QMessageBox.warning(
+                self,
+                "No Project Data",
+                "Open a project with images before applying model predictions.",
+            )
+            return
+
+        if indices is None:
+            scope_choices = self._prediction_scope_choices()
+            scope_labels = [label for label, _indices in scope_choices]
+            scope_label, accepted = QInputDialog.getItem(
+                self,
+                "Apply Model Predictions",
+                "Scope:",
+                scope_labels,
+                0,
+                False,
+            )
+            if not accepted or not scope_label:
+                return
+
+            indices = []
+            for label, raw_indices in scope_choices:
+                if label == scope_label:
+                    indices = raw_indices
+                    break
+        else:
+            indices = [int(i) for i in indices]
+            scope_label = scope_label or f"Custom scope ({len(indices)})"
+
+        if not indices:
+            QMessageBox.information(
+                self,
+                "No Images In Scope",
+                "The selected scope does not contain any images.",
+            )
+            return
+
+        from ..core.store.db import ClassKitDB
+
+        db = ClassKitDB(self.db_path)
+        updates = {}
+        metadata_by_path = {}
+        skipped_verified = 0
+        skipped_unknown = 0
+
+        for index in indices:
+            if index < 0 or index >= len(self.image_paths):
+                continue
+            path = self.image_paths[index]
+            status = self._review_status_for_index(index)
+            if skip_verified and status.get("verified"):
+                skipped_verified += 1
+                continue
+
+            pred_idx = int(np.argmax(self._model_probs[index]))
+            if pred_idx >= len(self._model_class_names):
+                skipped_unknown += 1
+                continue
+            predicted_label = str(self._model_class_names[pred_idx])
+            if predicted_label not in self.classes:
+                skipped_unknown += 1
+                continue
+
+            confidence = float(np.max(self._model_probs[index]))
+            updates[str(path)] = (predicted_label, confidence)
+            prediction_metadata = {
+                "provider": model_provider,
+                "active_model_mode": self._active_model_mode,
+                "predicted_index": pred_idx,
+                "scope": scope_label,
+            }
+            if model_metadata:
+                prediction_metadata.update(model_metadata)
+            metadata_by_path[str(path)] = prediction_metadata
+
+        if not updates:
+            QMessageBox.information(
+                self,
+                "No Predictions Applied",
+                "No unverified targets were eligible for prediction application in the selected scope.",
+            )
+            return
+
+        db.update_labels_with_confidence_batch(
+            updates,
+            label_source="auto_model",
+            verified=False,
+            metadata_by_path=metadata_by_path,
+        )
+        self._reload_label_state_from_db(db)
+        self.update_explorer_plot()
+        self.update_context_panel()
+        if self.selected_point_index is not None:
+            self.load_preview_for_index(self.selected_point_index, source="selection")
+        self.enter_review_mode()
+
+        self.status.showMessage(
+            f"Applied {len(updates):,} model predictions as review labels"
+            + (
+                f" ({skipped_verified} verified skipped, {skipped_unknown} unknown skipped)"
+                if skipped_verified or skipped_unknown
+                else ""
+            ),
+            6000,
+        )

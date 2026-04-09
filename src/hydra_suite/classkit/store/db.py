@@ -8,11 +8,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from hydra_suite.data.project_bundle import ensure_bundle_state_subdirectory
+
 
 class ClassKitDB:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._init_db()
+
+    def _cache_dir(self, cache_name: str) -> Path:
+        """Return the canonical bundle-aware cache directory for *cache_name*."""
+        return ensure_bundle_state_subdirectory(self.db_path, cache_name)
 
     def _init_db(self):
         """Create tables if not exist."""
@@ -277,8 +283,7 @@ class ClassKitDB:
             ID of the saved embedding record
         """
         # Create embeddings directory
-        embeddings_dir = self.db_path.parent / "embeddings"
-        embeddings_dir.mkdir(exist_ok=True)
+        embeddings_dir = self._cache_dir("embeddings")
 
         # Generate filename based on model and timestamp
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -445,8 +450,7 @@ class ClassKitDB:
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Persist clustering outputs for reuse."""
-        cache_dir = self.db_path.parent / "clusters"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = self._cache_dir("clusters")
 
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         assignments_path = cache_dir / f"assignments_{timestamp}.npy"
@@ -538,8 +542,7 @@ class ClassKitDB:
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Persist UMAP coordinates for reuse. kind='embedding' or 'model'."""
-        cache_dir = self.db_path.parent / "umap"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = self._cache_dir("umap")
 
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         coords_path = cache_dir / f"coords_{kind}_{timestamp}.npy"
@@ -672,8 +675,7 @@ class ClassKitDB:
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Persist per-image probability matrix (N, C) to disk and record metadata."""
-        cache_dir = self.db_path.parent / "predictions"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = self._cache_dir("predictions")
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         probs_path = cache_dir / f"probs_{active_model_mode}_{timestamp}.npy"
         np.save(probs_path, probs)
