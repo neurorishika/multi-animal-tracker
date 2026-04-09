@@ -2638,6 +2638,33 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.canonical_project_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;canonical_project_path
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.posekit_artifact_paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;posekit_artifact_paths
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.save_project_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;save_project_state
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#hydra_suite.posekit.gui.project.find_project" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;find_project
@@ -4003,6 +4030,33 @@
   <a href="#hydra_suite.posekit.gui.project.resolve_dataset_paths" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;resolve_dataset_paths
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.canonical_project_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;canonical_project_path
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.posekit_artifact_paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;posekit_artifact_paths
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.save_project_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;save_project_state
     </span>
   </a>
   
@@ -6650,8 +6704,60 @@ Output: writes {"preds": {...}} JSON to cfg["out_json"].</p>
   dataset_dir/
     images/
     posekit_project/
-      pose_project.json
+      state/
+        pose_project.json
       labels/</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="hydra_suite.posekit.gui.project.canonical_project_path" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">canonical_project_path</span><span class="p">(</span><span class="n">project_root</span><span class="p">)</span></code>
+
+<a href="#hydra_suite.posekit.gui.project.canonical_project_path" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return the canonical bundle state file path for a PoseKit project.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="hydra_suite.posekit.gui.project.posekit_artifact_paths" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">posekit_artifact_paths</span><span class="p">(</span><span class="n">project_root</span><span class="p">)</span></code>
+
+<a href="#hydra_suite.posekit.gui.project.posekit_artifact_paths" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return typed artifact directories for a PoseKit bundle.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="hydra_suite.posekit.gui.project.save_project_state" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">save_project_state</span><span class="p">(</span><span class="n">project</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">legacy_source_path</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#hydra_suite.posekit.gui.project.save_project_state" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Persist a PoseKit project into the canonical bundle layout.</p>
 
     </div>
 
@@ -6669,8 +6775,9 @@ Output: writes {"preds": {...}} JSON to cfg["out_json"].</p>
     <div class="doc doc-contents ">
 
         <p>Find an existing project for a dataset root.</p>
-<p>Primary location:
-  dataset_dir/posekit_project/pose_project.json</p>
+<div class="language-text highlight"><pre><span></span><code>Primary location:
+    dataset_dir/posekit_project/state/pose_project.json
+</code></pre></div>
 <p>The primary location is trusted by virtue of its path — if the file
 exists there it belongs to this dataset even if the stored <code>images_dir</code>
 is stale (e.g. after moving between machines).  <code>load_project_with_repairs</code>
