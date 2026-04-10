@@ -2411,6 +2411,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.main_window.MainWindow.manage_sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;manage_sources
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#hydra_suite.posekit.gui.main_window.MainWindow.open_project" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;open_project
@@ -2722,6 +2731,15 @@
   <a href="#hydra_suite.posekit.gui.project.add_source_to_project" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;add_source_to_project
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.remove_source_from_project" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;remove_source_from_project
     </span>
   </a>
   
@@ -3809,6 +3827,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.main_window.MainWindow.manage_sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;manage_sources
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#hydra_suite.posekit.gui.main_window.MainWindow.open_project" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;open_project
@@ -4120,6 +4147,15 @@
   <a href="#hydra_suite.posekit.gui.project.add_source_to_project" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;add_source_to_project
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.posekit.gui.project.remove_source_from_project" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;remove_source_from_project
     </span>
   </a>
   
@@ -6153,6 +6189,23 @@ Output: writes {"preds": {...}} JSON to cfg["out_json"].</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="hydra_suite.posekit.gui.main_window.MainWindow.manage_sources" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">manage_sources</span><span class="p">()</span></code>
+
+<a href="#hydra_suite.posekit.gui.main_window.MainWindow.manage_sources" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Open PoseKit's standalone Source Manager and refresh the workspace.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="hydra_suite.posekit.gui.main_window.MainWindow.open_project" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">open_project</span><span class="p">()</span></code>
 
@@ -6836,8 +6889,8 @@ matches, to avoid accidentally loading an unrelated project.</p>
 
         <p>Run NewProjectDialog and build a standalone multi-source project.</p>
 <p>Unlike <code>create_project_via_wizard()</code>, the project file lives at a
-user-chosen location independent of any dataset folder, and one or more
-sources are added during creation rather than as an afterthought.</p>
+user-chosen location independent of any dataset folder. Sources are managed
+after project creation via the standalone Source Manager.</p>
 
     </div>
 
@@ -6898,6 +6951,23 @@ top-level <code>project.images_dir</code>.</p>
 the existing <code>images_dir</code> / <code>labels_dir</code> is first promoted to
 <code>source_0</code> so that routing remains consistent.</p>
 <p>Returns the newly created :class:<code>DataSource</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="hydra_suite.posekit.gui.project.remove_source_from_project" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">remove_source_from_project</span><span class="p">(</span><span class="n">project</span><span class="p">,</span> <span class="n">source_id</span><span class="p">)</span></code>
+
+<a href="#hydra_suite.posekit.gui.project.remove_source_from_project" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Remove a source from <em>project</em> and delete its project-local label cache.</p>
 
     </div>
 
