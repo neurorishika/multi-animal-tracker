@@ -41,3 +41,51 @@ def test_cluster_cache_requires_matching_embedding_cache_id(tmp_path: Path) -> N
     cached = db.get_most_recent_cluster_cache(embedding_cache_id=first_embedding_id)
     assert cached is not None
     assert cached["embedding_cache_id"] == first_embedding_id
+
+
+def test_infinite_label_cache_requires_matching_embedding_cache_id(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "classkit.db"
+    image_paths = [tmp_path / "img_0.jpg", tmp_path / "img_1.jpg"]
+    db = ClassKitDB(db_path)
+    db.add_images(image_paths)
+
+    first_embedding_id = db.save_embeddings(
+        np.ones((2, 4), dtype=np.float32),
+        "resnet50.a1_in1k",
+        "cpu",
+        image_paths=image_paths,
+    )
+    db.save_infinite_label_cache(
+        np.array([0.0, 3.5], dtype=np.float32),
+        np.array([1, 0], dtype=np.int32),
+        np.array([0, 0], dtype=np.int32),
+        meta={
+            "embedding_cache_id": first_embedding_id,
+            "label_signature": "seed",
+        },
+    )
+
+    second_embedding_id = db.save_embeddings(
+        np.full((2, 4), 2.0, dtype=np.float32),
+        "resnet50.a1_in1k",
+        "cpu",
+        image_paths=image_paths,
+    )
+
+    assert (
+        db.get_most_recent_infinite_label_cache(embedding_cache_id=second_embedding_id)
+        is None
+    )
+
+    cached = db.get_most_recent_infinite_label_cache(
+        embedding_cache_id=first_embedding_id
+    )
+    assert cached is not None
+    assert cached["embedding_cache_id"] == first_embedding_id
+    assert np.array_equal(
+        cached["distance_cache"], np.array([0.0, 3.5], dtype=np.float32)
+    )
+    assert np.array_equal(cached["cluster_counts"], np.array([1, 0], dtype=np.int32))
+    assert np.array_equal(cached["owner_cache"], np.array([0, 0], dtype=np.int32))

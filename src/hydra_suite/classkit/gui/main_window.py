@@ -2,6 +2,7 @@
 ClassKit Main Window - Polished and feature-complete UI
 """
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self.db_path = None
         self.embeddings = None
         self._current_embedding_cache_id = None
+        self._current_cluster_cache_id = None
         self.umap_coords = None
         self.cluster_assignments = None
         self.image_paths = []
@@ -74,6 +76,11 @@ class MainWindow(QMainWindow):
         self.selected_point_index = None
         self.candidate_indices = []
         self.round_labeled_indices = []
+        self._labeling_flow_mode = "batch"
+        self._labeling_navigation_scope = "pool"
+        self._infinite_label_distance_cache = None
+        self._infinite_label_cluster_counts = None
+        self._infinite_label_owner_cache = None
         self.explorer_mode = "explore"
         self.hover_locked = False
         self._label_shortcuts = []
@@ -102,6 +109,7 @@ class MainWindow(QMainWindow):
         self._show_model_pca = False  # Explorer toggle: embedding vs model PCA
         self._al_candidates = None  # np.ndarray of selected AL batch indices
         self._active_model_mode = None  # "yolo", "tiny", or None
+        self._heldout_validation_summary = None  # training-time held-out metric
         self._current_knn_neighbors = []
         self._stepper = None
         self._custom_shortcuts: dict = {}  # action_name → key sequence string
@@ -1007,6 +1015,15 @@ class MainWindow(QMainWindow):
         metrics_layout.setContentsMargins(8, 8, 8, 8)
         metrics_layout.setSpacing(6)
 
+        self.metrics_validation_label = QLabel(
+            "Held-out validation: unavailable for the current prediction set."
+        )
+        self.metrics_validation_label.setWordWrap(True)
+        self.metrics_validation_label.setStyleSheet(
+            "background:#1a1a1a; color:#d8c27a; border-radius:4px; padding:8px;"
+        )
+        metrics_layout.addWidget(self.metrics_validation_label)
+
         self.metrics_view = QTextEdit()
         self.metrics_view.setReadOnly(True)
         self.metrics_view.setMaximumHeight(180)
@@ -1433,6 +1450,7 @@ class MainWindow(QMainWindow):
             self.image_labels = []
             self._image_review_status = {}
             self._review_candidate_indices = []
+            self._invalidate_infinite_labeling_cache()
             return
 
         if db is None:
@@ -1443,6 +1461,7 @@ class MainWindow(QMainWindow):
         self.image_labels = db.get_all_labels()
         self._image_review_status = db.get_label_review_status_by_path()
         self._refresh_review_candidate_indices()
+        self._invalidate_infinite_labeling_cache()
         if len(self.image_confidences) != len(self.image_paths):
             self.image_confidences = [None] * len(self.image_paths)
 
@@ -1611,6 +1630,330 @@ class MainWindow(QMainWindow):
         """Return True when labeling interactions should stay scoped to a batch."""
         return bool(self.candidate_indices or self.round_labeled_indices)
 
+    def _set_view_mode_combo_value(self, mode: str) -> None:
+        """Synchronize the mode combo without re-triggering change handlers."""
+        if not hasattr(self, "view_mode_combo"):
+            return
+        idx = self.view_mode_combo.findData(mode)
+        if idx < 0 or self.view_mode_combo.currentIndex() == idx:
+            return
+        self.view_mode_combo.blockSignals(True)
+        self.view_mode_combo.setCurrentIndex(idx)
+        self.view_mode_combo.blockSignals(False)
+
+    def _invalidate_infinite_labeling_cache(self) -> None:
+        """Drop cached diversity state used by infinite labeling."""
+        self._infinite_label_distance_cache = None
+        self._infinite_label_cluster_counts = None
+        self._infinite_label_owner_cache = None
+
+    def _labeled_index_signature(self, labeled_indices: list[int] | None = None) -> str:
+        """Return a stable signature for the currently labeled dataset indices."""
+        indices = (
+            labeled_indices
+            if labeled_indices is not None
+            else self._labeled_image_indices()
+        )
+        if not indices:
+            return "empty"
+        payload = np.asarray(indices, dtype=np.int32).tobytes()
+        return hashlib.sha1(payload).hexdigest()
+
+    def _persist_infinite_labeling_cache(self) -> None:
+        """Write the current infinite-labeling cache state to the project DB."""
+        if (
+            not self.db_path
+            or self._infinite_label_distance_cache is None
+            or self.embeddings is None
+            or self._current_embedding_cache_id is None
+        ):
+            return
+        try:
+            from ..core.store.db import ClassKitDB
+
+            labeled_indices = self._labeled_image_indices()
+            ClassKitDB(self.db_path).save_infinite_label_cache(
+                np.asarray(self._infinite_label_distance_cache, dtype=np.float32),
+                (
+                    np.asarray(self._infinite_label_cluster_counts, dtype=np.int32)
+                    if self._infinite_label_cluster_counts is not None
+                    else None
+                ),
+                (
+                    np.asarray(self._infinite_label_owner_cache, dtype=np.int32)
+                    if self._infinite_label_owner_cache is not None
+                    else None
+                ),
+                meta={
+                    "embedding_cache_id": int(self._current_embedding_cache_id),
+                    "cluster_cache_id": (
+                        int(self._current_cluster_cache_id)
+                        if self._current_cluster_cache_id is not None
+                        else None
+                    ),
+                    "label_signature": self._labeled_index_signature(labeled_indices),
+                    "labeled_count": len(labeled_indices),
+                },
+            )
+        except Exception:
+            pass
+
+    def _restore_persisted_infinite_labeling_cache(self) -> bool:
+        """Load a previously saved infinite-labeling cache if it matches current state."""
+        if (
+            not self.db_path
+            or self.embeddings is None
+            or self._current_embedding_cache_id is None
+            or len(self.image_paths) == 0
+        ):
+            return False
+        try:
+            from ..core.store.db import ClassKitDB
+
+            cached = ClassKitDB(self.db_path).get_most_recent_infinite_label_cache(
+                embedding_cache_id=self._current_embedding_cache_id,
+            )
+        except Exception:
+            return False
+
+        if not cached:
+            return False
+
+        if cached.get("label_signature") != self._labeled_index_signature():
+            return False
+
+        cached_cluster_id = cached.get("cluster_cache_id")
+        if cached_cluster_id is not None or self._current_cluster_cache_id is not None:
+            if cached_cluster_id != self._current_cluster_cache_id:
+                return False
+
+        distance_cache = np.asarray(cached.get("distance_cache"), dtype=np.float32)
+        if len(distance_cache) != len(self.image_paths):
+            return False
+
+        owner_cache = cached.get("owner_cache")
+        if owner_cache is not None:
+            owner_cache = np.asarray(owner_cache, dtype=np.int32)
+            if len(owner_cache) != len(self.image_paths):
+                return False
+            self._infinite_label_owner_cache = owner_cache
+        else:
+            self._infinite_label_owner_cache = None
+
+        cluster_counts = cached.get("cluster_counts")
+        if self.cluster_assignments is None:
+            if cluster_counts is not None:
+                return False
+            self._infinite_label_cluster_counts = None
+        else:
+            cluster_ids = np.asarray(self.cluster_assignments, dtype=int)
+            expected_size = int(cluster_ids.max()) + 1 if len(cluster_ids) else 0
+            if cluster_counts is None:
+                return False
+            cluster_counts = np.asarray(cluster_counts, dtype=np.int32)
+            if len(cluster_counts) != expected_size:
+                return False
+            self._infinite_label_cluster_counts = cluster_counts
+
+        self._infinite_label_distance_cache = distance_cache
+        return True
+
+    def _ensure_infinite_labeling_cache(self) -> np.ndarray | None:
+        """Build the infinite-labeling distance and cluster caches on demand."""
+        num_images = len(self.image_paths)
+        if num_images == 0:
+            self._invalidate_infinite_labeling_cache()
+            return None
+
+        if self.embeddings is None:
+            self._invalidate_infinite_labeling_cache()
+            return None
+
+        embeddings = np.asarray(self.embeddings)
+        if embeddings.ndim != 2 or embeddings.shape[0] != num_images:
+            self._invalidate_infinite_labeling_cache()
+            return None
+
+        if (
+            self._infinite_label_distance_cache is not None
+            and len(self._infinite_label_distance_cache) == num_images
+        ):
+            return self._infinite_label_distance_cache
+
+        if self._restore_persisted_infinite_labeling_cache():
+            return self._infinite_label_distance_cache
+
+        labeled_indices = self._labeled_image_indices()
+        if labeled_indices:
+            reference_indices = self._diversity_reference_indices(labeled_indices)
+            result = self._min_distance_and_owner_to_reference_scores(
+                list(range(num_images)), reference_indices
+            )
+            if result is None:
+                self._invalidate_infinite_labeling_cache()
+                return None
+            cache, owners = result
+            self._infinite_label_distance_cache = cache.astype(np.float32, copy=False)
+            self._infinite_label_owner_cache = owners.astype(np.int32, copy=False)
+        else:
+            self._infinite_label_distance_cache = np.full(
+                num_images, np.inf, dtype=np.float32
+            )
+            self._infinite_label_owner_cache = np.full(num_images, -1, dtype=np.int32)
+
+        assignments = self.cluster_assignments
+        if (
+            assignments is not None
+            and len(assignments) == num_images
+            and labeled_indices
+        ):
+            cluster_ids = np.asarray(assignments, dtype=int)
+            labeled_clusters = cluster_ids[labeled_indices]
+            counts = np.bincount(
+                labeled_clusters,
+                minlength=int(cluster_ids.max()) + 1,
+            )
+            self._infinite_label_cluster_counts = counts.astype(np.int32, copy=False)
+        elif assignments is not None and len(assignments) == num_images:
+            cluster_ids = np.asarray(assignments, dtype=int)
+            self._infinite_label_cluster_counts = np.zeros(
+                int(cluster_ids.max()) + 1,
+                dtype=np.int32,
+            )
+        else:
+            self._infinite_label_cluster_counts = None
+
+        self._persist_infinite_labeling_cache()
+
+        return self._infinite_label_distance_cache
+
+    def _update_infinite_labeling_cache_for_new_label(
+        self, index: int, *, allow_build: bool = True
+    ) -> bool:
+        """Incrementally update infinite-labeling caches after one new label."""
+        cache = self._infinite_label_distance_cache
+        if cache is None or len(cache) != len(self.image_paths):
+            if not self._restore_persisted_infinite_labeling_cache():
+                if not allow_build:
+                    return False
+                cache = self._ensure_infinite_labeling_cache()
+            else:
+                cache = self._infinite_label_distance_cache
+        if cache is None or self.embeddings is None:
+            return False
+
+        embeddings = np.asarray(self.embeddings)
+        if embeddings.ndim != 2 or index < 0 or index >= embeddings.shape[0]:
+            self._invalidate_infinite_labeling_cache()
+            return False
+
+        ref = embeddings[index].astype(np.float32, copy=False)
+        deltas = embeddings.astype(np.float32, copy=False) - ref
+        distances = np.einsum("ij,ij->i", deltas, deltas, optimize=True).astype(
+            np.float32,
+            copy=False,
+        )
+        self._infinite_label_distance_cache = np.minimum(cache, distances)
+        self._infinite_label_distance_cache[index] = 0.0
+        if self._infinite_label_owner_cache is None or len(
+            self._infinite_label_owner_cache
+        ) != len(self.image_paths):
+            self._infinite_label_owner_cache = np.full(
+                len(self.image_paths), -1, dtype=np.int32
+            )
+        improved = distances < cache
+        self._infinite_label_owner_cache[improved] = int(index)
+        self._infinite_label_owner_cache[index] = int(index)
+
+        assignments = self.cluster_assignments
+        counts = self._infinite_label_cluster_counts
+        if (
+            counts is not None
+            and assignments is not None
+            and 0 <= index < len(assignments)
+        ):
+            cluster_id = int(assignments[index])
+            if 0 <= cluster_id < len(counts):
+                counts[cluster_id] += 1
+
+        self._persist_infinite_labeling_cache()
+        return True
+
+    def _update_infinite_labeling_cache_for_removed_label(
+        self, index: int, *, allow_build: bool = True
+    ) -> bool:
+        """Update infinite-labeling caches after removing one existing label."""
+        if index < 0 or index >= len(self.image_paths):
+            return False
+
+        labeled_indices = self._labeled_image_indices()
+        if index not in labeled_indices:
+            return False
+
+        cache = self._infinite_label_distance_cache
+        owners = self._infinite_label_owner_cache
+        if (
+            cache is None
+            or owners is None
+            or len(cache) != len(self.image_paths)
+            or len(owners) != len(self.image_paths)
+        ):
+            if not self._restore_persisted_infinite_labeling_cache():
+                if not allow_build:
+                    return False
+                cache = self._ensure_infinite_labeling_cache()
+                owners = self._infinite_label_owner_cache
+            else:
+                cache = self._infinite_label_distance_cache
+                owners = self._infinite_label_owner_cache
+
+        if cache is None or owners is None:
+            return False
+
+        if len(labeled_indices) > 256:
+            self._invalidate_infinite_labeling_cache()
+            return False
+
+        remaining_reference_indices = [i for i in labeled_indices if i != index]
+        updated_cache = np.asarray(cache, dtype=np.float32).copy()
+        updated_owners = np.asarray(owners, dtype=np.int32).copy()
+
+        if remaining_reference_indices:
+            affected_indices = [
+                int(candidate_index)
+                for candidate_index, owner in enumerate(updated_owners)
+                if int(owner) == int(index) or candidate_index == index
+            ]
+            if affected_indices:
+                result = self._min_distance_and_owner_to_reference_scores(
+                    affected_indices,
+                    remaining_reference_indices,
+                )
+                if result is None:
+                    self._invalidate_infinite_labeling_cache()
+                    return False
+                rescored_cache, rescored_owners = result
+                updated_cache[affected_indices] = rescored_cache
+                updated_owners[affected_indices] = rescored_owners
+        else:
+            updated_cache = np.full(len(self.image_paths), np.inf, dtype=np.float32)
+            updated_owners = np.full(len(self.image_paths), -1, dtype=np.int32)
+
+        assignments = self.cluster_assignments
+        counts = self._infinite_label_cluster_counts
+        if (
+            counts is not None
+            and assignments is not None
+            and 0 <= index < len(assignments)
+        ):
+            cluster_id = int(assignments[index])
+            if 0 <= cluster_id < len(counts) and counts[cluster_id] > 0:
+                counts[cluster_id] -= 1
+
+        self._infinite_label_distance_cache = updated_cache
+        self._infinite_label_owner_cache = updated_owners
+        return True
+
     def _clear_explorer_selection_lock(self, clear_preview: bool = False) -> None:
         """Reset selection state so explorer preview returns to hover-driven behavior."""
         self.selected_point_index = None
@@ -1641,9 +1984,28 @@ class MainWindow(QMainWindow):
         """Reset candidate and current labeling-batch state."""
         self.candidate_indices = []
         self.round_labeled_indices = []
+        self._labeling_flow_mode = "batch"
+        self._labeling_navigation_scope = "pool"
 
         if self.explorer_mode == "labeling":
             self.set_explorer_mode("explore")
+
+        if not persist or not self.db_path:
+            return
+
+        try:
+            from ..core.store.db import ClassKitDB
+
+            ClassKitDB(self.db_path).save_candidate_cache([])
+        except Exception:
+            pass
+
+    def _reset_labeling_hover_session(self, persist: bool = False) -> None:
+        """Clear active labeling pool state while staying in labeling mode."""
+        self.candidate_indices = []
+        self.round_labeled_indices = []
+        self._labeling_flow_mode = "batch"
+        self._labeling_navigation_scope = "pool"
 
         if not persist or not self.db_path:
             return
@@ -1668,6 +2030,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Invalidate analysis artifacts derived from embeddings."""
         self.cluster_assignments = None
+        self._current_cluster_cache_id = None
         self.umap_coords = None
         self._clear_candidate_state(persist=persist_candidates)
         self._clear_embedding_projection_view()
@@ -1676,6 +2039,7 @@ class MainWindow(QMainWindow):
         """Invalidate in-memory state tied to the current project image set."""
         self.embeddings = None
         self._current_embedding_cache_id = None
+        self._invalidate_infinite_labeling_cache()
         self._invalidate_embedding_downstream_state(persist_candidates=True)
         self._model_probs = None
         self._model_class_names = None
@@ -1956,6 +2320,7 @@ class MainWindow(QMainWindow):
         )
         if cached_cluster is not None and self.cluster_assignments is None:
             self.cluster_assignments = cached_cluster["assignments"]
+            self._current_cluster_cache_id = cached_cluster.get("id")
             restored.append("clusters")
 
         cached_umap = db.get_most_recent_umap_cache(
@@ -2004,6 +2369,19 @@ class MainWindow(QMainWindow):
 
     def _apply_cached_predictions(self, cached_preds, db):
         """Apply cached prediction data and restore model-space projections."""
+        summary = None
+        get_recent_model = getattr(db, "get_most_recent_model_cache", None)
+        if callable(get_recent_model):
+            try:
+                recent_model = get_recent_model()
+            except Exception:
+                recent_model = None
+            if isinstance(recent_model, dict):
+                summary = self._validation_summary_from_value(
+                    recent_model.get("best_val_acc"),
+                    prefix="Saved held-out validation accuracy",
+                )
+        self._set_heldout_validation_summary(summary)
         self._model_probs = cached_preds["probs"]
         self._model_class_names = cached_preds["class_names"]
         self._active_model_mode = cached_preds.get("active_model_mode", "yolo")
@@ -2563,12 +2941,36 @@ class MainWindow(QMainWindow):
 
         if not self.image_labels or len(self.image_labels) != len(self.image_paths):
             self.image_labels = [None] * len(self.image_paths)
+        previous_label = self.image_labels[index]
+
+        removed_cache_updated = False
+        if previous_label and not label:
+            removed_cache_updated = (
+                self._update_infinite_labeling_cache_for_removed_label(
+                    index,
+                    allow_build=self._labeling_flow_mode == "infinite",
+                )
+            )
+
         self.image_labels[index] = label
+
+        if bool(label) and not previous_label:
+            self._update_infinite_labeling_cache_for_new_label(
+                index,
+                allow_build=self._labeling_flow_mode == "infinite",
+            )
+        elif previous_label and not label and removed_cache_updated:
+            self._persist_infinite_labeling_cache()
+        elif bool(label) != bool(previous_label):
+            self._invalidate_infinite_labeling_cache()
 
     def on_explorer_background_double_click(self):
         """Return to hover mode when empty region is double-clicked."""
+        if self.explorer_mode == "labeling":
+            self._reset_labeling_hover_session(persist=True)
         self._clear_explorer_selection_lock(clear_preview=False)
         self.request_update_explorer_plot()
+        self.request_update_context_panel()
         self.selection_info.setText(
             "<div style='line-height:1.5;'>"
             "<b>Selected Point:</b> none<br>"
@@ -2577,12 +2979,20 @@ class MainWindow(QMainWindow):
             "Selection cleared. Hover candidates to preview; click one to select for labeling."
             "</div>"
         )
-        self.status.showMessage("Hover mode restored")
+        if self.explorer_mode == "labeling":
+            self.status.showMessage("Hover mode restored — active labeling set cleared")
+        else:
+            self.status.showMessage("Hover mode restored")
 
     def _get_navigation_pool(self):
         """Return indices eligible for next/prev navigation in labeling context."""
         if self.explorer_mode == "review" and self._review_candidate_indices:
             return self._review_candidate_indices
+        if (
+            self.explorer_mode == "labeling"
+            and self._labeling_navigation_scope == "database"
+        ):
+            return []
         if self.candidate_indices:
             return self.candidate_indices
         return list(range(len(self.image_paths)))
@@ -2756,6 +3166,7 @@ class MainWindow(QMainWindow):
         previous_mode = self.explorer_mode
 
         if mode == "predictions" and self._model_probs is None:
+            self._set_view_mode_combo_value(previous_mode)
             QMessageBox.information(
                 self,
                 "Predictions Unavailable",
@@ -2764,6 +3175,7 @@ class MainWindow(QMainWindow):
             return
 
         if mode == "review" and not self._review_candidate_indices:
+            self._set_view_mode_combo_value(previous_mode)
             QMessageBox.information(
                 self,
                 "Review Queue Empty",
@@ -2772,6 +3184,9 @@ class MainWindow(QMainWindow):
             return
 
         self.explorer_mode = mode
+        if mode != "labeling":
+            self._labeling_flow_mode = "batch"
+            self._labeling_navigation_scope = "pool"
         if previous_mode in {"labeling", "review"} and mode not in {
             "labeling",
             "review",
@@ -2805,12 +3220,7 @@ class MainWindow(QMainWindow):
                     self.selected_point_index, source="selection"
                 )
 
-        if hasattr(self, "view_mode_combo"):
-            idx = self.view_mode_combo.findData(mode)
-            if idx >= 0 and self.view_mode_combo.currentIndex() != idx:
-                self.view_mode_combo.blockSignals(True)
-                self.view_mode_combo.setCurrentIndex(idx)
-                self.view_mode_combo.blockSignals(False)
+        self._set_view_mode_combo_value(mode)
 
         self.request_update_explorer_plot()
         self.update_knn_panel(self.selected_point_index)
@@ -2859,6 +3269,7 @@ class MainWindow(QMainWindow):
         """Clear current candidate set and return to explore mode."""
         self.candidate_indices = []
         self.round_labeled_indices = []
+        self._labeling_flow_mode = "batch"
 
         if self.db_path:
             try:
@@ -2919,9 +3330,225 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _labeled_image_indices(self) -> list[int]:
+        """Return dataset indices that already have an assigned label."""
+        labels = self.image_labels or []
+        return [
+            index
+            for index in range(len(self.image_paths))
+            if index < len(labels) and bool(labels[index])
+        ]
+
+    def _unlabeled_image_indices(self) -> list[int]:
+        """Return dataset indices that still need a label."""
+        labels = self.image_labels or []
+        return [
+            index
+            for index in range(len(self.image_paths))
+            if index >= len(labels) or not labels[index]
+        ]
+
+    def _diversity_reference_indices(
+        self, labeled_indices: list[int], max_refs: int = 256
+    ) -> list[int]:
+        """Reduce large labeled sets to a representative reference subset."""
+        if len(labeled_indices) <= max_refs:
+            return list(labeled_indices)
+        try:
+            embeddings = np.asarray(self.embeddings)
+            from ..core.al.density import select_diverse_samples
+
+            local = select_diverse_samples(
+                embeddings[labeled_indices], max_refs, seed=0
+            )
+            return [int(labeled_indices[int(idx)]) for idx in local]
+        except Exception:
+            step = max(1, len(labeled_indices) // max_refs)
+            return [int(idx) for idx in labeled_indices[::step][:max_refs]]
+
+    def _min_distance_to_reference_scores(
+        self, candidate_indices: list[int], reference_indices: list[int]
+    ) -> np.ndarray | None:
+        """Score each candidate by its minimum embedding distance to references."""
+        if not candidate_indices or not reference_indices:
+            return None
+        if self.embeddings is None:
+            return None
+
+        embeddings = np.asarray(self.embeddings)
+        if embeddings.ndim != 2 or embeddings.shape[0] != len(self.image_paths):
+            return None
+
+        candidate_embs = embeddings[candidate_indices].astype(np.float32, copy=False)
+        reference_embs = embeddings[reference_indices].astype(np.float32, copy=False)
+        scores = np.full(len(candidate_indices), np.inf, dtype=np.float32)
+
+        candidate_chunk = 256
+        reference_chunk = 128
+        for cand_start in range(0, len(candidate_embs), candidate_chunk):
+            cand_stop = cand_start + candidate_chunk
+            cand_chunk = candidate_embs[cand_start:cand_stop]
+            chunk_scores = np.full(len(cand_chunk), np.inf, dtype=np.float32)
+            for ref_start in range(0, len(reference_embs), reference_chunk):
+                ref_stop = ref_start + reference_chunk
+                ref_chunk = reference_embs[ref_start:ref_stop]
+                deltas = cand_chunk[:, None, :] - ref_chunk[None, :, :]
+                distances = np.einsum("ijk,ijk->ij", deltas, deltas, optimize=True)
+                chunk_scores = np.minimum(chunk_scores, distances.min(axis=1))
+            scores[cand_start:cand_stop] = chunk_scores
+
+        return scores
+
+    def _min_distance_and_owner_to_reference_scores(
+        self, candidate_indices: list[int], reference_indices: list[int]
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return each candidate's min distance and nearest labeled reference index."""
+        if not candidate_indices or not reference_indices:
+            return None
+        if self.embeddings is None:
+            return None
+
+        embeddings = np.asarray(self.embeddings)
+        if embeddings.ndim != 2 or embeddings.shape[0] != len(self.image_paths):
+            return None
+
+        candidate_embs = embeddings[candidate_indices].astype(np.float32, copy=False)
+        reference_embs = embeddings[reference_indices].astype(np.float32, copy=False)
+        reference_ids = np.asarray(reference_indices, dtype=np.int32)
+        scores = np.full(len(candidate_indices), np.inf, dtype=np.float32)
+        owners = np.full(len(candidate_indices), -1, dtype=np.int32)
+
+        candidate_chunk = 256
+        reference_chunk = 128
+        for cand_start in range(0, len(candidate_embs), candidate_chunk):
+            cand_stop = cand_start + candidate_chunk
+            cand_chunk = candidate_embs[cand_start:cand_stop]
+            chunk_scores = np.full(len(cand_chunk), np.inf, dtype=np.float32)
+            chunk_owners = np.full(len(cand_chunk), -1, dtype=np.int32)
+            for ref_start in range(0, len(reference_embs), reference_chunk):
+                ref_stop = ref_start + reference_chunk
+                ref_chunk = reference_embs[ref_start:ref_stop]
+                deltas = cand_chunk[:, None, :] - ref_chunk[None, :, :]
+                distances = np.einsum("ijk,ijk->ij", deltas, deltas, optimize=True)
+                local_best = distances.argmin(axis=1)
+                local_scores = distances[np.arange(len(cand_chunk)), local_best]
+                improved = local_scores < chunk_scores
+                if np.any(improved):
+                    chunk_scores[improved] = local_scores[improved]
+                    chunk_owners[improved] = reference_ids[
+                        ref_start + local_best[improved]
+                    ]
+            scores[cand_start:cand_stop] = chunk_scores
+            owners[cand_start:cand_stop] = chunk_owners
+
+        return scores, owners
+
+    def _select_infinite_labeling_candidate(self) -> int | None:
+        """Pick the next unlabeled point that most expands dataset coverage."""
+        unlabeled_indices = self._unlabeled_image_indices()
+        if not unlabeled_indices:
+            return None
+        if len(unlabeled_indices) == 1:
+            return int(unlabeled_indices[0])
+
+        labeled_indices = self._labeled_image_indices()
+        assignments = self.cluster_assignments
+        candidate_pool = list(unlabeled_indices)
+        distance_cache = (
+            self._ensure_infinite_labeling_cache() if labeled_indices else None
+        )
+
+        if assignments is not None and len(assignments) == len(self.image_paths):
+            if labeled_indices:
+                cluster_counts = self._infinite_label_cluster_counts
+                min_count = min(
+                    (
+                        int(cluster_counts[int(assignments[index])])
+                        if cluster_counts is not None
+                        and 0 <= int(assignments[index]) < len(cluster_counts)
+                        else 0
+                    )
+                    for index in unlabeled_indices
+                )
+                candidate_pool = [
+                    int(index)
+                    for index in unlabeled_indices
+                    if (
+                        int(cluster_counts[int(assignments[index])])
+                        if cluster_counts is not None
+                        and 0 <= int(assignments[index]) < len(cluster_counts)
+                        else 0
+                    )
+                    == min_count
+                ]
+            else:
+                sampled = self._sample_cluster_candidates(
+                    list(assignments),
+                    self.image_labels or [None] * len(self.image_paths),
+                    1,
+                )
+                if sampled:
+                    return int(sampled[0])
+
+        if distance_cache is not None and len(distance_cache) == len(self.image_paths):
+            distance_scores = distance_cache[candidate_pool]
+            best_local = int(np.argmax(distance_scores))
+            return int(candidate_pool[best_local])
+
+        return int(candidate_pool[0]) if candidate_pool else None
+
+    def _activate_infinite_labeling_candidate(self, index: int) -> None:
+        """Make one distinct unlabeled point the active singleton candidate set."""
+        self._labeling_flow_mode = "infinite"
+        self._labeling_navigation_scope = "pool"
+        self.candidate_indices = [int(index)]
+        self.round_labeled_indices = []
+        self._persist_candidate_indices()
+
+    def _start_infinite_labeling_mode(self) -> bool:
+        """Enter a rolling singleton labeling flow driven by diversity."""
+        next_index = self._select_infinite_labeling_candidate()
+        if next_index is None:
+            self._labeling_flow_mode = "batch"
+            QMessageBox.information(
+                self,
+                "Infinite Labeling Complete",
+                "There are no unlabeled points left to surface.",
+            )
+            return False
+
+        self._activate_infinite_labeling_candidate(next_index)
+        self.set_explorer_mode("labeling")
+        self.selected_point_index = int(next_index)
+        self._apply_navigation_selection("infinite")
+        self.request_update_explorer_plot()
+        self.request_update_context_panel()
+        self.status.showMessage(
+            "Infinite labeling mode active — showing the next most distinct unlabeled point"
+        )
+        return True
+
+    def _handle_exhausted_labeling_pool(self) -> tuple[int | None, str | None]:
+        """Resolve what should happen when the current labeling pool runs out."""
+        if self._labeling_flow_mode == "infinite":
+            next_index = self._select_infinite_labeling_candidate()
+            if next_index is None:
+                self._labeling_flow_mode = "batch"
+                QMessageBox.information(
+                    self,
+                    "Infinite Labeling Complete",
+                    "There are no unlabeled points left to surface.",
+                )
+                return None, None
+            self._activate_infinite_labeling_candidate(next_index)
+            return int(next_index), None
+        return None, self._prompt_after_label_set_complete()
+
     def _apply_sampled_candidates(self, assignments) -> None:
         """Update UI state after sampling a new labeling candidate set."""
         if self.candidate_indices:
+            self._labeling_flow_mode = "batch"
+            self._labeling_navigation_scope = "pool"
             self.set_explorer_mode("labeling")
             self.selected_point_index = None
             self.hover_locked = False
@@ -3215,6 +3842,8 @@ class MainWindow(QMainWindow):
             self._apply_selected_label(index, label)
             self.on_label_assigned(label)
             next_unlabeled = self._next_unlabeled_candidate_index(index)
+            if next_unlabeled is None:
+                next_unlabeled, next_action = self._handle_exhausted_labeling_pool()
             if next_unlabeled is not None:
                 self.selected_point_index = next_unlabeled
                 self.request_preview_for_index(
@@ -3226,7 +3855,6 @@ class MainWindow(QMainWindow):
                 self.hover_locked = False
                 self.request_update_explorer_selection(None)
                 self.request_preview_for_index(index, source="label")
-                next_action = self._prompt_after_label_set_complete()
 
             self.request_update_explorer_plot()
             self.request_update_context_panel()
@@ -3237,8 +3865,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.sample_candidates_for_labeling)
         elif next_action == "al":
             QTimer.singleShot(0, self._build_al_batch)
-        elif next_action == "train":
-            QTimer.singleShot(0, self.train_classifier)
+        elif next_action == "infinite":
+            QTimer.singleShot(0, self._start_infinite_labeling_mode)
 
     def _selected_index_for_assignment(self) -> int | None:
         """Validate the current selection before applying a label."""
@@ -3255,6 +3883,7 @@ class MainWindow(QMainWindow):
         previous_label = (
             self.image_labels[index] if index < len(self.image_labels) else None
         )
+        self._labeling_navigation_scope = "pool"
         self.last_assigned_stack.append(
             {
                 "index": index,
@@ -3287,13 +3916,16 @@ class MainWindow(QMainWindow):
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Information)
         message.setWindowTitle("Labeling Set Complete")
-        message.setText("All points in the current labeling set are labeled.")
+        message.setText(
+            "There are no unlabeled points left in the current labeling set."
+        )
         message.setInformativeText(
-            "Choose what to do next: sample more smart selections, build an Active Learning batch, or start training."
+            "Choose what to do next: sample another labeling set, or enter infinite labeling mode to keep surfacing distinct unlabeled points across clusters and embedding space until the dataset is exhausted."
         )
         sample_btn = message.addButton("Sample Another Set", QMessageBox.AcceptRole)
-        al_btn = message.addButton("Build AL Batch", QMessageBox.ActionRole)
-        train_btn = message.addButton("Train Classifier", QMessageBox.ActionRole)
+        infinite_btn = message.addButton(
+            "Start Infinite Labeling", QMessageBox.ActionRole
+        )
         message.addButton(QMessageBox.Close)
         message.setDefaultButton(sample_btn)
         message.exec()
@@ -3301,10 +3933,8 @@ class MainWindow(QMainWindow):
         clicked = message.clickedButton()
         if clicked == sample_btn:
             return "sample"
-        if clicked == al_btn:
-            return "al"
-        if clicked == train_btn:
-            return "train"
+        if clicked == infinite_btn:
+            return "infinite"
         return None
 
     def update_explorer_plot(self, force_fit: bool = False):
@@ -4105,7 +4735,7 @@ class MainWindow(QMainWindow):
             f"• <b>{active.get('Explore mode', 'E')}</b> / <b>{active.get('Labeling mode', 'L')}</b> / <b>{active.get('Review mode', 'V')}</b> / <b>{active.get('Predictions mode', 'P')}</b>: set mode<br>",
             f"• <b>{label_instr}</b>: assign class<br>",
             "• <b>0</b>: mark as unknown<br>",
-            f"• <b>{active.get('Approve review label', 'A')}</b> / <b>{active.get('Reject review label', 'X')}</b>: approve or reject selected machine label<br>",
+            f"• <b>{active.get('Approve review label', '+')}</b> / <b>{active.get('Reject review label', '-')}</b>: approve or reject selected machine label<br>",
             f"• <b>{active.get('Sample next candidates', 'Space')}</b>: sample candidates<br>",
             f"• <b>{active.get('Previous unlabeled', 'Left')}</b> / <b>{active.get('Next unlabeled', 'Right')}</b>: navigate<br>",
             f"• <b>{active.get('Undo last label (Ctrl+Z)', 'Ctrl+Z')}</b>: undo<br>",
@@ -4709,10 +5339,20 @@ class MainWindow(QMainWindow):
         self._evaluate_model_on_labeled()
         dialog.append_log("Inference complete — Metrics tab updated.")
         dialog.append_log("Auto-computing model-space UMAP...")
-        QTimer.singleShot(100, self._replot_umap_model_space)
+        QTimer.singleShot(
+            100,
+            lambda: self._replot_umap_model_space(
+                auto_switch=True,
+                suppress_errors=True,
+                log_callback=dialog.append_log,
+            ),
+        )
 
     def _on_training_success(self, dialog, context, results: list) -> None:
         """Handle successful training completion before post-training inference."""
+        self._set_heldout_validation_summary(
+            self._validation_summary_from_results(results)
+        )
         dialog._train_results = results
         dialog.publish_btn.setEnabled(True)
         dialog.append_log("Training complete.")
@@ -4854,6 +5494,7 @@ class MainWindow(QMainWindow):
         dialog.start_btn.setEnabled(False)
         dialog.cancel_btn.setEnabled(True)
         dialog.append_log("Starting dataset export...")
+        dialog.append_log(dialog.current_data_summary_text())
         self._threadpool_start(worker)
 
     def train_classifier(self):
@@ -4876,6 +5517,7 @@ class MainWindow(QMainWindow):
             scheme=scheme,
             n_labeled=len(labeled_pairs),
             class_choices=project_class_choices,
+            labeled_label_names=[label for _, label in labeled_pairs],
             initial_settings=self._get_recent_project_training_settings(),
             recent_model_paths=self._list_recent_trainable_model_paths(),
             average_image_size=self._estimate_average_image_dimensions(),
@@ -5010,6 +5652,7 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a classic embedding-head checkpoint and recompute predictions."""
+        self._set_heldout_validation_summary(None)
         from ..core.train.trainer import EmbeddingHeadTrainer
 
         input_dim = (
@@ -5074,6 +5717,12 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a torchvision custom CNN checkpoint and run inference."""
+        self._set_heldout_validation_summary(
+            self._validation_summary_from_value(
+                ckpt.get("best_val_acc") if isinstance(ckpt, dict) else None,
+                prefix="Checkpoint held-out validation accuracy",
+            )
+        )
         ckpt_names = ckpt.get("class_names")
         input_size = ckpt.get("input_size", (224, 224))
         size = (
@@ -5118,6 +5767,12 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a tiny CNN checkpoint and run inference."""
+        self._set_heldout_validation_summary(
+            self._validation_summary_from_value(
+                ckpt.get("best_val_acc") if isinstance(ckpt, dict) else None,
+                prefix="Checkpoint held-out validation accuracy",
+            )
+        )
         ckpt_names = ckpt.get("class_names")
         resolved = (
             ckpt_names or self._cached_model_class_names(path) or list(self.classes)
@@ -5153,6 +5808,7 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a YOLO classifier checkpoint and run inference."""
+        self._set_heldout_validation_summary(None)
         self._yolo_model_path = path
         self.status.showMessage(f"Loading YOLO model: {path.name}...")
 
@@ -5272,6 +5928,8 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Selection is disabled outside Labeling mode")
             return
         self.selected_point_index = index
+        if self.explorer_mode == "labeling":
+            self._labeling_navigation_scope = "database"
         self.hover_locked = True
         self.request_preview_for_index(index, source="click")
         self.request_update_explorer_selection(index)
@@ -5281,6 +5939,13 @@ class MainWindow(QMainWindow):
 
     def on_explorer_point_hovered(self, index):
         """Handle point hover in explorer."""
+        if (
+            self.explorer_mode == "labeling"
+            and self.hover_locked
+            and self.selected_point_index is not None
+            and index != self.selected_point_index
+        ):
+            return
         if self._has_active_labeling_batch():
             self.request_preview_for_index(index, source="hover")
             return
@@ -5295,7 +5960,13 @@ class MainWindow(QMainWindow):
     def on_explorer_empty_hover(self) -> None:
         """Clear the preview whenever the cursor is not over an explorer point."""
         if (
-            self._has_active_labeling_batch() or self.explorer_mode == "review"
+            (
+                self.explorer_mode == "labeling"
+                and self.hover_locked
+                and self.selected_point_index is not None
+            )
+            or self._has_active_labeling_batch()
+            or self.explorer_mode == "review"
         ) and self.selected_point_index is not None:
             self.request_preview_for_index(
                 self.selected_point_index, source="selection"
@@ -5327,10 +5998,13 @@ class MainWindow(QMainWindow):
         labels = self.image_labels or []
         unlabeled = [i for i in pool if i >= len(labels) or not labels[i]]
         if not unlabeled:
+            next_index, next_action = self._handle_exhausted_labeling_pool()
+            if next_index is not None:
+                return int(next_index), None
             self.selected_point_index = None
             self.hover_locked = False
             self.request_update_explorer_selection(None)
-            return None, self._prompt_after_label_set_complete()
+            return None, next_action
 
         unlabeled_set = set(unlabeled)
         try:
@@ -5399,8 +6073,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.sample_candidates_for_labeling)
         elif next_action == "al":
             QTimer.singleShot(0, self._build_al_batch)
-        elif next_action == "train":
-            QTimer.singleShot(0, self.train_classifier)
+        elif next_action == "infinite":
+            QTimer.singleShot(0, self._start_infinite_labeling_mode)
 
     def on_prev_image(self):
         """Navigate to previous candidate or point."""
@@ -5415,8 +6089,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.sample_candidates_for_labeling)
         elif next_action == "al":
             QTimer.singleShot(0, self._build_al_batch)
-        elif next_action == "train":
-            QTimer.singleShot(0, self.train_classifier)
+        elif next_action == "infinite":
+            QTimer.singleShot(0, self._start_infinite_labeling_mode)
 
     def refresh_view(self):
         """Refresh current view."""
@@ -5523,7 +6197,7 @@ class MainWindow(QMainWindow):
                 from ..core.store.db import ClassKitDB
 
                 db = ClassKitDB(self.db_path)
-                db.save_cluster_cache(
+                self._current_cluster_cache_id = db.save_cluster_cache(
                     self.cluster_assignments,
                     result.get("centers"),
                     n_clusters,
@@ -5532,6 +6206,8 @@ class MainWindow(QMainWindow):
                 )
             except Exception:
                 pass
+
+        self._invalidate_infinite_labeling_cache()
 
         self.status.showMessage(f"Clustered into {n_clusters} groups")
         self.update_explorer_plot()
@@ -5849,6 +6525,12 @@ class MainWindow(QMainWindow):
 
     def _load_model_from_cache_entry(self, entry: dict, on_success=None):
         """Load a model from a DB cache entry and run inference + UMAP."""
+        self._set_heldout_validation_summary(
+            self._validation_summary_from_value(
+                entry.get("best_val_acc") if isinstance(entry, dict) else None,
+                prefix="Saved held-out validation accuracy",
+            )
+        )
         mode = entry.get("mode", "")
         paths = entry.get("artifact_paths") or []
         if not paths or not Path(paths[0]).exists():
@@ -5924,6 +6606,73 @@ class MainWindow(QMainWindow):
             probs_subset[:, :usable_cols] = probs_rows[:, :usable_cols]
         return probs_subset
 
+    @staticmethod
+    def _validation_summary_from_results(results: list[dict] | None):
+        """Build a held-out validation summary from training results."""
+        values = []
+        for index, result in enumerate(results or []):
+            raw = result.get("best_val_acc") if isinstance(result, dict) else None
+            if raw is None:
+                continue
+            try:
+                values.append((index, float(raw)))
+            except Exception:
+                continue
+        if not values:
+            return None
+        if len(values) == 1:
+            value = values[0][1]
+            return {
+                "text": f"Held-out validation accuracy (best epoch): {value:.3f}",
+                "short_text": f"Held-out val acc: {value:.3f}",
+            }
+
+        mean_value = sum(value for _index, value in values) / len(values)
+        per_factor = ", ".join(f"f{index}={value:.3f}" for index, value in values)
+        return {
+            "text": (
+                "Held-out validation accuracy by factor (best epoch per head): "
+                f"{per_factor}  |  mean={mean_value:.3f}"
+            ),
+            "short_text": f"Held-out val acc mean: {mean_value:.3f}",
+        }
+
+    @staticmethod
+    def _validation_summary_from_value(value, *, prefix: str):
+        """Build a held-out validation summary from one scalar value."""
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except Exception:
+            return None
+        return {
+            "text": f"{prefix}: {numeric:.3f}",
+            "short_text": f"Held-out val acc: {numeric:.3f}",
+        }
+
+    def _set_heldout_validation_summary(self, summary) -> None:
+        """Update held-out validation state and the metrics banner."""
+        self._heldout_validation_summary = (
+            summary if isinstance(summary, dict) else None
+        )
+        if not hasattr(self, "metrics_validation_label"):
+            return
+        if self._heldout_validation_summary:
+            self.metrics_validation_label.setText(
+                self._heldout_validation_summary["text"]
+            )
+        else:
+            self.metrics_validation_label.setText(
+                "Held-out validation: unavailable for the current prediction set."
+            )
+
+    def _heldout_validation_short_text(self) -> str:
+        """Return a short held-out validation text snippet for figure captions."""
+        if not isinstance(self._heldout_validation_summary, dict):
+            return ""
+        return str(self._heldout_validation_summary.get("short_text") or "").strip()
+
     def _evaluate_model_on_labeled(self, activate_metrics_tab: bool = True):
         """Compute metrics from _model_probs on all labeled images and update Metrics tab."""
         if self._model_probs is None:
@@ -5951,7 +6700,15 @@ class MainWindow(QMainWindow):
         """Update Metrics tab: text report + matplotlib confusion matrix / per-class bars."""
         from ..core.train.metrics import format_metrics_report
 
-        self.metrics_view.setPlainText(format_metrics_report(metrics))
+        report = format_metrics_report(metrics)
+        heldout_text = (
+            self._heldout_validation_summary.get("text")
+            if isinstance(self._heldout_validation_summary, dict)
+            else ""
+        )
+        if heldout_text:
+            report = f"{heldout_text}\n\n{report}"
+        self.metrics_view.setPlainText(report)
         if activate_metrics_tab:
             self.tabs.setCurrentWidget(self.metrics_page)
 
@@ -6051,7 +6808,12 @@ class MainWindow(QMainWindow):
                 0.5,
                 0.01,
                 f"Accuracy: {metrics.accuracy:.3f}  |  Macro F1: {metrics.macro_f1:.3f}  |  "
-                f"Weighted F1: {metrics.weighted_f1:.3f}  |  n={metrics.num_samples}",
+                f"Weighted F1: {metrics.weighted_f1:.3f}  |  n={metrics.num_samples}"
+                + (
+                    f"  |  {self._heldout_validation_short_text()}"
+                    if self._heldout_validation_short_text()
+                    else ""
+                ),
                 ha="center",
                 color="#aaa",
                 fontsize=9,
@@ -6074,6 +6836,7 @@ class MainWindow(QMainWindow):
 
     def _clear_metrics_display(self) -> None:
         """Reset the Metrics tab to its empty project state."""
+        self._set_heldout_validation_summary(None)
         if hasattr(self, "metrics_view"):
             self.metrics_view.clear()
         if hasattr(self, "metrics_figure_label"):
@@ -6133,15 +6896,41 @@ class MainWindow(QMainWindow):
         }.get(target, target)
         self.status.showMessage(f"Explorer space → {label}")
 
-    def _replot_umap_model_space(self, auto_switch: bool = True):
-        """Compute UMAP from current model probabilities and switch explorer to it."""
+    def _validate_model_umap_input(self) -> str | None:
+        """Return a human-readable validation error for model-space UMAP input."""
         if self._model_probs is None:
-            QMessageBox.warning(
-                self,
-                "No Model Predictions",
-                "Load a model first (Load Ckpt or train one).\n"
-                "Predictions are computed automatically during model load.",
+            return (
+                "Load a model first (Load Ckpt or train one). "
+                "Predictions are computed automatically during model load."
             )
+
+        probs = np.asarray(self._model_probs)
+        if probs.ndim != 2:
+            return "Expected a 2D model prediction matrix for model-space UMAP."
+
+        num_samples, num_classes = probs.shape
+        if num_samples < 3:
+            return "Need at least 3 images with model predictions to compute model-space UMAP."
+        if num_classes < 2:
+            return "Need at least 2 prediction columns to compute model-space UMAP."
+        if not np.isfinite(probs).all():
+            return "Model predictions contain NaN or infinite values, so model-space UMAP was skipped."
+        return None
+
+    def _replot_umap_model_space(
+        self,
+        auto_switch: bool = True,
+        suppress_errors: bool = False,
+        log_callback=None,
+    ):
+        """Compute UMAP from current model probabilities and switch explorer to it."""
+        validation_error = self._validate_model_umap_input()
+        if validation_error:
+            self.status.showMessage(validation_error)
+            if log_callback is not None:
+                log_callback(f"Model-space UMAP skipped: {validation_error}")
+            if not suppress_errors:
+                QMessageBox.warning(self, "No Model UMAP", validation_error)
             return
 
         from ..jobs.task_workers import LogitsUMAPWorker
@@ -6174,12 +6963,18 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
+        def _on_model_umap_error(error_message: str) -> None:
+            message = f"Model-space UMAP failed: {error_message}"
+            self.status.showMessage(message)
+            if log_callback is not None:
+                log_callback(message)
+            if not suppress_errors:
+                QMessageBox.critical(
+                    self, "UMAP Error", f"Model UMAP failed:\n{error_message}"
+                )
+
         worker.signals.success.connect(_on_model_umap_success)
-        worker.signals.error.connect(
-            lambda e: QMessageBox.critical(
-                self, "UMAP Error", f"Model UMAP failed:\n{e}"
-            )
-        )
+        worker.signals.error.connect(_on_model_umap_error)
         worker.signals.progress.connect(
             lambda p, m: (
                 self.progress_bar.setValue(p),
@@ -6381,6 +7176,8 @@ class MainWindow(QMainWindow):
         """Set AL candidates as the active labeling set and enter labeling mode."""
         if self._al_candidates is None or len(self._al_candidates) == 0:
             return
+        self._labeling_flow_mode = "batch"
+        self._labeling_navigation_scope = "pool"
         new_candidates = [int(i) for i in self._al_candidates]
         # Preserve already-labeled images from the current candidate set so
         # they remain visible after switching to the AL batch.

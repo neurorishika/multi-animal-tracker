@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 QApplication = QtWidgets.QApplication
+QScrollArea = QtWidgets.QScrollArea
 
 ClassKitTrainingDialog = pytest.importorskip(
     "hydra_suite.classkit.gui.dialogs.training"
@@ -104,12 +105,62 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
     assert dialog.get_settings()["initial_model_path"] == "/tmp/previous_model.pth"
 
 
+def test_training_dialog_data_summary_reflects_stratified_split_and_expansion(
+    qapp,
+) -> None:
+    dialog = ClassKitTrainingDialog(
+        n_labeled=10,
+        class_choices=["left", "right"],
+        labeled_label_names=["left"] * 6 + ["right"] * 4,
+    )
+
+    dialog._exp_group.setChecked(True)
+    dialog._add_lr_row("left", "right")
+
+    summary = dialog.current_data_summary_text()
+
+    assert "8 train / 2 val" in summary
+    assert "adds 5 mirrored train copies" in summary
+    assert "15 files are exported" in summary
+
+
+def test_training_dialog_label_expansion_keeps_photometric_jitter(qapp) -> None:
+    dialog = ClassKitTrainingDialog(
+        n_labeled=6,
+        class_choices=["left", "right"],
+        labeled_label_names=["left", "right"] * 3,
+    )
+
+    dialog.brightness_spin.setValue(0.2)
+    dialog.contrast_spin.setValue(0.15)
+    dialog.flip_lr_spin.setValue(0.4)
+    dialog._exp_group.setChecked(True)
+    dialog._add_lr_row("left", "right")
+
+    settings = dialog.get_settings()
+
+    assert settings["fliplr"] == pytest.approx(0.0)
+    assert settings["flipud"] == pytest.approx(0.0)
+    assert settings["brightness"] == pytest.approx(0.2)
+    assert settings["contrast"] == pytest.approx(0.15)
+    assert settings["label_expansion"] == {"fliplr": {"left": "right"}}
+
+
 def test_training_dialog_exposes_custom_and_yolo_modes_only(qapp) -> None:
     dialog = ClassKitTrainingDialog(n_labeled=8, class_choices=["a", "b"])
 
     modes = [dialog.mode_combo.itemData(i) for i in range(dialog.mode_combo.count())]
 
     assert modes == ["flat_custom", "flat_yolo"]
+
+
+def test_training_dialog_custom_tab_uses_scroll_area(qapp) -> None:
+    dialog = ClassKitTrainingDialog(n_labeled=8, class_choices=["a", "b"])
+
+    custom_tab = dialog.tabs.widget(dialog._custom_tab_idx)
+
+    assert isinstance(custom_tab, QScrollArea)
+    assert custom_tab.widgetResizable()
 
 
 def test_training_dialog_class_rebalancing_defaults_to_none(qapp) -> None:

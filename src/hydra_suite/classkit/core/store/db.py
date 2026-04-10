@@ -125,6 +125,18 @@ class ClassKitDB:
             """)
 
             c.execute("""
+                CREATE TABLE IF NOT EXISTS infinite_label_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    num_images INTEGER,
+                    num_embeddings INTEGER,
+                    distance_path TEXT NOT NULL,
+                    cluster_counts_path TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    meta_json TEXT
+                )
+            """)
+
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS prediction_cache (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     num_images INTEGER,
@@ -786,7 +798,7 @@ class ClassKitDB:
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
-                SELECT num_images, num_embeddings, n_clusters, method,
+                SELECT id, num_images, num_embeddings, n_clusters, method,
                        assignments_path, centers_path, timestamp, meta_json
                 FROM cluster_cache
                 ORDER BY timestamp DESC
@@ -795,6 +807,7 @@ class ClassKitDB:
 
         for row in rows:
             (
+                cache_id,
                 num_images,
                 num_embeddings,
                 n_clusters,
@@ -824,6 +837,7 @@ class ClassKitDB:
                     centers = np.load(centers_path_obj)
 
             payload = {
+                "id": cache_id,
                 "assignments": assignments,
                 "centers": centers,
                 "n_clusters": n_clusters,
@@ -971,6 +985,120 @@ class ClassKitDB:
             if meta_json:
                 payload.update(json.loads(meta_json))
             return payload
+
+    def save_infinite_label_cache(
+        self,
+        distance_cache: np.ndarray,
+        cluster_counts: Optional[np.ndarray] = None,
+        owner_cache: Optional[np.ndarray] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Persist infinite-labeling cache artifacts for reuse."""
+        cache_dir = self._cache_dir("infinite_labeling")
+        timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+        distance_path = cache_dir / f"distance_{timestamp}.npy"
+        np.save(distance_path, distance_cache)
+
+        cluster_counts_path = None
+        if cluster_counts is not None:
+            cluster_counts_path = cache_dir / f"cluster_counts_{timestamp}.npy"
+            np.save(cluster_counts_path, cluster_counts)
+
+        meta_payload = dict(meta or {})
+        if owner_cache is not None:
+            owner_path = cache_dir / f"owners_{timestamp}.npy"
+            np.save(owner_path, owner_cache)
+            meta_payload["owner_cache_path"] = str(owner_path)
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT INTO infinite_label_cache
+                (num_images, num_embeddings, distance_path, cluster_counts_path, meta_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    self.count_images(),
+                    int(len(distance_cache)),
+                    str(distance_path),
+                    str(cluster_counts_path) if cluster_counts_path else None,
+                    json.dumps(meta_payload) if meta_payload else None,
+                ),
+            )
+            conn.commit()
+            return c.lastrowid
+
+    def get_most_recent_infinite_label_cache(
+        self,
+        embedding_cache_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Load the most recent persisted infinite-labeling cache if still valid."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, num_images, num_embeddings, distance_path,
+                       cluster_counts_path, timestamp, meta_json
+                FROM infinite_label_cache
+                ORDER BY timestamp DESC
+                """)
+            rows = c.fetchall()
+
+        for row in rows:
+            (
+                cache_id,
+                num_images,
+                num_embeddings,
+                distance_path,
+                cluster_counts_path,
+                timestamp,
+                meta_json,
+            ) = row
+            if num_images != self.count_images():
+                continue
+
+            meta = self._decode_meta_json(meta_json)
+            if embedding_cache_id is not None:
+                if int(meta.get("embedding_cache_id", -1)) != int(embedding_cache_id):
+                    continue
+
+            distance_path_obj = Path(distance_path)
+            if not distance_path_obj.exists():
+                continue
+
+            distance_cache = np.load(distance_path_obj)
+            if len(distance_cache) != num_embeddings:
+                continue
+
+            cluster_counts = None
+            if cluster_counts_path:
+                cluster_counts_path_obj = Path(cluster_counts_path)
+                if not cluster_counts_path_obj.exists():
+                    continue
+                cluster_counts = np.load(cluster_counts_path_obj)
+
+            owner_cache = None
+            owner_path = meta.get("owner_cache_path")
+            if owner_path:
+                owner_path_obj = Path(str(owner_path))
+                if not owner_path_obj.exists():
+                    continue
+                owner_cache = np.load(owner_path_obj)
+                if len(owner_cache) != num_embeddings:
+                    continue
+
+            payload = {
+                "id": cache_id,
+                "distance_cache": distance_cache,
+                "cluster_counts": cluster_counts,
+                "owner_cache": owner_cache,
+                "timestamp": timestamp,
+            }
+            if meta:
+                payload.update(meta)
+            return payload
+
+        return None
 
     def close(self):
         """No-op; provided for API symmetry with connection-holding DB wrappers."""

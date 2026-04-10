@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
@@ -32,6 +33,9 @@ _DARK_STYLE = """
     QPushButton:disabled { background-color: #3e3e42; color: #888888; }
 """
 
+_PLUS_KEY = QKeySequence(Qt.Key.Key_Plus).toString()
+_MINUS_KEY = QKeySequence(Qt.Key.Key_Minus).toString()
+
 
 class ShortcutEditorDialog(QDialog):
     """Edit keyboard shortcut assignments for non-label global actions."""
@@ -41,8 +45,8 @@ class ShortcutEditorDialog(QDialog):
         ("Labeling mode", "L"),
         ("Predictions mode", "P"),
         ("Review mode", "V"),
-        ("Approve review label", "A"),
-        ("Reject review label", "X"),
+        ("Approve review label", _PLUS_KEY),
+        ("Reject review label", _MINUS_KEY),
         ("Sample next candidates", "Space"),
         ("Previous unlabeled", "Left"),
         ("Next unlabeled", "Right"),

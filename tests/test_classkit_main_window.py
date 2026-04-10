@@ -19,7 +19,8 @@ QApplication = QtWidgets.QApplication
 classkit_config_path = pytest.importorskip(
     "hydra_suite.classkit.gui.project"
 ).classkit_config_path
-MainWindow = pytest.importorskip("hydra_suite.classkit.gui.main_window").MainWindow
+main_window_module = pytest.importorskip("hydra_suite.classkit.gui.main_window")
+MainWindow = main_window_module.MainWindow
 
 
 @pytest.fixture()
@@ -101,6 +102,380 @@ def test_review_buttons_live_in_left_review_panel(qapp) -> None:
     )
 
 
+def test_empty_review_mode_reverts_combo_selection(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown = []
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "information",
+        lambda *args, **kwargs: shown.append(args[1:3]) or QtWidgets.QMessageBox.Ok,
+    )
+
+    window = MainWindow()
+    review_idx = window.view_mode_combo.findData("review")
+
+    window.view_mode_combo.setCurrentIndex(review_idx)
+
+    assert window.explorer_mode == "explore"
+    assert window.view_mode_combo.currentData() == "explore"
+    assert shown == [
+        ("Review Queue Empty", "There are no unverified machine labels to review yet.")
+    ]
+
+
+def test_assign_label_can_continue_in_infinite_labeling_mode(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_single_shot = main_window_module.QTimer.singleShot
+
+    monkeypatch.setattr(
+        main_window_module.QTimer,
+        "singleShot",
+        staticmethod(
+            lambda msec, fn: fn() if int(msec) == 0 else original_single_shot(msec, fn)
+        ),
+    )
+
+    window = MainWindow()
+    window.image_paths = [
+        Path("/tmp/a.png"),
+        Path("/tmp/b.png"),
+        Path("/tmp/c.png"),
+        Path("/tmp/d.png"),
+    ]
+    window.image_labels = [None, None, None, None]
+    window.embeddings = np.array(
+        [
+            [0.0, 0.0],
+            [0.2, 0.0],
+            [10.0, 10.0],
+            [10.5, 10.2],
+        ],
+        dtype=np.float32,
+    )
+    window.cluster_assignments = np.array([0, 0, 1, 1])
+    window.set_explorer_mode("labeling")
+    window.selected_point_index = 0
+    window.candidate_indices = []
+
+    monkeypatch.setattr(window, "_prompt_after_label_set_complete", lambda: "infinite")
+
+    window.assign_label_to_selected("alpha")
+
+    assert window.image_labels[0] == "alpha"
+    assert window._labeling_flow_mode == "infinite"
+    assert window.selected_point_index in {2, 3}
+    assert window.candidate_indices == [window.selected_point_index]
+    assert window.round_labeled_indices == []
+    assert int(window.cluster_assignments[window.selected_point_index]) == 1
+
+
+def test_manual_click_in_labeling_mode_browses_database_with_prev_next(qapp) -> None:
+    window = MainWindow()
+    window.image_paths = [Path(f"/tmp/{idx}.png") for idx in range(6)]
+    window.image_labels = [None] * 6
+    window.candidate_indices = [1, 4]
+    window.set_explorer_mode("labeling")
+
+    window.on_explorer_point_clicked(2)
+    window.on_next_image()
+
+    assert window.selected_point_index == 3
+
+    window._command_busy = False
+    window._command_block_until = 0.0
+    window.on_prev_image()
+
+    assert window.selected_point_index == 2
+
+
+def test_clicking_different_point_replaces_labeling_selection(qapp) -> None:
+    window = MainWindow()
+    window.image_paths = [Path(f"/tmp/{idx}.png") for idx in range(5)]
+    window.image_labels = [None] * 5
+    window.candidate_indices = [1, 3]
+    window.set_explorer_mode("labeling")
+
+    window.on_explorer_point_clicked(1)
+    window.on_explorer_point_clicked(4)
+
+    assert window.selected_point_index == 4
+    assert window._labeling_navigation_scope == "database"
+
+
+def test_infinite_labeling_reuses_cached_distance_scores(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_single_shot = main_window_module.QTimer.singleShot
+
+    monkeypatch.setattr(
+        main_window_module.QTimer,
+        "singleShot",
+        staticmethod(
+            lambda msec, fn: fn() if int(msec) == 0 else original_single_shot(msec, fn)
+        ),
+    )
+
+    window = MainWindow()
+    window.image_paths = [
+        Path("/tmp/a.png"),
+        Path("/tmp/b.png"),
+        Path("/tmp/c.png"),
+        Path("/tmp/d.png"),
+    ]
+    window.image_labels = ["seed", None, None, None]
+    window.embeddings = np.array(
+        [
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [8.0, 8.0],
+            [8.5, 8.2],
+        ],
+        dtype=np.float32,
+    )
+    window.cluster_assignments = np.array([0, 0, 1, 1])
+
+    assert window._start_infinite_labeling_mode() is True
+    first_choice = window.selected_point_index
+    assert first_choice in {2, 3}
+
+    monkeypatch.setattr(
+        window,
+        "_min_distance_to_reference_scores",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("full distance recomputation should not run again")
+        ),
+    )
+
+    window.assign_label_to_selected("beta")
+
+    assert window._labeling_flow_mode == "infinite"
+    assert window.selected_point_index in {1, 2, 3}
+    assert window.selected_point_index != first_choice
+
+
+def test_infinite_labeling_restores_persisted_cache_before_recomputing(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_module = pytest.importorskip("hydra_suite.classkit.core.store.db")
+
+    class FakeDB:
+        def __init__(self, _path):
+            self.path = _path
+
+        def get_most_recent_infinite_label_cache(self, embedding_cache_id=None):
+            assert embedding_cache_id == 41
+            return {
+                "distance_cache": np.array([0.0, 0.25, 81.0], dtype=np.float32),
+                "cluster_counts": np.array([1, 0], dtype=np.int32),
+                "owner_cache": np.array([0, 0, 0], dtype=np.int32),
+                "embedding_cache_id": 41,
+                "cluster_cache_id": 9,
+                "label_signature": window._labeled_index_signature([0]),
+            }
+
+    window = MainWindow()
+    window.db_path = tmp_path / "classkit.db"
+    window.image_paths = [Path("/tmp/a.png"), Path("/tmp/b.png"), Path("/tmp/c.png")]
+    window.image_labels = ["seed", None, None]
+    window.embeddings = np.array([[0.0, 0.0], [0.5, 0.0], [9.0, 9.0]], dtype=np.float32)
+    window.cluster_assignments = np.array([0, 0, 1], dtype=np.int32)
+    window._current_embedding_cache_id = 41
+    window._current_cluster_cache_id = 9
+
+    monkeypatch.setattr(db_module, "ClassKitDB", FakeDB)
+    monkeypatch.setattr(
+        window,
+        "_min_distance_to_reference_scores",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("distance cache should restore from project storage")
+        ),
+    )
+
+    restored = window._ensure_infinite_labeling_cache()
+
+    assert restored is not None
+    assert np.array_equal(
+        restored,
+        np.array([0.0, 0.25, 81.0], dtype=np.float32),
+    )
+    assert np.array_equal(
+        window._infinite_label_cluster_counts,
+        np.array([1, 0], dtype=np.int32),
+    )
+    assert np.array_equal(
+        window._infinite_label_owner_cache,
+        np.array([0, 0, 0], dtype=np.int32),
+    )
+
+
+def test_deleting_label_keeps_infinite_cache_hot_for_next_label(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_single_shot = main_window_module.QTimer.singleShot
+
+    monkeypatch.setattr(
+        main_window_module.QTimer,
+        "singleShot",
+        staticmethod(
+            lambda msec, fn: fn() if int(msec) == 0 else original_single_shot(msec, fn)
+        ),
+    )
+
+    window = MainWindow()
+    window.image_paths = [Path(f"/tmp/{idx}.png") for idx in range(5)]
+    window.image_labels = ["alpha", "beta", None, None, None]
+    window.embeddings = np.array(
+        [
+            [0.0, 0.0],
+            [0.4, 0.0],
+            [7.0, 7.0],
+            [7.4, 7.1],
+            [0.8, 0.1],
+        ],
+        dtype=np.float32,
+    )
+    window.cluster_assignments = np.array([0, 0, 1, 1, 0], dtype=np.int32)
+    window.set_explorer_mode("labeling")
+    window._labeling_flow_mode = "infinite"
+    window.selected_point_index = 2
+    window.candidate_indices = [2]
+
+    assert window._ensure_infinite_labeling_cache() is not None
+    assert window._infinite_label_owner_cache is not None
+
+    window._set_label_for_index(1, None)
+
+    assert window._infinite_label_distance_cache is not None
+    assert window._infinite_label_owner_cache is not None
+
+    monkeypatch.setattr(
+        window,
+        "_min_distance_to_reference_scores",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("full cache rebuild should not run after delete")
+        ),
+    )
+    monkeypatch.setattr(
+        window,
+        "_min_distance_and_owner_to_reference_scores",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("owner-aware full cache rebuild should not run after delete")
+        ),
+    )
+
+    window.assign_label_to_selected("gamma")
+
+    assert window.image_labels[2] == "gamma"
+    assert window._labeling_flow_mode == "infinite"
+    assert window.selected_point_index in {3, 4}
+
+
+def test_after_training_inference_skips_invalid_auto_model_umap(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    critical_calls = []
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "critical",
+        lambda *args, **kwargs: critical_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        main_window_module.QTimer,
+        "singleShot",
+        staticmethod(lambda _msec, fn: fn()),
+    )
+
+    class Dialog:
+        def __init__(self) -> None:
+            self.logs = []
+
+        def append_log(self, message: str) -> None:
+            self.logs.append(message)
+
+    window = MainWindow()
+    window._model_probs = np.array([[1.0], [1.0], [1.0]], dtype=np.float32)
+    dialog = Dialog()
+
+    window._after_training_inference(dialog)
+
+    assert critical_calls == []
+    assert dialog.logs == [
+        "Inference complete — Metrics tab updated.",
+        "Auto-computing model-space UMAP...",
+        "Model-space UMAP skipped: Need at least 2 prediction columns to compute model-space UMAP.",
+    ]
+
+
+def test_after_training_inference_logs_model_umap_worker_error_without_modal(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    critical_calls = []
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "critical",
+        lambda *args, **kwargs: critical_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        main_window_module.QTimer,
+        "singleShot",
+        staticmethod(lambda _msec, fn: fn()),
+    )
+
+    task_workers = pytest.importorskip("hydra_suite.classkit.jobs.task_workers")
+
+    class DummySignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class DummySignals:
+        def __init__(self) -> None:
+            self.success = DummySignal()
+            self.error = DummySignal()
+            self.progress = DummySignal()
+            self.finished = DummySignal()
+
+    class FailingWorker:
+        def __init__(self, *args, **kwargs) -> None:
+            self.signals = DummySignals()
+
+    class Dialog:
+        def __init__(self) -> None:
+            self.logs = []
+
+        def append_log(self, message: str) -> None:
+            self.logs.append(message)
+
+    monkeypatch.setattr(task_workers, "LogitsUMAPWorker", FailingWorker)
+
+    window = MainWindow()
+    window._model_probs = np.array(
+        [[0.9, 0.1], [0.2, 0.8], [0.7, 0.3]],
+        dtype=np.float32,
+    )
+    window._threadpool_start = lambda worker: (
+        worker.signals.error.emit("boom"),
+        worker.signals.finished.emit(),
+    )
+    dialog = Dialog()
+
+    window._after_training_inference(dialog)
+
+    assert critical_calls == []
+    assert dialog.logs[-1] == "Model-space UMAP failed: boom"
+
+
 def test_empty_hover_clears_preview_without_active_label_selection(qapp) -> None:
     window = MainWindow()
     window.set_explorer_mode("labeling")
@@ -140,7 +515,7 @@ def test_empty_hover_clears_preview_in_explore_mode_and_cancels_pending_hover(
     assert "Hover a point to preview the source image" in window.preview_info.text()
 
 
-def test_empty_hover_clears_preview_even_with_locked_selection(qapp) -> None:
+def test_empty_hover_keeps_selected_preview_with_locked_selection(qapp) -> None:
     window = MainWindow()
     window.set_explorer_mode("labeling")
     window.selected_point_index = 3
@@ -150,9 +525,69 @@ def test_empty_hover_clears_preview_even_with_locked_selection(qapp) -> None:
 
     window.on_explorer_empty_hover()
 
-    assert window.last_preview_index is None
-    assert window.preview_canvas.pix_item.pixmap().isNull() is True
-    assert "Hover a point to preview the source image" in window.preview_info.text()
+    assert window._pending_preview_index == 3
+    assert window._pending_preview_source == "selection"
+    assert window.last_preview_index == 3
+    assert window.preview_canvas.pix_item.pixmap().isNull() is False
+
+
+def test_hovering_other_points_does_not_replace_locked_labeling_preview(qapp) -> None:
+    window = MainWindow()
+    window.set_explorer_mode("labeling")
+    window.selected_point_index = 2
+    window.hover_locked = True
+    window.candidate_indices = [1, 2, 3]
+
+    requested = []
+    window.request_preview_for_index = lambda index, source="hover": requested.append(
+        (index, source)
+    )
+
+    window.on_explorer_point_hovered(1)
+
+    assert requested == []
+
+
+def test_empty_background_double_click_clears_labeling_pool_but_stays_in_labeling(
+    qapp,
+) -> None:
+    window = MainWindow()
+    window.image_paths = [Path(f"/tmp/{idx}.png") for idx in range(4)]
+    window.image_labels = [None] * 4
+    window.set_explorer_mode("labeling")
+    window.selected_point_index = 2
+    window.hover_locked = True
+    window.candidate_indices = [1, 2]
+    window.round_labeled_indices = [1]
+    window._labeling_flow_mode = "infinite"
+    window._labeling_navigation_scope = "database"
+
+    window.on_explorer_background_double_click()
+
+    assert window.explorer_mode == "labeling"
+    assert window.selected_point_index is None
+    assert window.hover_locked is False
+    assert window.candidate_indices == []
+    assert window.round_labeled_indices == []
+    assert window._labeling_flow_mode == "batch"
+    assert window._labeling_navigation_scope == "pool"
+
+
+def test_empty_background_double_click_keeps_labeling_mode_without_active_set(
+    qapp,
+) -> None:
+    window = MainWindow()
+    window.image_paths = [Path(f"/tmp/{idx}.png") for idx in range(3)]
+    window.image_labels = [None] * 3
+    window.set_explorer_mode("labeling")
+    window.selected_point_index = 1
+    window.hover_locked = True
+
+    window.on_explorer_background_double_click()
+
+    assert window.explorer_mode == "labeling"
+    assert window.selected_point_index is None
+    assert window.hover_locked is False
 
 
 def test_leaving_labeling_mode_clears_selection_and_restores_hover_preview(
@@ -522,6 +957,9 @@ def test_apply_cached_predictions_restores_metrics_without_switching_tabs(qapp) 
         def get_most_recent_umap_cache(self, kind="model"):
             return None
 
+        def get_most_recent_model_cache(self):
+            return {"best_val_acc": 0.875}
+
     window = MainWindow()
     window.image_paths = [Path("/tmp/a.png"), Path("/tmp/b.png")]
     window.image_labels = ["class_1", "class_2"]
@@ -539,7 +977,27 @@ def test_apply_cached_predictions_restores_metrics_without_switching_tabs(qapp) 
     )
 
     assert "Classification Metrics" in window.metrics_view.toPlainText()
+    assert "0.875" in window.metrics_validation_label.text()
     assert window.tabs.currentWidget() is current_tab
+
+
+def test_metrics_display_includes_heldout_validation_summary(qapp) -> None:
+    metrics_module = pytest.importorskip("hydra_suite.classkit.core.train.metrics")
+
+    window = MainWindow()
+    metrics = metrics_module.compute_metrics(
+        np.array([0, 1]),
+        np.array([0, 1]),
+        class_names=["class_1", "class_2"],
+    )
+    window._set_heldout_validation_summary(
+        window._validation_summary_from_results([{"best_val_acc": 0.875}])
+    )
+
+    window._update_metrics_display(metrics, activate_metrics_tab=False)
+
+    assert "0.875" in window.metrics_validation_label.text()
+    assert "0.875" in window.metrics_view.toPlainText()
 
 
 def test_load_project_data_clears_stale_model_state_before_restore(

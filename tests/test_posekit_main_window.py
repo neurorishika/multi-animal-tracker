@@ -105,3 +105,56 @@ def test_recent_project_display_name_handles_bundle_state_path() -> None:
     path = "/Users/example/projects/ant_pose_project/state/pose_project.json"
 
     assert MainWindow._recent_project_display_name(path) == "ant_pose_project"
+
+
+def test_switch_project_window_allows_empty_projects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = []
+    shown = []
+    closed = []
+
+    class _StubWindow:
+        def __init__(self, project, image_paths, *, show_welcome_when_empty=True):
+            created.append((project, list(image_paths), show_welcome_when_empty))
+
+        def resize(self, _size) -> None:
+            return None
+
+        def showMaximized(self) -> None:
+            shown.append(True)
+
+    class _StubApp:
+        pass
+
+    app = _StubApp()
+    monkeypatch.setattr(
+        "hydra_suite.posekit.gui.main_window.MainWindow",
+        _StubWindow,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.posekit.gui.main_window.build_image_list",
+        lambda _project: [],
+    )
+    monkeypatch.setattr(
+        "hydra_suite.posekit.gui.main_window.QApplication.instance",
+        lambda: app,
+    )
+
+    window = SimpleNamespace(
+        _recents_store=SimpleNamespace(add=lambda _path: None),
+        _perform_autosave=lambda: None,
+        save_project=lambda: None,
+        size=lambda: object(),
+        close=lambda: closed.append(True),
+    )
+    project = SimpleNamespace(project_path=Path("/tmp/pose_project.json"))
+
+    MainWindow._switch_project_window(
+        window, project, open_source_manager_if_empty=False
+    )
+
+    assert created == [(project, [], False)]
+    assert shown == [True]
+    assert closed == [True]
+    assert hasattr(app, "_posekit_windows")

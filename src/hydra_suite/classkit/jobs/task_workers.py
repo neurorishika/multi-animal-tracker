@@ -9,6 +9,8 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from ..core.export.splits import build_stratified_splits
+
 
 class TaskSignals(QObject):
     """
@@ -582,35 +584,14 @@ class ExportWorker(QRunnable):
         """Resolve class display name for a label ID."""
         return self.class_names.get(label, f"class_{label}")
 
-    def _build_splits(self):
-        """Build deterministic train/val/test split assignments."""
-        import numpy as np
-
-        n_items = len(self.image_paths)
-        if n_items == 0:
-            return []
-
-        indices = np.arange(n_items)
-        rng = np.random.default_rng(42)
-        rng.shuffle(indices)
-
-        n_test = int(round(n_items * self.test_fraction))
-        n_val = int(round(n_items * self.val_fraction))
-
-        if n_test + n_val >= n_items and n_items > 1:
-            overflow = (n_test + n_val) - (n_items - 1)
-            if n_test >= overflow:
-                n_test -= overflow
-            else:
-                n_val = max(0, n_val - (overflow - n_test))
-                n_test = 0
-
-        split_by_index = ["train"] * n_items
-        for idx in indices[:n_test]:
-            split_by_index[int(idx)] = "test"
-        for idx in indices[n_test : n_test + n_val]:
-            split_by_index[int(idx)] = "val"
-        return split_by_index
+    def _build_splits(self, labels: Optional[List[int]] = None):
+        """Build deterministic stratified train/val/test split assignments."""
+        labels = list(self.labels if labels is None else labels)
+        return build_stratified_splits(
+            labels,
+            val_fraction=self.val_fraction,
+            test_fraction=self.test_fraction,
+        )
 
     def _prepare_export_workspace(self) -> None:
         """Create a temporary expansion workspace when label expansion is enabled."""
@@ -636,13 +617,7 @@ class ExportWorker(QRunnable):
 
         image_paths = [item[0] for item in valid]
         labels = [item[1] for item in valid]
-        splits = [
-            split
-            for split, (_, lbl) in zip(
-                self._build_splits(), zip(self.image_paths, self.labels)
-            )
-            if int(lbl) >= 0
-        ]
+        splits = self._build_splits(labels)
         class_names = {label: self._class_name(label) for label in set(labels)}
         return image_paths, labels, splits, class_names
 

@@ -70,6 +70,11 @@ def _resolve_images_dir(folder: Path) -> Path:
     return folder
 
 
+def _default_project_images_dir(project_root: Path) -> Path:
+    """Return the placeholder image directory used by empty standalone projects."""
+    return project_root / DEFAULT_DATASET_IMAGES_DIR
+
+
 def resolve_dataset_paths(dataset_dir: Path) -> Tuple[Path, Path, Path, Path, Path]:
     """Resolve canonical dataset structure paths.
 
@@ -370,8 +375,8 @@ def create_standalone_project_via_wizard(parent_widget=None) -> Optional[Project
     """Run NewProjectDialog and build a standalone multi-source project.
 
     Unlike ``create_project_via_wizard()``, the project file lives at a
-    user-chosen location independent of any dataset folder, and one or more
-    sources are added during creation rather than as an afterthought.
+    user-chosen location independent of any dataset folder. Sources are managed
+    after project creation via the standalone Source Manager.
     """
     from .dialogs.project_wizard import NewProjectDialog
 
@@ -387,53 +392,24 @@ def create_standalone_project_via_wizard(parent_widget=None) -> Optional[Project
     kpt_names = dlg.get_keypoints()
     edges = dlg.get_edges()
     autosave, pad = dlg.get_options()
-    sources_to_add = dlg.get_sources()  # List[Tuple[Path, str]]
-
-    if not sources_to_add:
-        QMessageBox.warning(
-            parent_widget, "No Sources", "At least one dataset source is required."
-        )
-        return None
 
     out_root = project_location
     out_root.mkdir(parents=True, exist_ok=True)
+    images_dir = _default_project_images_dir(out_root)
+    images_dir.mkdir(parents=True, exist_ok=True)
     labels_dir = out_root / "labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
-    project_path = out_root / DEFAULT_PROJECT_NAME
-
-    # Build DataSource objects directly to avoid the legacy-promotion path inside
-    # add_source_to_project (which would double-count the first source).
-    sources: List[DataSource] = []
-    for i, (ds_dir, desc) in enumerate(sources_to_add):
-        source_id = f"source_{i}"
-        src_images_dir = _resolve_images_dir(ds_dir)
-        src_labels_dir = labels_dir / source_id
-        src_labels_dir.mkdir(parents=True, exist_ok=True)
-        sources.append(
-            DataSource(
-                source_id=source_id,
-                dataset_root=ds_dir,
-                images_dir=src_images_dir,
-                labels_dir=src_labels_dir,
-                description=desc or ds_dir.name,
-            )
-        )
-
-    # Use the first source's images dir as the legacy images_dir field so
-    # older code paths that read project.images_dir still work.
-    first_images_dir = sources[0].images_dir
 
     proj = Project(
-        images_dir=first_images_dir,
+        images_dir=images_dir,
         out_root=out_root,
         labels_dir=labels_dir,
-        project_path=project_path,
+        project_path=canonical_project_path(out_root),
         class_names=class_names,
         keypoint_names=kpt_names,
         skeleton_edges=edges,
         autosave=autosave,
         bbox_pad_frac=pad,
-        sources=sources,
     )
     save_project_state(proj)
 
@@ -501,7 +477,7 @@ def add_source_to_project(
     images_dir = _resolve_images_dir(dataset_dir)
 
     # --- promote legacy project to multi-source on first add ---
-    if not project.sources:
+    if not project.sources and list_images(project.images_dir):
         src0 = DataSource(
             source_id="source_0",
             dataset_root=project.images_dir.parent,
@@ -530,8 +506,42 @@ def add_source_to_project(
         description=description or dataset_dir.name,
     )
     project.sources.append(src)
+    if not list_images(project.images_dir):
+        project.images_dir = images_dir
+    if not project.last_source_id:
+        project.last_source_id = source_id
     save_project_state(project)
     return src
+
+
+def remove_source_from_project(project: Project, source_id: str) -> bool:
+    """Remove a source from *project* and delete its project-local label cache."""
+    source = next((src for src in project.sources if src.source_id == source_id), None)
+    if source is None:
+        return False
+
+    project.sources = [src for src in project.sources if src.source_id != source_id]
+
+    try:
+        if source.labels_dir.exists() and source.labels_dir != project.labels_dir:
+            shutil.rmtree(source.labels_dir)
+    except OSError:
+        pass
+
+    if project.sources:
+        if project.last_source_id == source_id or not any(
+            src.source_id == project.last_source_id for src in project.sources
+        ):
+            project.last_source_id = project.sources[0].source_id
+        project.images_dir = project.sources[0].images_dir
+    else:
+        project.last_source_id = ""
+        placeholder_dir = _default_project_images_dir(project.out_root)
+        placeholder_dir.mkdir(parents=True, exist_ok=True)
+        project.images_dir = placeholder_dir
+
+    save_project_state(project)
+    return True
 
 
 def create_empty_startup_project() -> Project:

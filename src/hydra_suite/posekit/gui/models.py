@@ -112,6 +112,7 @@ class Project:
     # When non-empty, images/labels are routed per-source.
     # Legacy single-source projects have sources=[] and use images_dir/labels_dir.
     sources: List["DataSource"] = field(default_factory=list)
+    last_source_id: str = ""
 
     def to_json(self) -> dict:
         """Serialize project state to a JSON-compatible dictionary."""
@@ -162,6 +163,7 @@ class Project:
             "edge_opacity": self.edge_opacity,
             "edge_width": self.edge_width,
             "sources": [s.to_dict(base) for s in self.sources],
+            "last_source_id": self.last_source_id,
         }
 
     @staticmethod
@@ -220,6 +222,7 @@ class Project:
                 for s in data.get("sources", [])
                 if isinstance(s, dict)
             ],
+            last_source_id=str(data.get("last_source_id", "")),
         )
 
 

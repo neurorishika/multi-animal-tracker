@@ -55,10 +55,10 @@ def test_posekit_new_project_dialog_defaults_to_posekit_projects_root(
         dialog.get_project_location()
         == tmp_path / "hydra-projects" / "PoseKit" / "ant_pose_project"
     )
-    assert create_button.isEnabled() is False
+    assert create_button.isEnabled() is True
 
 
-def test_posekit_new_project_dialog_enables_create_after_source_added(
+def test_posekit_new_project_dialog_enables_create_after_name_entered(
     qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("HYDRA_PROJECTS_DIR", str(tmp_path / "hydra-projects"))
@@ -66,13 +66,10 @@ def test_posekit_new_project_dialog_enables_create_after_source_added(
     dialog = NewProjectDialog()
     create_button = dialog._buttons.button(QDialogButtonBox.Ok)
     dialog._le_name.setText("ant_pose_project")
-    dialog._sources.append((tmp_path / "dataset_a", "colony a"))
     dialog._refresh_create_btn()
 
     assert create_button.isEnabled() is True
     assert dialog.get_classes() == ["object"]
-    assert dialog.get_keypoints() == ["kp1", "kp2"]
-    assert dialog.get_options() == (True, 0.03)
     assert dialog.get_keypoints() == ["kp1", "kp2"]
     assert dialog.get_options() == (True, 0.03)
 

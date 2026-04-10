@@ -60,14 +60,17 @@ from .canvas import FrameListDelegate, PoseCanvas
 from .constants import DEFAULT_AUTOSAVE_DELAY_MS, DEFAULT_PROJECT_NAME
 from .dialogs.project_wizard import ProjectWizard
 from .dialogs.skeleton import SkeletonEditorDialog
+from .dialogs.source_manager import SourceManagerDialog
 from .io import load_yolo_pose_label, migrate_labels_keypoints, save_yolo_pose_label
 from .models import DataSource, FrameAnn, Keypoint, Project, compute_bbox_from_kpts
+from .panels import PoseSourceBrowserPanel
 from .project import (
     build_image_list,
     create_standalone_project_via_wizard,
     find_project,
     load_project_with_repairs,
     open_project_from_path,
+    remove_source_from_project,
     save_project_state,
 )
 from .runtimes import (
@@ -113,11 +116,18 @@ except ImportError:
 class MainWindow(QMainWindow):
     """MainWindow API surface documentation."""
 
-    def __init__(self, project: Project, image_paths: List[Path]) -> None:
+    def __init__(
+        self,
+        project: Project,
+        image_paths: List[Path],
+        *,
+        show_welcome_when_empty: bool = True,
+    ) -> None:
         super().__init__()
         self.config = PoseKitConfig()
         self.setWindowTitle("PoseKit")
         self.apply_stylesheet()
+        self._show_welcome_when_empty = bool(show_welcome_when_empty)
 
         self.project = project
         self.image_paths = image_paths
@@ -172,6 +182,8 @@ class MainWindow(QMainWindow):
         )
         self.autosave_delay_ms = DEFAULT_AUTOSAVE_DELAY_MS
         self._rebuild_path_index()
+        self._suppress_source_combo_events = False
+        self.current_source_id = self._resolve_initial_source_id()
 
         splitter = QSplitter(Qt.Horizontal)
         self._content_stack = QStackedWidget(self)
@@ -179,91 +191,33 @@ class MainWindow(QMainWindow):
         self._content_stack.addWidget(self._make_welcome_page())  # index 0
         self._content_stack.addWidget(splitter)  # index 1
 
-        # Frames lists - dual list with drag-drop
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-
-        left_layout.addWidget(QLabel("Labeling Frames"))
-        self.labeling_list = QListWidget()
+        left = PoseSourceBrowserPanel(self)
+        self.left_panel = left
+        self.labeling_list = left.labeling_list
         self.labeling_list.setDragDropMode(QListWidget.DragDrop)
         self.labeling_list.setDefaultDropAction(Qt.MoveAction)
         self.labeling_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.labeling_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.labeling_list.setTextElideMode(Qt.ElideRight)
         self.labeling_list.setItemDelegate(FrameListDelegate(self.labeling_list))
-        left_layout.addWidget(self.labeling_list, 1)
-
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Find frame...")
-        left_layout.addWidget(self.search_edit)
-
-        sort_row = QHBoxLayout()
-        sort_row.addWidget(QLabel("How should frames be sorted?"))
-        self.sort_combo = QComboBox()
-        self.sort_combo.addItems(
-            [
-                "Default",
-                "Pred conf (high to low)",
-                "Pred conf (low to high)",
-                "Detected kpts (high to low)",
-                "Detected kpts (low to high)",
-                "Cluster id (low to high)",
-                "Cluster id (high to low)",
-            ]
-        )
-        sort_row.addWidget(self.sort_combo, 1)
-        left_layout.addLayout(sort_row)
-
-        left_layout.addWidget(QLabel("All Frames"))
-        self.frame_list = QListWidget()
+        self.frame_list = left.frame_list
         self.frame_list.setDragDropMode(QListWidget.DragDrop)
         self.frame_list.setDefaultDropAction(Qt.MoveAction)
         self.frame_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.frame_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.frame_list.setTextElideMode(Qt.ElideRight)
         self.frame_list.setItemDelegate(FrameListDelegate(self.frame_list))
-        left_layout.addWidget(self.frame_list, 1)
-
-        # Frame management buttons
-        frame_btns = QGridLayout()
-        frame_btns.setHorizontalSpacing(6)
-        frame_btns.setVerticalSpacing(6)
-        self.btn_unlabeled_to_labeling = QPushButton("Unlabeled → Labeling")
-        self.btn_unlabeled_to_labeling.setToolTip(
-            "Move all unlabeled frames to labeling list"
-        )
-        frame_btns.addWidget(self.btn_unlabeled_to_labeling, 0, 0)
-
-        self.btn_unlabeled_to_all = QPushButton("Unlabeled → All")
-        self.btn_unlabeled_to_all.setToolTip(
-            "Move unlabeled frames from labeling to all frames list"
-        )
-        frame_btns.addWidget(self.btn_unlabeled_to_all, 0, 1)
-
-        self.btn_random_to_labeling = QPushButton("Random")
-        self.btn_random_to_labeling.setToolTip(
-            "Add random unlabeled frames to labeling"
-        )
-        self.spin_random_count = QSpinBox()
-        self.spin_random_count.setRange(1, 1000)
-        self.spin_random_count.setValue(10)
-        frame_btns.addWidget(self.btn_random_to_labeling, 1, 0)
-        frame_btns.addWidget(self.spin_random_count, 1, 1)
-
-        self.btn_smart_select = QPushButton("Smart Select…")
-        self.btn_smart_select.setToolTip(
-            "Select diverse frames using embeddings + clustering"
-        )
-        frame_btns.addWidget(self.btn_smart_select, 2, 0)
-        self.btn_smart_select.clicked.connect(self.open_smart_select)
-
-        self.btn_delete_frames = QPushButton("Delete Selected…")
-        self.btn_delete_frames.setToolTip(
-            "Permanently delete selected images (and labels) from the dataset"
-        )
-        frame_btns.addWidget(self.btn_delete_frames, 2, 1)
-
-        left_layout.addLayout(frame_btns)
+        self.search_edit = left.search_edit
+        self.sort_combo = left.sort_combo
+        self.source_combo = left.source_combo
+        self.source_summary = left.source_summary
+        self.btn_manage_sources_inline = left.btn_manage_sources
+        self.btn_unlabeled_to_labeling = left.btn_unlabeled_to_labeling
+        self.btn_unlabeled_to_all = left.btn_unlabeled_to_all
+        self.btn_random_to_labeling = left.btn_random_to_labeling
+        self.spin_random_count = left.spin_random_count
+        self.btn_smart_select = left.btn_smart_select
+        self.btn_delete_frames = left.btn_delete_frames
 
         # Canvas
         # Load UI settings - will be applied after widgets are created
@@ -348,6 +302,11 @@ class MainWindow(QMainWindow):
         self.rb_frame.setChecked(True)
         ann_layout.addWidget(self.rb_frame)
         ann_layout.addWidget(self.rb_kpt)
+        self.btn_clear_all_kpts = QPushButton("Clear Frame Keypoints")
+        self.btn_clear_all_kpts.setToolTip(
+            "Remove all keypoints from the current frame"
+        )
+        ann_layout.addWidget(self.btn_clear_all_kpts)
         right_layout.addWidget(ann_group)
 
         # Display
@@ -732,9 +691,12 @@ class MainWindow(QMainWindow):
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
         self.btn_delete_frames.clicked.connect(self._delete_selected_frames)
+        self.btn_manage_sources_inline.clicked.connect(self.manage_sources)
         self.search_edit.textChanged.connect(self._populate_frames)
         self.sort_combo.currentTextChanged.connect(self._populate_frames)
+        self.source_combo.currentIndexChanged.connect(self._on_source_selector_changed)
         self.rb_frame.toggled.connect(self._update_mode)
+        self.btn_clear_all_kpts.clicked.connect(self.clear_all_keypoints)
         self.class_combo.currentIndexChanged.connect(self._mark_dirty)
         self.cb_enhance.toggled.connect(self._toggle_enhancement)
         self.btn_enhance_settings.clicked.connect(self._open_enhancement_settings)
@@ -748,6 +710,7 @@ class MainWindow(QMainWindow):
         # Load UI settings now that all widgets are created
         self._refresh_sleap_envs()
         self._load_ui_settings()
+        self._refresh_source_selector()
         self._update_pred_backend_ui()
         app = QApplication.instance()
         if app is not None:
@@ -758,15 +721,12 @@ class MainWindow(QMainWindow):
         # Don't auto-load a frame on startup to avoid odd zoom; user clicks to load.
         self.frame_list.setCurrentRow(-1)
         self.labeling_list.setCurrentRow(-1)
+        self.source_combo.setCurrentIndex(self.source_combo.currentIndex())
         self.lbl_info.setText("Select a frame to display.")
         self._show_canvas_logo_placeholder()
-        self._content_stack.setCurrentIndex(1 if self.image_paths else 0)
-
-        # Hide the menu bar and toolbar on the welcome page; show them in the main view.
-        on_welcome = not bool(self.image_paths)
-        self.menuBar().setVisible(not on_welcome)
-        for tb in self.findChildren(QToolBar):
-            tb.setVisible(not on_welcome)
+        self._set_workspace_visible(
+            bool(self.image_paths) or not self._show_welcome_when_empty
+        )
 
     def _make_welcome_page(self) -> QWidget:
         """Logo/welcome screen shown when PoseKit starts without a loaded project."""
@@ -1259,7 +1219,7 @@ class MainWindow(QMainWindow):
         proj = create_standalone_project_via_wizard(parent_widget=self)
         if proj is None:
             return
-        self._switch_project_window(proj)
+        self._switch_project_window(proj, open_source_manager_if_empty=True)
 
     def closeEvent(self: object, event: object) -> object:
         """Save UI settings when window closes."""
@@ -1567,6 +1527,13 @@ class MainWindow(QMainWindow):
             self._apply_sleap_settings(settings)
             self._apply_prediction_visibility_settings(settings)
 
+    def _set_workspace_visible(self, visible: bool) -> None:
+        """Toggle between the welcome page and the working PoseKit shell."""
+        self._content_stack.setCurrentIndex(1 if visible else 0)
+        self.menuBar().setVisible(visible)
+        for toolbar in self.findChildren(QToolBar):
+            toolbar.setVisible(visible)
+
     # ----- menus / shortcuts -----
     def _build_actions(self):
         menubar = self.menuBar()
@@ -1586,6 +1553,10 @@ class MainWindow(QMainWindow):
         act_open_proj = QAction("Open Project…", self)
         act_open_proj.setShortcut(QKeySequence.Open)
         act_open_proj.triggered.connect(self.open_project)
+
+        act_manage_sources = QAction("Source Manager…", self)
+        act_manage_sources.setShortcut(QKeySequence("Ctrl+I"))
+        act_manage_sources.triggered.connect(self.manage_sources)
 
         act_export = QAction("Export dataset.yaml + splits…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
@@ -1664,6 +1635,7 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         m_file.addAction(act_new_proj)
         m_file.addAction(act_open_proj)
+        m_file.addAction(act_manage_sources)
         m_file.addSeparator()
         m_file.addAction(act_proj)
         m_file.addSeparator()
@@ -1696,9 +1668,13 @@ class MainWindow(QMainWindow):
 
         tb = QToolBar("Main", self)
         self.addToolBar(tb)
+        tb.addAction(act_new_proj)
+        tb.addAction(act_open_proj)
+        tb.addAction(act_save)
+        tb.addAction(act_manage_sources)
+        tb.addSeparator()
         tb.addAction(act_prev)
         tb.addAction(act_next)
-        tb.addAction(act_save)
         tb.addAction(act_next_unl)
         tb.addSeparator()
         tb.addAction(act_skel)
@@ -1838,6 +1814,7 @@ class MainWindow(QMainWindow):
                     "idx": idx,
                     "is_saved": is_saved,
                     "in_labeling": idx in self.labeling_frames,
+                    "in_current_source": self._matches_current_source(idx),
                     "item_text": item_text,
                     "color": color,
                     "pred_conf": pred_conf,
@@ -1889,7 +1866,7 @@ class MainWindow(QMainWindow):
                 item.setForeground(it["color"])
                 self.labeling_list.addItem(item)
                 self._list_items[idx] = item
-            else:
+            elif it["in_current_source"]:
                 item = QListWidgetItem(it["item_text"])
                 item.setData(Qt.UserRole, idx)
                 item.setData(FrameListDelegate.CONF_ROLE, it["pred_conf"])
@@ -2057,6 +2034,199 @@ class MainWindow(QMainWindow):
                         pass
             except Exception:
                 pass
+
+    def _source_id_for_path(self, img_path: Path) -> str:
+        return self._image_source.get(str(img_path)) or self._image_source.get(
+            str(img_path.resolve()) if img_path.exists() else str(img_path),
+            "",
+        )
+
+    def _source_id_for_index(self, idx: int) -> str:
+        if idx < 0 or idx >= len(self.image_paths):
+            return ""
+        return self._source_id_for_path(self.image_paths[idx])
+
+    def _resolve_initial_source_id(self, preferred_path: Optional[Path] = None) -> str:
+        if not self.project.sources:
+            return ""
+
+        preferred_id = ""
+        if preferred_path is not None:
+            preferred_id = self._source_id_for_path(preferred_path)
+        if preferred_id and preferred_id in self._source_map:
+            return preferred_id
+        if (
+            self.project.last_source_id
+            and self.project.last_source_id in self._source_map
+        ):
+            return self.project.last_source_id
+        if self.image_paths:
+            current_id = self._source_id_for_index(
+                max(0, min(self.current_index, len(self.image_paths) - 1))
+            )
+            if current_id and current_id in self._source_map:
+                return current_id
+        return self.project.sources[0].source_id
+
+    def _matches_current_source(self, idx: int) -> bool:
+        if not self.project.sources or not self.current_source_id:
+            return True
+        return self._source_id_for_index(idx) == self.current_source_id
+
+    def _first_index_for_current_source(self) -> Optional[int]:
+        if not self.image_paths:
+            return None
+        for idx in range(len(self.image_paths)):
+            if self._matches_current_source(idx):
+                return idx
+        return None
+
+    def _refresh_source_selector(self) -> None:
+        if not hasattr(self, "source_combo"):
+            return
+
+        self._suppress_source_combo_events = True
+        self.source_combo.clear()
+
+        if not self.project.sources:
+            self.current_source_id = ""
+            self.source_combo.addItem("No sources added", "")
+            self.source_combo.setEnabled(False)
+            if self.image_paths:
+                self.source_summary.setText(
+                    f"{len(self.image_paths):,} project frame(s)"
+                )
+            else:
+                self.source_summary.setText("Use Source Manager to add folders.")
+            self._suppress_source_combo_events = False
+            return
+
+        counts: Dict[str, int] = {}
+        for img_path in self.image_paths:
+            source_id = self._source_id_for_path(img_path)
+            if source_id:
+                counts[source_id] = counts.get(source_id, 0) + 1
+
+        if self.current_source_id not in self._source_map:
+            self.current_source_id = self._resolve_initial_source_id()
+
+        for src in self.project.sources:
+            label = src.description or src.dataset_root.name or src.source_id
+            self.source_combo.addItem(
+                f"{label} ({counts.get(src.source_id, 0):,})",
+                src.source_id,
+            )
+
+        combo_index = self.source_combo.findData(self.current_source_id)
+        if combo_index < 0:
+            combo_index = 0
+            self.current_source_id = str(self.source_combo.itemData(0) or "")
+        self.source_combo.setCurrentIndex(combo_index)
+        self.source_combo.setEnabled(True)
+        self.project.last_source_id = self.current_source_id
+
+        current_source = self._source_map.get(self.current_source_id)
+        if current_source is None:
+            self.source_summary.setText("Select a source to browse its frames.")
+        else:
+            self.source_summary.setText(
+                f"{counts.get(current_source.source_id, 0):,} frame(s) from {current_source.images_dir}"
+            )
+        self._suppress_source_combo_events = False
+
+    def _set_current_source_for_index(self, idx: int) -> bool:
+        if idx < 0 or idx >= len(self.image_paths):
+            return False
+        source_id = self._source_id_for_index(idx)
+        if not source_id or source_id == self.current_source_id:
+            return False
+        self.current_source_id = source_id
+        self.project.last_source_id = source_id
+        if hasattr(self, "source_combo"):
+            self._suppress_source_combo_events = True
+            combo_index = self.source_combo.findData(source_id)
+            if combo_index >= 0:
+                self.source_combo.setCurrentIndex(combo_index)
+            self._suppress_source_combo_events = False
+            self._refresh_source_selector()
+        return True
+
+    def _on_source_selector_changed(self, _row: int) -> None:
+        if self._suppress_source_combo_events:
+            return
+        selected_id = str(self.source_combo.currentData() or "")
+        if selected_id == self.current_source_id:
+            return
+
+        self.current_source_id = selected_id
+        self.project.last_source_id = selected_id
+        self._refresh_source_selector()
+        self._populate_frames()
+        if self._select_frame_in_list(self.current_index, trigger_load=False):
+            return
+        first_idx = self._first_index_for_current_source()
+        if first_idx is not None:
+            self.load_frame(first_idx)
+            self._select_frame_in_list(first_idx, trigger_load=False)
+
+    def _refresh_after_source_change(self, preferred_source_id: str = "") -> None:
+        current_path = None
+        if 0 <= self.current_index < len(self.image_paths):
+            current_path = self.image_paths[self.current_index]
+
+        old_labeling_paths = {
+            self.image_paths[idx]
+            for idx in self.labeling_frames
+            if 0 <= idx < len(self.image_paths)
+        }
+
+        self.image_paths = build_image_list(self.project)
+        self._rebuild_path_index()
+        self.labeling_frames = set()
+        for idx, img_path in enumerate(self.image_paths):
+            if img_path in old_labeling_paths or self._is_labeled(img_path):
+                self.labeling_frames.add(idx)
+
+        self._frame_cache.clear()
+        self._undo_stack.clear()
+        self._pred_conf_cache_key = None
+        self._pred_conf_map = {}
+        self._pred_conf_complete = False
+        self._pred_kpt_count_map = {}
+        self._cluster_ids_cache = None
+        self._cluster_ids_mtime = None
+
+        if preferred_source_id and preferred_source_id in self._source_map:
+            self.current_source_id = preferred_source_id
+            self.project.last_source_id = preferred_source_id
+        else:
+            self.current_source_id = self._resolve_initial_source_id(current_path)
+
+        self._refresh_source_selector()
+
+        if not self.image_paths:
+            self.current_index = 0
+            self._ann = None
+            self._dirty = False
+            self._populate_frames()
+            self.labeling_list.clearSelection()
+            self.frame_list.clearSelection()
+            self.lbl_info.setText("Add a source to start labeling.")
+            self.statusBar().showMessage("Project has no source images.", 3000)
+            self._show_canvas_logo_placeholder()
+            self.save_project()
+            return
+
+        if current_path and str(current_path) in self._path_to_index:
+            self.current_index = self._path_to_index[str(current_path)]
+        else:
+            fallback = self._first_index_for_current_source()
+            self.current_index = fallback if fallback is not None else 0
+
+        self.load_frame(self.current_index)
+        self._populate_frames()
+        self._select_frame_in_list(self.current_index, trigger_load=False)
+        self.save_project()
 
     def _get_pred_conf_for_indices(
         self, indices: List[int]
@@ -2376,6 +2546,8 @@ class MainWindow(QMainWindow):
 
     def load_frame(self: object, idx: int) -> object:
         """load_frame method documentation."""
+        if not self.image_paths:
+            return
         idx = max(0, min(idx, len(self.image_paths) - 1))
 
         logger.debug("Load frame requested: idx=%d", idx)
@@ -2394,6 +2566,9 @@ class MainWindow(QMainWindow):
             self.save_current(refresh_ui=False)
 
         self.current_index = idx
+        source_changed = False
+        if hasattr(self, "_set_current_source_for_index"):
+            source_changed = self._set_current_source_for_index(idx)
         img_path = self.image_paths[idx]
         self._img_bgr = self._read_image(img_path)
         self._img_display = None
@@ -2457,6 +2632,10 @@ class MainWindow(QMainWindow):
         # currentRowChanged handler can crash PySide/Qt on macOS/Python 3.13.
         if _was_dirty:
             self._schedule_frame_item_refresh(_prev_index)
+
+        if source_changed:
+            self._populate_frames()
+            self._select_frame_in_list(self.current_index, trigger_load=False)
 
         return
 
@@ -2525,23 +2704,29 @@ class MainWindow(QMainWindow):
         logger.debug("Rebuild labeling set (after): %s", sorted(self.labeling_frames))
 
     def _move_unlabeled_to_labeling(self):
-        """Move all unlabeled frames from all frames to labeling frames."""
+        """Move unlabeled frames from the current source into the labeling set."""
         for idx, img_path in enumerate(self.image_paths):
-            if not self._is_labeled(img_path) and idx not in self.labeling_frames:
+            if (
+                self._matches_current_source(idx)
+                and not self._is_labeled(img_path)
+                and idx not in self.labeling_frames
+            ):
                 self.labeling_frames.add(idx)
         self._populate_frames()
-        self._select_frame_in_list(self.current_index)
+        self._select_frame_in_list(self.current_index, trigger_load=False)
 
     def _move_unlabeled_to_all(self):
-        """Move unlabeled frames from labeling to all frames."""
+        """Move unlabeled frames from the current source back to the source browser."""
         unlabeled_to_remove = []
         for idx in list(self.labeling_frames):
-            if not self._is_labeled(self.image_paths[idx]):
+            if self._matches_current_source(idx) and not self._is_labeled(
+                self.image_paths[idx]
+            ):
                 unlabeled_to_remove.append(idx)
         for idx in unlabeled_to_remove:
             self.labeling_frames.remove(idx)
         self._populate_frames()
-        self._select_frame_in_list(self.current_index)
+        self._select_frame_in_list(self.current_index, trigger_load=False)
 
     def _add_random_to_labeling(self):
         """Add random unlabeled frames from All Frames list to labeling set."""
@@ -2549,10 +2734,14 @@ class MainWindow(QMainWindow):
 
         count = self.spin_random_count.value()
 
-        # Get all unlabeled frames from All Frames list (not in labeling set)
+        # Get all unlabeled frames from the current source browser.
         candidates = []
         for idx, img_path in enumerate(self.image_paths):
-            if not self._is_labeled(img_path) and idx not in self.labeling_frames:
+            if (
+                self._matches_current_source(idx)
+                and not self._is_labeled(img_path)
+                and idx not in self.labeling_frames
+            ):
                 candidates.append(idx)
 
         if not candidates:
@@ -2567,7 +2756,7 @@ class MainWindow(QMainWindow):
             self.labeling_frames.add(idx)
 
         self._populate_frames()
-        self._select_frame_in_list(self.current_index)
+        self._select_frame_in_list(self.current_index, trigger_load=False)
         QMessageBox.information(
             self, "Added frames", f"Added {len(to_add)} frames to labeling set."
         )
@@ -3181,20 +3370,37 @@ class MainWindow(QMainWindow):
                     self.frame_list.setCurrentRow(i)
                     break
 
-    def _select_frame_in_list(self, idx: int):
+    def _select_frame_in_list(self, idx: int, trigger_load: bool = True) -> bool:
         """Select a frame by its actual index in the appropriate list."""
         # Check labeling list first
         for i in range(self.labeling_list.count()):
             item = self.labeling_list.item(i)
             if item.data(Qt.UserRole) == idx:
-                self.labeling_list.setCurrentRow(i)
-                return
+                if trigger_load:
+                    self.labeling_list.setCurrentRow(i)
+                else:
+                    self.labeling_list.blockSignals(True)
+                    self.frame_list.blockSignals(True)
+                    self.frame_list.clearSelection()
+                    self.labeling_list.setCurrentRow(i)
+                    self.labeling_list.blockSignals(False)
+                    self.frame_list.blockSignals(False)
+                return True
         # Check all frames list
         for i in range(self.frame_list.count()):
             item = self.frame_list.item(i)
             if item.data(Qt.UserRole) == idx:
-                self.frame_list.setCurrentRow(i)
-                return
+                if trigger_load:
+                    self.frame_list.setCurrentRow(i)
+                else:
+                    self.labeling_list.blockSignals(True)
+                    self.frame_list.blockSignals(True)
+                    self.labeling_list.clearSelection()
+                    self.frame_list.setCurrentRow(i)
+                    self.labeling_list.blockSignals(False)
+                    self.frame_list.blockSignals(False)
+                return True
+        return False
 
     def prev_keypoint(self: object) -> object:
         """prev_keypoint method documentation."""
@@ -3469,40 +3675,62 @@ class MainWindow(QMainWindow):
         self.save_project()
         self._update_info()
 
-        # Rebuild image list if sources were added inside the wizard
-        if getattr(wiz, "sources_modified", False):
-            cur_path = (
-                self.image_paths[self.current_index] if self.image_paths else None
-            )
-            self.image_paths = build_image_list(self.project)
-            self._rebuild_path_index()
-            if cur_path and str(cur_path) in self._path_to_index:
-                self.current_index = self._path_to_index[str(cur_path)]
-            else:
-                self.current_index = 0
-            self._populate_frames()
-            self._select_frame_in_list(self.current_index)
-            self._update_info()
+    def manage_sources(self) -> None:
+        """Open PoseKit's standalone Source Manager and refresh the workspace."""
+        dlg = SourceManagerDialog(self.project, parent=self)
+        if dlg.exec() != SourceManagerDialog.Accepted or not dlg.has_changes:
+            return
 
-    def _switch_project_window(self, proj: Project):
+        if dlg.source_ids_to_remove:
+            reply = QMessageBox.warning(
+                self,
+                "Remove sources?",
+                "Removing sources deletes their project-local label folders from this PoseKit project. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        for source_id in dlg.source_ids_to_remove:
+            remove_source_from_project(self.project, source_id)
+        for dataset_dir, description in dlg.sources_to_add:
+            from .project import add_source_to_project
+
+            add_source_to_project(self.project, dataset_dir, description)
+
+        preferred_source_id = dlg.preferred_source_id
+        if dlg.sources_to_add and preferred_source_id.startswith("pending_"):
+            preferred_source_id = ""
+
+        self._refresh_after_source_change(preferred_source_id=preferred_source_id)
+
+    def _prompt_adjust_sources_if_empty(self) -> None:
+        """Open Source Manager automatically when a project has no source images yet."""
+        if not self.image_paths:
+            self.manage_sources()
+
+    def _switch_project_window(
+        self,
+        proj: Project,
+        *,
+        open_source_manager_if_empty: bool = False,
+    ):
         if hasattr(self, "_recents_store") and proj is not None:
             # Store the project file or directory path
             if hasattr(proj, "project_path") and proj.project_path:
                 self._recents_store.add(str(proj.project_path))
         imgs = build_image_list(proj)
-        if not imgs:
-            QMessageBox.critical(
-                self, "No images", "No images found in any registered source."
-            )
-            return
         try:
             self._perform_autosave()
             self.save_project()
         except Exception:
             pass
-        new_win = MainWindow(proj, imgs)
+        new_win = MainWindow(proj, imgs, show_welcome_when_empty=False)
         new_win.resize(self.size())
         new_win.showMaximized()
+        if open_source_manager_if_empty and not imgs:
+            QTimer.singleShot(150, new_win._prompt_adjust_sources_if_empty)
         app = QApplication.instance()
         if app is not None:
             if not hasattr(app, "_posekit_windows"):

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from .constants import DEFAULT_DATASET_IMAGES_DIR
 from .main_window import MainWindow
@@ -144,13 +144,7 @@ def main() -> None:
             sys.exit(0)
 
     imgs = build_image_list(proj)
-    if not imgs:
-        QMessageBox.critical(
-            None, "No images", "No images found in any registered source."
-        )
-        sys.exit(2)
-
-    win = MainWindow(proj, imgs)
+    win = MainWindow(proj, imgs, show_welcome_when_empty=False)
     try:
         win.setWindowIcon(app.windowIcon())
     except Exception:

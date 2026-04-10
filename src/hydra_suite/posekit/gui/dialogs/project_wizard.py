@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -34,7 +33,7 @@ from hydra_suite.widgets.dialogs import BaseDialog
 from ..constants import DEFAULT_DATASET_IMAGES_DIR, DEFAULT_POSEKIT_PROJECT_DIR
 from ..models import Project
 from ..project import default_project_parent_dir
-from ..utils import get_default_skeleton_dir, list_images
+from ..utils import get_default_skeleton_dir
 from .skeleton import SkeletonEditorDialog
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +46,7 @@ class NewProjectDialog(BaseDialog):
     Guides the user through creating a brand-new PoseKit project:
       1. Choose where to save the project (any folder — independent of datasets)
       2. Configure pose classes, keypoints and skeleton
-      3. Add at least one dataset source (required before Create is enabled)
+    3. Create the project and manage dataset sources from the workspace
     """
 
     def __init__(self, parent=None) -> None:
@@ -55,7 +54,6 @@ class NewProjectDialog(BaseDialog):
         self.setMinimumSize(QSize(820, 600))
 
         self._parent_dir: Optional[Path] = default_project_parent_dir()
-        self._sources: List[Tuple[Path, str]] = []  # (dataset_dir, description)
         self._edges: List[Tuple[int, int]] = []
         self._kpt_names: List[str] = ["kp1", "kp2"]
 
@@ -65,7 +63,7 @@ class NewProjectDialog(BaseDialog):
 
         header = QLabel("<h2 style='margin:0;'>Create New Project</h2>")
         intro = QLabel(
-            "Set the project folder first, then define annotation defaults and add the dataset sources the project should manage."
+            "Set the project folder first, then define annotation defaults. Dataset sources are managed from the workspace after creation."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #aaaaaa;")
@@ -136,26 +134,7 @@ class NewProjectDialog(BaseDialog):
         setup_layout.addWidget(skel_group)
         layout.addWidget(setup_group)
 
-        # ── 4. Dataset Sources ──────────────────────────────────────────
-        src_group = QGroupBox("Dataset Sources")
-        sg_layout = QVBoxLayout(src_group)
-        src_help = QLabel(
-            "Add at least one source. You can add more sources later from the project workspace."
-        )
-        src_help.setWordWrap(True)
-        src_help.setStyleSheet("color: #aaaaaa;")
-        sg_layout.addWidget(src_help)
-        self._sources_lw = QListWidget()
-        self._sources_lw.setMaximumHeight(110)
-        self._sources_lw.setSelectionMode(QListWidget.NoSelection)
-        self._sources_lw.addItem("(no sources added yet — click Add Source…)")
-        sg_layout.addWidget(self._sources_lw)
-        btn_add = QPushButton("Add Source…")
-        btn_add.clicked.connect(self._add_source)
-        sg_layout.addWidget(btn_add)
-        layout.addWidget(src_group)
-
-        # ── 5. Options ──────────────────────────────────────────────────
+        # ── 4. Options ──────────────────────────────────────────────────
         opt_group = QGroupBox("Options")
         opt_form = QFormLayout(opt_group)
         self._autosave_cb = QCheckBox("Autosave when changing frames")
@@ -169,7 +148,7 @@ class NewProjectDialog(BaseDialog):
         layout.addWidget(opt_group)
 
         info = QLabel(
-            "PoseKit creates a standalone project folder with labels, annotation defaults, and per-source metadata at the selected location."
+            "PoseKit creates a standalone project folder with labels and annotation defaults at the selected location. Use Source Manager after creation to add dataset sources."
         )
         info.setWordWrap(True)
         info.setStyleSheet(
@@ -196,9 +175,7 @@ class NewProjectDialog(BaseDialog):
     def _refresh_create_btn(self):
         name = self._le_name.text().strip()
         create_button = self._buttons.button(QDialogButtonBox.Ok)
-        create_button.setEnabled(
-            self._parent_dir is not None and bool(name) and len(self._sources) > 0
-        )
+        create_button.setEnabled(self._parent_dir is not None and bool(name))
 
     def _get_skeleton_summary(self) -> str:
         k = len(self._kpt_names)
@@ -258,56 +235,6 @@ class NewProjectDialog(BaseDialog):
             ]
             self._skel_lbl.setText(self._get_skeleton_summary())
 
-    def _add_source(self):
-        from ..models import DataSource as _DataSource
-        from ..models import Project as _Project
-        from ..project import _resolve_images_dir
-        from .add_source import AddSourceDialog
-
-        # Build a minimal stub project so AddSourceDialog can detect duplicates
-        stub = _Project(
-            images_dir=Path("."),
-            out_root=Path("."),
-            labels_dir=Path("."),
-            project_path=Path("."),
-            class_names=["object"],
-            keypoint_names=self._kpt_names,
-            skeleton_edges=[],
-        )
-        for i, (ds_dir, desc) in enumerate(self._sources):
-            stub.sources.append(
-                _DataSource(
-                    source_id=f"source_{i}",
-                    dataset_root=ds_dir,
-                    images_dir=_resolve_images_dir(ds_dir),
-                    labels_dir=Path("."),
-                    description=desc,
-                )
-            )
-
-        dlg = AddSourceDialog(stub, parent=self)
-        if dlg.exec() != QDialog.Accepted or dlg.selected_dir is None:
-            return
-        self._sources.append((dlg.selected_dir, dlg.description))
-        self._refresh_sources_list()
-        self._refresh_create_btn()
-
-    def _refresh_sources_list(self):
-        self._sources_lw.clear()
-        if not self._sources:
-            self._sources_lw.addItem("(no sources added yet — click Add Source…)")
-            return
-        from ..project import _resolve_images_dir
-
-        for i, (ds_dir, desc) in enumerate(self._sources):
-            images_dir = _resolve_images_dir(ds_dir)
-            count = len(list_images(images_dir))
-            label = (
-                f"[source_{i}]  {desc or ds_dir.name}"
-                f"  —  {ds_dir}  ({count:,} images)"
-            )
-            self._sources_lw.addItem(label)
-
     # ── accessors ───────────────────────────────────────────────────────
 
     def get_project_location(self) -> Optional[Path]:
@@ -332,10 +259,6 @@ class NewProjectDialog(BaseDialog):
     def get_edges(self) -> List[Tuple[int, int]]:
         """Return the skeleton edge list as pairs of 0-based keypoint indices."""
         return list(self._edges)
-
-    def get_sources(self) -> List[Tuple[Path, str]]:
-        """Return [(dataset_root_dir, description), …] for all added sources."""
-        return list(self._sources)
 
     def get_options(self) -> Tuple[bool, float]:
         """Return ``(autosave_enabled, bbox_pad_fraction)`` from the wizard options page."""
@@ -477,23 +400,7 @@ class ProjectWizard(QDialog):
         skel_layout.addWidget(self.mig_box)
         layout.addWidget(skel_box)
 
-        # ── Dataset Sources (edit mode only) ────────────────────────────
         self.sources_modified = False
-        if existing is not None:
-            src_group = QGroupBox("Dataset Sources")
-            sg_layout = QVBoxLayout(src_group)
-
-            self._sources_lw = QListWidget()
-            self._sources_lw.setMaximumHeight(110)
-            self._sources_lw.setSelectionMode(QListWidget.NoSelection)
-            self._refresh_sources_list()
-            sg_layout.addWidget(self._sources_lw)
-
-            btn_add_src = QPushButton("Add Source…")
-            btn_add_src.clicked.connect(self._add_source)
-            sg_layout.addWidget(btn_add_src)
-
-            layout.addWidget(src_group)
 
         # OK / Cancel
         bottom = QHBoxLayout()
@@ -559,30 +466,3 @@ class ProjectWizard(QDialog):
         do = bool(self.migrate_cb.isChecked())
         mode = "name" if self.rb_by_name.isChecked() else "index"
         return do, mode
-
-    # ── Dataset Sources helpers ──────────────────────────────────────────
-    def _refresh_sources_list(self):
-        self._sources_lw.clear()
-        if not self.existing or not self.existing.sources:
-            self._sources_lw.addItem(
-                "(Single-source project — add a source below to enable multi-source)"
-            )
-            return
-        for src in self.existing.sources:
-            label = f"[{src.source_id}]  {src.description or src.source_id}  —  {src.images_dir}"
-            self._sources_lw.addItem(label)
-
-    def _add_source(self):
-        from ..project import add_source_to_project
-        from .add_source import AddSourceDialog
-
-        dlg = AddSourceDialog(self.existing, parent=self)
-        if dlg.exec() != QDialog.Accepted or dlg.selected_dir is None:
-            return
-        try:
-            add_source_to_project(self.existing, dlg.selected_dir, dlg.description)
-            self.sources_modified = True
-            self._refresh_sources_list()
-        except Exception as exc:
-            QMessageBox.critical(self, "Add Source Failed", str(exc))
-            QMessageBox.critical(self, "Add Source Failed", str(exc))

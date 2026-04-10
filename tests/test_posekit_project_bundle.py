@@ -12,9 +12,11 @@ from hydra_suite.posekit.gui.constants import (
 )
 from hydra_suite.posekit.gui.models import Project
 from hydra_suite.posekit.gui.project import (
+    add_source_to_project,
     canonical_project_path,
     find_project,
     open_project_from_path,
+    remove_source_from_project,
     save_project_state,
 )
 
@@ -69,6 +71,55 @@ def test_posekit_open_project_from_manifest_loads_bundled_state(tmp_path: Path) 
     assert loaded is not None
     assert loaded.project_path == canonical_project_path(project.out_root)
     assert loaded.class_names == ["ant"]
+
+
+def test_posekit_bundle_round_trip_preserves_last_source_id(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    project = _make_posekit_project(dataset_root)
+    project.last_source_id = "source_3"
+    save_project_state(project)
+
+    loaded = open_project_from_path(project.out_root / "hydra_project.json")
+
+    assert loaded is not None
+    assert loaded.last_source_id == "source_3"
+
+
+def test_posekit_add_and_remove_source_updates_empty_project_state(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "pose_project"
+    images_dir = project_root / DEFAULT_DATASET_IMAGES_DIR
+    labels_dir = project_root / "labels"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    project = Project(
+        images_dir=images_dir,
+        out_root=project_root,
+        labels_dir=labels_dir,
+        project_path=project_root / DEFAULT_PROJECT_NAME,
+        class_names=["ant"],
+        keypoint_names=["head", "tail"],
+        skeleton_edges=[(0, 1)],
+    )
+
+    dataset_root = tmp_path / "source_a"
+    source_images = dataset_root / DEFAULT_DATASET_IMAGES_DIR
+    source_images.mkdir(parents=True, exist_ok=True)
+    (source_images / "frame_0.png").write_bytes(b"png")
+
+    added = add_source_to_project(project, dataset_root, "colony a")
+
+    assert project.sources[0].source_id == added.source_id
+    assert project.last_source_id == added.source_id
+    assert project.images_dir == added.images_dir
+
+    removed = remove_source_from_project(project, added.source_id)
+
+    assert removed is True
+    assert project.sources == []
+    assert project.last_source_id == ""
+    assert project.images_dir == project.out_root / DEFAULT_DATASET_IMAGES_DIR
 
 
 def test_posekit_open_project_from_legacy_file_migrates_to_bundle(

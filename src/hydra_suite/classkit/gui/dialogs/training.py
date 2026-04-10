@@ -31,6 +31,7 @@ from hydra_suite.classkit.config.custom_backbones import (
     get_custom_backbone_choices,
     register_user_timm_backbones,
 )
+from hydra_suite.classkit.core.export.splits import build_stratified_splits
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 from .timm_backbone_browser import TimmBackboneBrowserDialog
@@ -44,6 +45,7 @@ class ClassKitTrainingDialog(QDialog):
         scheme=None,
         n_labeled: int = 0,
         class_choices: Optional[List[str]] = None,
+        labeled_label_names: Optional[List[str]] = None,
         initial_settings: Optional[dict] = None,
         recent_model_paths: Optional[List[str]] = None,
         average_image_size: Optional[Tuple[float, float]] = None,
@@ -54,6 +56,11 @@ class ClassKitTrainingDialog(QDialog):
         self._scheme = scheme
         self._n_labeled = n_labeled
         self._class_choices = self._resolve_class_choices(class_choices)
+        self._labeled_label_names = [
+            str(label).strip()
+            for label in (labeled_label_names or [])
+            if str(label).strip()
+        ]
         self._initial_settings = (
             dict(initial_settings) if isinstance(initial_settings, dict) else {}
         )
@@ -271,6 +278,7 @@ class ClassKitTrainingDialog(QDialog):
             self._on_mode_changed()
             self._on_rebalance_mode_changed()
             self._on_custom_backbone_changed()
+            self._refresh_data_summary()
             return
 
         self._set_combo_value(
@@ -343,6 +351,7 @@ class ClassKitTrainingDialog(QDialog):
         self._on_mode_changed()
         self._on_rebalance_mode_changed()
         self._on_custom_backbone_changed()
+        self._refresh_data_summary()
 
     def _resolve_class_choices(
         self, class_choices: Optional[List[str]] = None
@@ -415,8 +424,17 @@ class ClassKitTrainingDialog(QDialog):
         )
         form.addRow("", self._mode_desc_label)
 
+        self._data_summary_group = QGroupBox("Dataset Summary")
+        data_summary_layout = QVBoxLayout(self._data_summary_group)
+        data_summary_layout.setContentsMargins(10, 8, 10, 8)
+        self._data_summary_label = QLabel("")
+        self._data_summary_label.setWordWrap(True)
+        self._data_summary_label.setStyleSheet("color:#ddd; font-size:11px;")
+        data_summary_layout.addWidget(self._data_summary_label)
+
         layout_gen = QVBoxLayout(self.general_tab)
         layout_gen.addLayout(form)
+        layout_gen.addWidget(self._data_summary_group)
         layout_gen.addStretch()
         return self.general_tab
 
@@ -586,7 +604,7 @@ class ClassKitTrainingDialog(QDialog):
     def _build_hyperparams_widgets(self, form):
         """Build epoch, batch, lr, val fraction, and patience widgets."""
         self.epochs_spin = QSpinBox()
-        self.epochs_spin.setRange(1, 500)
+        self.epochs_spin.setRange(1, 999999)
         self.epochs_spin.setValue(50)
         form.addRow("<b>Epochs:</b>", self.epochs_spin)
 
@@ -708,16 +726,20 @@ class ClassKitTrainingDialog(QDialog):
 
         pair = (src, dst)
         rows.append(pair)
+        src.currentTextChanged.connect(lambda _text: self._refresh_data_summary())
+        dst.currentTextChanged.connect(lambda _text: self._refresh_data_summary())
 
         def _remove_row() -> None:
             if pair in rows:
                 rows.remove(pair)
             row_widget.setParent(None)
+            self._refresh_data_summary()
 
         remove_btn.clicked.connect(_remove_row)
         add_rev.clicked.connect(
             lambda: self._add_reverse_mapping(rows, add_row, src, dst)
         )
+        self._refresh_data_summary()
 
     def _build_mapping_section(
         self,
@@ -755,7 +777,7 @@ class ClassKitTrainingDialog(QDialog):
         exp_note = QLabel(
             "<i>Each row: source label \u2192 destination label when that flip is applied.<br>"
             "Pairs are applied to train images only; evaluation data is never flipped.<br>"
-            "When enabled, all stochastic augmentations (flip/rotate) are disabled.</i>"
+            "When enabled, random flip augmentation is disabled; brightness and contrast jitter remain available.</i>"
         )
         exp_note.setWordWrap(True)
         exp_note.setStyleSheet("color:#aaa; font-size:11px;")
@@ -865,9 +887,15 @@ class ClassKitTrainingDialog(QDialog):
         self._tiny_tab_idx = self.tabs.addTab(self.tiny_tab, "Tiny Architecture")
 
     def _build_custom_cnn_tab(self) -> None:
-        self.custom_tab = QWidget()
-        custom_form = QFormLayout(self.custom_tab)
+        self.custom_tab = QScrollArea()
+        self.custom_tab.setWidgetResizable(True)
+        self.custom_tab.setFrameShape(QFrame.NoFrame)
+
+        custom_content = QWidget()
+        custom_form = QFormLayout(custom_content)
+        custom_form.setContentsMargins(0, 0, 0, 0)
         custom_form.setSpacing(8)
+        self.custom_tab.setWidget(custom_content)
 
         self._custom_backbone_combo = QComboBox()
         self._reload_custom_backbone_choices(selected="tinyclassifier")
@@ -879,7 +907,7 @@ class ClassKitTrainingDialog(QDialog):
         )
         custom_form.addRow("", self._custom_add_timm_btn)
 
-        custom_layout = self.custom_tab.layout()
+        custom_layout = custom_content.layout()
         self._build_auto_size_row(custom_layout)
 
         self._tiny_in_custom_width_label = QLabel("Input width")
@@ -1204,6 +1232,22 @@ class ClassKitTrainingDialog(QDialog):
             lambda _checked: self._sync_expansion_constraints()
         )
         self._sync_expansion_constraints()
+        self.val_fraction_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self.flip_lr_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self.flip_ud_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self.brightness_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self.contrast_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self._refresh_data_summary()
 
     def _populate_modes(self):
         self.mode_combo.clear()
@@ -1348,36 +1392,7 @@ class ClassKitTrainingDialog(QDialog):
         enable_power = mode != "none"
         self.tiny_rebalance_power_spin.setEnabled(enable_power)
 
-    def _sync_expansion_constraints(self) -> None:
-        expansion_enabled = bool(self._exp_group.isChecked())
-
-        for widget in (
-            self.flip_lr_spin,
-            self.flip_ud_spin,
-            self.brightness_spin,
-            self.contrast_spin,
-        ):
-            widget.setEnabled(not expansion_enabled)
-
-        if expansion_enabled:
-            self.flip_lr_spin.setValue(0.0)
-            self.flip_ud_spin.setValue(0.0)
-            self.brightness_spin.setValue(0.0)
-            self.contrast_spin.setValue(0.0)
-            self._exp_constraints_label.setText(
-                "Label expansion ON: all random augmentations are disabled."
-            )
-        else:
-            self._exp_constraints_label.setText(
-                "Label expansion OFF: choose augmentation probabilities freely."
-            )
-
-    def append_log(self, msg: str):
-        if msg:
-            self.log_view.appendPlainText(msg)
-            self.log_view.ensureCursorVisible()
-
-    def get_settings(self) -> dict:
+    def _current_label_expansion_settings(self) -> dict:
         label_expansion: dict = {}
 
         def _combo_text(cb: QComboBox) -> str:
@@ -1385,30 +1400,171 @@ class ClassKitTrainingDialog(QDialog):
 
         if self._exp_group.isChecked():
             lr_map = {
-                _combo_text(s): _combo_text(d)
-                for s, d in self._lr_mapping_rows
-                if _combo_text(s)
-                and _combo_text(d)
-                and _combo_text(s) != _combo_text(d)
+                _combo_text(src): _combo_text(dst)
+                for src, dst in self._lr_mapping_rows
+                if _combo_text(src)
+                and _combo_text(dst)
+                and _combo_text(src) != _combo_text(dst)
             }
             if lr_map:
                 label_expansion["fliplr"] = lr_map
+
             ud_map = {
-                _combo_text(s): _combo_text(d)
-                for s, d in self._ud_mapping_rows
-                if _combo_text(s)
-                and _combo_text(d)
-                and _combo_text(s) != _combo_text(d)
+                _combo_text(src): _combo_text(dst)
+                for src, dst in self._ud_mapping_rows
+                if _combo_text(src)
+                and _combo_text(dst)
+                and _combo_text(src) != _combo_text(dst)
             }
             if ud_map:
                 label_expansion["flipud"] = ud_map
+
+        return label_expansion
+
+    def _count_expanded_train_samples(
+        self, label_names: List[str], splits: List[str], label_expansion: dict
+    ) -> int:
+        if not label_expansion:
+            return 0
+
+        known_names = {str(name).strip() for name in self._class_choices}
+        known_names_ci = {name.lower() for name in known_names}
+        expanded = 0
+        for label_name, split in zip(label_names, splits):
+            if split != "train":
+                continue
+            src_name = str(label_name).strip()
+            src_name_ci = src_name.lower()
+            for mapping in label_expansion.values():
+                dst_name = mapping.get(src_name)
+                if dst_name is None:
+                    for key, value in mapping.items():
+                        if str(key).strip().lower() == src_name_ci:
+                            dst_name = value
+                            break
+                if dst_name is None:
+                    continue
+                if str(dst_name).strip().lower() in known_names_ci:
+                    expanded += 1
+        return expanded
+
+    def _current_data_summary(self) -> dict:
+        if self._labeled_label_names:
+            splits = build_stratified_splits(
+                self._labeled_label_names,
+                val_fraction=self.val_fraction_spin.value(),
+                test_fraction=0.0,
+            )
+            train_count = sum(1 for split in splits if split == "train")
+            val_count = sum(1 for split in splits if split == "val")
+            expansion_count = self._count_expanded_train_samples(
+                self._labeled_label_names,
+                splits,
+                self._current_label_expansion_settings(),
+            )
+            return {
+                "exact": True,
+                "labeled": len(self._labeled_label_names),
+                "train": train_count,
+                "val": val_count,
+                "expansion": expansion_count,
+                "exported": len(self._labeled_label_names) + expansion_count,
+            }
+
+        labeled = max(0, int(self._n_labeled))
+        val_count = int(round(labeled * float(self.val_fraction_spin.value())))
+        if labeled > 1:
+            val_count = min(val_count, labeled - 1)
+        else:
+            val_count = 0
+        train_count = max(0, labeled - val_count)
+        return {
+            "exact": False,
+            "labeled": labeled,
+            "train": train_count,
+            "val": val_count,
+            "expansion": 0,
+            "exported": labeled,
+        }
+
+    def current_data_summary_text(self) -> str:
+        summary = self._current_data_summary()
+        lead = "Stratified export" if summary["exact"] else "Estimated export"
+        lines = [
+            (
+                f"{lead}: {summary['train']:,} train / {summary['val']:,} val "
+                f"from {summary['labeled']:,} labeled images."
+            )
+        ]
+        if summary["expansion"] > 0:
+            lines.append(
+                (
+                    f"Label-switching expansion adds {summary['expansion']:,} mirrored train copies, "
+                    f"so {summary['exported']:,} files are exported in total."
+                )
+            )
+        else:
+            lines.append(f"Exported files: {summary['exported']:,} total.")
+
+        enabled_augments = []
+        if self.flip_lr_spin.value() > 0:
+            enabled_augments.append(f"LR flip p={self.flip_lr_spin.value():.2f}")
+        if self.flip_ud_spin.value() > 0:
+            enabled_augments.append(f"UD flip p={self.flip_ud_spin.value():.2f}")
+        if self.brightness_spin.value() > 0:
+            enabled_augments.append(f"brightness {self.brightness_spin.value():.2f}")
+        if self.contrast_spin.value() > 0:
+            enabled_augments.append(f"contrast {self.contrast_spin.value():.2f}")
+
+        if enabled_augments:
+            lines.append(
+                "Train-only stochastic augmentation: "
+                + ", ".join(enabled_augments)
+                + "."
+            )
+        else:
+            lines.append("Train-only stochastic augmentation: none.")
+        return "\n".join(lines)
+
+    def _refresh_data_summary(self) -> None:
+        if hasattr(self, "_data_summary_label"):
+            self._data_summary_label.setText(self.current_data_summary_text())
+
+    def _sync_expansion_constraints(self) -> None:
+        expansion_enabled = bool(self._exp_group.isChecked())
+
+        for widget in (
+            self.flip_lr_spin,
+            self.flip_ud_spin,
+        ):
+            widget.setEnabled(not expansion_enabled)
+
+        if expansion_enabled:
+            self.flip_lr_spin.setValue(0.0)
+            self.flip_ud_spin.setValue(0.0)
+            self._exp_constraints_label.setText(
+                "Label expansion ON: random flips are disabled; brightness and contrast jitter still apply to train samples."
+            )
+        else:
+            self._exp_constraints_label.setText(
+                "Label expansion OFF: choose flip and photometric augmentation probabilities freely."
+            )
+        self._refresh_data_summary()
+
+    def append_log(self, msg: str):
+        if msg:
+            self.log_view.appendPlainText(msg)
+            self.log_view.ensureCursorVisible()
+
+    def get_settings(self) -> dict:
+        label_expansion = self._current_label_expansion_settings()
 
         expansion_enabled = bool(self._exp_group.isChecked())
 
         flipud_value = 0.0 if expansion_enabled else self.flip_ud_spin.value()
         fliplr_value = 0.0 if expansion_enabled else self.flip_lr_spin.value()
-        brightness_value = 0.0 if expansion_enabled else self.brightness_spin.value()
-        contrast_value = 0.0 if expansion_enabled else self.contrast_spin.value()
+        brightness_value = self.brightness_spin.value()
+        contrast_value = self.contrast_spin.value()
 
         _rt = str(self.compute_runtime_combo.currentData() or "cpu")
         _train_device = str(self.device_combo.currentData() or "cpu")
