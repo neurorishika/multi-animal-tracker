@@ -1920,6 +1920,7 @@
 <li><code>mps</code></li>
 <li><code>cuda</code></li>
 <li><code>rocm</code></li>
+<li><code>onnx_coreml</code></li>
 <li><code>onnx_cpu</code></li>
 <li><code>onnx_cuda</code></li>
 <li><code>onnx_rocm</code></li>
@@ -1938,6 +1939,7 @@
 <ul>
 <li><code>cpu</code>: CPU inference paths.</li>
 <li><code>mps</code>: Apple Metal (PyTorch-native paths).</li>
+<li><code>onnx_coreml</code>: ONNX Runtime with CoreMLExecutionProvider on Apple Silicon.</li>
 <li><code>cuda</code>: PyTorch CUDA native paths.</li>
 <li><code>rocm</code>: PyTorch ROCm native paths.</li>
 <li><code>onnx_cpu</code>: ONNX Runtime with CPU provider.</li>
@@ -1959,7 +1961,7 @@
 <h2 id="platform-expectations">Platform Expectations<a class="headerlink" href="#platform-expectations" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Apple Silicon:</li>
-<li>Typically <code>mps</code> and <code>onnx_cpu</code> (no TensorRT).</li>
+<li>Typically <code>mps</code>, <code>onnx_coreml</code>, and <code>onnx_cpu</code> (no TensorRT).</li>
 <li>NVIDIA CUDA:</li>
 <li><code>cuda</code>, <code>onnx_cuda</code>, and <code>tensorrt</code> when installed correctly.</li>
 <li>ROCm:</li>

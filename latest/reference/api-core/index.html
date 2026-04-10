@@ -2509,6 +2509,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#hydra_suite.core.identity.CNNIdentityCache.get_cached_frames" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_cached_frames
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -4193,6 +4202,15 @@
   <a href="#hydra_suite.core.identity.CNNIdentityCache.load" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;load
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hydra_suite.core.identity.CNNIdentityCache.get_cached_frames" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_cached_frames
     </span>
   </a>
   
@@ -5974,8 +5992,8 @@ Compatible interface with ObjectDetector for seamless integration.</p>
         meas, sizes, shapes, yolo_results, confidences
     If return_raw=True:
         raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences,
-        raw_obb_corners, raw_heading_hints, raw_directed_mask,
-        raw_canonical_affines</p>
+        raw_obb_corners, raw_heading_hints, raw_heading_confidences,
+        raw_directed_mask, raw_canonical_affines</p>
 
     </div>
 
@@ -6002,7 +6020,8 @@ Compatible interface with ObjectDetector for seamless integration.</p>
       - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
       - return_raw=True:  (
             raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners,
-            raw_heading_hints, raw_directed_mask, raw_canonical_affines
+          raw_heading_hints, raw_heading_confidences,
+          raw_directed_mask, raw_canonical_affines
         )</p>
 
     </div>
@@ -7125,6 +7144,23 @@ tracking loop to retrieve per-frame predictions.</p>
     <div class="doc doc-contents ">
 
         <p>Return saved predictions for <em>frame_idx</em>, or [] if not found.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="hydra_suite.core.identity.CNNIdentityCache.get_cached_frames" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">get_cached_frames</span><span class="p">()</span></code>
+
+<a href="#hydra_suite.core.identity.CNNIdentityCache.get_cached_frames" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return sorted frame indices present in the cache.</p>
 
     </div>
 
