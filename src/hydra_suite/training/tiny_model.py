@@ -137,25 +137,13 @@ def load_tiny_onnx(onnx_path: str | Path, compute_runtime: str = "onnx_cpu"):
     """Load a TinyClassifier ONNX model as an ``onnxruntime.InferenceSession``.
 
     *compute_runtime* must be one of the canonical runtimes:
-    ``onnx_cpu``, ``onnx_cuda``, ``onnx_rocm``, or ``tensorrt``.
+    ``onnx_coreml``, ``onnx_cpu``, ``onnx_cuda``, ``onnx_rocm``, or ``tensorrt``.
     """
     import onnxruntime as ort
 
-    rt = str(compute_runtime or "onnx_cpu").strip().lower()
-    if rt in {"onnx_cuda", "tensorrt"}:
-        providers = (
-            [
-                "TensorrtExecutionProvider",
-                "CUDAExecutionProvider",
-                "CPUExecutionProvider",
-            ]
-            if rt == "tensorrt"
-            else ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        )
-    elif rt == "onnx_rocm":
-        providers = ["ROCMExecutionProvider", "CPUExecutionProvider"]
-    else:
-        providers = ["CPUExecutionProvider"]
+    from hydra_suite.runtime.compute_runtime import derive_onnx_execution_providers
+
+    providers = derive_onnx_execution_providers(compute_runtime)
     return ort.InferenceSession(str(onnx_path), providers=providers)
 
 

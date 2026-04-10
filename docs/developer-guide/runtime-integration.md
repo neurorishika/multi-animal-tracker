@@ -35,6 +35,7 @@ Core public helpers:
 - `mps`
 - `cuda`
 - `rocm`
+- `onnx_coreml`
 - `onnx_cpu`
 - `onnx_cuda`
 - `onnx_rocm`

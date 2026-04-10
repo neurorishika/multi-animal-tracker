@@ -54,11 +54,16 @@ class OrientedTrackVideoExportResult:
 
     output_dir: str
     dataset_dir: str
+    image_output_dir: str
     exported_videos: int
     exported_tracks: int
     exported_frames: int
+    exported_images: int
     skipped_tracks: int
     missing_rows: int
+    missing_detected_rows: int = 0
+    missing_interpolated_rows: int = 0
+    invalid_geometry_rows: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the export result to a plain dictionary."""
@@ -132,10 +137,17 @@ class OrientedTrackVideoExporter:
         padding_fraction: float = 0.1,
         background_color: tuple[int, int, int] = (0, 0, 0),
         suppress_foreign_obb: bool = False,
+        suppress_foreign_obb_images: bool | None = None,
+        suppress_foreign_obb_videos: bool | None = None,
         fix_direction_flips: bool = False,
         heading_flip_max_burst: int = 5,
         enable_affine_stabilization: bool = False,
         stabilization_window: int = 5,
+        export_videos: bool = True,
+        export_images: bool = False,
+        image_output_dir: str | Path | None = None,
+        image_interval: int = 1,
+        image_format: str = "png",
         output_subdir: str = "oriented_videos",
         codec: str = "mp4v",
     ) -> None:
@@ -152,12 +164,50 @@ class OrientedTrackVideoExporter:
         self.padding_fraction = max(0.0, float(padding_fraction or 0.0))
         self.background_color = self._normalize_background_color(background_color)
         self.suppress_foreign_obb = bool(suppress_foreign_obb)
+        self.suppress_foreign_obb_images = bool(
+            self.suppress_foreign_obb
+            if suppress_foreign_obb_images is None
+            else suppress_foreign_obb_images
+        )
+        self.suppress_foreign_obb_videos = bool(
+            self.suppress_foreign_obb
+            if suppress_foreign_obb_videos is None
+            else suppress_foreign_obb_videos
+        )
         self.fix_direction_flips = bool(fix_direction_flips)
         self.heading_flip_max_burst = max(1, int(heading_flip_max_burst or 1))
         self.enable_affine_stabilization = bool(enable_affine_stabilization)
         self.stabilization_window = max(1, int(stabilization_window or 1))
-        self.output_dir = self.dataset_dir / str(output_subdir).strip()
+        self.export_videos = bool(export_videos)
+        self.export_images = bool(export_images)
+        output_subdir = str(output_subdir).strip()
+        self.output_dir = (
+            (
+                self.dataset_dir / output_subdir
+                if self.export_videos and output_subdir
+                else self.dataset_dir
+            )
+            if self.export_videos
+            else None
+        )
+        self.image_output_dir = (
+            Path(image_output_dir).expanduser().resolve()
+            if image_output_dir
+            else (self.dataset_dir / "images" if self.export_images else None)
+        )
+        self.image_interval = max(1, int(image_interval or 1))
+        image_format = str(image_format or "png").strip().lower()
+        self.image_format = "jpg" if image_format in {"jpg", "jpeg"} else "png"
         self.codec = str(codec or "mp4v")
+        self._last_missing_breakdown = self._empty_missing_breakdown()
+
+    @staticmethod
+    def _empty_missing_breakdown() -> dict[str, int]:
+        return {
+            "missing_detected_rows": 0,
+            "missing_interpolated_rows": 0,
+            "invalid_geometry_rows": 0,
+        }
 
     def export(
         self,
@@ -180,39 +230,61 @@ class OrientedTrackVideoExporter:
             should_stop=should_stop,
             progress_callback=progress_callback,
         )
+        missing_breakdown = dict(self._last_missing_breakdown)
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.output_dir is not None:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.image_output_dir is not None:
+            self.image_output_dir.mkdir(parents=True, exist_ok=True)
         track_ids = sorted(track_sizes)
         if not track_ids:
             logger.warning(
                 "No oriented track videos exported: no cached geometry matched final trajectory rows."
             )
             return OrientedTrackVideoExportResult(
-                output_dir=str(self.output_dir),
+                output_dir=str(self.output_dir or ""),
                 dataset_dir=str(self.dataset_dir),
+                image_output_dir=str(self.image_output_dir or ""),
                 exported_videos=0,
                 exported_tracks=0,
                 exported_frames=0,
+                exported_images=0,
                 skipped_tracks=0,
                 missing_rows=int(missing_rows),
+                missing_detected_rows=int(missing_breakdown["missing_detected_rows"]),
+                missing_interpolated_rows=int(
+                    missing_breakdown["missing_interpolated_rows"]
+                ),
+                invalid_geometry_rows=int(missing_breakdown["invalid_geometry_rows"]),
             )
 
-        self._emit(progress_callback, 35, "Streaming source video for track export...")
-        exported_videos, exported_frames, skipped_tracks = self._write_videos(
-            frame_bundles,
-            track_sizes,
-            should_stop=should_stop,
-            progress_callback=progress_callback,
+        self._emit(
+            progress_callback, 35, "Streaming source video for final media export..."
         )
-        self._emit(progress_callback, 100, "Oriented track videos complete.")
+        exported_videos, exported_frames, exported_images, skipped_tracks = (
+            self._write_videos(
+                frame_bundles,
+                track_sizes,
+                should_stop=should_stop,
+                progress_callback=progress_callback,
+            )
+        )
+        self._emit(progress_callback, 100, "Final canonical media export complete.")
         return OrientedTrackVideoExportResult(
-            output_dir=str(self.output_dir),
+            output_dir=str(self.output_dir or ""),
             dataset_dir=str(self.dataset_dir),
+            image_output_dir=str(self.image_output_dir or ""),
             exported_videos=int(exported_videos),
             exported_tracks=int(len(track_ids)),
             exported_frames=int(exported_frames),
+            exported_images=int(exported_images),
             skipped_tracks=int(skipped_tracks),
             missing_rows=int(missing_rows),
+            missing_detected_rows=int(missing_breakdown["missing_detected_rows"]),
+            missing_interpolated_rows=int(
+                missing_breakdown["missing_interpolated_rows"]
+            ),
+            invalid_geometry_rows=int(missing_breakdown["invalid_geometry_rows"]),
         )
 
     @staticmethod
@@ -368,7 +440,7 @@ class OrientedTrackVideoExporter:
 
         frame_bundles: dict[int, FrameBundle] = {}
         track_sizes: dict[int, tuple[int, int]] = {}
-        missing_rows = 0
+        missing_breakdown = self._empty_missing_breakdown()
 
         actual_frames = sorted(actual_rows_by_frame)
         total_actual = len(actual_frames)
@@ -406,7 +478,7 @@ class OrientedTrackVideoExporter:
                         f"Preparing cached detection geometry... {actual_index}/{total_actual}",
                     )
                     bundle = frame_bundles.setdefault(frame_id, FrameBundle())
-                    missing_rows += self._add_actual_tasks(
+                    actual_missing = self._add_actual_tasks(
                         detection_cache,
                         frame_id,
                         actual_rows,
@@ -414,6 +486,8 @@ class OrientedTrackVideoExporter:
                         track_sizes,
                         track_theta_state,
                     )
+                    for key, value in actual_missing.items():
+                        missing_breakdown[key] += int(value)
 
                 interp_rows = interp_rows_by_frame.get(frame_id, [])
                 if interp_rows:
@@ -428,7 +502,7 @@ class OrientedTrackVideoExporter:
                         traj_id = int(row.TrajectoryID)
                         record = interp_lookup.get((frame_id, traj_id))
                         if record is None:
-                            missing_rows += 1
+                            missing_breakdown["missing_interpolated_rows"] += 1
                             continue
                         theta = self._resolve_task_theta(
                             row,
@@ -447,7 +521,7 @@ class OrientedTrackVideoExporter:
                             polygon_index=len(bundle.polygons),
                         )
                         if task is None:
-                            missing_rows += 1
+                            missing_breakdown["invalid_geometry_rows"] += 1
                             continue
                         bundle.polygons.append(task.corners)
                         bundle.tasks.append(task)
@@ -464,7 +538,8 @@ class OrientedTrackVideoExporter:
             frame_bundles,
             track_sizes,
         )
-        return frame_bundles, track_sizes, missing_rows
+        self._last_missing_breakdown = missing_breakdown
+        return frame_bundles, track_sizes, int(sum(missing_breakdown.values()))
 
     def _apply_track_postprocessing(
         self,
@@ -566,8 +641,11 @@ class OrientedTrackVideoExporter:
         bundle: FrameBundle,
         track_sizes: dict[int, tuple[int, int]],
         track_theta_state: dict[int, float],
-    ) -> int:
-        missing_rows = 0
+    ) -> dict[str, int]:
+        missing = {
+            "missing_detected_rows": 0,
+            "invalid_geometry_rows": 0,
+        }
         (
             meas,
             _sizes,
@@ -576,6 +654,7 @@ class OrientedTrackVideoExporter:
             obb_corners,
             detection_ids,
             heading_hints,
+            _heading_confidences,
             directed_mask,
             _canonical_affines,
             _canvas_dims,
@@ -592,11 +671,11 @@ class OrientedTrackVideoExporter:
             traj_id = int(row.TrajectoryID)
             det_id = getattr(row, "DetectionID", np.nan)
             if pd.isna(det_id):
-                missing_rows += 1
+                missing["missing_detected_rows"] += 1
                 continue
             idx = det_index.get(int(det_id))
             if idx is None:
-                missing_rows += 1
+                missing["missing_detected_rows"] += 1
                 continue
             corners = None
             if obb_corners and idx < len(obb_corners):
@@ -617,7 +696,7 @@ class OrientedTrackVideoExporter:
                             theta,
                         )
             if corners is None or corners.shape != (4, 2):
-                missing_rows += 1
+                missing["missing_detected_rows"] += 1
                 continue
             width, height = self._edge_lengths(corners)
             center = corners.mean(axis=0)
@@ -655,7 +734,7 @@ class OrientedTrackVideoExporter:
                 polygon_index=len(bundle.polygons),
             )
             if task is None:
-                missing_rows += 1
+                missing["invalid_geometry_rows"] += 1
                 continue
             bundle.polygons.append(task.corners)
             bundle.tasks.append(task)
@@ -663,7 +742,7 @@ class OrientedTrackVideoExporter:
             track_sizes[traj_id] = self._merge_canvas_size(
                 track_sizes.get(traj_id), (task.out_w, task.out_h)
             )
-        return missing_rows
+        return missing
 
     def _build_task(
         self,
@@ -708,46 +787,77 @@ class OrientedTrackVideoExporter:
         )
 
     def _process_frame_bundle(
-        self, frame, bundle, track_sizes, writers, frames_written_by_track, _canvases
+        self,
+        frame,
+        bundle,
+        track_sizes,
+        writers,
+        frames_written_by_track,
+        images_written_by_track,
+        _canvases,
     ):
         """Write all tasks from a single frame bundle to their track writers."""
         for task in bundle.tasks:
             canvas_size = track_sizes.get(task.trajectory_id)
             if canvas_size is None:
                 continue
-            writer = writers.get(task.trajectory_id)
-            if writer is None:
-                writer = self._open_writer(task.trajectory_id, canvas_size)
-                writers[task.trajectory_id] = writer
-            rendered = self._render_task(
-                frame,
-                task,
-                bundle.polygons,
-                canvas_size,
-                canvas=_canvases.get(task.trajectory_id),
-            )
-            if rendered is not None:
-                writer.write(rendered)
-                frames_written_by_track[task.trajectory_id] += 1
+            rendered_videos = None
+            if self.export_videos:
+                rendered_videos = self._render_task(
+                    frame,
+                    task,
+                    bundle.polygons,
+                    canvas_size,
+                    canvas=_canvases.get(task.trajectory_id),
+                    suppress_foreign_obb=self.suppress_foreign_obb_videos,
+                )
+                if rendered_videos is not None:
+                    writer = writers.get(task.trajectory_id)
+                    if writer is None:
+                        writer = self._open_writer(task.trajectory_id, canvas_size)
+                        writers[task.trajectory_id] = writer
+                    writer.write(rendered_videos)
+                    frames_written_by_track[task.trajectory_id] += 1
 
-    def _tally_exports(self, track_sizes, frames_written_by_track):
+            if self._should_export_image(task.frame_id):
+                rendered_images = rendered_videos
+                if rendered_images is None or (
+                    self.suppress_foreign_obb_images != self.suppress_foreign_obb_videos
+                ):
+                    rendered_images = self._render_task(
+                        frame,
+                        task,
+                        bundle.polygons,
+                        canvas_size,
+                        suppress_foreign_obb=self.suppress_foreign_obb_images,
+                    )
+                if rendered_images is not None and self._write_image(
+                    task.trajectory_id, task.frame_id, rendered_images
+                ):
+                    images_written_by_track[task.trajectory_id] += 1
+
+    def _tally_exports(
+        self, track_sizes, frames_written_by_track, images_written_by_track
+    ):
         """Compute export summary and clean up empty output files."""
         exported_videos = 0
         skipped_tracks = 0
         exported_frames = 0
+        exported_images = 0
         for traj_id in track_sizes:
             count = int(frames_written_by_track.get(traj_id, 0))
+            exported_images += int(images_written_by_track.get(traj_id, 0))
             if count > 0:
                 exported_videos += 1
                 exported_frames += count
-            else:
+            elif self.export_videos:
                 skipped_tracks += 1
                 output_path = self.output_dir / f"trajectory_{int(traj_id):04d}.mp4"
                 try:
                     output_path.unlink(missing_ok=True)
                 except Exception:
                     pass
-        return exported_videos, exported_frames, skipped_tracks
+        return exported_videos, exported_frames, exported_images, skipped_tracks
 
     def _write_videos(
         self,
@@ -756,14 +866,14 @@ class OrientedTrackVideoExporter:
         *,
         should_stop: Optional[Callable[[], bool]] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, int]:
         if not self.video_path.exists():
             raise FileNotFoundError(
                 f"Missing source video for oriented track export: {self.video_path}"
             )
         needed_frames = sorted(frame_bundles)
         if not needed_frames:
-            return 0, 0, 0
+            return 0, 0, 0, 0
 
         cap = cv2.VideoCapture(str(self.video_path))
         if not cap.isOpened():
@@ -771,6 +881,7 @@ class OrientedTrackVideoExporter:
 
         writers: dict[int, cv2.VideoWriter] = {}
         frames_written_by_track: dict[int, int] = defaultdict(int)
+        images_written_by_track: dict[int, int] = defaultdict(int)
         current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
 
         # Pre-allocate one reusable canvas per track to avoid per-frame np.full()
@@ -800,7 +911,7 @@ class OrientedTrackVideoExporter:
                     self._emit(
                         progress_callback,
                         35 + int(60 * index / max(1, total_frames)),
-                        f"Writing oriented track videos... {index}/{total_frames}",
+                        f"Writing final canonical media... {index}/{total_frames}",
                     )
 
                     ok, frame = future.result()
@@ -818,6 +929,7 @@ class OrientedTrackVideoExporter:
                         track_sizes,
                         writers,
                         frames_written_by_track,
+                        images_written_by_track,
                         _canvases,
                     )
         finally:
@@ -828,11 +940,41 @@ class OrientedTrackVideoExporter:
                 except Exception:
                     pass
 
-        return self._tally_exports(track_sizes, frames_written_by_track)
+        return self._tally_exports(
+            track_sizes,
+            frames_written_by_track,
+            images_written_by_track,
+        )
+
+    def _should_export_image(self, frame_id: int) -> bool:
+        if not self.export_images or self.image_output_dir is None:
+            return False
+        try:
+            return int(frame_id) % self.image_interval == 0
+        except Exception:
+            return False
+
+    def _write_image(
+        self, trajectory_id: int, frame_id: int, image: np.ndarray
+    ) -> bool:
+        if self.image_output_dir is None:
+            return False
+        track_dir = self.image_output_dir / f"trajectory_{int(trajectory_id):04d}"
+        track_dir.mkdir(parents=True, exist_ok=True)
+        output_path = track_dir / f"frame_{int(frame_id):06d}.{self.image_format}"
+        try:
+            return bool(cv2.imwrite(str(output_path), image))
+        except Exception:
+            logger.debug(
+                "Failed to write canonical image: %s", output_path, exc_info=True
+            )
+            return False
 
     def _open_writer(
         self, trajectory_id: int, canvas_size: tuple[int, int]
     ) -> cv2.VideoWriter:
+        if self.output_dir is None:
+            raise RuntimeError("Video output directory is not configured for export.")
         output_path = self.output_dir / f"trajectory_{int(trajectory_id):04d}.mp4"
         writer = cv2.VideoWriter(
             str(output_path),
@@ -851,6 +993,7 @@ class OrientedTrackVideoExporter:
         frame_polygons: list[np.ndarray],
         canvas_size: tuple[int, int],
         canvas: Optional[np.ndarray] = None,
+        suppress_foreign_obb: Optional[bool] = None,
     ) -> Optional[np.ndarray]:
         warped = cv2.warpAffine(
             frame,
@@ -870,7 +1013,10 @@ class OrientedTrackVideoExporter:
             return None
         cv2.fillPoly(mask, [target_poly], 255)
 
-        if self.suppress_foreign_obb and len(frame_polygons) > 1:
+        if suppress_foreign_obb is None:
+            suppress_foreign_obb = self.suppress_foreign_obb
+
+        if suppress_foreign_obb and len(frame_polygons) > 1:
             for idx, corners in enumerate(frame_polygons):
                 if idx == task.polygon_index:
                     continue

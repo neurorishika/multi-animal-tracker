@@ -1132,27 +1132,60 @@ class ConfigOrchestrator:
                 default=False,
             )
         )
+        realtime_mode = bool(
+            get_cfg(
+                "realtime_tracking_mode",
+                default=(
+                    str(get_cfg("tracking_workflow_mode", default="non_realtime"))
+                    .strip()
+                    .lower()
+                    == "realtime"
+                ),
+            )
+        )
+        self._panels.setup.chk_realtime_mode.setChecked(realtime_mode)
         self._panels.dataset.chk_enable_individual_dataset.setChecked(
             get_cfg(
+                "export_final_canonical_images",
                 "enable_individual_image_save",
                 "enable_individual_dataset",
                 default=False,
             )
         )
         self._panels.dataset.chk_generate_individual_track_videos.setChecked(
-            get_cfg("generate_oriented_track_videos", default=False)
+            get_cfg(
+                "final_media_export_videos_enabled",
+                "generate_oriented_track_videos",
+                default=False,
+            )
         )
         self._panels.dataset.chk_fix_oriented_video_direction_flips.setChecked(
-            get_cfg("fix_oriented_video_direction_flips", default=False)
+            get_cfg(
+                "final_media_export_fix_direction_flips",
+                "fix_oriented_video_direction_flips",
+                default=False,
+            )
         )
         self._panels.dataset.spin_oriented_video_heading_flip_burst.setValue(
-            get_cfg("oriented_video_heading_flip_burst", default=5)
+            get_cfg(
+                "final_media_export_heading_flip_burst",
+                "oriented_video_heading_flip_burst",
+                default=5,
+            )
         )
         self._panels.dataset.chk_enable_oriented_video_affine_stabilization.setChecked(
-            get_cfg("enable_oriented_video_affine_stabilization", default=False)
+            get_cfg(
+                "final_media_export_enable_affine_stabilization",
+                "enable_oriented_video_affine_stabilization",
+                default=False,
+            )
         )
         self._panels.dataset.spin_oriented_video_stabilization_window.setValue(
-            get_cfg("oriented_video_stabilization_window", default=5)
+            get_cfg(
+                "final_media_export_stabilization_window",
+                "oriented_video_stabilization_window",
+                default=5,
+            )
         )
         format_text = get_cfg("individual_output_format", default="png").upper()
         format_idx = self._panels.dataset.combo_individual_format.findText(format_text)
@@ -1693,20 +1726,23 @@ class ConfigOrchestrator:
                 "pose_sleap_batch": self._panels.identity.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
                 "pose_sleap_experimental_features": self._mw._sleap_experimental_features_enabled(),
-                # === REAL-TIME INDIVIDUAL DATASET ===
+                "tracking_workflow_mode": self._mw._session_orch._workflow_mode_key(),
+                "realtime_tracking_mode": self._mw._is_realtime_tracking_mode_enabled(),
+                # === FINAL MEDIA EXPORT ===
+                "export_final_canonical_images": self._mw._is_individual_image_save_enabled(),
                 "enable_individual_dataset": self._mw._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._mw._is_individual_image_save_enabled(),
-                "generate_oriented_track_videos": bool(
+                "final_media_export_videos_enabled": bool(
                     self._panels.dataset.chk_generate_individual_track_videos.isChecked()
                 ),
-                "fix_oriented_video_direction_flips": bool(
+                "final_media_export_fix_direction_flips": bool(
                     self._panels.dataset.chk_fix_oriented_video_direction_flips.isChecked()
                 ),
-                "oriented_video_heading_flip_burst": self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
-                "enable_oriented_video_affine_stabilization": bool(
+                "final_media_export_heading_flip_burst": self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
+                "final_media_export_enable_affine_stabilization": bool(
                     self._panels.dataset.chk_enable_oriented_video_affine_stabilization.isChecked()
                 ),
-                "oriented_video_stabilization_window": self._panels.dataset.spin_oriented_video_stabilization_window.value(),
+                "final_media_export_stabilization_window": self._panels.dataset.spin_oriented_video_stabilization_window.value(),
                 "individual_output_format": self._panels.dataset.combo_individual_format.currentText().lower(),
             }
         )
@@ -1922,7 +1958,9 @@ class ConfigOrchestrator:
         )
 
         individual_pipeline_enabled = self._mw._is_individual_pipeline_enabled()
-        individual_image_save_enabled = self._mw._is_individual_image_save_enabled()
+        final_canonical_image_export_enabled = (
+            self._mw._is_individual_image_save_enabled()
+        )
         pose_extractor_enabled = self._mw._is_pose_inference_enabled()
         identity_cfg = self._mw._identity_config()
         identity_method = (
@@ -2089,6 +2127,8 @@ class ConfigOrchestrator:
             "SHOW_STATE": self._panels.setup.chk_show_state.isChecked(),
             "SHOW_KALMAN_UNCERTAINTY": self._panels.setup.chk_show_kalman_uncertainty.isChecked(),
             "VISUALIZATION_FREE_MODE": self._panels.setup.chk_visualization_free.isChecked(),
+            "TRACKING_REALTIME_MODE": self._mw._is_realtime_tracking_mode_enabled(),
+            "TRACKING_WORKFLOW_MODE": self._mw._session_orch._workflow_mode_key(),
             "zoom_factor": self._mw.slider_zoom.value() / 100.0,
             "ROI_MASK": self._mw.roi_mask,
             "REFERENCE_BODY_SIZE": reference_body_size,
@@ -2181,19 +2221,20 @@ class ConfigOrchestrator:
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
                 self._mw.current_individual_properties_cache_path or ""
             ).strip(),
-            # Real-time Individual Dataset Generation parameters
-            "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
-            "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
-            "GENERATE_ORIENTED_TRACK_VIDEOS": self._mw._should_generate_oriented_track_videos(),
-            "ORIENTED_VIDEO_FIX_DIRECTION_FLIPS": bool(
+            # Final media export parameters
+            "ENABLE_INDIVIDUAL_DATASET": False,
+            "ENABLE_INDIVIDUAL_IMAGE_SAVE": False,
+            "EXPORT_FINAL_CANONICAL_IMAGES": final_canonical_image_export_enabled,
+            "FINAL_MEDIA_EXPORT_VIDEOS_ENABLED": self._mw._should_export_final_media_videos(),
+            "FINAL_MEDIA_EXPORT_FIX_DIRECTION_FLIPS": bool(
                 self._panels.dataset.chk_fix_oriented_video_direction_flips.isChecked()
             ),
-            "ORIENTED_VIDEO_HEADING_FLIP_MAX_BURST": self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
-            "ORIENTED_VIDEO_ENABLE_AFFINE_STABILIZATION": bool(
+            "FINAL_MEDIA_EXPORT_HEADING_FLIP_MAX_BURST": self._panels.dataset.spin_oriented_video_heading_flip_burst.value(),
+            "FINAL_MEDIA_EXPORT_ENABLE_AFFINE_STABILIZATION": bool(
                 self._panels.dataset.chk_enable_oriented_video_affine_stabilization.isChecked()
             ),
-            "ORIENTED_VIDEO_STABILIZATION_WINDOW": self._panels.dataset.spin_oriented_video_stabilization_window.value(),
-            "ORIENTED_TRACK_VIDEO_OUTPUT_DIR": (
+            "FINAL_MEDIA_EXPORT_STABILIZATION_WINDOW": self._panels.dataset.spin_oriented_video_stabilization_window.value(),
+            "FINAL_MEDIA_EXPORT_VIDEO_OUTPUT_DIR": (
                 os.path.join(
                     os.path.dirname(self._mw.current_video_path),
                     f"{os.path.splitext(os.path.basename(self._mw.current_video_path))[0]}_datasets",
@@ -3766,6 +3807,7 @@ class ConfigOrchestrator:
             backend=backend,
             preferred_model_path=preferred_model_path,
         )
+        self._mw._identity_panel._sync_pose_model_remove_button()
 
     def _handle_add_new_yolo_model(
         self,

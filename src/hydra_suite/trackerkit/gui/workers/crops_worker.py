@@ -243,6 +243,38 @@ class InterpolatedCropsWorker(BaseWorker):
             logger.warning("Interpolated head-tail analysis disabled: %s", exc)
             return None
 
+    def _init_interpolation_backends(self, output_dir):
+        """Initialize optional analysis backends after eligible gap tasks exist."""
+        pose_backend, pose_kpt_source_names, pose_kpt_labels = self._init_pose_backend(
+            output_dir
+        )
+        apriltag_detector = self._init_apriltag_detector()
+        cnn_backends, cnn_labels = self._init_cnn_backends()
+        headtail_analyzer = self._init_headtail_analyzer()
+        interp_cnn_rows = {label: [] for label in cnn_labels}
+        return (
+            pose_backend,
+            pose_kpt_source_names,
+            pose_kpt_labels,
+            apriltag_detector,
+            cnn_backends,
+            cnn_labels,
+            headtail_analyzer,
+            interp_cnn_rows,
+        )
+
+    @staticmethod
+    def _empty_artifact_paths():
+        return {
+            "mapping_path": None,
+            "roi_csv_path": None,
+            "roi_npz_path": None,
+            "pose_csv_path": None,
+            "tag_csv_path": None,
+            "cnn_csv_paths": {},
+            "headtail_csv_path": None,
+        }
+
     def _load_and_validate_csv(self):
         """Load CSV and validate required columns. Returns DataFrame or None."""
         df = pd.read_csv(self.csv_path)
@@ -959,13 +991,32 @@ class InterpolatedCropsWorker(BaseWorker):
         interp_cnn_rows,
         interp_headtail_rows,
         save_interpolated_outputs,
+        *,
+        occluded_rows=0,
+        interp_runs=0,
+        eligible_frames=0,
+        eligible_rows=0,
+        roi_rows_count=0,
+        no_work_reason="",
     ):
         def _str_or_none(p):
             return str(p) if p else None
 
+        cnn_rows_produced = int(sum(len(rows) for rows in interp_cnn_rows.values()))
+
         return {
             "saved": interp_saved,
             "gaps": interp_gaps,
+            "occluded_rows": int(occluded_rows),
+            "interp_runs": int(interp_runs),
+            "eligible_frames": int(eligible_frames),
+            "eligible_rows": int(eligible_rows),
+            "roi_rows_cached": int(roi_rows_count),
+            "pose_rows_produced": int(len(interp_pose_rows)),
+            "tag_rows_produced": int(len(interp_tag_rows)),
+            "cnn_rows_produced": cnn_rows_produced,
+            "headtail_rows_produced": int(len(interp_headtail_rows)),
+            "no_work_reason": str(no_work_reason or ""),
             "mapping_path": _str_or_none(artifact_paths["mapping_path"]),
             "roi_csv_path": _str_or_none(artifact_paths["roi_csv_path"]),
             "roi_npz_path": _str_or_none(artifact_paths["roi_npz_path"]),
@@ -1259,12 +1310,16 @@ class InterpolatedCropsWorker(BaseWorker):
             self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
         )
         generate_oriented_videos = bool(
-            self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+            self.params.get("FINAL_MEDIA_EXPORT_VIDEOS_ENABLED", False)
+            or self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
         )
         if not save_interpolated_outputs and generate_oriented_videos:
             output_dir = self.params.get(
-                "ORIENTED_TRACK_VIDEO_OUTPUT_DIR",
-                output_dir,
+                "FINAL_MEDIA_EXPORT_VIDEO_OUTPUT_DIR",
+                self.params.get(
+                    "ORIENTED_TRACK_VIDEO_OUTPUT_DIR",
+                    output_dir,
+                ),
             )
         cache_interpolated_artifacts = bool(
             save_interpolated_outputs or generate_oriented_videos
@@ -1288,13 +1343,6 @@ class InterpolatedCropsWorker(BaseWorker):
         _canonical_ref_ar = gen._canonical_ref_ar
         _canonical_padding = gen._canonical_padding
 
-        pose_backend, pose_kpt_source_names, pose_kpt_labels = self._init_pose_backend(
-            output_dir
-        )
-        apriltag_detector = self._init_apriltag_detector()
-        cnn_backends, cnn_labels = self._init_cnn_backends()
-        headtail_analyzer = self._init_headtail_analyzer()
-
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             self.finished_signal.emit({"saved": 0, "gaps": 0})
@@ -1312,26 +1360,18 @@ class InterpolatedCropsWorker(BaseWorker):
             return None
 
         profiler.phase_end("interp_setup")
-        interp_cnn_rows = {label: [] for label in cnn_labels}
         return (
             df,
             cap,
             detection_cache,
             gen,
-            pose_backend,
-            cnn_backends,
-            cnn_labels,
-            apriltag_detector,
-            headtail_analyzer,
+            output_dir,
             save_interpolated_outputs,
             cache_interpolated_artifacts,
             position_scale,
             size_scale,
             _canonical_ref_ar,
             _canonical_padding,
-            pose_kpt_source_names,
-            pose_kpt_labels,
-            interp_cnn_rows,
         )
 
     def execute(self):
@@ -1351,8 +1391,12 @@ class InterpolatedCropsWorker(BaseWorker):
         detection_cache = None
         cap = None
         cnn_backends = []
+        cnn_labels = []
         apriltag_detector = None
         headtail_analyzer = None
+        pose_kpt_source_names = []
+        pose_kpt_labels = []
+        interp_cnn_rows = {}
         try:
             setup = self._validate_and_setup(profiler)
             if setup is None:
@@ -1362,20 +1406,13 @@ class InterpolatedCropsWorker(BaseWorker):
                 cap,
                 detection_cache,
                 gen,
-                pose_backend,
-                cnn_backends,
-                cnn_labels,
-                apriltag_detector,
-                headtail_analyzer,
+                output_dir,
                 save_interpolated_outputs,
                 cache_interpolated_artifacts,
                 position_scale,
                 size_scale,
                 _canonical_ref_ar,
                 _canonical_padding,
-                pose_kpt_source_names,
-                pose_kpt_labels,
-                interp_cnn_rows,
             ) = setup
 
             interp_saved = 0
@@ -1405,10 +1442,23 @@ class InterpolatedCropsWorker(BaseWorker):
             del df
             gc.collect()
 
+            eligible_frames = int(len(frame_tasks))
+            eligible_rows = int(sum(len(tasks) for tasks in frame_tasks.values()))
+
             profiler.phase_end("interp_gap_detection")
             profiler.phase_start("interp_crop_extraction")
 
             if frame_tasks:
+                (
+                    pose_backend,
+                    pose_kpt_source_names,
+                    pose_kpt_labels,
+                    apriltag_detector,
+                    cnn_backends,
+                    cnn_labels,
+                    headtail_analyzer,
+                    interp_cnn_rows,
+                ) = self._init_interpolation_backends(output_dir)
                 interp_saved = self._run_frame_tasks_loop(
                     frame_tasks,
                     cap,
@@ -1437,23 +1487,29 @@ class InterpolatedCropsWorker(BaseWorker):
                 )
                 if interp_saved is None:
                     return
+            else:
+                logger.info(
+                    "Interpolated post-pass found no eligible bounded gaps; skipping backend initialization."
+                )
 
             profiler.phase_end("interp_crop_extraction")
             profiler.phase_start("interp_finalize")
 
-            artifact_paths = self._write_interpolation_artifacts(
-                gen,
-                save_interpolated_outputs,
-                cache_interpolated_artifacts,
-                interp_rows,
-                roi_rows,
-                roi_corners,
-                interp_pose_rows,
-                interp_tag_rows,
-                interp_cnn_rows,
-                interp_headtail_rows,
-                pose_kpt_labels,
-            )
+            artifact_paths = self._empty_artifact_paths()
+            if frame_tasks:
+                artifact_paths = self._write_interpolation_artifacts(
+                    gen,
+                    save_interpolated_outputs,
+                    cache_interpolated_artifacts,
+                    interp_rows,
+                    roi_rows,
+                    roi_corners,
+                    interp_pose_rows,
+                    interp_tag_rows,
+                    interp_cnn_rows,
+                    interp_headtail_rows,
+                    pose_kpt_labels,
+                )
             if cache_interpolated_artifacts:
                 gen.finalize()
 
@@ -1473,6 +1529,16 @@ class InterpolatedCropsWorker(BaseWorker):
                         interp_cnn_rows,
                         interp_headtail_rows,
                         save_interpolated_outputs,
+                        occluded_rows=occluded_rows,
+                        interp_runs=interp_runs,
+                        eligible_frames=eligible_frames,
+                        eligible_rows=eligible_rows,
+                        roi_rows_count=len(roi_rows),
+                        no_work_reason=(
+                            "no_occluded_rows"
+                            if occluded_rows == 0
+                            else "no_eligible_gaps" if eligible_rows == 0 else ""
+                        ),
                     )
                 )
         except Exception:

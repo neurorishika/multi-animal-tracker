@@ -105,6 +105,26 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
     assert dialog.get_settings()["initial_model_path"] == "/tmp/previous_model.pth"
 
 
+def test_training_dialog_prefers_onnx_coreml_for_mps_inference(
+    qapp, monkeypatch
+) -> None:
+    import hydra_suite.runtime.compute_runtime as compute_runtime
+
+    monkeypatch.setattr(
+        compute_runtime,
+        "supported_runtimes_for_pipeline",
+        lambda _pipeline: ["cpu", "mps", "onnx_coreml", "onnx_cpu"],
+    )
+
+    dialog = ClassKitTrainingDialog(
+        n_labeled=8,
+        class_choices=["a", "b"],
+        initial_settings={"device": "mps"},
+    )
+
+    assert dialog.compute_runtime_combo.currentData() == "onnx_coreml"
+
+
 def test_training_dialog_data_summary_reflects_stratified_split_and_expansion(
     qapp,
 ) -> None:

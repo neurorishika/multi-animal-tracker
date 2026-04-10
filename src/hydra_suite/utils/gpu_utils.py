@@ -104,6 +104,9 @@ ONNXRUNTIME_CUDA_AVAILABLE = ONNXRUNTIME_AVAILABLE and any(
     p in ONNXRUNTIME_PROVIDERS
     for p in ("CUDAExecutionProvider", "TensorrtExecutionProvider")
 )
+ONNXRUNTIME_COREML_AVAILABLE = ONNXRUNTIME_AVAILABLE and (
+    "CoreMLExecutionProvider" in ONNXRUNTIME_PROVIDERS
+)
 ONNXRUNTIME_ROCM_AVAILABLE = ONNXRUNTIME_AVAILABLE and (
     "ROCMExecutionProvider" in ONNXRUNTIME_PROVIDERS
 )
@@ -212,6 +215,7 @@ def get_device_info() -> object:
         "onnxruntime_providers": list(ONNXRUNTIME_PROVIDERS),
         "onnxruntime_cpu_available": ONNXRUNTIME_CPU_AVAILABLE,
         "onnxruntime_cuda_available": ONNXRUNTIME_CUDA_AVAILABLE,
+        "onnxruntime_coreml_available": ONNXRUNTIME_COREML_AVAILABLE,
         "onnxruntime_rocm_available": ONNXRUNTIME_ROCM_AVAILABLE,
         "sleap_nn_export_available": SLEAP_NN_EXPORT_AVAILABLE,
         "sleap_runtime_onnx_available": SLEAP_RUNTIME_ONNX_AVAILABLE,
@@ -320,11 +324,14 @@ def _append_runtime_option(
 def _add_macos_pose_runtime_options(
     options: list[tuple[str, str]],
     supports_onnx: bool,
+    supports_coreml: bool,
 ) -> None:
     if MPS_AVAILABLE:
         _append_runtime_option(options, "MPS", "mps")
     _append_runtime_option(options, "CPU", "cpu")
     if supports_onnx:
+        if supports_coreml:
+            _append_runtime_option(options, "ONNX (CoreML)", "onnx_coreml")
         _append_runtime_option(options, "ONNX (CPU)", "onnx_cpu")
 
 
@@ -402,7 +409,7 @@ def get_pose_runtime_options(backend_family: str = "yolo"):
     Values are normalized ids consumed by runtime_api, e.g.:
     - auto
     - cpu / mps / cuda / rocm
-    - onnx_cpu / onnx_cuda
+    - onnx_coreml / onnx_cpu / onnx_cuda
     - tensorrt_cuda
     """
     backend = str(backend_family or "yolo").strip().lower()
@@ -412,13 +419,16 @@ def get_pose_runtime_options(backend_family: str = "yolo"):
     supports_onnx = (
         ONNXRUNTIME_AVAILABLE if backend != "sleap" else SLEAP_RUNTIME_ONNX_AVAILABLE
     )
+    supports_coreml = bool(
+        backend != "sleap" and MPS_AVAILABLE and ONNXRUNTIME_COREML_AVAILABLE
+    )
     supports_tensorrt = (
         TENSORRT_AVAILABLE if backend != "sleap" else SLEAP_RUNTIME_TENSORRT_AVAILABLE
     )
     cuda_like = CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE
 
     if is_mac:
-        _add_macos_pose_runtime_options(options, supports_onnx)
+        _add_macos_pose_runtime_options(options, supports_onnx, supports_coreml)
     else:
         _add_linux_pose_runtime_options(
             options,
@@ -444,6 +454,7 @@ __all__ = [
     "ONNXRUNTIME_PROVIDERS",
     "ONNXRUNTIME_CPU_AVAILABLE",
     "ONNXRUNTIME_CUDA_AVAILABLE",
+    "ONNXRUNTIME_COREML_AVAILABLE",
     "ONNXRUNTIME_ROCM_AVAILABLE",
     "SLEAP_NN_EXPORT_AVAILABLE",
     "SLEAP_RUNTIME_ONNX_AVAILABLE",

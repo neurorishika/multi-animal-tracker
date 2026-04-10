@@ -10,7 +10,7 @@ torch
 torchvision
 torchaudio
 
-# ONNX model export and CPU inference (no ONNX GPU runtime for MPS yet)
+# ONNX model export and ONNX Runtime inference (CoreMLExecutionProvider is used when available)
 onnx
 onnxslim
 onnxruntime

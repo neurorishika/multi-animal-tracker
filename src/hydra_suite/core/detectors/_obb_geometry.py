@@ -82,6 +82,7 @@ class OBBGeometryMixin:
         iou_threshold,
         detection_ids=None,
         heading_hints=None,
+        heading_confidences=None,
         directed_mask=None,
     ):
         """
@@ -114,6 +115,7 @@ class OBBGeometryMixin:
                     confidences,
                     obb_corners_list,
                     heading_hints,
+                    heading_confidences,
                     directed_mask,
                 )
             return (
@@ -124,6 +126,7 @@ class OBBGeometryMixin:
                 obb_corners_list,
                 detection_ids,
                 heading_hints,
+                heading_confidences,
                 directed_mask,
             )
 
@@ -207,6 +210,10 @@ class OBBGeometryMixin:
         obb_corners_list = [obb_corners_list[i] for i in keep_indices]
         if heading_hints is not None:
             heading_hints = [heading_hints[i] for i in keep_indices]
+            if heading_confidences is None:
+                heading_confidences = [0.0] * len(heading_hints)
+            else:
+                heading_confidences = [heading_confidences[i] for i in keep_indices]
             if directed_mask is None:
                 directed_mask = [0] * len(heading_hints)
             else:
@@ -223,6 +230,7 @@ class OBBGeometryMixin:
                 obb_corners_list,
                 detection_ids,
                 heading_hints,
+                heading_confidences,
                 directed_mask,
             )
         if heading_hints is not None:
@@ -358,6 +366,7 @@ class OBBGeometryMixin:
         roi_mask=None,
         detection_ids=None,
         heading_hints=None,
+        heading_confidences=None,
         directed_mask=None,
     ):
         """
@@ -367,7 +376,7 @@ class OBBGeometryMixin:
         if not meas:
             if heading_hints is None:
                 return [], [], [], [], [], []
-            return [], [], [], [], [], [], [], []
+            return [], [], [], [], [], [], [], [], []
 
         conf_threshold = float(self.params.get("YOLO_CONFIDENCE_THRESHOLD", 0.25))
         iou_threshold = float(self.params.get("YOLO_IOU_THRESHOLD", 0.7))
@@ -392,12 +401,14 @@ class OBBGeometryMixin:
             n = min(n, len(obb_corners_list))
         if heading_hints is not None:
             n = min(n, len(heading_hints))
+            if heading_confidences is not None:
+                n = min(n, len(heading_confidences))
             if directed_mask is not None:
                 n = min(n, len(directed_mask))
         if n == 0:
             if heading_hints is None:
                 return [], [], [], [], [], []
-            return [], [], [], [], [], [], [], []
+            return [], [], [], [], [], [], [], [], []
 
         meas_arr = meas_arr[:n]
         sizes_arr = sizes_arr[:n]
@@ -417,6 +428,12 @@ class OBBGeometryMixin:
             heading_arr = np.ascontiguousarray(
                 np.asarray(heading_hints, dtype=np.float32)
             )[:n]
+            if heading_confidences is None:
+                heading_conf_arr = np.zeros(n, dtype=np.float32)
+            else:
+                heading_conf_arr = np.ascontiguousarray(
+                    np.asarray(heading_confidences, dtype=np.float32)
+                )[:n]
             if directed_mask is None:
                 directed_arr = np.zeros(n, dtype=np.uint8)
             else:
@@ -425,6 +442,7 @@ class OBBGeometryMixin:
                 )[:n]
         else:
             heading_arr = None
+            heading_conf_arr = None
             directed_arr = None
 
         keep_mask = conf_arr >= conf_threshold
@@ -466,7 +484,7 @@ class OBBGeometryMixin:
         if not np.any(keep_mask):
             if heading_hints is None:
                 return [], [], [], [], [], []
-            return [], [], [], [], [], [], [], []
+            return [], [], [], [], [], [], [], [], []
 
         meas_arr = meas_arr[keep_mask]
         sizes_arr = sizes_arr[keep_mask]
@@ -476,6 +494,7 @@ class OBBGeometryMixin:
         obb_arr = obb_arr[keep_mask]
         if heading_arr is not None:
             heading_arr = heading_arr[keep_mask]
+            heading_conf_arr = heading_conf_arr[keep_mask]
             directed_arr = directed_arr[keep_mask]
 
         meas_list = [meas_arr[i] for i in range(len(meas_arr))]
@@ -485,6 +504,9 @@ class OBBGeometryMixin:
         ids_list = [int(v) for v in ids_arr.tolist()]
         obb_list = [obb_arr[i] for i in range(len(obb_arr))]
         heading_list = heading_arr.tolist() if heading_arr is not None else None
+        heading_conf_list = (
+            heading_conf_arr.tolist() if heading_conf_arr is not None else None
+        )
         directed_list = directed_arr.tolist() if directed_arr is not None else None
 
         if len(meas_list) > 1:
@@ -514,6 +536,7 @@ class OBBGeometryMixin:
                     obb_list,
                     ids_list,
                     heading_list,
+                    heading_conf_list,
                     directed_list,
                 ) = self._filter_overlapping_detections(
                     meas_list,
@@ -524,6 +547,7 @@ class OBBGeometryMixin:
                     iou_threshold,
                     detection_ids=ids_list,
                     heading_hints=heading_list,
+                    heading_confidences=heading_conf_list,
                     directed_mask=directed_list,
                 )
 
@@ -537,6 +561,7 @@ class OBBGeometryMixin:
             ids_list = [ids_list[i] for i in idxs]
             if heading_list is not None:
                 heading_list = [heading_list[i] for i in idxs]
+                heading_conf_list = [heading_conf_list[i] for i in idxs]
                 directed_list = [directed_list[i] for i in idxs]
 
         if heading_list is None:
@@ -549,5 +574,6 @@ class OBBGeometryMixin:
             obb_list,
             ids_list,
             heading_list,
+            heading_conf_list,
             directed_list,
         )

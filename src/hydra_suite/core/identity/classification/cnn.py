@@ -118,6 +118,18 @@ class CNNIdentityCache:
             )
         return results
 
+    def get_cached_frames(self) -> list[int]:
+        """Return sorted frame indices present in the cache."""
+        frames = []
+        for key in self._data:
+            if not key.startswith("f") or not key.endswith("_det"):
+                continue
+            try:
+                frames.append(int(str(key)[1:-4]))
+            except ValueError:
+                continue
+        return sorted(set(frames))
+
 
 # ---------------------------------------------------------------------------
 # CNNIdentityBackend
@@ -155,11 +167,9 @@ class CNNIdentityBackend:
         if self._loaded:
             return
 
-        use_onnx = self._compute_runtime in (
-            "onnx_cpu",
-            "onnx_cuda",
-            "onnx_rocm",
-            "tensorrt",
+        use_onnx = (
+            self._compute_runtime.startswith("onnx_")
+            or self._compute_runtime == "tensorrt"
         )
         device = self._torch_device(self._compute_runtime)
 
@@ -172,7 +182,7 @@ class CNNIdentityBackend:
     def _torch_device(self, rt: str) -> str:
         if rt in ("cuda", "onnx_cuda", "tensorrt"):
             return "cuda"
-        if rt == "mps":
+        if rt in ("mps", "onnx_coreml"):
             return "mps"
         if rt in ("rocm", "onnx_rocm"):
             return "cuda"
@@ -195,11 +205,11 @@ class CNNIdentityBackend:
             onnx_path = self._derive_onnx(ckpt, device)
             import onnxruntime as ort
 
-            providers = (
-                ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                if "cuda" in self._compute_runtime
-                else ["CPUExecutionProvider"]
+            from hydra_suite.runtime.compute_runtime import (
+                derive_onnx_execution_providers,
             )
+
+            providers = derive_onnx_execution_providers(self._compute_runtime)
             self._model = ort.InferenceSession(onnx_path, providers=providers)
             self._infer_fn = self._infer_onnx
         else:
@@ -234,8 +244,13 @@ class CNNIdentityBackend:
                 yolo.export(format="onnx", imgsz=224)
             import onnxruntime as ort
 
+            from hydra_suite.runtime.compute_runtime import (
+                derive_onnx_execution_providers,
+            )
+
             self._model = ort.InferenceSession(
-                onnx_path, providers=["CPUExecutionProvider"]
+                onnx_path,
+                providers=derive_onnx_execution_providers(self._compute_runtime),
             )
             self._infer_fn = self._infer_onnx
         else:
@@ -330,6 +345,7 @@ class CNNIdentityBackend:
         self._ensure_loaded()
         # YOLO native inference does its own preprocessing — pass raw crops
         if self._is_yolo and self._compute_runtime not in (
+            "onnx_coreml",
             "onnx_cpu",
             "onnx_cuda",
             "onnx_rocm",

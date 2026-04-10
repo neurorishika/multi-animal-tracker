@@ -107,6 +107,7 @@ def _filter_cached_detections(det_filter, cache, f_idx, roi_mask):
         raw_obb,
         raw_det_ids,
         raw_heading_hints,
+        raw_heading_confidences,
         raw_directed_mask,
         _raw_canonical_affines,
         _raw_canvas_dims,
@@ -122,6 +123,7 @@ def _filter_cached_detections(det_filter, cache, f_idx, roi_mask):
             roi_mask=roi_mask,
             detection_ids=raw_det_ids,
             heading_hints=raw_heading_hints,
+            heading_confidences=raw_heading_confidences,
             directed_mask=raw_directed_mask,
         )
         (
@@ -132,6 +134,7 @@ def _filter_cached_detections(det_filter, cache, f_idx, roi_mask):
             _obb_out,
             detection_ids,
             _headtail_hints,
+            _headtail_confidences,
             _headtail_directed,
         ) = filtered
     else:
@@ -145,7 +148,7 @@ def _filter_cached_detections(det_filter, cache, f_idx, roi_mask):
             detection_ids=raw_det_ids,
         )
         meas, _, shapes, _confs, _obb_out, detection_ids = filtered
-        _headtail_hints, _headtail_directed = [], []
+        _headtail_hints, _headtail_confidences, _headtail_directed = [], [], []
     return meas, shapes, _confs, detection_ids, _headtail_hints, _headtail_directed
 
 

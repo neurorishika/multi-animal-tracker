@@ -82,10 +82,10 @@ class DetectionCache:
             if "metadata" in self._loaded_data:
                 metadata = self._loaded_data["metadata"].item()
                 cache_version = str(metadata.get("version", ""))
-                if cache_version not in {"2.0", "2.1", "2.2", "2.3"}:
+                if cache_version not in {"2.0", "2.1", "2.2", "2.3", "2.4"}:
                     logger.warning(
                         f"Incompatible detection cache version '{cache_version}' "
-                        f"(expected '2.0', '2.1', '2.2', or '2.3'). Cache will be regenerated."
+                        f"(expected '2.0', '2.1', '2.2', '2.3', or '2.4'). Cache will be regenerated."
                     )
                     self._compatible = False
                     self._loaded_data.close()
@@ -146,6 +146,7 @@ class DetectionCache:
         obb_corners: object = None,
         detection_ids: object = None,
         heading_hints: object = None,
+        heading_confidences: object = None,
         directed_mask: object = None,
         canonical_affines: object = None,
         canonical_canvas_dims: object = None,
@@ -163,6 +164,7 @@ class DetectionCache:
             obb_corners: Optional list of OBB corner arrays for YOLO
             detection_ids: Optional list of detection IDs (FrameID * 10000 + detection_index)
             heading_hints: Optional list of directed heading hints (radians).
+            heading_confidences: Optional list of head-tail confidence scores.
             directed_mask: Optional list indicating whether heading_hints are directed.
             canonical_affines: Optional list of (2, 3) affine matrices (M_align per detection).
             canonical_canvas_dims: Optional list of (width, height) int tuples per detection.
@@ -186,6 +188,9 @@ class DetectionCache:
 
             obb_arr = self._to_optional_arr(obb_corners, np.float32)
             heading_hints_arr = self._to_optional_arr(heading_hints, np.float32)
+            heading_confidences_arr = self._to_optional_arr(
+                heading_confidences, np.float32
+            )
             directed_mask_arr = self._to_optional_arr(directed_mask, np.uint8)
             canonical_affines_arr = self._to_optional_arr(
                 canonical_affines, np.float32, filter_none=True
@@ -204,6 +209,7 @@ class DetectionCache:
             detection_ids_arr = np.array([], dtype=np.int64)
             obb_arr = np.array([], dtype=np.float32)
             heading_hints_arr = np.array([], dtype=np.float32)
+            heading_confidences_arr = np.array([], dtype=np.float32)
             directed_mask_arr = np.array([], dtype=np.uint8)
             canonical_affines_arr = np.array([], dtype=np.float32)
             canvas_dims_arr = np.array([], dtype=np.int32)
@@ -217,6 +223,7 @@ class DetectionCache:
         self._data[f"{frame_key}_detection_ids"] = detection_ids_arr
         self._data[f"{frame_key}_obb"] = obb_arr
         self._data[f"{frame_key}_heading_hints"] = heading_hints_arr
+        self._data[f"{frame_key}_heading_confidences"] = heading_confidences_arr
         self._data[f"{frame_key}_directed_mask"] = directed_mask_arr
         self._data[f"{frame_key}_canonical_affine"] = canonical_affines_arr
         self._data[f"{frame_key}_canvas_dims"] = canvas_dims_arr
@@ -235,7 +242,7 @@ class DetectionCache:
                 "total_frames": self._total_frames,
                 "start_frame": self._start_frame,
                 "end_frame": self._end_frame,
-                "version": "2.3",
+                "version": "2.4",
                 "format": "raw_detections",
             }
         )
@@ -272,6 +279,7 @@ class DetectionCache:
                 obb_corners,
                 detection_ids,
                 heading_hints,
+                heading_confidences,
                 directed_mask,
             )
             where meas is a list of numpy arrays to match the tracking worker API
@@ -306,6 +314,9 @@ class DetectionCache:
         heading_hints_arr = self._loaded_data.get(
             f"{frame_key}_heading_hints", np.array([], dtype=np.float32)
         )
+        heading_confidences_arr = self._loaded_data.get(
+            f"{frame_key}_heading_confidences", np.array([], dtype=np.float32)
+        )
         directed_mask_arr = self._loaded_data.get(
             f"{frame_key}_directed_mask", np.array([], dtype=np.uint8)
         )
@@ -337,6 +348,7 @@ class DetectionCache:
         else:
             obb_corners = []
         heading_hints = heading_hints_arr.tolist()
+        heading_confidences = heading_confidences_arr.tolist()
         directed_mask = directed_mask_arr.tolist()
 
         # Canonical affines: (N, 2, 3) or empty
@@ -369,6 +381,7 @@ class DetectionCache:
             obb_corners,
             detection_ids,
             heading_hints,
+            heading_confidences,
             directed_mask,
             canonical_affines,
             canonical_canvas_dims,

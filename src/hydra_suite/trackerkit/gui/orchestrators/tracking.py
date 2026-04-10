@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+RICH_EXPORT_SUFFIX = "_with_individual"
+LEGACY_RICH_EXPORT_SUFFIX = "_with_pose"
+
 
 class TrackingOrchestrator:
     """Owns the tracking lifecycle: start, stop, merge, export, finalize."""
@@ -53,6 +56,42 @@ class TrackingOrchestrator:
         self._mw = main_window
         self._config = config
         self._panels = panels
+
+    @staticmethod
+    def _rich_export_path(final_csv_path: str, *, legacy: bool = False) -> str:
+        """Return the rich-export CSV path next to *final_csv_path*."""
+        base, ext = os.path.splitext(final_csv_path)
+        suffix = LEGACY_RICH_EXPORT_SUFFIX if legacy else RICH_EXPORT_SUFFIX
+        return f"{base}{suffix}{ext or '.csv'}"
+
+    def _write_rich_export_csv(
+        self, rich_df: pd.DataFrame, final_csv_path: str
+    ) -> str | None:
+        """Write canonical rich export and a legacy alias for older consumers."""
+        rich_path = self._rich_export_path(final_csv_path)
+        legacy_path = self._rich_export_path(final_csv_path, legacy=True)
+        try:
+            rich_df.to_csv(rich_path, index=False)
+            rich_df.to_csv(legacy_path, index=False)
+        except Exception:
+            logger.exception("Failed to save rich export CSV to: %s", rich_path)
+            return None
+
+        logger.info("Rich trajectories saved to: %s", rich_path)
+        if legacy_path != rich_path:
+            logger.info("Legacy rich-export alias saved to: %s", legacy_path)
+        return rich_path
+
+    def _remove_legacy_rich_exports(self, final_csv_path: str) -> None:
+        """Remove any stale rich-export CSV variants next to *final_csv_path*."""
+        for legacy in (False, True):
+            candidate = self._rich_export_path(final_csv_path, legacy=legacy)
+            if not os.path.exists(candidate):
+                continue
+            try:
+                os.remove(candidate)
+            except Exception:
+                logger.warning("Failed to remove stale rich-export CSV: %s", candidate)
 
     def start_full(self):
         """start_full method documentation."""
@@ -72,6 +111,8 @@ class TrackingOrchestrator:
             )
             self._mw.current_detection_cache_path = None
             self._mw.current_individual_properties_cache_path = None
+            self._mw.current_detected_properties_cache_path = None
+            self._mw.current_detected_cnn_cache_paths = {}
             self._mw.current_interpolated_roi_npz_path = None
             self._mw.current_interpolated_pose_csv_path = None
             self._mw.current_interpolated_pose_df = None
@@ -201,7 +242,7 @@ class TrackingOrchestrator:
         self._request_qthread_stop(self._mw.dataset_worker, "DatasetGenerationWorker")
         self._request_qthread_stop(self._mw.interp_worker, "InterpolatedCropsWorker")
         self._request_qthread_stop(
-            self._mw.oriented_video_worker, "OrientedTrackVideoWorker"
+            self._mw.final_media_export_worker, "FinalMediaExportWorker"
         )
         self._request_qthread_stop(self._mw.tracking_worker, "TrackingWorker")
         self._stop_csv_writer()
@@ -210,7 +251,7 @@ class TrackingOrchestrator:
         self._cleanup_thread_reference("merge_worker")
         self._cleanup_thread_reference("dataset_worker")
         self._cleanup_thread_reference("interp_worker")
-        self._cleanup_thread_reference("oriented_video_worker")
+        self._cleanup_thread_reference("final_media_export_worker")
 
         self._mw.progress_bar.setVisible(False)
         self._mw.progress_label.setVisible(False)
@@ -233,6 +274,8 @@ class TrackingOrchestrator:
         self._mw._individual_dataset_run_id = None
         self._mw.current_detection_cache_path = None
         self._mw.current_individual_properties_cache_path = None
+        self._mw.current_detected_properties_cache_path = None
+        self._mw.current_detected_cnn_cache_paths = {}
         self._mw.current_interpolated_roi_npz_path = None
         self._mw.current_interpolated_pose_csv_path = None
         self._mw.current_interpolated_pose_df = None
@@ -341,6 +384,178 @@ class TrackingOrchestrator:
         msg_box.setText(message)
         msg_box.setIcon(QMessageBox.Information)
         msg_box.exec()
+
+    @staticmethod
+    def _iter_cache_artifact_paths(video_path: str, artifact_base_dirs) -> list[Path]:
+        """Return current-video cache files for the given video."""
+        stem = Path(video_path).stem.strip() or "video"
+        patterns = (f"{stem}*_cache*.npz",)
+        found: dict[str, Path] = {}
+
+        for base_dir in artifact_base_dirs:
+            base_path = Path(base_dir).expanduser()
+            search_dirs = [base_path / f"{stem}_caches", base_path]
+            for search_dir in search_dirs:
+                if not search_dir.exists():
+                    continue
+                for pattern in patterns:
+                    for cache_path in search_dir.glob(pattern):
+                        try:
+                            key = str(cache_path.resolve())
+                        except OSError:
+                            key = str(cache_path)
+                        found[key] = cache_path
+
+        return sorted(found.values(), key=lambda path: path.name)
+
+    def clear_detection_caches(self) -> None:
+        """Delete all current-video cache files for the active video."""
+        if self._mw._has_active_progress_task():
+            QMessageBox.warning(
+                self._mw,
+                "Tracking Busy",
+                "Stop active tracking or cache-building tasks before clearing caches.",
+            )
+            return
+
+        video_path = str(self._panels.setup.file_line.text() or "").strip()
+        if not video_path:
+            QMessageBox.information(
+                self._mw,
+                "No Video Loaded",
+                "Load a video before clearing caches.",
+            )
+            return
+
+        csv_dir = (
+            os.path.dirname(self._panels.setup.csv_line.text())
+            if hasattr(self._panels.setup, "csv_line")
+            and self._panels.setup.csv_line.text()
+            else ""
+        )
+        artifact_base_dirs = candidate_artifact_base_dirs(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        cache_paths = self._iter_cache_artifact_paths(video_path, artifact_base_dirs)
+
+        current_cache_path = str(
+            getattr(self._mw, "current_detection_cache_path", "") or ""
+        ).strip()
+        current_props_cache_path = str(
+            getattr(self._mw, "current_individual_properties_cache_path", "") or ""
+        ).strip()
+        if current_cache_path:
+            current_cache = Path(current_cache_path).expanduser()
+            if current_cache.exists() and current_cache not in cache_paths:
+                cache_paths.append(current_cache)
+        if current_props_cache_path:
+            current_props_cache = Path(current_props_cache_path).expanduser()
+            if current_props_cache.exists() and current_props_cache not in cache_paths:
+                cache_paths.append(current_props_cache)
+
+        if not cache_paths:
+            QMessageBox.information(
+                self._mw,
+                "No Caches Found",
+                "No cache files were found for the current video.",
+            )
+            if (
+                current_cache_path
+                and not Path(current_cache_path).expanduser().exists()
+            ):
+                self._mw.current_detection_cache_path = None
+            if (
+                current_props_cache_path
+                and not Path(current_props_cache_path).expanduser().exists()
+            ):
+                self._mw.current_individual_properties_cache_path = None
+            return
+
+        reply = QMessageBox.question(
+            self._mw,
+            "Clear All Caches",
+            "Delete cache files for this video?\n\n"
+            "This removes reusable detection, pose, AprilTag, classifier, and related cache artifacts and forces fresh cache generation on the next run.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        deleted = 0
+        failed: list[str] = []
+        removed_current_cache = False
+        removed_current_props_cache = False
+        for cache_path in cache_paths:
+            try:
+                cache_path.unlink()
+                deleted += 1
+            except FileNotFoundError:
+                pass
+            except Exception:
+                failed.append(str(cache_path))
+                continue
+
+            if (
+                current_cache_path
+                and cache_path == Path(current_cache_path).expanduser()
+            ):
+                removed_current_cache = True
+            if (
+                current_props_cache_path
+                and cache_path == Path(current_props_cache_path).expanduser()
+            ):
+                removed_current_props_cache = True
+
+            try:
+                cache_path.with_suffix(".autotune_state.json").unlink(missing_ok=True)
+            except Exception:
+                logger.debug(
+                    "Failed to delete cache sidecar for %s",
+                    cache_path,
+                    exc_info=True,
+                )
+            try:
+                cache_path.with_name(
+                    cache_path.stem + "_confidence_regions.json"
+                ).unlink(missing_ok=True)
+            except Exception:
+                logger.debug(
+                    "Failed to delete confidence-region sidecar for %s",
+                    cache_path,
+                    exc_info=True,
+                )
+
+        if removed_current_cache or (
+            current_cache_path and not Path(current_cache_path).expanduser().exists()
+        ):
+            self._mw.current_detection_cache_path = None
+        if removed_current_props_cache or (
+            current_props_cache_path
+            and not Path(current_props_cache_path).expanduser().exists()
+        ):
+            self._mw.current_individual_properties_cache_path = None
+
+        logger.info(
+            "Cleared %d cache file(s) for %s%s",
+            deleted,
+            video_path,
+            f"; failed={len(failed)}" if failed else "",
+        )
+
+        if failed:
+            QMessageBox.warning(
+                self._mw,
+                "Cache Cleanup Incomplete",
+                f"Deleted {deleted} cache file(s), but {len(failed)} could not be removed.",
+            )
+            return
+
+        QMessageBox.information(
+            self._mw,
+            "Caches Cleared",
+            f"Deleted {deleted} cache file(s) for the current video.",
+        )
 
     def on_stats_update(self, stats):
         """Update real-time tracking statistics."""
@@ -716,6 +931,107 @@ class TrackingOrchestrator:
             except Exception:
                 self._mw.current_interpolated_headtail_df = None
 
+    def _log_interpolated_postpass_summary(self, result, saved, gaps):
+        """Log what the interpolated post-pass actually produced."""
+        try:
+            occluded_rows = int(result.get("occluded_rows", 0))
+            interp_runs = int(result.get("interp_runs", 0))
+            eligible_frames = int(result.get("eligible_frames", 0))
+            eligible_rows = int(result.get("eligible_rows", 0))
+            roi_rows_cached = int(result.get("roi_rows_cached", 0))
+            pose_rows = int(result.get("pose_rows_produced", 0))
+            tag_rows = int(result.get("tag_rows_produced", 0))
+            cnn_rows = int(result.get("cnn_rows_produced", 0))
+            headtail_rows = int(result.get("headtail_rows_produced", 0))
+            no_work_reason = str(result.get("no_work_reason", "") or "").strip()
+        except Exception:
+            return
+
+        if no_work_reason == "no_occluded_rows":
+            logger.info(
+                "Interpolated post-pass found no occluded rows; no interpolated analyses were needed."
+            )
+            return
+        if no_work_reason == "no_eligible_gaps":
+            logger.info(
+                "Interpolated post-pass found %d occluded rows but no eligible bounded gaps; no interpolated analyses were produced.",
+                occluded_rows,
+            )
+            return
+
+        logger.info(
+            "Interpolated post-pass summary: occluded rows=%d, bounded runs=%d, eligible rows=%d across %d frames, cached ROI rows=%d, pose rows=%d, tag rows=%d, CNN rows=%d, head-tail rows=%d, saved images=%d (gaps=%d)",
+            occluded_rows,
+            interp_runs,
+            eligible_rows,
+            eligible_frames,
+            roi_rows_cached,
+            pose_rows,
+            tag_rows,
+            cnn_rows,
+            headtail_rows,
+            saved,
+            gaps,
+        )
+
+    @staticmethod
+    def _count_augmented_pose_rows(with_pose_df):
+        pose_cols = [col for col in with_pose_df.columns if str(col).startswith("Pose")]
+        if not pose_cols:
+            return 0, 0
+        pose_present = with_pose_df[pose_cols].notna().any(axis=1)
+        detection_present = pd.to_numeric(
+            with_pose_df.get("DetectionID"), errors="coerce"
+        ).notna()
+        detection_rows = int((detection_present & pose_present).sum())
+        interpolated_rows = int(((~detection_present) & pose_present).sum())
+        return detection_rows, interpolated_rows
+
+    @staticmethod
+    def _count_interpolated_cnn_rows(with_pose_df):
+        labels = []
+        for col in with_pose_df.columns:
+            match = re.match(r"^CNN_(.+)_Class$", str(col))
+            if match:
+                labels.append(match.group(1))
+        labels = sorted(set(labels))
+        parts = []
+        for label in labels:
+            class_col = f"CNN_{label}_Class"
+            conf_col = f"CNN_{label}_Conf"
+            present = pd.Series(False, index=with_pose_df.index)
+            if class_col in with_pose_df.columns:
+                present = present | with_pose_df[class_col].fillna("").astype(str).ne(
+                    ""
+                )
+            if conf_col in with_pose_df.columns:
+                present = present | with_pose_df[conf_col].notna()
+            count = int(present.sum())
+            if count > 0:
+                parts.append(f"{label}={count}")
+        return ", ".join(parts) if parts else "none"
+
+    def _log_pose_augmented_merge_summary(self, with_pose_df):
+        """Log how many rows were retained or backfilled into pose-augmented output."""
+        detection_pose_rows, interpolated_pose_rows = self._count_augmented_pose_rows(
+            with_pose_df
+        )
+        interp_tag_rows = int(
+            with_pose_df.get("InterpTagID", pd.Series(dtype=float)).notna().sum()
+        )
+        interp_headtail_rows = int(
+            with_pose_df.get("InterpHeadingRad", pd.Series(dtype=float)).notna().sum()
+        )
+        cnn_summary = self._count_interpolated_cnn_rows(with_pose_df)
+        logger.info(
+            "Pose-augmented merge summary: detection pose rows=%d, interpolated pose rows=%d, interpolated tag rows=%d, interpolated head-tail rows=%d, interpolated CNN rows=%s",
+            detection_pose_rows,
+            interpolated_pose_rows,
+            interp_tag_rows,
+            interp_headtail_rows,
+            cnn_summary,
+        )
+
     def _on_interpolated_crops_finished(self, result):
         sender = None
         if (
@@ -743,6 +1059,7 @@ class TrackingOrchestrator:
 
         self._mw._refresh_progress_visibility()
         logger.info(f"Interpolated individual crops saved: {saved} (gaps: {gaps})")
+        self._log_interpolated_postpass_summary(result, saved, gaps)
 
         mapping_path = result.get("mapping_path")
         if mapping_path:
@@ -780,68 +1097,95 @@ class TrackingOrchestrator:
 
         if self._mw._pending_finish_after_interp:
             self._mw._pending_finish_after_interp = False
-            if self._start_pending_oriented_track_video_export(
-                self._mw._session_final_csv_path
-            ):
+            if self._start_pending_final_media_export(self._mw._session_final_csv_path):
                 return
             self._run_pending_video_generation_or_finalize()
 
-    def _generate_oriented_track_videos(self, final_csv_path):
-        """Export orientation-fixed videos for final trajectories."""
+    def _generate_final_media_export(self, final_csv_path):
+        """Export final canonical stills and/or orientation-fixed videos."""
         from hydra_suite.trackerkit.gui.workers.video_worker import (
-            OrientedTrackVideoWorker,
+            FinalMediaExportWorker,
         )
 
         try:
             if self._mw._stop_all_requested:
                 return False
-            if not self._should_generate_oriented_track_videos():
+            export_images = self._mw._is_individual_image_save_enabled()
+            export_videos = self._mw._should_export_final_media_videos()
+            if not export_images and not export_videos:
                 return False
             if not final_csv_path or not os.path.exists(final_csv_path):
-                return False
-
-            output_dir = self._mw._resolve_current_oriented_track_video_dir()
-            if output_dir is None:
-                logger.warning(
-                    "Skipping oriented track video export: no oriented-video output directory found."
-                )
                 return False
             if not self._mw.current_detection_cache_path or not os.path.exists(
                 self._mw.current_detection_cache_path
             ):
                 logger.warning(
-                    "Skipping oriented track video export: no compatible detection cache is available."
+                    "Skipping final canonical media export: no compatible detection cache is available."
                 )
                 return False
+
+            image_root = (
+                self._mw._resolve_current_individual_dataset_dir()
+                if export_images
+                else None
+            )
+            video_root = (
+                self._mw._resolve_current_final_media_video_dir()
+                if export_videos
+                else None
+            )
+            if export_images and image_root is None:
+                logger.warning(
+                    "Skipping final canonical image export: no image output directory found."
+                )
+                export_images = False
+            if export_videos and video_root is None:
+                logger.warning(
+                    "Skipping final media video export: no video output directory found."
+                )
+                export_videos = False
+            if not export_images and not export_videos:
+                return False
+
+            export_root = video_root or image_root
+            image_output_dir = (
+                str((image_root / "images").expanduser()) if image_root else None
+            )
+            progress_text = "Generating final canonical media..."
+            if export_images and not export_videos:
+                progress_text = "Generating final canonical images..."
+            elif export_videos and not export_images:
+                progress_text = "Generating final media videos..."
 
             self._mw.progress_bar.setVisible(True)
             self._mw.progress_label.setVisible(True)
             self._mw.progress_bar.setValue(0)
-            self._mw.progress_label.setText("Generating oriented track videos...")
+            self._mw.progress_label.setText(progress_text)
 
             if (
-                self._mw.oriented_video_worker is not None
-                and self._mw.oriented_video_worker.isRunning()
+                self._mw.final_media_export_worker is not None
+                and self._mw.final_media_export_worker.isRunning()
             ):
                 logger.warning(
-                    "Oriented track video export already running; skipping duplicate request."
+                    "Final media video export already running; skipping duplicate request."
                 )
                 return True
             if (
-                self._mw.oriented_video_worker is not None
-                and not self._mw.oriented_video_worker.isRunning()
+                self._mw.final_media_export_worker is not None
+                and not self._mw.final_media_export_worker.isRunning()
             ):
-                self._mw.oriented_video_worker.deleteLater()
-                self._mw.oriented_video_worker = None
+                self._mw.final_media_export_worker.deleteLater()
+                self._mw.final_media_export_worker = None
 
             padding_fraction = (
                 float(self._panels.identity.spin_individual_padding.value())
                 if hasattr(self._mw, "_identity_panel")
                 else 0.1
             )
-            self._mw.oriented_video_worker = OrientedTrackVideoWorker(
+            self._mw.final_media_export_worker = FinalMediaExportWorker(
                 final_csv_path,
-                str(output_dir),
+                str(export_root),
+                image_output_dir,
                 self._panels.setup.file_line.text().strip(),
                 self._mw.current_detection_cache_path,
                 self._mw.current_interpolated_roi_npz_path,
@@ -850,7 +1194,19 @@ class TrackingOrchestrator:
                 tuple(int(c) for c in self._panels.identity._background_color),
                 bool(
                     self._panels.dataset.chk_suppress_foreign_obb_oriented_videos.isChecked()
+                    if export_videos
+                    else self._panels.dataset.chk_suppress_foreign_obb_individual_dataset.isChecked()
                 ),
+                bool(
+                    self._panels.dataset.chk_suppress_foreign_obb_individual_dataset.isChecked()
+                ),
+                bool(
+                    self._panels.dataset.chk_suppress_foreign_obb_oriented_videos.isChecked()
+                ),
+                export_images,
+                self._panels.dataset.spin_individual_interval.value(),
+                self._panels.dataset.combo_individual_format.currentText(),
+                export_videos,
                 bool(
                     self._panels.dataset.chk_fix_oriented_video_direction_flips.isChecked()
                 ),
@@ -861,54 +1217,54 @@ class TrackingOrchestrator:
                 self._panels.dataset.spin_oriented_video_stabilization_window.value(),
                 output_subdir="",
             )
-            self._mw.oriented_video_worker.progress_signal.connect(
+            self._mw.final_media_export_worker.progress_signal.connect(
                 self._mw.on_progress_update
             )
-            self._mw.oriented_video_worker.finished_signal.connect(
-                self._mw._on_oriented_track_videos_finished
+            self._mw.final_media_export_worker.finished_signal.connect(
+                self._mw._on_final_media_export_finished
             )
-            self._mw.oriented_video_worker.error_signal.connect(
-                self._mw._on_oriented_track_videos_error
+            self._mw.final_media_export_worker.error_signal.connect(
+                self._mw._on_final_media_export_error
             )
-            self._mw.oriented_video_worker.finished.connect(
-                self._mw._on_oriented_track_video_worker_thread_finished
+            self._mw.final_media_export_worker.finished.connect(
+                self._mw._on_final_media_export_worker_thread_finished
             )
-            self._mw.oriented_video_worker.start()
+            self._mw.final_media_export_worker.start()
             return True
         except Exception as e:
-            logger.warning(f"Oriented track video export failed to start: {e}")
+            logger.warning(f"Final canonical media export failed to start: {e}")
             return False
 
-    def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
+    def _start_pending_final_media_export(self, final_csv_path) -> bool:
         """Start optional oriented track video export and hold the finish pipeline."""
-        started = self._generate_oriented_track_videos(final_csv_path)
+        started = self._generate_final_media_export(final_csv_path)
         if started:
             self._mw._pending_finish_after_track_videos = True
         return started
 
-    def _on_oriented_track_video_worker_thread_finished(self):
+    def _on_final_media_export_worker_thread_finished(self):
         """Release completed oriented track video worker safely."""
         sender = None
         if (
             sender is not None
-            and self._mw.oriented_video_worker is not None
-            and sender is not self._mw.oriented_video_worker
+            and self._mw.final_media_export_worker is not None
+            and sender is not self._mw.final_media_export_worker
         ):
             try:
                 sender.deleteLater()
             except Exception:
                 pass
             return
-        self._cleanup_thread_reference("oriented_video_worker")
+        self._cleanup_thread_reference("final_media_export_worker")
         self._mw._refresh_progress_visibility()
 
-    def _on_oriented_track_videos_finished(self, result):
-        """Handle completion of oriented track video export."""
+    def _on_final_media_export_finished(self, result):
+        """Handle completion of final canonical media export."""
         sender = None
         if (
             sender is not None
-            and self._mw.oriented_video_worker is not None
-            and sender is not self._mw.oriented_video_worker
+            and self._mw.final_media_export_worker is not None
+            and sender is not self._mw.final_media_export_worker
         ):
             try:
                 sender.deleteLater()
@@ -916,7 +1272,7 @@ class TrackingOrchestrator:
                 pass
             return
         if self._mw._stop_all_requested:
-            self._cleanup_thread_reference("oriented_video_worker")
+            self._cleanup_thread_reference("final_media_export_worker")
             self._mw._refresh_progress_visibility()
             return
 
@@ -924,55 +1280,79 @@ class TrackingOrchestrator:
             exported_videos = int(result.get("exported_videos", 0))
             exported_frames = int(result.get("exported_frames", 0))
             exported_tracks = int(result.get("exported_tracks", 0))
+            exported_images = int(result.get("exported_images", 0))
             missing_rows = int(result.get("missing_rows", 0))
+            missing_detected_rows = int(result.get("missing_detected_rows", 0))
+            missing_interpolated_rows = int(result.get("missing_interpolated_rows", 0))
+            invalid_geometry_rows = int(result.get("invalid_geometry_rows", 0))
             output_dir = str(result.get("output_dir", "")).strip()
+            image_output_dir = str(result.get("image_output_dir", "")).strip()
         except Exception:
             exported_videos = 0
             exported_frames = 0
             exported_tracks = 0
+            exported_images = 0
             missing_rows = 0
+            missing_detected_rows = 0
+            missing_interpolated_rows = 0
+            invalid_geometry_rows = 0
             output_dir = ""
+            image_output_dir = ""
 
         if output_dir:
             logger.info(
-                "Oriented track videos exported to %s (%d/%d tracks, %d frames, missing rows=%d)",
+                "Final media export wrote videos to %s (%d/%d tracks, %d frames, missing rows=%d)",
                 output_dir,
                 exported_videos,
                 exported_tracks,
                 exported_frames,
                 missing_rows,
             )
-        else:
+        if image_output_dir:
             logger.info(
-                "Oriented track video export complete (%d/%d tracks, %d frames, missing rows=%d)",
+                "Final media export wrote %d canonical images to %s",
+                exported_images,
+                image_output_dir,
+            )
+        if not output_dir and not image_output_dir:
+            logger.info(
+                "Final media export complete (%d videos, %d images across %d tracks, %d frames, missing rows=%d)",
                 exported_videos,
+                exported_images,
                 exported_tracks,
                 exported_frames,
                 missing_rows,
             )
+        if missing_rows:
+            logger.info(
+                "Final media export missing geometry breakdown: detected-cache=%d, interpolated-roi=%d, invalid-task=%d",
+                missing_detected_rows,
+                missing_interpolated_rows,
+                invalid_geometry_rows,
+            )
 
-        self._cleanup_thread_reference("oriented_video_worker")
+        self._cleanup_thread_reference("final_media_export_worker")
         self._mw._refresh_progress_visibility()
 
         if self._mw._pending_finish_after_track_videos:
             self._mw._pending_finish_after_track_videos = False
             self._run_pending_video_generation_or_finalize()
 
-    def _on_oriented_track_videos_error(self, error_message):
-        """Handle oriented track video export errors without aborting the session."""
+    def _on_final_media_export_error(self, error_message):
+        """Handle final canonical media export errors without aborting the session."""
         sender = None
         if (
             sender is not None
-            and self._mw.oriented_video_worker is not None
-            and sender is not self._mw.oriented_video_worker
+            and self._mw.final_media_export_worker is not None
+            and sender is not self._mw.final_media_export_worker
         ):
             try:
                 sender.deleteLater()
             except Exception:
                 pass
             return
-        logger.warning("Oriented track video export failed: %s", error_message)
-        self._cleanup_thread_reference("oriented_video_worker")
+        logger.warning("Final canonical media export failed: %s", error_message)
+        self._cleanup_thread_reference("final_media_export_worker")
         self._mw._refresh_progress_visibility()
         if self._mw._pending_finish_after_track_videos:
             self._mw._pending_finish_after_track_videos = False
@@ -1839,8 +2219,10 @@ class TrackingOrchestrator:
             self._finish_tracking_session(final_csv_path=processed_csv_path)
 
     def _collect_worker_props_path(self):
-        """Read individual_properties_cache_path from tracking_worker and store it."""
+        """Read export-relevant cache paths from tracking_worker and store them."""
         worker_props_path = ""
+        worker_detected_props_path = ""
+        worker_detected_cnn_paths = {}
         if self._mw.tracking_worker is not None:
             worker_props_path = str(
                 getattr(
@@ -1848,11 +2230,35 @@ class TrackingOrchestrator:
                 )
                 or ""
             ).strip()
+            worker_detected_props_path = str(
+                getattr(self._mw.tracking_worker, "detected_properties_cache_path", "")
+                or ""
+            ).strip()
+            worker_detected_cnn_paths = {
+                str(label): str(path).strip()
+                for label, path in (
+                    getattr(self._mw.tracking_worker, "detected_cnn_cache_paths", {})
+                    or {}
+                ).items()
+                if str(path).strip()
+            }
         if worker_props_path:
             self._mw.current_individual_properties_cache_path = worker_props_path
             logger.info(
                 "Using individual properties cache for export: %s",
                 worker_props_path,
+            )
+        if worker_detected_props_path:
+            self._mw.current_detected_properties_cache_path = worker_detected_props_path
+            logger.info(
+                "Using detected properties cache for export: %s",
+                worker_detected_props_path,
+            )
+        if worker_detected_cnn_paths:
+            self._mw.current_detected_cnn_cache_paths = worker_detected_cnn_paths
+            logger.info(
+                "Using detected CNN caches for export: %s",
+                worker_detected_cnn_paths,
             )
 
     def _accumulate_session_fps(self, fps_list, is_backward_mode):
@@ -1942,6 +2348,19 @@ class TrackingOrchestrator:
     def _check_pose_export_sources(self):
         """Return (has_other_analyses, cache_path, cache_available, interp_pose_path,
         interp_available, interp_pose_df_mem, interp_mem_available)."""
+        _detected_props_path = str(
+            getattr(self._mw, "current_detected_properties_cache_path", None) or ""
+        ).strip()
+        _has_detected_props = bool(
+            _detected_props_path and os.path.exists(_detected_props_path)
+        )
+        _detected_cnn_paths = (
+            getattr(self._mw, "current_detected_cnn_cache_paths", {}) or {}
+        )
+        _has_detected_cnn = any(
+            str(path).strip() and os.path.exists(str(path).strip())
+            for path in _detected_cnn_paths.values()
+        )
         _has_interp_tag = bool(
             (getattr(self._mw, "current_interpolated_tag_csv_path", None))
             or (
@@ -1964,7 +2383,13 @@ class TrackingOrchestrator:
                 )
             )
         )
-        _has_other_analyses = _has_interp_tag or _has_interp_cnn or _has_interp_ht
+        _has_other_analyses = (
+            _has_detected_props
+            or _has_detected_cnn
+            or _has_interp_tag
+            or _has_interp_cnn
+            or _has_interp_ht
+        )
         cache_path = str(
             self._mw.current_individual_properties_cache_path or ""
         ).strip()
@@ -2000,11 +2425,35 @@ class TrackingOrchestrator:
     ):
         """Merge pose cache, interpolated pose, AprilTag, CNN, and head-tail into trajectories_df."""
         from hydra_suite.core.identity.properties.export import (
+            augment_trajectories_with_detected_cnn_cache,
+            augment_trajectories_with_detected_properties_cache,
             augment_trajectories_with_pose_cache,
             merge_interpolated_pose_df,
         )
 
         with_pose_df = trajectories_df
+        _detected_props_path = str(
+            getattr(self._mw, "current_detected_properties_cache_path", None) or ""
+        ).strip()
+        if _detected_props_path and os.path.exists(_detected_props_path):
+            with_pose_df = augment_trajectories_with_detected_properties_cache(
+                with_pose_df,
+                _detected_props_path,
+            )
+
+        _detected_cnn_paths = (
+            getattr(self._mw, "current_detected_cnn_cache_paths", {}) or {}
+        )
+        for _cnn_label, _cnn_path in _detected_cnn_paths.items():
+            _cnn_path = str(_cnn_path or "").strip()
+            if not _cnn_path or not os.path.exists(_cnn_path):
+                continue
+            with_pose_df = augment_trajectories_with_detected_cnn_cache(
+                with_pose_df,
+                _cnn_path,
+                label=str(_cnn_label),
+            )
+
         if cache_available:
             min_valid_conf = float(
                 self._panels.identity.spin_pose_min_kpt_conf_valid.value()
@@ -2317,27 +2766,20 @@ class TrackingOrchestrator:
                 with_pose_df, pose_labels, params
             )
 
+        self._log_pose_augmented_merge_summary(with_pose_df)
+
         return with_pose_df
 
     def _export_pose_augmented_csv(self, final_csv_path):
-        """Write a pose-augmented trajectories CSV next to the final CSV."""
+        """Write the rich individual-analysis CSV next to the final CSV."""
         with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
         if with_pose_df is None or with_pose_df.empty:
             return None
 
-        base, ext = os.path.splitext(final_csv_path)
-        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
-        try:
-            with_pose_df.to_csv(with_pose_path, index=False)
-        except Exception:
-            logger.exception("Failed to save pose-augmented CSV to: %s", with_pose_path)
-            return None
-
-        logger.info("Pose-augmented trajectories saved to: %s", with_pose_path)
-        return with_pose_path
+        return self._write_rich_export_csv(with_pose_df, final_csv_path)
 
     def _relink_final_pose_augmented_csv(self, final_csv_path):
-        """Rewrite final CSV IDs after pose-aware relinking and regenerate _with_pose.csv."""
+        """Rewrite final CSV IDs after pose-aware relinking and regenerate the rich export CSV."""
         if not final_csv_path or not os.path.exists(final_csv_path):
             return None
 
@@ -2380,23 +2822,12 @@ class TrackingOrchestrator:
             logger.exception("Failed to rewrite relinked final CSV: %s", final_csv_path)
             return None
 
-        base, ext = os.path.splitext(final_csv_path)
-        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
         if with_pose_df is not None and not with_pose_df.empty:
-            try:
-                relinked_with_pose.to_csv(with_pose_path, index=False)
-            except Exception:
-                logger.exception(
-                    "Failed to rewrite relinked pose-augmented CSV: %s", with_pose_path
-                )
+            rich_path = self._write_rich_export_csv(relinked_with_pose, final_csv_path)
+            if not rich_path:
                 return None
-        elif os.path.exists(with_pose_path):
-            try:
-                os.remove(with_pose_path)
-            except Exception:
-                logger.warning(
-                    "Failed to remove stale pose-augmented CSV: %s", with_pose_path
-                )
+        else:
+            self._remove_legacy_rich_exports(final_csv_path)
 
         logger.info(
             "Relinked final CSV rewritten: %s (%d trajectories)",
@@ -2408,18 +2839,22 @@ class TrackingOrchestrator:
             ),
         )
         if with_pose_df is not None and not with_pose_df.empty:
-            logger.info("Relinked pose-augmented CSV saved: %s", with_pose_path)
-            return with_pose_path
+            rich_path = self._rich_export_path(final_csv_path)
+            logger.info("Relinked rich-export CSV saved: %s", rich_path)
+            return rich_path
         return final_csv_path
 
     def _load_video_trajectories(self, final_csv_path):
-        """Load best available trajectories for video generation (prefers pose-augmented CSV)."""
+        """Load best available trajectories for video generation (prefers rich export CSV)."""
         if not final_csv_path:
             return None, None
-        base, ext = os.path.splitext(final_csv_path)
-        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
-        candidate = with_pose_path if os.path.exists(with_pose_path) else final_csv_path
-        if not os.path.exists(candidate):
+        candidates = [
+            self._rich_export_path(final_csv_path),
+            self._rich_export_path(final_csv_path, legacy=True),
+            final_csv_path,
+        ]
+        candidate = next((path for path in candidates if os.path.exists(path)), None)
+        if not candidate:
             return None, None
         try:
             return pd.read_csv(candidate), candidate
@@ -2498,7 +2933,7 @@ class TrackingOrchestrator:
         if final_csv_path:
             self._relink_final_pose_augmented_csv(final_csv_path)
 
-        if self._start_pending_oriented_track_video_export(final_csv_path):
+        if self._start_pending_final_media_export(final_csv_path):
             return
 
         self._run_pending_video_generation_or_finalize()
@@ -2618,12 +3053,14 @@ class TrackingOrchestrator:
                 params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
             )
             generate_oriented_videos = bool(
-                params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+                params.get("FINAL_MEDIA_EXPORT_VIDEOS_ENABLED", False)
+                or params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
             )
             output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
             if not save_interpolated_outputs and generate_oriented_videos:
                 output_dir = str(
-                    params.get("ORIENTED_TRACK_VIDEO_OUTPUT_DIR", output_dir)
+                    params.get("FINAL_MEDIA_EXPORT_VIDEO_OUTPUT_DIR", "")
+                    or params.get("ORIENTED_TRACK_VIDEO_OUTPUT_DIR", output_dir)
                 ).strip()
             if not output_dir:
                 # Keep interpolated analysis available even when image-save toggle is off.

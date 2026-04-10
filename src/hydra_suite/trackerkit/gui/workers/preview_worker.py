@@ -46,6 +46,7 @@ def resolve_model_path(model_path: object) -> object:
     If absolute and exists, return as-is.
 
     Args:
+        raw_heading_confidences,
         model_path: Relative or absolute model path
 
     Returns:
@@ -603,11 +604,15 @@ def _preview_run_yolo_raw_detection(detector, frame_to_process, yolo_params):
             return_class_ids=True,
         )
     raw_heading_hints = []
+    raw_heading_confidences = []
     raw_directed_mask = []
     if raw_meas:
-        raw_heading_hints, raw_directed_mask, _ = detector._compute_headtail_hints(
-            frame_to_process, raw_obb_corners
-        )
+        (
+            raw_heading_hints,
+            raw_heading_confidences,
+            raw_directed_mask,
+            _,
+        ) = detector._compute_headtail_hints(frame_to_process, raw_obb_corners)
     return (
         raw_meas,
         raw_sizes,
@@ -616,6 +621,7 @@ def _preview_run_yolo_raw_detection(detector, frame_to_process, yolo_params):
         raw_obb_corners,
         raw_class_ids,
         raw_heading_hints,
+        raw_heading_confidences,
         raw_directed_mask,
         stage1_result,
     )
@@ -1055,6 +1061,7 @@ def _preview_run_yolo_branch(
         raw_obb_corners,
         raw_class_ids,
         raw_heading_hints,
+        raw_heading_confidences,
         raw_directed_mask,
         stage1_result,
     ) = _preview_run_yolo_raw_detection(detector, frame_to_process, yolo_params)
@@ -1068,6 +1075,7 @@ def _preview_run_yolo_branch(
         filtered_obb_corners,
         filtered_ids,
         _filtered_heading_hints,
+        _filtered_heading_confidences,
         _filtered_directed_mask,
     ) = detector.filter_raw_detections(
         raw_meas,
@@ -1078,6 +1086,7 @@ def _preview_run_yolo_branch(
         roi_mask=roi_for_yolo,
         detection_ids=raw_ids,
         heading_hints=raw_heading_hints,
+        heading_confidences=raw_heading_confidences,
         directed_mask=raw_directed_mask,
     )
 

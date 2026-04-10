@@ -12,13 +12,14 @@ def _load_mod():
     )
 
 
-def test_get_pose_runtime_options_on_macos_includes_mps_and_onnx_cpu(
+def test_get_pose_runtime_options_on_macos_includes_mps_coreml_and_onnx_cpu(
     monkeypatch,
 ) -> None:
     mod = _load_mod()
     monkeypatch.setattr(mod.sys, "platform", "darwin")
     monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", True)
     monkeypatch.setattr(mod, "SLEAP_RUNTIME_ONNX_AVAILABLE", False)
     monkeypatch.setattr(mod, "TENSORRT_AVAILABLE", False)
     monkeypatch.setattr(mod, "CUDA_AVAILABLE", False)
@@ -31,6 +32,7 @@ def test_get_pose_runtime_options_on_macos_includes_mps_and_onnx_cpu(
         ("Auto", "auto"),
         ("MPS", "mps"),
         ("CPU", "cpu"),
+        ("ONNX (CoreML)", "onnx_coreml"),
         ("ONNX (CPU)", "onnx_cpu"),
     ]
 
@@ -44,6 +46,7 @@ def test_get_pose_runtime_options_on_linux_includes_cuda_onnx_and_tensorrt(
     monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", True)
     monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
     monkeypatch.setattr(mod, "TENSORRT_AVAILABLE", True)
@@ -116,6 +119,7 @@ def test_get_device_info_collects_versions_and_device_details(monkeypatch) -> No
     monkeypatch.setattr(mod, "ONNXRUNTIME_PROVIDERS", ["CPUExecutionProvider"])
     monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
     monkeypatch.setattr(mod, "TENSORRT_AVAILABLE", False)
     monkeypatch.setattr(mod, "NUMBA_AVAILABLE", False)
@@ -130,6 +134,7 @@ def test_get_device_info_collects_versions_and_device_details(monkeypatch) -> No
     assert info["cupy_version"] == "13.0"
     assert info["torch_version"] == "2.7"
     assert info["onnxruntime_version"] == "1.22"
+    assert info["onnxruntime_coreml_available"] is False
     assert info["cuda_device_count"] == 2
     assert info["cuda_device_name"] == "8.9"
     assert info["torch_cuda_device_name"] == "Fake GPU"

@@ -247,6 +247,7 @@ class UnifiedPrecompute:
                 raw_obb,
                 raw_ids,
                 raw_headings,
+                raw_heading_confidences,
                 raw_directed,
                 raw_canonical_affines,
                 _raw_canvas_dims,
@@ -254,7 +255,9 @@ class UnifiedPrecompute:
             ) = detection_cache.get_frame(frame_idx)
         except Exception:
             raw_meas = raw_sizes = raw_shapes = raw_confs = []
-            raw_obb = raw_ids = raw_headings = raw_directed = []
+            raw_obb = raw_ids = raw_headings = raw_heading_confidences = (
+                raw_directed
+            ) = []
             raw_canonical_affines = None
         if profiler:
             profiler.phase_end("precompute_cache_load")
@@ -266,6 +269,7 @@ class UnifiedPrecompute:
             raw_obb,
             raw_ids,
             raw_headings,
+            raw_heading_confidences,
             raw_directed,
             raw_canonical_affines,
         )
@@ -280,6 +284,7 @@ class UnifiedPrecompute:
         raw_obb,
         raw_ids,
         raw_headings,
+        raw_heading_confidences,
         raw_directed,
         roi_mask,
         profiler,
@@ -295,6 +300,7 @@ class UnifiedPrecompute:
             filt_obb,
             det_ids,
             _hd,
+            _hc,
             _dm,
         ) = detector.filter_raw_detections(
             raw_meas,
@@ -305,6 +311,7 @@ class UnifiedPrecompute:
             roi_mask=roi_mask,
             detection_ids=raw_ids,
             heading_hints=raw_headings,
+            heading_confidences=raw_heading_confidences,
             directed_mask=raw_directed,
         )
         if profiler:
@@ -586,6 +593,95 @@ class UnifiedPrecompute:
             if profiler:
                 profiler.phase_end(_phase_prof_name)
 
+    def process_live_frame(
+        self,
+        frame_idx: int,
+        frame,
+        detector,
+        raw_meas,
+        raw_sizes,
+        raw_shapes,
+        raw_confs,
+        raw_obb,
+        raw_ids,
+        raw_headings,
+        raw_heading_confidences,
+        raw_directed,
+        raw_canonical_affines,
+        roi_mask,
+        profiler=None,
+    ) -> None:
+        """Run all registered phases for a single live frame.
+
+        This is the realtime counterpart to run(): detections are already
+        available for the current frame, so the phases only need filtering,
+        crop extraction, and per-frame dispatch.
+        """
+        if not self._phases:
+            return
+
+        filt_obb, det_ids = self._filter_detections(
+            detector,
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            raw_confs,
+            raw_obb,
+            raw_ids,
+            raw_headings,
+            raw_heading_confidences,
+            raw_directed,
+            roi_mask,
+            profiler,
+        )
+        all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
+        use_canonical, filtered_affines = self._filter_canonical_affines(
+            raw_canonical_affines,
+            raw_ids,
+            det_ids,
+        )
+        (
+            aabb_crops,
+            aabb_offsets,
+            canonical_crops,
+            canonical_M_inv,
+            crop_det_indices,
+        ) = self._extract_crops_for_frame(
+            frame,
+            all_obb,
+            filtered_affines,
+            use_canonical,
+            profiler,
+        )
+        frame_detection_ids = [
+            int(det_ids[i]) if det_ids and i < len(det_ids) else i
+            for i in range(len(all_obb))
+        ]
+        self._dispatch_to_phases(
+            self._phases,
+            frame_idx,
+            aabb_crops,
+            canonical_crops,
+            frame_detection_ids,
+            crop_det_indices,
+            all_obb,
+            aabb_offsets,
+            canonical_M_inv,
+            use_canonical,
+            profiler,
+        )
+
+    def sync_live_frame(self) -> None:
+        """Wait for any live phase that needs per-frame synchronization."""
+        for phase in self._phases:
+            sync = getattr(phase, "sync", None)
+            if callable(sync):
+                sync()
+
+    def finalize_live(self, warning_cb: Optional[Callable[[str, str], None]] = None):
+        """Finalize all live phases and persist their artifacts."""
+        return self._finalize_phases(warning_cb)
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -650,6 +746,7 @@ class UnifiedPrecompute:
                 raw_obb,
                 raw_ids,
                 raw_headings,
+                raw_heading_confidences,
                 raw_directed,
                 raw_canonical_affines,
             ) = self._load_raw_detections(detection_cache, frame_idx, profiler)
@@ -664,6 +761,7 @@ class UnifiedPrecompute:
                 raw_obb,
                 raw_ids,
                 raw_headings,
+                raw_heading_confidences,
                 raw_directed,
                 roi_mask,
                 profiler,
@@ -757,6 +855,8 @@ class AprilTagPrecomputePhase(PrecomputePhase):
         start_frame: int,
         end_frame: int,
         video_path: str = "",
+        frame_result_callback: Optional[Callable[..., None]] = None,
+        ignore_existing_cache: bool = False,
     ) -> None:
         self._cache_path = Path(cache_path)
         self._start_frame = start_frame
@@ -765,9 +865,15 @@ class AprilTagPrecomputePhase(PrecomputePhase):
         self._hit = False
         self._detector: Optional[AprilTagDetector] = None
         self._tag_cache: Optional[TagObservationCache] = None
+        self._frame_result_callback = frame_result_callback
 
         # Check for a compatible existing cache.
-        if self._cache_path.exists():
+        if ignore_existing_cache and self._cache_path.exists():
+            logger.info(
+                "Realtime workflow ignoring existing AprilTag cache: %s",
+                self._cache_path,
+            )
+        elif self._cache_path.exists():
             probe = TagObservationCache(
                 self._cache_path, mode="r", start_frame=start_frame, end_frame=end_frame
             )
@@ -804,6 +910,12 @@ class AprilTagPrecomputePhase(PrecomputePhase):
     def has_cache_hit(self) -> bool:
         return self._hit
 
+    def set_frame_result_callback(
+        self, callback: Optional[Callable[..., None]]
+    ) -> None:
+        """Register a callback for live per-frame AprilTag outputs."""
+        self._frame_result_callback = callback
+
     def process_frame(
         self,
         frame_idx: int,
@@ -834,6 +946,16 @@ class AprilTagPrecomputePhase(PrecomputePhase):
         observations = self._detector.detect_in_crops(
             crops, crop_offsets, det_indices=crop_det_indices
         )
+
+        if self._frame_result_callback is not None:
+            self._frame_result_callback(
+                frame_idx,
+                [obs.tag_id for obs in observations],
+                [obs.center_xy for obs in observations],
+                [obs.corners for obs in observations],
+                [obs.det_index for obs in observations],
+                [obs.hamming for obs in observations],
+            )
 
         if not observations:
             self._tag_cache.add_frame(
@@ -907,12 +1029,17 @@ class CNNPrecomputePhase(PrecomputePhase):
         cache_path,
         compute_runtime: str = "cpu",
         name: str = "cnn_identity",
+        frame_result_callback: Optional[
+            Callable[[int, List[ClassPrediction]], None]
+        ] = None,
+        ignore_existing_cache: bool = False,
     ) -> None:
         self.name = name
         self._cache_path = Path(cache_path)
         self._cfg = config
-        self._hit = self._cache_path.exists()
+        self._hit = self._cache_path.exists() and not ignore_existing_cache
         self._closed = False
+        self._frame_result_callback = frame_result_callback
 
         # accumulator for batching
         self._pending_crops: List[np.ndarray] = []
@@ -920,6 +1047,19 @@ class CNNPrecomputePhase(PrecomputePhase):
         self._pending_det_ids: List[int] = []
 
         if not self._hit:
+            if ignore_existing_cache and self._cache_path.exists():
+                logger.info(
+                    "Realtime workflow ignoring existing CNN cache (%s): %s",
+                    self.name,
+                    self._cache_path,
+                )
+                try:
+                    self._cache_path.unlink()
+                except OSError:
+                    logger.warning(
+                        "Failed to remove existing CNN cache before realtime regeneration: %s",
+                        self._cache_path,
+                    )
             self._backend = CNNIdentityBackend(
                 config, model_path=model_path, compute_runtime=compute_runtime
             )
@@ -930,6 +1070,13 @@ class CNNPrecomputePhase(PrecomputePhase):
 
     def has_cache_hit(self) -> bool:
         return self._hit
+
+    def set_frame_result_callback(
+        self,
+        callback: Optional[Callable[[int, List[ClassPrediction]], None]],
+    ) -> None:
+        """Register a callback for live per-frame CNN outputs."""
+        self._frame_result_callback = callback
 
     def process_frame(
         self,
@@ -968,6 +1115,8 @@ class CNNPrecomputePhase(PrecomputePhase):
             frame_preds.setdefault(frame_idx, []).append(pred)
         for fid, fps in frame_preds.items():
             self._cache.save(fid, fps)
+            if self._frame_result_callback is not None:
+                self._frame_result_callback(fid, fps)
         self._pending_crops.clear()
         self._pending_frame_idx.clear()
         self._pending_det_ids.clear()

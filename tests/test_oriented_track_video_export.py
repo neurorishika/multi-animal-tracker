@@ -172,6 +172,7 @@ def test_oriented_track_video_export_streams_from_source_video_and_caches(
     assert result.exported_videos == 2
     assert result.exported_tracks == 2
     assert result.exported_frames == 4
+    assert result.exported_images == 0
     assert result.missing_rows == 0
 
     track1_path = Path(result.output_dir) / "trajectory_0001.mp4"
@@ -192,6 +193,124 @@ def test_oriented_track_video_export_streams_from_source_video_and_caches(
         assert int(cap2.get(cv2.CAP_PROP_FRAME_COUNT)) == 1
     finally:
         cap2.release()
+
+
+def test_final_canonical_media_export_writes_images_and_videos(tmp_path: Path):
+    dataset_dir = tmp_path / "individual_crops" / "run_20260311"
+    image_output_dir = dataset_dir / "images"
+    video_path = tmp_path / "source.mp4"
+    cache_path = tmp_path / "detections.npz"
+    interp_npz_path = tmp_path / "interpolated_rois.npz"
+    final_csv_path = tmp_path / "tracks_final.csv"
+
+    _write_video(
+        video_path,
+        [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255)],
+    )
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=3) as cache:
+        cache.add_frame(
+            0,
+            meas=[np.array([20.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(20.0, 24.0, 6.0)],
+            detection_ids=[101],
+        )
+        cache.add_frame(
+            1,
+            meas=[np.array([24.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(24.0, 24.0, 6.0)],
+            detection_ids=[102],
+        )
+        cache.add_frame(2, [], [], [], [])
+        cache.add_frame(
+            3,
+            meas=[np.array([42.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(42.0, 24.0, 6.0)],
+            detection_ids=[201],
+        )
+        cache.save()
+
+    np.savez_compressed(
+        str(interp_npz_path),
+        frame_id=np.array([2], dtype=np.int64),
+        trajectory_id=np.array([1], dtype=np.int64),
+        filename=np.array([""], dtype=object),
+        cx=np.array([28.0], dtype=np.float32),
+        cy=np.array([24.0], dtype=np.float32),
+        w=np.array([12.0], dtype=np.float32),
+        h=np.array([12.0], dtype=np.float32),
+        theta=np.array([0.0], dtype=np.float32),
+        interp_from_start=np.array([1], dtype=np.int64),
+        interp_from_end=np.array([3], dtype=np.int64),
+        interp_index=np.array([1], dtype=np.int64),
+        interp_total=np.array([1], dtype=np.int64),
+        obb_corners=np.array([_square(28.0, 24.0, 6.0)], dtype=np.float32),
+    )
+
+    pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 1,
+                "FrameID": 0,
+                "DetectionID": 101,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 1,
+                "DetectionID": 102,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 2,
+                "DetectionID": np.nan,
+                "Theta": 0.0,
+                "State": "occluded",
+            },
+            {
+                "TrajectoryID": 2,
+                "FrameID": 3,
+                "DetectionID": 201,
+                "Theta": 0.0,
+                "State": "active",
+            },
+        ]
+    ).to_csv(final_csv_path, index=False)
+
+    exporter = OrientedTrackVideoExporter(
+        dataset_dir,
+        final_csv_path,
+        video_path=video_path,
+        detection_cache_path=cache_path,
+        interpolated_roi_npz_path=interp_npz_path,
+        fps=5.0,
+        padding_fraction=0.0,
+        export_images=True,
+        image_output_dir=image_output_dir,
+        export_videos=True,
+        output_subdir="oriented_videos",
+    )
+
+    result = exporter.export()
+
+    assert result.exported_videos == 2
+    assert result.exported_images == 4
+    assert Path(result.image_output_dir) == image_output_dir
+    assert (image_output_dir / "trajectory_0001" / "frame_000000.png").exists()
+    assert (image_output_dir / "trajectory_0001" / "frame_000002.png").exists()
+    assert (image_output_dir / "trajectory_0002" / "frame_000003.png").exists()
 
 
 def test_oriented_track_video_prefers_directed_heading_and_preserves_branch(
@@ -491,3 +610,100 @@ def test_oriented_track_video_affine_stabilization_smooths_jitter(tmp_path: Path
     assert np.allclose(stabilized_task.affine, expected_affine)
     assert stabilized_task.out_w == expected_w
     assert stabilized_task.out_h == expected_h
+
+
+def test_final_media_export_reports_missing_geometry_breakdown(tmp_path: Path):
+    dataset_dir = tmp_path / "oriented_videos" / "run_20260311"
+    cache_path = tmp_path / "detections.npz"
+    interp_npz_path = tmp_path / "interpolated_rois.npz"
+    final_csv_path = tmp_path / "tracks_final.csv"
+    video_path = tmp_path / "source.mp4"
+
+    _write_video(
+        video_path,
+        [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255)],
+    )
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=3) as cache:
+        cache.add_frame(
+            0,
+            meas=[np.array([20.0, 24.0, 0.0], dtype=np.float32)],
+            sizes=[64.0],
+            shapes=[(64.0, 1.0)],
+            confidences=[0.9],
+            obb_corners=[_square(20.0, 24.0, 6.0)],
+            detection_ids=[101],
+        )
+        cache.add_frame(1, [], [], [], [])
+        cache.add_frame(2, [], [], [], [])
+        cache.add_frame(3, [], [], [], [])
+        cache.save()
+
+    np.savez_compressed(
+        str(interp_npz_path),
+        frame_id=np.array([3], dtype=np.int64),
+        trajectory_id=np.array([4], dtype=np.int64),
+        filename=np.array([""], dtype=object),
+        cx=np.array([np.nan], dtype=np.float32),
+        cy=np.array([24.0], dtype=np.float32),
+        w=np.array([12.0], dtype=np.float32),
+        h=np.array([12.0], dtype=np.float32),
+        theta=np.array([0.0], dtype=np.float32),
+        interp_from_start=np.array([2], dtype=np.int64),
+        interp_from_end=np.array([2], dtype=np.int64),
+        interp_index=np.array([1], dtype=np.int64),
+        interp_total=np.array([1], dtype=np.int64),
+        obb_corners=np.array([_square(28.0, 24.0, 6.0)], dtype=np.float32),
+    )
+
+    pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 1,
+                "FrameID": 0,
+                "DetectionID": 101,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 2,
+                "FrameID": 1,
+                "DetectionID": 999,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 3,
+                "FrameID": 2,
+                "DetectionID": np.nan,
+                "Theta": 0.0,
+                "State": "occluded",
+            },
+            {
+                "TrajectoryID": 4,
+                "FrameID": 3,
+                "DetectionID": np.nan,
+                "Theta": 0.0,
+                "State": "occluded",
+            },
+        ]
+    ).to_csv(final_csv_path, index=False)
+
+    exporter = OrientedTrackVideoExporter(
+        dataset_dir,
+        final_csv_path,
+        video_path=video_path,
+        detection_cache_path=cache_path,
+        interpolated_roi_npz_path=interp_npz_path,
+        fps=5.0,
+        padding_fraction=0.0,
+    )
+
+    result = exporter.export()
+
+    assert result.exported_videos == 1
+    assert result.exported_tracks == 1
+    assert result.missing_rows == 3
+    assert result.missing_detected_rows == 1
+    assert result.missing_interpolated_rows == 1
+    assert result.invalid_geometry_rows == 1

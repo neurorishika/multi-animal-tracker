@@ -224,6 +224,33 @@ def build_individual_properties_cache_path(
     )
 
 
+def build_detected_properties_cache_path(
+    video_path: str | os.PathLike[str],
+    properties_id: str,
+    start_frame: int,
+    end_frame: int,
+    detection_cache_path: str | os.PathLike[str] | None = None,
+    artifact_base_dir: str | os.PathLike[str] | None = None,
+    create_dir: bool = False,
+) -> Path:
+    """Return the ``.npz`` path for detected-frame heading/export metadata."""
+    if detection_cache_path:
+        base_dir = Path(detection_cache_path).expanduser().parent
+        if create_dir:
+            base_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        base_dir = build_video_cache_dir(
+            video_path,
+            artifact_base_dir=artifact_base_dir,
+            create=create_dir,
+        )
+    stem = _video_stem(video_path)
+    return base_dir / (
+        f"{stem}_detected_props_cache_{properties_id}_"
+        f"{int(start_frame)}_{int(end_frame)}.npz"
+    )
+
+
 def build_apriltag_cache_path(
     video_path: str | os.PathLike[str],
     apriltag_id: str,
@@ -404,6 +431,7 @@ __all__ = [
     "build_apriltag_cache_path",
     "build_autotune_state_path",
     "build_classify_cache_path",
+    "build_detected_properties_cache_path",
     "build_detection_cache_path",
     "build_individual_properties_cache_path",
     "build_optimizer_detection_cache_path",

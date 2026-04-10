@@ -585,7 +585,11 @@ class MainWindow(QMainWindow):
         vp = Path(video_path)
         stem = vp.stem
         parent = vp.parent
-        for suffix in ("tracking_final_with_pose.csv", "tracking_final.csv"):
+        for suffix in (
+            "tracking_final_with_individual.csv",
+            "tracking_final_with_pose.csv",
+            "tracking_final.csv",
+        ):
             candidate = parent / f"{stem}_{suffix}"
             if candidate.exists():
                 return candidate

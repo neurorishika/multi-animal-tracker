@@ -141,9 +141,8 @@ class YoloNativeBackend:
         self.is_onnx_model = self.model_path.lower().endswith(".onnx")
         if self.is_onnx_model and self.device == "mps":
             logger.info(
-                "YOLO ONNX runtime requested with mps device; forcing cpu to avoid CoreMLExecutionProvider instability."
+                "YOLO ONNX runtime requested with mps device; using CoreMLExecutionProvider path when available."
             )
-            self.device = "cpu"
         self.min_valid_conf = float(min_valid_conf)
         self.conf = float(conf)
         self.iou = float(iou)

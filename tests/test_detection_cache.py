@@ -26,6 +26,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
             obb_corners=[np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)],
             detection_ids=[100001],
             heading_hints=[0.1],
+            heading_confidences=[0.93],
             directed_mask=[1],
         )
         cache.add_frame(
@@ -65,6 +66,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
             obb,
             det_ids,
             heading_hints,
+            heading_confidences,
             directed_mask,
             canonical_affines,
             _canvas_dims,
@@ -77,6 +79,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
         assert len(obb) == 1
         assert det_ids == [100001]
         assert np.allclose(heading_hints, [0.1], rtol=1e-6, atol=1e-6)
+        assert np.allclose(heading_confidences, [0.93], rtol=1e-6, atol=1e-6)
         assert directed_mask == [1]
         assert canonical_affines is None
 
@@ -88,6 +91,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
             obb,
             det_ids,
             heading_hints,
+            heading_confidences,
             directed_mask,
             canonical_affines,
             _canvas_dims,
@@ -100,6 +104,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
         assert obb == []
         assert det_ids == []
         assert heading_hints == []
+        assert heading_confidences == []
         assert directed_mask == []
 
 

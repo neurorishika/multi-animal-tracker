@@ -66,6 +66,7 @@ def _cache_batch_results(detection_cache, batch_results, batch_start_idx, start_
         raw_confidences,
         raw_obb_corners,
         raw_heading_hints,
+        raw_heading_confidences,
         raw_directed_mask,
         raw_canonical_affines,
     ) in enumerate(batch_results):
@@ -80,6 +81,7 @@ def _cache_batch_results(detection_cache, batch_results, batch_start_idx, start_
             raw_obb_corners,
             detection_ids,
             raw_heading_hints,
+            raw_heading_confidences,
             raw_directed_mask,
             canonical_affines=raw_canonical_affines,
         )

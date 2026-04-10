@@ -21,6 +21,7 @@ class _StubDetectionFilter:
         roi_mask=None,
         detection_ids=None,
         heading_hints=None,
+        heading_confidences=None,
         directed_mask=None,
     ):
         return (
@@ -31,6 +32,7 @@ class _StubDetectionFilter:
             obb,
             detection_ids or [],
             heading_hints or [],
+            heading_confidences or [],
             directed_mask or [],
         )
 
@@ -103,6 +105,7 @@ class _FakeCache:
             [np.array([[0, 0], [4, 0], [4, 2], [0, 2]], dtype=np.float32)],
             [101],
             [1.25],
+            [0.88],
             [1],
             None,
             None,

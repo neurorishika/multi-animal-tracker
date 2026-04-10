@@ -107,11 +107,11 @@ class _FakeDetectionCache:
     def get_frame(self, frame_idx):
         if frame_idx in self._frames:
             val = self._frames[frame_idx]
-            # Pad to 11 elements (raw_canonical_affines, canvas_dims, M_inverse)
-            while len(val) < 11:
+            # Pad to 12 elements (headtail confidence plus canonical extras)
+            while len(val) < 12:
                 val = val + (None,)
             return val
-        empty = ([], [], [], [], [], [], [], [], None, None, None)
+        empty = ([], [], [], [], [], [], [], [], [], None, None, None)
         return empty
 
 
@@ -129,6 +129,7 @@ class _FakeDetector:
         roi_mask=None,
         detection_ids=None,
         heading_hints=None,
+        heading_confidences=None,
         directed_mask=None,
     ):
         return (
@@ -139,6 +140,7 @@ class _FakeDetector:
             obb,
             detection_ids,
             heading_hints,
+            heading_confidences,
             directed_mask,
         )
 

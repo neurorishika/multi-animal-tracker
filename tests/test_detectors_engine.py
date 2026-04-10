@@ -436,6 +436,7 @@ def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
     ]
     ids = [1.0, 2.0]
     heading_hints = [0.25, 1.25]
+    heading_confidences = [0.9, 0.2]
     directed_mask = [1, 0]
 
     out = det.filter_raw_detections(
@@ -447,13 +448,25 @@ def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
         roi_mask=None,
         detection_ids=ids,
         heading_hints=heading_hints,
+        heading_confidences=heading_confidences,
         directed_mask=directed_mask,
     )
-    _, out_sizes, _, out_conf, _, out_ids, out_heading, out_directed = out
+    (
+        _,
+        out_sizes,
+        _,
+        out_conf,
+        _,
+        out_ids,
+        out_heading,
+        out_heading_conf,
+        out_directed,
+    ) = out
     assert out_sizes == [50.0]
     assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
     assert out_ids == [1]
     assert np.allclose(out_heading, [0.25], rtol=1e-6, atol=1e-6)
+    assert np.allclose(out_heading_conf, [0.9], rtol=1e-6, atol=1e-6)
     assert out_directed == [1]
 
 
@@ -548,11 +561,12 @@ def test_headtail_hint_uses_batched_classify_call() -> None:
         np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
         np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
     ]
-    heading_hints, directed_mask, _affines = det._compute_headtail_hints(
-        np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
+    heading_hints, heading_confidences, directed_mask, _affines = (
+        det._compute_headtail_hints(np.zeros((64, 64, 3), dtype=np.uint8), obb_corners)
     )
 
     assert calls["count"] == 1
+    assert np.allclose(heading_confidences, [0.95, 0.95], rtol=1e-6, atol=1e-6)
     assert directed_mask == [1, 1]
     assert np.allclose(heading_hints, [0.5, 0.5], rtol=1e-6, atol=1e-6)
 
@@ -701,12 +715,14 @@ def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
         np.array([[9, 9], [11, 9], [11, 10], [9, 10]], dtype=np.float32),
     ]
 
-    heading_hints, directed_mask, _affines = det._compute_headtail_hints(
-        np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
+    heading_hints, heading_confidences, directed_mask, _affines = (
+        det._compute_headtail_hints(np.zeros((64, 64, 3), dtype=np.uint8), obb_corners)
     )
 
     assert np.isnan(heading_hints[0])
     assert np.isnan(heading_hints[1])
+    assert heading_confidences[2] == pytest.approx(0.92, abs=1e-6)
+    assert heading_confidences[3] == pytest.approx(0.91, abs=1e-6)
     assert directed_mask == [0, 0, 1, 1]
     assert heading_hints[2] == pytest.approx((0.5 + np.pi) % (2 * np.pi), abs=1e-6)
     assert heading_hints[3] == pytest.approx(0.5, abs=1e-6)

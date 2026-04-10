@@ -20,12 +20,19 @@ from hydra_suite.runtime.compute_runtime import (
     runtime_label,
 )
 from hydra_suite.utils.geometry import fit_circle_to_points
+from hydra_suite.utils.gpu_utils import MPS_AVAILABLE, ONNXRUNTIME_COREML_AVAILABLE
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.config.schemas import TrackerConfig
     from hydra_suite.trackerkit.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
+
+
+COMPUTE_RUNTIME_TOOLTIP = (
+    "Global compute runtime for detection and pose.\n"
+    "Only runtimes compatible with all enabled pipelines are shown."
+)
 
 
 class SessionOrchestrator:
@@ -301,7 +308,7 @@ class SessionOrchestrator:
                 self._is_worker_running(getattr(self._mw, "merge_worker", None)),
                 self._is_worker_running(self._mw.dataset_worker),
                 self._is_worker_running(self._mw.interp_worker),
-                self._is_worker_running(self._mw.oriented_video_worker),
+                self._is_worker_running(self._mw.final_media_export_worker),
             ]
         )
 
@@ -820,8 +827,20 @@ class SessionOrchestrator:
         """Return effective runtime state for individual analysis pipeline."""
         return self._mw._is_yolo_detection_mode()
 
-    def _is_individual_image_save_enabled(self) -> bool:
-        """Return effective runtime state for saving individual crops."""
+    def _is_realtime_tracking_mode_enabled(self) -> bool:
+        """Return True when the setup tab requests streaming realtime workflow."""
+        if not hasattr(self._mw, "_setup_panel"):
+            return False
+        return bool(self._mw._setup_panel.chk_realtime_mode.isChecked())
+
+    def _workflow_mode_key(self) -> str:
+        """Return the normalized workflow mode key for runtime parameters."""
+        return (
+            "realtime" if self._is_realtime_tracking_mode_enabled() else "non_realtime"
+        )
+
+    def _should_export_final_canonical_images(self) -> bool:
+        """Return effective runtime state for final canonical still export."""
         if not hasattr(self._mw, "_dataset_panel"):
             return False
         return bool(
@@ -829,8 +848,12 @@ class SessionOrchestrator:
             and self._is_individual_pipeline_enabled()
         )
 
-    def _should_generate_oriented_track_videos(self) -> bool:
-        """Return True when final per-track oriented videos should be exported."""
+    def _is_individual_image_save_enabled(self) -> bool:
+        """Backward-compatible alias for final canonical still export state."""
+        return self._should_export_final_canonical_images()
+
+    def _should_export_final_media_videos(self) -> bool:
+        """Return True when final per-track videos should be exported."""
         if not hasattr(self._mw, "_dataset_panel"):
             return False
         return bool(
@@ -845,7 +868,7 @@ class SessionOrchestrator:
         We run this pass when interpolation is enabled and either:
         - individual crop saving is enabled, or
         - pose export is enabled (to fill occluded-frame pose rows in final CSV), or
-        - oriented track video export is enabled (to cache interpolated ROI geometry).
+        - final media video export is enabled (to cache interpolated ROI geometry).
         """
         if not hasattr(self._mw, "_identity_panel"):
             return False
@@ -854,9 +877,9 @@ class SessionOrchestrator:
         if not self._is_individual_pipeline_enabled():
             return False
         return bool(
-            self._is_individual_image_save_enabled()
+            self._should_export_final_canonical_images()
             or self._mw._is_pose_export_enabled()
-            or self._should_generate_oriented_track_videos()
+            or self._should_export_final_media_videos()
         )
 
     # =========================================================================
@@ -889,6 +912,35 @@ class SessionOrchestrator:
             allowed = ["cpu"]
         return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
 
+    def _update_compute_runtime_tooltip(self) -> None:
+        """Explain when CoreML is available in the env but filtered by UI state."""
+        if not hasattr(self._mw, "_setup_panel"):
+            return
+        combo = self._mw._setup_panel.combo_compute_runtime
+        tooltip = COMPUTE_RUNTIME_TOOLTIP
+        runtime_values = {
+            value for _label, value in self._compute_runtime_options_for_current_ui()
+        }
+        pipelines = self._runtime_pipelines_for_current_ui()
+        if (
+            ONNXRUNTIME_COREML_AVAILABLE
+            and MPS_AVAILABLE
+            and "onnx_coreml" not in runtime_values
+        ):
+            if "sleap_pose" in pipelines:
+                tooltip += (
+                    "\n\nONNX (CoreML) is available in this environment, but it is hidden "
+                    "because SLEAP pose is enabled. TrackerKit only shows runtimes "
+                    "compatible with all enabled pipelines, and SLEAP does not expose the "
+                    "CoreML path."
+                )
+            else:
+                tooltip += (
+                    "\n\nONNX (CoreML) is available in this environment, but it is hidden "
+                    "because the current enabled pipeline combination does not support it."
+                )
+        combo.setToolTip(tooltip)
+
     def _selected_compute_runtime(self) -> str:
         """Return the currently selected compute runtime key."""
         if not hasattr(self._mw, "_setup_panel"):
@@ -912,6 +964,8 @@ class SessionOrchestrator:
         rt = str(runtime or "cpu").strip().lower()
         if rt == "onnx_cpu":
             return "cpu"
+        if rt == "onnx_coreml":
+            return "mps"
         if rt in ("onnx_cuda", "tensorrt"):
             return "cuda"
         if rt == "onnx_rocm":
@@ -922,6 +976,7 @@ class SessionOrchestrator:
         """Update runtime combo and sync dependent controls when context changes."""
         previous = self._selected_compute_runtime()
         self._mw._populate_compute_runtime_options(preferred=previous)
+        self._update_compute_runtime_tooltip()
         selected_runtime = self._selected_compute_runtime()
         self._mw._update_obb_mode_warning()
         derived = derive_detection_runtime_settings(selected_runtime)
@@ -1081,7 +1136,7 @@ class SessionOrchestrator:
                 pipeline_enabled
             )
 
-        save_enabled = self._is_individual_image_save_enabled()
+        save_enabled = self._should_export_final_canonical_images()
         if hasattr(self._mw, "_dataset_panel"):
             self._mw._dataset_panel.ind_output_group.setVisible(save_enabled)
             self._mw._dataset_panel.ind_output_group.setEnabled(save_enabled)

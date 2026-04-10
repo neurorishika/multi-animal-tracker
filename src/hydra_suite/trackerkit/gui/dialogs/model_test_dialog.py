@@ -130,7 +130,8 @@ class _TestWorker(BaseWorker):
             result = detector.detect_objects(frame, frame_count=idx, return_raw=True)
             # result when return_raw=True:
             #   (meas, sizes, shapes, yolo_results, confidences,
-            #    obb_corners, heading_hints, directed_mask, canonical_affines)
+            #    obb_corners, heading_hints, heading_confidences,
+            #    directed_mask, canonical_affines)
             obb_corners = result[5] if len(result) > 5 else []
 
             annotated = frame.copy()

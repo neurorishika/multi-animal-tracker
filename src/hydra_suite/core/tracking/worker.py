@@ -19,7 +19,6 @@ from hydra_suite.core.assigners.hungarian import TrackAssigner
 from hydra_suite.core.background.model import BackgroundModel
 from hydra_suite.core.detectors import create_detector
 from hydra_suite.core.filters.kalman import KalmanFilterManager
-from hydra_suite.core.identity.dataset.generator import IndividualDatasetGenerator
 from hydra_suite.core.identity.geometry import (
     build_detection_direction_overrides as _pf_build_direction_overrides,
 )
@@ -48,6 +47,11 @@ from hydra_suite.core.tracking.cnn_features import (
     cnn_update_track_history as _cnn_update_track_history,
 )
 from hydra_suite.core.tracking.density import get_density_region_flags
+from hydra_suite.core.tracking.live_features import (
+    LiveCNNIdentityStore,
+    LivePosePropertiesStore,
+    LiveTagObservationStore,
+)
 from hydra_suite.core.tracking.precompute import (
     AprilTagPrecomputePhase,
     CNNPrecomputePhase,
@@ -69,7 +73,10 @@ from hydra_suite.utils.image_processing import (
     apply_image_adjustments,
     stabilize_lighting,
 )
-from hydra_suite.utils.video_artifacts import build_individual_properties_cache_path
+from hydra_suite.utils.video_artifacts import (
+    build_detected_properties_cache_path,
+    build_individual_properties_cache_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +117,8 @@ class TrackingWorker(QThread):
         self.params_mutex = QMutex()
         self.parameters = {}
         self.individual_properties_cache_path = None
+        self.detected_properties_cache_path = None
+        self.detected_cnn_cache_paths = {}
         # Stats tracking for FPS/ETA
         self.start_time = None
         self.frame_times = deque(maxlen=30)  # Keep last 30 frames for FPS calculation
@@ -233,6 +242,18 @@ class TrackingWorker(QThread):
             detection_cache_path=self.detection_cache_path,
         )
 
+    def _build_detected_properties_cache_path(
+        self, properties_id: str, start_frame: int, end_frame: int
+    ) -> Path:
+        """Build deterministic path for detected-properties export cache."""
+        return build_detected_properties_cache_path(
+            self.video_path,
+            properties_id,
+            start_frame,
+            end_frame,
+            detection_cache_path=self.detection_cache_path,
+        )
+
     @staticmethod
     def _should_precompute_individual_data(params: dict, detection_method: str) -> bool:
         """Return True when individual-data precompute should run."""
@@ -254,6 +275,24 @@ class TrackingWorker(QThread):
         return _pf_resolve_tracking_theta(
             track_idx, measured_theta, pose_directed, orientation_last, fallback_theta
         )
+
+    @staticmethod
+    def _heading_source_for_detection(
+        pose_is_directed: bool,
+        headtail_is_directed: bool,
+        pose_overrides_headtail: bool,
+    ) -> str:
+        if pose_overrides_headtail:
+            if pose_is_directed:
+                return "pose"
+            if headtail_is_directed:
+                return "headtail"
+            return "obb_axis"
+        if headtail_is_directed:
+            return "headtail"
+        if pose_is_directed:
+            return "pose"
+        return "obb_axis"
 
     @staticmethod
     def _normalize_theta(theta):
@@ -338,7 +377,13 @@ class TrackingWorker(QThread):
             )
         )
 
-    def _build_pose_phase(self, params, start_frame, end_frame):
+    def _build_pose_phase(
+        self,
+        params,
+        start_frame,
+        end_frame,
+        ignore_existing_cache: bool = False,
+    ):
         """Build the pose precompute phase if enabled. Returns phase or None."""
         if not bool(params.get("ENABLE_POSE_EXTRACTOR", False)):
             return None
@@ -371,7 +416,12 @@ class TrackingWorker(QThread):
         params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(pose_cache_path)
 
         pose_cache_hit = False
-        if pose_cache_path.exists():
+        if ignore_existing_cache and pose_cache_path.exists():
+            logger.info(
+                "Realtime workflow ignoring existing pose cache: %s",
+                pose_cache_path,
+            )
+        elif pose_cache_path.exists():
             existing = IndividualPropertiesCache(str(pose_cache_path), mode="r")
             try:
                 pose_cache_hit = existing.is_compatible()
@@ -469,6 +519,8 @@ class TrackingWorker(QThread):
         from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
         _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
+        if bool(params.get("TRACKING_REALTIME_MODE", False)):
+            _POSE_CROSS_FRAME_BATCH = 1
         _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
         _pose_bg_color = (
             tuple(int(c) for c in _bg_raw)
@@ -495,7 +547,13 @@ class TrackingWorker(QThread):
             finalize_metadata=finalize_metadata,
         )
 
-    def _build_apriltag_phase(self, params, start_frame, end_frame):
+    def _build_apriltag_phase(
+        self,
+        params,
+        start_frame,
+        end_frame,
+        ignore_existing_cache: bool = False,
+    ):
         """Build the AprilTag precompute phase if enabled. Returns phase or None."""
         if not bool(params.get("USE_APRILTAGS", False)):
             return None
@@ -518,13 +576,20 @@ class TrackingWorker(QThread):
                 start_frame=start_frame,
                 end_frame=end_frame,
                 video_path=str(Path(self.video_path).expanduser().resolve()),
+                ignore_existing_cache=ignore_existing_cache,
             )
         except ImportError as exc:
             logger.warning("AprilTag precompute skipped: %s", exc)
             self.warning_signal.emit("AprilTag Unavailable", str(exc))
             return None
 
-    def _build_cnn_phases(self, params, start_frame, end_frame):
+    def _build_cnn_phases(
+        self,
+        params,
+        start_frame,
+        end_frame,
+        ignore_existing_cache: bool = False,
+    ):
         """Build CNN identity precompute phases. Returns list of phases."""
         phases = []
         for cnn_cfg_dict in params.get("CNN_CLASSIFIERS", []):
@@ -556,12 +621,14 @@ class TrackingWorker(QThread):
                 label, classify_id, start_frame, end_frame
             )
             if cnn_cache_path:
+                self.detected_cnn_cache_paths[label] = str(cnn_cache_path)
                 phase = CNNPrecomputePhase(
                     config=cnn_cfg,
                     model_path=model_path,
                     cache_path=cnn_cache_path,
                     compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
                     name=label,
+                    ignore_existing_cache=ignore_existing_cache,
                 )
                 phases.append(phase)
         return phases
@@ -586,17 +653,44 @@ class TrackingWorker(QThread):
         if detection_cache is None:
             return []
 
+        ignore_existing_cache = bool(
+            params.get(
+                "TRACKING_REALTIME_MODE",
+                str(params.get("TRACKING_WORKFLOW_MODE", "non_realtime"))
+                .strip()
+                .lower()
+                == "realtime",
+            )
+        )
+
         phases = []
 
-        pose_phase = self._build_pose_phase(params, start_frame, end_frame)
+        pose_phase = self._build_pose_phase(
+            params,
+            start_frame,
+            end_frame,
+            ignore_existing_cache=ignore_existing_cache,
+        )
         if pose_phase is not None:
             phases.append(pose_phase)
 
-        apriltag_phase = self._build_apriltag_phase(params, start_frame, end_frame)
+        apriltag_phase = self._build_apriltag_phase(
+            params,
+            start_frame,
+            end_frame,
+            ignore_existing_cache=ignore_existing_cache,
+        )
         if apriltag_phase is not None:
             phases.append(apriltag_phase)
 
-        phases.extend(self._build_cnn_phases(params, start_frame, end_frame))
+        phases.extend(
+            self._build_cnn_phases(
+                params,
+                start_frame,
+                end_frame,
+                ignore_existing_cache=ignore_existing_cache,
+            )
+        )
 
         return phases
 
@@ -696,10 +790,18 @@ class TrackingWorker(QThread):
         # Batching is only used for YOLO in full tracking mode (not preview, not backward)
         detection_method = p.get("DETECTION_METHOD", "background_subtraction")
         advanced_config = p.get("ADVANCED_CONFIG", {})
+        realtime_tracking_mode_requested = bool(
+            p.get(
+                "TRACKING_REALTIME_MODE",
+                str(p.get("TRACKING_WORKFLOW_MODE", "non_realtime")).strip().lower()
+                == "realtime",
+            )
+        )
         use_batched_detection = (
             not self.preview_mode  # Not preview mode
             and not self.backward_mode  # Not backward mode (uses cache)
             and detection_method == "yolo_obb"  # Only YOLO benefits from batching
+            and not realtime_tracking_mode_requested
             and advanced_config.get(
                 "enable_yolo_batching", True
             )  # Batching enabled in config
@@ -729,13 +831,6 @@ class TrackingWorker(QThread):
                 "ENABLE_INDIVIDUAL_PIPELINE", p.get("ENABLE_IDENTITY_ANALYSIS", False)
             )
         )
-        individual_image_save_enabled = bool(
-            p.get(
-                "ENABLE_INDIVIDUAL_IMAGE_SAVE",
-                p.get("ENABLE_INDIVIDUAL_DATASET", False),
-            )
-        )
-
         # Individual analysis is YOLO-only in this phase. Keep tracking behavior
         # unchanged for background subtraction and skip analysis outputs there.
         if individual_pipeline_enabled and detection_method != "yolo_obb":
@@ -746,7 +841,6 @@ class TrackingWorker(QThread):
             logger.info(msg)
             self.warning_signal.emit("Individual Analysis Disabled", msg)
             individual_pipeline_enabled = False
-            individual_image_save_enabled = False
 
         # Whether any precompute phase will be needed (pose, AprilTag, CNN identity).
         # Used to gate detection-cache requirements and force two-phase YOLO detection.
@@ -760,6 +854,26 @@ class TrackingWorker(QThread):
                 or bool(p.get("CNN_CLASSIFIERS", []))
             )
         )
+        streaming_precompute_enabled = bool(
+            realtime_tracking_mode_requested
+            and not self.preview_mode
+            and not self.backward_mode
+            and individual_data_precompute_enabled
+        )
+        effective_realtime_tracking_mode = bool(
+            realtime_tracking_mode_requested
+            and not self.preview_mode
+            and not self.backward_mode
+        )
+        if streaming_precompute_enabled:
+            logger.info(
+                "Realtime workflow enabled: streaming advanced individual analysis inside the forward loop."
+            )
+        elif effective_realtime_tracking_mode:
+            logger.info(
+                "Realtime workflow enabled: using streaming forward detection/tracking."
+            )
+
         if individual_data_precompute_enabled and not self.detection_cache_path:
             logger.error(
                 "Individual precompute requires detection caching, but no detection cache path is configured."
@@ -770,28 +884,17 @@ class TrackingWorker(QThread):
 
         # Individual precompute needs full raw detections before tracking starts.
         # Force two-phase detection in YOLO mode so precompute can run on cached detections.
-        if individual_data_precompute_enabled and not use_batched_detection:
+        if (
+            individual_data_precompute_enabled
+            and not use_batched_detection
+            and not effective_realtime_tracking_mode
+        ):
             use_batched_detection = True
             logger.info("Enabling batched YOLO prepass for precompute.")
 
-        # Initialize individual dataset generator for image persistence only.
+        # Final canonical stills and oriented videos are exported only after
+        # backward tracking and post-processing complete.
         individual_generator = None
-        if (
-            individual_pipeline_enabled
-            and individual_image_save_enabled
-            and not self.backward_mode  # Only generate dataset in forward pass
-            and not self.preview_mode  # Never generate in preview
-        ):
-            output_dir = p.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
-            video_name = Path(self.video_path).stem
-            dataset_name = p.get("INDIVIDUAL_DATASET_NAME", "individual_dataset")
-            if output_dir:
-                individual_generator = IndividualDatasetGenerator(
-                    p, output_dir, video_name, dataset_name
-                )
-                logger.info(
-                    f"Individual dataset generator enabled for {detection_method}, output: {output_dir}"
-                )
 
         self.kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
         assigner = TrackAssigner(p, worker=self)
@@ -869,7 +972,8 @@ class TrackingWorker(QThread):
             # Check if we should load existing cache
             cache_exists = os.path.exists(self.detection_cache_path)
             should_load_cache = self.backward_mode or (
-                (self.use_cached_detections or individual_data_precompute_enabled)
+                not effective_realtime_tracking_mode
+                and self.use_cached_detections
                 and cache_exists
             )
 
@@ -1078,6 +1182,7 @@ class TrackingWorker(QThread):
                             _obb_corners,
                             _det_ids,
                             _heading_hints,
+                            _heading_confidences,
                             _directed_mask,
                             _canonical_affines,
                             _canvas_dims,
@@ -1198,6 +1303,11 @@ class TrackingWorker(QThread):
         # === UNIFIED PRECOMPUTE ===
         props_path = None
         tag_observation_cache_path = None
+        live_feature_precompute = None
+        live_pose_props_cache = None
+        live_pose_keypoint_names = []
+        live_tag_obs_cache = None
+        live_cnn_caches = {}
 
         phases = self._build_precompute_phases(
             p, detection_method, detection_cache, start_frame, end_frame
@@ -1216,55 +1326,107 @@ class TrackingWorker(QThread):
                 ),
                 reference_aspect_ratio=_ref_ar,
             )
-            precompute = UnifiedPrecompute(phases, crop_config)
-            profiler.phase_start("precompute")
-            try:
-                results = precompute.run(
-                    cap,
-                    detection_cache,
-                    detector,
-                    start_frame,
-                    end_frame,
-                    float(p.get("RESIZE_FACTOR", 1.0)),
-                    p.get("ROI_MASK", None),
-                    progress_cb=lambda pct, msg: self.progress_signal.emit(pct, msg),
-                    stop_check=lambda: self._stop_requested,
-                    warning_cb=lambda title, msg: self.warning_signal.emit(title, msg),
-                    profiler=profiler,
-                )
-            except Exception as exc:
+            if streaming_precompute_enabled:
+                for phase in phases:
+                    if phase.name == "pose":
+                        props_path = str(getattr(phase, "_cache_path", "") or "")
+                        if phase.has_cache_hit():
+                            continue
+                        live_pose_props_cache = LivePosePropertiesStore()
+                        live_pose_keypoint_names = list(
+                            getattr(phase, "_finalize_metadata", {}).get(
+                                "pose_keypoint_names", []
+                            )
+                            or []
+                        )
+                        set_callback = getattr(phase, "set_frame_result_callback", None)
+                        if callable(set_callback):
+                            set_callback(live_pose_props_cache.update_frame)
+                    elif phase.name == "apriltag":
+                        tag_observation_cache_path = str(
+                            getattr(phase, "_cache_path", "") or ""
+                        )
+                        if phase.has_cache_hit():
+                            continue
+                        live_tag_obs_cache = LiveTagObservationStore()
+                        set_callback = getattr(phase, "set_frame_result_callback", None)
+                        if callable(set_callback):
+                            set_callback(live_tag_obs_cache.update_frame)
+                    else:
+                        cnn_cache_path = str(getattr(phase, "_cache_path", "") or "")
+                        if phase.has_cache_hit():
+                            live_cnn_caches[phase.name] = cnn_cache_path
+                            continue
+                        live_store = LiveCNNIdentityStore()
+                        live_cnn_caches[phase.name] = live_store
+                        set_callback = getattr(phase, "set_frame_result_callback", None)
+                        if callable(set_callback):
+                            set_callback(live_store.update_frame)
+
+                live_feature_precompute = UnifiedPrecompute(phases, crop_config)
+            else:
+                precompute = UnifiedPrecompute(phases, crop_config)
+                profiler.phase_start("precompute")
+                try:
+                    results = precompute.run(
+                        cap,
+                        detection_cache,
+                        detector,
+                        start_frame,
+                        end_frame,
+                        float(p.get("RESIZE_FACTOR", 1.0)),
+                        p.get("ROI_MASK", None),
+                        progress_cb=lambda pct, msg: self.progress_signal.emit(
+                            pct, msg
+                        ),
+                        stop_check=lambda: self._stop_requested,
+                        warning_cb=lambda title, msg: self.warning_signal.emit(
+                            title, msg
+                        ),
+                        profiler=profiler,
+                    )
+                except Exception as exc:
+                    profiler.phase_end("precompute")
+                    logger.exception("Unified precompute failed (fatal phase).")
+                    self.warning_signal.emit(
+                        "Precompute Failed",
+                        f"Tracking aborted because precompute failed:\n{exc}",
+                    )
+                    if detection_cache:
+                        detection_cache.close()
+                    cap.release()
+                    if self.video_writer:
+                        self.video_writer.release()
+                    self.finished_signal.emit(False, [], [])
+                    return
+
+                props_path = results.get("pose")
+                tag_observation_cache_path = results.get("apriltag")
                 profiler.phase_end("precompute")
-                logger.exception("Unified precompute failed (fatal phase).")
-                self.warning_signal.emit(
-                    "Precompute Failed",
-                    f"Tracking aborted because precompute failed:\n{exc}",
-                )
-                if detection_cache:
-                    detection_cache.close()
+
+                if props_path:
+                    logger.info("Individual properties cache: %s", props_path)
+
+                # Reset cap position after precompute consumed all frames.
+                # Reopen for reliability — codec-dependent seek can fail post-EOF.
                 cap.release()
-                if self.video_writer:
-                    self.video_writer.release()
-                self.finished_signal.emit(False, [], [])
-                return
-
-            props_path = results.get("pose")
-            tag_observation_cache_path = results.get("apriltag")
-            profiler.phase_end("precompute")
-
-            if props_path:
-                logger.info("Individual properties cache: %s", props_path)
-
-            # Reset cap position after precompute consumed all frames.
-            # Reopen for reliability — codec-dependent seek can fail post-EOF.
-            cap.release()
-            cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
-            if start_frame > 0:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
+                if start_frame > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         # Open tag observation cache for reading during tracking loop.
-        tag_obs_cache = None
+        tag_obs_cache = live_tag_obs_cache
         track_tag_history = None
-        if tag_observation_cache_path and os.path.exists(tag_observation_cache_path):
+        if tag_obs_cache is not None:
+            track_tag_history = TrackTagHistory(
+                N, window=int(p.get("TAG_HISTORY_WINDOW", 30))
+            )
+            logger.info("Using live AprilTag observations for realtime tracking.")
+        elif (
+            not effective_realtime_tracking_mode
+            and tag_observation_cache_path
+            and os.path.exists(tag_observation_cache_path)
+        ):
             tag_obs_cache = TagObservationCache(tag_observation_cache_path, mode="r")
             if not tag_obs_cache.is_compatible():
                 logger.warning("Tag observation cache incompatible; ignoring.")
@@ -1286,39 +1448,59 @@ class TrackingWorker(QThread):
         for cnn_cfg_dict in p.get("CNN_CLASSIFIERS", []):
             label = str(cnn_cfg_dict.get("label", "cnn_identity"))
             model_path = str(cnn_cfg_dict.get("model_path", ""))
-            from hydra_suite.core.identity.properties.cache import (
-                compute_classify_cache_id,
-            )
+            live_or_path = live_cnn_caches.get(label)
+            if isinstance(live_or_path, LiveCNNIdentityStore):
+                from hydra_suite.core.identity.classification.cnn import TrackCNNHistory
 
-            classify_id = compute_classify_cache_id(
-                model_path=model_path,
-                compute_runtime=str(p.get("COMPUTE_RUNTIME", "cpu")),
-                inference_model_id=str(p.get("INFERENCE_MODEL_ID", "")),
-            )
-            _path = self._build_cnn_identity_cache_path(
-                label, classify_id, start_frame, end_frame
-            )
-            if _path and os.path.exists(_path):
-                from hydra_suite.core.identity.classification.cnn import (
-                    CNNIdentityCache,
-                    TrackCNNHistory,
-                )
-
-                _cache = CNNIdentityCache(_path)
                 _hist = TrackCNNHistory(N, window=int(cnn_cfg_dict.get("window", 10)))
                 _cnn_phase_states.append(
                     (
                         label,
-                        _cache,
+                        live_or_path,
                         _hist,
                         float(cnn_cfg_dict.get("match_bonus", 20.0)),
                         float(cnn_cfg_dict.get("mismatch_penalty", 50.0)),
                     )
                 )
-                logger.info("CNN identity cache loaded (%s): %s", label, _path)
+                logger.info(
+                    "Using live CNN identity outputs for realtime tracking (%s)", label
+                )
+            elif not effective_realtime_tracking_mode:
+                from hydra_suite.core.identity.properties.cache import (
+                    compute_classify_cache_id,
+                )
+
+                classify_id = compute_classify_cache_id(
+                    model_path=model_path,
+                    compute_runtime=str(p.get("COMPUTE_RUNTIME", "cpu")),
+                    inference_model_id=str(p.get("INFERENCE_MODEL_ID", "")),
+                )
+                _path = self._build_cnn_identity_cache_path(
+                    label, classify_id, start_frame, end_frame
+                )
+                if _path and os.path.exists(_path):
+                    from hydra_suite.core.identity.classification.cnn import (
+                        CNNIdentityCache,
+                        TrackCNNHistory,
+                    )
+
+                    _cache = CNNIdentityCache(_path)
+                    _hist = TrackCNNHistory(
+                        N, window=int(cnn_cfg_dict.get("window", 10))
+                    )
+                    _cnn_phase_states.append(
+                        (
+                            label,
+                            _cache,
+                            _hist,
+                            float(cnn_cfg_dict.get("match_bonus", 20.0)),
+                            float(cnn_cfg_dict.get("mismatch_penalty", 50.0)),
+                        )
+                    )
+                    logger.info("CNN identity cache loaded (%s): %s", label, _path)
 
         # Optional pose-properties reader for directional orientation override.
-        pose_props_cache = None
+        pose_props_cache = live_pose_props_cache
         pose_direction_enabled = False
         pose_direction_applied_count = 0
         pose_direction_fallback_count = 0
@@ -1336,8 +1518,30 @@ class TrackingWorker(QThread):
             or ""
         ).strip()
         pose_extractor_enabled = bool(p.get("ENABLE_POSE_EXTRACTOR", False))
-        if (
-            pose_extractor_enabled
+        if pose_props_cache is not None:
+            pose_keypoint_names = [str(v) for v in live_pose_keypoint_names]
+            pose_ignore_indices = _pf_resolve_indices(
+                p.get("POSE_IGNORE_KEYPOINTS", []), pose_keypoint_names
+            )
+            pose_direction_anterior_indices = _pf_resolve_indices(
+                p.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), pose_keypoint_names
+            )
+            pose_direction_posterior_indices = _pf_resolve_indices(
+                p.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), pose_keypoint_names
+            )
+            if (
+                len(pose_direction_anterior_indices) > 0
+                and len(pose_direction_posterior_indices) > 0
+            ):
+                pose_direction_enabled = True
+                logger.info(
+                    "Pose direction override enabled from live pose outputs: anterior=%s, posterior=%s",
+                    pose_direction_anterior_indices,
+                    pose_direction_posterior_indices,
+                )
+        elif (
+            not effective_realtime_tracking_mode
+            and pose_extractor_enabled
             and detection_method == "yolo_obb"
             and pose_cache_candidate
             and os.path.exists(pose_cache_candidate)
@@ -1381,6 +1585,36 @@ class TrackingWorker(QThread):
                     logger.info(
                         "Pose direction override disabled: define both anterior/posterior keypoint groups."
                     )
+
+        from hydra_suite.core.identity.properties.cache import (
+            compute_detection_hash,
+            compute_extractor_hash,
+            compute_filter_settings_hash,
+            compute_individual_properties_id,
+        )
+        from hydra_suite.core.identity.properties.detected_cache import (
+            DetectedPropertiesCache,
+        )
+
+        detected_props_id = compute_individual_properties_id(
+            compute_detection_hash(
+                p.get("INFERENCE_MODEL_ID", ""),
+                self.video_path,
+                start_frame,
+                end_frame,
+                detection_cache_version="2.4",
+            ),
+            compute_filter_settings_hash(p),
+            compute_extractor_hash(p),
+        )
+        self.detected_properties_cache_path = str(
+            self._build_detected_properties_cache_path(
+                detected_props_id, start_frame, end_frame
+            )
+        )
+        detected_props_cache = DetectedPropertiesCache(
+            self.detected_properties_cache_path, mode="w"
+        )
 
         # === 2. FRAME PROCESSING LOOP ===
         # Determine whether to use frame prefetcher
@@ -1571,6 +1805,7 @@ class TrackingWorker(QThread):
                     raw_obb_corners,
                     raw_detection_ids,
                     raw_heading_hints,
+                    raw_heading_confidences,
                     raw_directed_mask,
                     raw_canonical_affines,
                     _raw_canvas_dims,
@@ -1586,6 +1821,7 @@ class TrackingWorker(QThread):
                         filtered_obb_corners,
                         detection_ids,
                         filtered_heading_hints,
+                        filtered_heading_confidences,
                         filtered_directed_mask,
                     ) = detector.filter_raw_detections(
                         raw_meas,
@@ -1596,10 +1832,14 @@ class TrackingWorker(QThread):
                         roi_mask=ROI_mask_current,
                         detection_ids=raw_detection_ids,
                         heading_hints=raw_heading_hints,
+                        heading_confidences=raw_heading_confidences,
                         directed_mask=raw_directed_mask,
                     )
                     detection_headtail_heading = np.asarray(
                         filtered_heading_hints, dtype=np.float32
+                    )
+                    detection_headtail_confidence = np.asarray(
+                        filtered_heading_confidences, dtype=np.float32
                     )
                     headtail_directed_mask = np.asarray(
                         filtered_directed_mask, dtype=np.uint8
@@ -1611,6 +1851,9 @@ class TrackingWorker(QThread):
                     detection_confidences = raw_confidences
                     filtered_obb_corners = raw_obb_corners
                     detection_ids = raw_detection_ids
+                    detection_headtail_heading = np.asarray([], dtype=np.float32)
+                    detection_headtail_confidence = np.asarray([], dtype=np.float32)
+                    headtail_directed_mask = np.asarray([], dtype=np.uint8)
 
             elif detection_method == "background_subtraction" and frame is not None:
                 # Background subtraction detection pipeline
@@ -1687,6 +1930,7 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners,
                     raw_heading_hints,
+                    raw_heading_confidences,
                     raw_directed_mask,
                     raw_canonical_affines,
                 ) = detector.detect_objects(
@@ -1707,6 +1951,7 @@ class TrackingWorker(QThread):
                     filtered_obb_corners,
                     detection_ids,
                     filtered_heading_hints,
+                    filtered_heading_confidences,
                     filtered_directed_mask,
                 ) = detector.filter_raw_detections(
                     raw_meas,
@@ -1717,10 +1962,14 @@ class TrackingWorker(QThread):
                     roi_mask=ROI_mask_current,
                     detection_ids=raw_detection_ids,
                     heading_hints=raw_heading_hints,
+                    heading_confidences=raw_heading_confidences,
                     directed_mask=raw_directed_mask,
                 )
                 detection_headtail_heading = np.asarray(
                     filtered_heading_hints, dtype=np.float32
+                )
+                detection_headtail_confidence = np.asarray(
+                    filtered_heading_confidences, dtype=np.float32
                 )
                 headtail_directed_mask = np.asarray(
                     filtered_directed_mask, dtype=np.uint8
@@ -1748,10 +1997,35 @@ class TrackingWorker(QThread):
                     raw_obb_corners if raw_obb_corners else None,
                     raw_detection_ids,
                     raw_heading_hints,
+                    raw_heading_confidences,
                     raw_directed_mask,
                     canonical_affines=raw_canonical_affines,
                 )
                 cached_frame_indices.add(actual_frame_index)
+
+            if (
+                live_feature_precompute is not None
+                and frame is not None
+                and not use_cached_detections
+            ):
+                live_feature_precompute.process_live_frame(
+                    frame_idx=actual_frame_index,
+                    frame=frame,
+                    detector=detector,
+                    raw_meas=raw_meas,
+                    raw_sizes=raw_sizes,
+                    raw_shapes=raw_shapes,
+                    raw_confs=raw_confidences,
+                    raw_obb=raw_obb_corners,
+                    raw_ids=raw_detection_ids,
+                    raw_headings=raw_heading_hints,
+                    raw_heading_confidences=raw_heading_confidences,
+                    raw_directed=raw_directed_mask,
+                    raw_canonical_affines=raw_canonical_affines,
+                    roi_mask=ROI_mask_current,
+                    profiler=profiler,
+                )
+                live_feature_precompute.sync_live_frame()
 
             profiler.tock("detection")
 
@@ -1762,6 +2036,14 @@ class TrackingWorker(QThread):
             detection_pose_visibility = np.zeros(len(meas), dtype=np.float32)
             detection_directed_heading = np.full(len(meas), np.nan, dtype=np.float32)
             detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
+            detection_headtail_confidence = np.asarray(
+                (
+                    detection_headtail_confidence
+                    if "detection_headtail_confidence" in locals()
+                    else np.zeros(len(meas), dtype=np.float32)
+                ),
+                dtype=np.float32,
+            )
 
             if meas and shapes:
                 reference_body_size = float(params.get("REFERENCE_BODY_SIZE", 20.0))
@@ -1821,6 +2103,49 @@ class TrackingWorker(QThread):
                         headtail_directed_mask,
                         pose_overrides_headtail=pose_overrides_headtail,
                     )
+                )
+
+            detection_theta_raw = (
+                np.array([float(m[2]) for m in meas], dtype=np.float32)
+                if meas
+                else np.zeros(0, dtype=np.float32)
+            )
+            detection_theta_resolved = detection_theta_raw.copy()
+            detection_heading_source = ["obb_axis"] * len(meas)
+            for det_idx in range(len(meas)):
+                pose_is_directed = bool(
+                    det_idx < len(pose_directed_mask) and pose_directed_mask[det_idx]
+                )
+                headtail_is_directed = bool(
+                    det_idx < len(headtail_directed_mask)
+                    and headtail_directed_mask[det_idx]
+                )
+                detection_heading_source[det_idx] = self._heading_source_for_detection(
+                    pose_is_directed,
+                    headtail_is_directed,
+                    pose_overrides_headtail,
+                )
+                if (
+                    det_idx < len(detection_directed_mask)
+                    and detection_directed_mask[det_idx]
+                    and det_idx < len(detection_directed_heading)
+                    and np.isfinite(detection_directed_heading[det_idx])
+                ):
+                    detection_theta_resolved[det_idx] = np.float32(
+                        detection_directed_heading[det_idx]
+                    )
+
+            if detected_props_cache is not None and detection_ids:
+                detected_props_cache.add_frame(
+                    actual_frame_index,
+                    detection_ids=detection_ids,
+                    theta_raw=detection_theta_raw,
+                    theta_resolved=detection_theta_resolved,
+                    heading_source=detection_heading_source,
+                    heading_directed=detection_directed_mask,
+                    headtail_heading=detection_headtail_heading,
+                    headtail_confidence=detection_headtail_confidence,
+                    headtail_directed=headtail_directed_mask,
                 )
 
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
@@ -2155,8 +2480,8 @@ class TrackingWorker(QThread):
                             )
                         else:
                             _orient_conf_for_r = (
-                                float(detection_confidences[c])
-                                if c < len(detection_confidences)
+                                float(detection_headtail_confidence[c])
+                                if c < len(detection_headtail_confidence)
                                 else 1.0
                             )
                     _theta_r_scale = 1.0 / max(_orient_conf_for_r, 0.1)
@@ -2188,8 +2513,8 @@ class TrackingWorker(QThread):
                             )
                         else:
                             orient_confidence = (
-                                float(detection_confidences[c])
-                                if c < len(detection_confidences)
+                                float(detection_headtail_confidence[c])
+                                if c < len(detection_headtail_confidence)
                                 else 1.0
                             )
                     orientation_last[r] = self._smooth_orientation(
@@ -2788,6 +3113,22 @@ class TrackingWorker(QThread):
             self.frame_prefetcher.stop()
             self.frame_prefetcher = None
 
+        if live_feature_precompute is not None:
+            try:
+                live_results = live_feature_precompute.finalize_live(
+                    warning_cb=lambda title, msg: self.warning_signal.emit(title, msg)
+                )
+                props_path = props_path or live_results.get("pose")
+                tag_observation_cache_path = (
+                    tag_observation_cache_path or live_results.get("apriltag")
+                )
+            except Exception as exc:
+                logger.exception("Realtime feature finalization failed")
+                self.warning_signal.emit(
+                    "Realtime Analysis Finalization Failed",
+                    f"Tracking finished, but finalizing realtime analysis artifacts failed:\n{exc}",
+                )
+
         cap.release()
         if self.video_writer:
             self.video_writer.release()
@@ -2797,6 +3138,18 @@ class TrackingWorker(QThread):
                 pose_props_cache.close()
             except Exception:
                 pass
+        if detected_props_cache is not None:
+            try:
+                detected_props_cache.save(
+                    metadata={
+                        "cache_id": detected_props_id,
+                        "start_frame": int(start_frame),
+                        "end_frame": int(end_frame),
+                        "video_path": str(Path(self.video_path).expanduser().resolve()),
+                    }
+                )
+            finally:
+                detected_props_cache.close()
         # Save or close detection cache
         if detection_cache:
             if not self.backward_mode and not use_cached_detections:

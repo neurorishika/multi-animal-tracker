@@ -328,13 +328,15 @@ class MainWindow(QMainWindow):
         self.csv_writer_thread = None
         self.dataset_worker = None
         self.interp_worker = None
-        self.oriented_video_worker = None
+        self.final_media_export_worker = None
         self.preview_detection_worker = None
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
         self._individual_dataset_run_id = None
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
+        self.current_detected_properties_cache_path = None
+        self.current_detected_cnn_cache_paths = {}
         self.current_interpolated_roi_npz_path = None
         self.current_interpolated_pose_csv_path = None
         self.current_interpolated_pose_df = None
@@ -1395,6 +1397,8 @@ class MainWindow(QMainWindow):
         rt = str(runtime or "cpu").strip().lower()
         if rt == "onnx_cpu":
             return "cpu"
+        if rt == "onnx_coreml":
+            return "mps"
         if rt in ("onnx_cuda", "tensorrt"):
             return "cuda"
         if rt == "onnx_rocm":
@@ -1489,16 +1493,22 @@ class MainWindow(QMainWindow):
         return self._detection_panel._identity_config()
 
     def _is_individual_image_save_enabled(self) -> bool:
-        """Return effective runtime state for saving individual crops."""
+        """Return effective runtime state for final canonical still export."""
         if not hasattr(self, "_session_orch"):
             return False
         return self._session_orch._is_individual_image_save_enabled()
 
-    def _should_generate_oriented_track_videos(self) -> bool:
-        """Return True when final per-track oriented videos should be exported."""
+    def _is_realtime_tracking_mode_enabled(self) -> bool:
+        """Return True when the setup tab requests realtime workflow."""
         if not hasattr(self, "_session_orch"):
             return False
-        return self._session_orch._should_generate_oriented_track_videos()
+        return self._session_orch._is_realtime_tracking_mode_enabled()
+
+    def _should_export_final_media_videos(self) -> bool:
+        """Return True when final per-track videos should be exported."""
+        if not hasattr(self, "_session_orch"):
+            return False
+        return self._session_orch._should_export_final_media_videos()
 
     def _should_run_interpolated_postpass(self) -> bool:
         """Return True when interpolated post-pass should run."""
@@ -2367,6 +2377,10 @@ class MainWindow(QMainWindow):
         """Display GPU and acceleration information dialog."""
         self._tracking_orch.show_gpu_info()
 
+    def _clear_detection_caches(self) -> None:
+        """Delete cached detection artifacts for the active video."""
+        self._tracking_orch.clear_detection_caches()
+
     def on_stats_update(self: object, stats: object) -> object:
         """Update real-time tracking statistics."""
         self._tracking_orch.on_stats_update(stats)
@@ -2452,42 +2466,41 @@ class MainWindow(QMainWindow):
             return None
         return Path(dataset_dir).expanduser()
 
-    def _resolve_current_oriented_track_video_dir(self):
-        """Resolve the active per-session oriented-video output directory."""
+    def _resolve_current_final_media_video_dir(self):
+        """Resolve the active per-session final-media video output directory."""
         from hydra_suite.core.identity.dataset.oriented_video import (
             resolve_oriented_track_video_dir,
         )
 
         params = self.get_parameters_dict()
         output_dir = resolve_oriented_track_video_dir(
-            params.get("ORIENTED_TRACK_VIDEO_OUTPUT_DIR"),
+            params.get("FINAL_MEDIA_EXPORT_VIDEO_OUTPUT_DIR")
+            or params.get("ORIENTED_TRACK_VIDEO_OUTPUT_DIR"),
             self._individual_dataset_run_id,
         )
         if output_dir is None:
             return None
         return Path(output_dir).expanduser()
 
-    def _generate_oriented_track_videos(self, final_csv_path):
+    def _generate_final_media_export(self, final_csv_path):
         """Export orientation-fixed videos for final trajectories."""
-        return self._tracking_orch._generate_oriented_track_videos(final_csv_path)
+        return self._tracking_orch._generate_final_media_export(final_csv_path)
 
-    def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
+    def _start_pending_final_media_export(self, final_csv_path) -> bool:
         """Start optional oriented track video export and hold the finish pipeline."""
-        return self._tracking_orch._start_pending_oriented_track_video_export(
-            final_csv_path
-        )
+        return self._tracking_orch._start_pending_final_media_export(final_csv_path)
 
-    def _on_oriented_track_video_worker_thread_finished(self):
+    def _on_final_media_export_worker_thread_finished(self):
         """Release completed oriented track video worker safely."""
-        self._tracking_orch._on_oriented_track_video_worker_thread_finished()
+        self._tracking_orch._on_final_media_export_worker_thread_finished()
 
-    def _on_oriented_track_videos_finished(self, result):
+    def _on_final_media_export_finished(self, result):
         """Handle completion of oriented track video export."""
-        self._tracking_orch._on_oriented_track_videos_finished(result)
+        self._tracking_orch._on_final_media_export_finished(result)
 
-    def _on_oriented_track_videos_error(self, error_message):
+    def _on_final_media_export_error(self, error_message):
         """Handle oriented track video export errors without aborting the session."""
-        self._tracking_orch._on_oriented_track_videos_error(error_message)
+        self._tracking_orch._on_final_media_export_error(error_message)
 
     def on_merge_error(self: object, error_message: object) -> object:
         """Handle merge errors."""
@@ -2536,7 +2549,7 @@ class MainWindow(QMainWindow):
         self._tracking_orch._export_pose_augmented_csv(final_csv_path)
 
     def _relink_final_pose_augmented_csv(self, final_csv_path):
-        """Rewrite final CSV IDs after pose-aware relinking and regenerate _with_pose.csv."""
+        """Rewrite final CSV IDs after pose-aware relinking and regenerate the rich export CSV."""
         self._tracking_orch._relink_final_pose_augmented_csv(final_csv_path)
 
     def _load_video_trajectories(self, final_csv_path):

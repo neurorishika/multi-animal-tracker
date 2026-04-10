@@ -273,6 +273,9 @@ class PosePipeline:
         cache_hit: bool = False,
         cache_path: Optional[str] = None,
         finalize_metadata: Optional[dict] = None,
+        frame_result_callback: Optional[
+            Callable[[int, List[int], List[Optional[np.ndarray]]], None]
+        ] = None,
     ):
         self._backend = pose_backend
         self._batch_size = max(1, cross_frame_batch)
@@ -300,8 +303,22 @@ class PosePipeline:
         self._cache_hit = cache_hit
         self._cache_path = cache_path
         self._finalize_metadata = finalize_metadata or {}
+        self._frame_result_callback = frame_result_callback
         self._closed = False
         self._async_cache_closed = False
+
+    def set_frame_result_callback(
+        self,
+        callback: Optional[
+            Callable[[int, List[int], List[Optional[np.ndarray]]], None]
+        ],
+    ) -> None:
+        """Register a callback that receives per-frame pose outputs."""
+        self._frame_result_callback = callback
+
+    def sync(self) -> None:
+        """Wait until any in-flight inference has completed."""
+        self._wait_inflight()
 
     def _filter_canonical_affines(self, raw_affines, raw_ids, det_ids):
         """Map raw canonical affines to filtered detection indices."""
@@ -371,6 +388,7 @@ class PosePipeline:
                 raw_obb,
                 raw_ids,
                 raw_headings,
+                raw_heading_confidences,
                 raw_directed,
                 raw_canonical_affines,
                 _raw_canvas_dims,
@@ -384,6 +402,7 @@ class PosePipeline:
                 filt_obb,
                 det_ids,
                 _headings,
+                _heading_confidences,
                 _directed,
             ) = detector.filter_raw_detections(
                 raw_meas,
@@ -394,6 +413,7 @@ class PosePipeline:
                 roi_mask=roi_mask,
                 detection_ids=raw_ids,
                 heading_hints=raw_headings,
+                heading_confidences=raw_heading_confidences,
                 directed_mask=raw_directed,
             )
 
@@ -709,6 +729,8 @@ class PosePipeline:
 
             if self._async_cache:
                 self._async_cache.submit(pf.frame_idx, pf.det_ids, pose_outputs)
+            if self._frame_result_callback is not None:
+                self._frame_result_callback(pf.frame_idx, pf.det_ids, pose_outputs)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #

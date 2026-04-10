@@ -623,6 +623,17 @@ class SetupPanel(QWidget):
             "Disable to force fresh detection on every run."
         )
 
+        self.chk_realtime_mode = QCheckBox("Realtime workflow")
+        self.chk_realtime_mode.setChecked(False)
+        self.chk_realtime_mode.setToolTip(
+            "Run the forward pass as a true streaming workflow.\n"
+            "\n"
+            "When enabled, tracking favors per-frame processing over cache-first\n"
+            "non-realtime execution. Final canonical images and oriented videos are\n"
+            "still exported only after backward tracking and cleanup complete."
+        )
+        self.chk_realtime_mode.stateChanged.connect(self._sync_realtime_cache_controls)
+
         # Visualization-Free Mode
         self.chk_visualization_free = QCheckBox("Headless preview")
         self.chk_visualization_free.setChecked(False)
@@ -639,6 +650,7 @@ class SetupPanel(QWidget):
         for perf_checkbox in (
             self.check_save_confidence,
             self.chk_use_cached_detections,
+            self.chk_realtime_mode,
             self.chk_visualization_free,
         ):
             perf_checkbox.setStyleSheet("font-size: 10px; spacing: 6px;")
@@ -651,11 +663,29 @@ class SetupPanel(QWidget):
         perf_toggle_grid.setContentsMargins(0, 0, 0, 0)
         perf_toggle_grid.addWidget(self.check_save_confidence, 0, 0)
         perf_toggle_grid.addWidget(self.chk_use_cached_detections, 0, 1)
-        perf_toggle_grid.addWidget(self.chk_visualization_free, 0, 2)
+        perf_toggle_grid.addWidget(self.chk_realtime_mode, 0, 2)
+        perf_toggle_grid.addWidget(self.chk_visualization_free, 0, 3)
         perf_toggle_grid.setColumnStretch(0, 1)
         perf_toggle_grid.setColumnStretch(1, 1)
         perf_toggle_grid.setColumnStretch(2, 1)
+        perf_toggle_grid.setColumnStretch(3, 1)
         fl_sys.addRow("", perf_toggle_grid)
+        self._sync_realtime_cache_controls()
+
+        self.btn_clear_detection_caches = QPushButton("Clear All Caches")
+        self.btn_clear_detection_caches.setFixedHeight(28)
+        self.btn_clear_detection_caches.setToolTip(
+            "Delete TrackerKit cache files for the current video.\n"
+            "This includes detection, pose, AprilTag, classifier, and related cache artifacts."
+        )
+        self.btn_clear_detection_caches.clicked.connect(
+            self._main_window._clear_detection_caches
+        )
+        _perf_actions_row = QHBoxLayout()
+        _perf_actions_row.setContentsMargins(0, 0, 0, 0)
+        _perf_actions_row.addStretch(1)
+        _perf_actions_row.addWidget(self.btn_clear_detection_caches)
+        vl_sys.addLayout(_perf_actions_row)
 
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
@@ -775,6 +805,13 @@ class SetupPanel(QWidget):
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
+
+    def _sync_realtime_cache_controls(self) -> None:
+        """Disable cache reuse whenever realtime workflow is enabled."""
+        realtime_enabled = bool(self.chk_realtime_mode.isChecked())
+        if realtime_enabled and self.chk_use_cached_detections.isChecked():
+            self.chk_use_cached_detections.setChecked(False)
+        self.chk_use_cached_detections.setEnabled(not realtime_enabled)
         # NOTE: _populate_compute_runtime_options and _on_runtime_context_changed
         # are called after panel construction in main_window.py
 

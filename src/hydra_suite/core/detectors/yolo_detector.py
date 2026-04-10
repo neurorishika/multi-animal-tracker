@@ -323,6 +323,48 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             return int(self.onnx_batch_size)
         return 1
 
+    @staticmethod
+    def _is_coreml_failure(exc) -> bool:
+        msg = str(exc)
+        return (
+            "CoreMLExecutionProvider" in msg
+            or "Unable to compute the prediction using a neural network model" in msg
+        )
+
+    def _predict_with_coreml_fallback(self, model, predict_kwargs, context: str):
+        try:
+            return model.predict(**predict_kwargs)
+        except Exception as exc:
+            predict_device = (
+                str(
+                    predict_kwargs.get("device")
+                    or getattr(self, "obb_predict_device", None)
+                    or self.device
+                )
+                .strip()
+                .lower()
+            )
+            if (
+                not self.use_onnx
+                or predict_device != "mps"
+                or not self._is_coreml_failure(exc)
+            ):
+                raise
+            logger.warning(
+                "YOLO ONNX %s failed on mps/CoreML path. Retrying on CPU ORT provider.",
+                context,
+            )
+            self.device = "cpu"
+            self.obb_predict_device = "cpu"
+            try:
+                if hasattr(model, "predictor"):
+                    model.predictor = None
+            except Exception:
+                pass
+            retry_kwargs = dict(predict_kwargs)
+            retry_kwargs["device"] = "cpu"
+            return model.predict(**retry_kwargs)
+
     def _predict_obb_results(
         self, source, target_classes, raw_conf_floor, max_det, imgsz=None
     ):
@@ -360,7 +402,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                         predict_kwargs["imgsz"] = int(self.onnx_imgsz)
                     elif imgsz is not None:
                         predict_kwargs["imgsz"] = imgsz
-                    chunk_results = self.model.predict(**predict_kwargs)
+                    chunk_results = self._predict_with_coreml_fallback(
+                        self.model,
+                        predict_kwargs,
+                        context="chunked OBB inference",
+                    )
                     all_results.extend(chunk_results[:actual_chunk])
                 return all_results
 
@@ -384,7 +430,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             predict_kwargs["imgsz"] = int(self.onnx_imgsz)
         elif imgsz is not None:
             predict_kwargs["imgsz"] = imgsz
-        results = self.model.predict(**predict_kwargs)
+        results = self._predict_with_coreml_fallback(
+            self.model,
+            predict_kwargs,
+            context="OBB inference",
+        )
         if not isinstance(source, list) and fixed_batch > 1:
             results = results[:1]
         return results
@@ -470,7 +520,8 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 frame.
 
         Returns:
-            list of *N* tuples ``(heading_hints, directed_mask, canonical_affines)``
+            list of *N* tuples ``(heading_hints, heading_confidences,
+            directed_mask, canonical_affines)``
             where ``canonical_affines`` is a list of (2, 3) float32 arrays or None.
         """
         n_frames = len(frames)
@@ -478,7 +529,9 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         results_per_frame = []
         for corners in per_frame_obb_corners:
             n = len(corners)
-            results_per_frame.append(([float("nan")] * n, [0] * n, [None] * n))
+            results_per_frame.append(
+                ([float("nan")] * n, [0.0] * n, [0] * n, [None] * n)
+            )
 
         analyzer = self._headtail_analyzer
         if analyzer is None or not analyzer.is_available:
@@ -493,9 +546,10 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
 
         # Unpack (heading, confidence, directed_flag) tuples into result arrays
         for fi in range(n_frames):
-            for di, (heading, _conf, directed) in enumerate(ht_results[fi]):
+            for di, (heading, conf, directed) in enumerate(ht_results[fi]):
                 results_per_frame[fi][0][di] = heading
-                results_per_frame[fi][1][di] = directed
+                results_per_frame[fi][1][di] = float(conf)
+                results_per_frame[fi][2][di] = directed
 
         # ----- Phase 4: replace stored affines with native-scale variants --
         # Head-tail used a fixed-size canvas (e.g. 128px) for batched GPU
@@ -543,7 +597,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                         M_align, _ = compute_alignment_affine(
                             _all_corners[idx], cw_i, ch_i, padding
                         )
-                        results_per_frame[fi][2][di] = M_align.astype(np.float32)
+                        results_per_frame[fi][3][di] = M_align.astype(np.float32)
                     except (ValueError, Exception):
                         pass  # keep whatever was there (or None)
         except ImportError:
@@ -629,7 +683,25 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         seq_detect_imgsz = int(self.params.get("YOLO_SEQ_DETECT_IMGSZ", 0))
         if seq_detect_imgsz > 0:
             detect_kwargs["imgsz"] = seq_detect_imgsz
-        return self.detect_model.predict(**detect_kwargs)
+        try:
+            return self.detect_model.predict(**detect_kwargs)
+        except Exception as exc:
+            if str(
+                detect_predict_device
+            ).strip().lower() != "mps" or not self._is_coreml_failure(exc):
+                raise
+            logger.warning(
+                "YOLO detect stage-1 ONNX inference failed on mps/CoreML path. Retrying on CPU ORT provider."
+            )
+            self.detect_predict_device = "cpu"
+            try:
+                if hasattr(self.detect_model, "predictor"):
+                    self.detect_model.predictor = None
+            except Exception:
+                pass
+            retry_kwargs = dict(detect_kwargs)
+            retry_kwargs["device"] = "cpu"
+            return self.detect_model.predict(**retry_kwargs)
 
     def _seq_build_crops(self, frame, xyxy, order, max_det):
         crops = []
@@ -918,13 +990,13 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 meas, sizes, shapes, yolo_results, confidences
             If return_raw=True:
                 raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences,
-                raw_obb_corners, raw_heading_hints, raw_directed_mask,
-                raw_canonical_affines
+                raw_obb_corners, raw_heading_hints, raw_heading_confidences,
+                raw_directed_mask, raw_canonical_affines
         """
         if self.model is None:
             logger.error("YOLO model not initialized")
             if return_raw:
-                return [], [], [], None, [], [], [], [], None
+                return [], [], [], None, [], [], [], [], [], None
             return [], [], [], None, []
 
         p = self.params
@@ -964,11 +1036,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         except Exception as e:
             logger.error(f"YOLO inference failed on frame {frame_count}: {e}")
             if return_raw:
-                return [], [], [], None, [], [], [], [], None
+                return [], [], [], None, [], [], [], [], [], None
             return [], [], [], None, []
 
         if not raw_meas:
-            raw_heading_hints, raw_directed_mask = [], []
+            raw_heading_hints, raw_heading_confidences, raw_directed_mask = [], [], []
             if return_raw:
                 return (
                     [],
@@ -978,12 +1050,13 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     [],
                     [],
                     raw_heading_hints,
+                    raw_heading_confidences,
                     raw_directed_mask,
                     None,
                 )
             return [], [], [], yolo_results, []
 
-        raw_heading_hints, raw_directed_mask, _raw_affines = (
+        raw_heading_hints, raw_heading_confidences, raw_directed_mask, _raw_affines = (
             self._compute_headtail_hints(frame, raw_obb_corners, profiler=profiler)
         )
 
@@ -998,6 +1071,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 raw_confidences,
                 raw_obb_corners,
                 raw_heading_hints,
+                raw_heading_confidences,
                 raw_directed_mask,
                 _raw_affines,
             )
@@ -1010,6 +1084,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             obb_corners_list,
             _,
             filtered_heading_hints,
+            _filtered_heading_confidences,
             filtered_directed_mask,
         ) = self.filter_raw_detections(
             raw_meas,
@@ -1020,6 +1095,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             roi_mask=None,
             detection_ids=None,
             heading_hints=raw_heading_hints,
+            heading_confidences=raw_heading_confidences,
             directed_mask=raw_directed_mask,
         )
 
@@ -1047,6 +1123,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 raw_confidences,
                 raw_obb_corners,
                 raw_heading_hints,
+                raw_heading_confidences,
                 raw_directed_mask,
                 raw_canonical_affines,
             ) = self.detect_objects(frame, frame_count, return_raw=True)
@@ -1060,6 +1137,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                         raw_confidences,
                         raw_obb_corners,
                         raw_heading_hints,
+                        raw_heading_confidences,
                         raw_directed_mask,
                         raw_canonical_affines,
                     )
@@ -1073,6 +1151,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     obb_corners_list,
                     _,
                     _heading_hints,
+                    _heading_confidences,
                     _directed_mask,
                 ) = self.filter_raw_detections(
                     raw_meas,
@@ -1083,6 +1162,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     roi_mask=None,
                     detection_ids=None,
                     heading_hints=raw_heading_hints,
+                    heading_confidences=raw_heading_confidences,
                     directed_mask=raw_directed_mask,
                 )
                 batch_detections.append(
@@ -1145,7 +1225,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     predict_kwargs["device"] = obb_predict_device
                 if self.use_onnx and self.onnx_imgsz:
                     predict_kwargs["imgsz"] = int(self.onnx_imgsz)
-                chunk_results = self.model.predict(**predict_kwargs)
+                chunk_results = self._predict_with_coreml_fallback(
+                    self.model,
+                    predict_kwargs,
+                    context="batched OBB inference",
+                )
                 # Only keep results for actual frames (not padding)
                 all_results.extend(chunk_results[:chunk_size])
             except Exception as e:
@@ -1178,7 +1262,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     single_kwargs["device"] = obb_predict_device
                 if self.onnx_imgsz:
                     single_kwargs["imgsz"] = int(self.onnx_imgsz)
-                single_results = self.model.predict(**single_kwargs)
+                    single_results = self._predict_with_coreml_fallback(
+                        self.model,
+                        single_kwargs,
+                        context="single-frame OBB fallback inference",
+                    )
                 results_batch.append(
                     single_results[0] if len(single_results) > 0 else None
                 )
@@ -1213,7 +1301,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 predict_kwargs["device"] = obb_predict_device
             if self.use_onnx and self.onnx_imgsz:
                 predict_kwargs["imgsz"] = int(self.onnx_imgsz)
-            return self.model.predict(**predict_kwargs)
+            return self._predict_with_coreml_fallback(
+                self.model,
+                predict_kwargs,
+                context="standard batched OBB inference",
+            )
         except Exception as e:
             logger.error(f"YOLO batched inference failed: {e}")
             if not self.use_onnx:
@@ -1251,9 +1343,15 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             return ([], [], [], [], [])
         raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = raw
         if headtail_per_frame is not None:
-            raw_heading_hints, raw_directed_mask, _raw_affines = headtail_per_frame[idx]
+            (
+                raw_heading_hints,
+                raw_heading_confidences,
+                raw_directed_mask,
+                _raw_affines,
+            ) = headtail_per_frame[idx]
         else:
             raw_heading_hints = [float("nan")] * len(raw_meas)
+            raw_heading_confidences = [0.0] * len(raw_meas)
             raw_directed_mask = [0] * len(raw_meas)
             _raw_affines = None
         if return_raw:
@@ -1264,6 +1362,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 raw_confidences,
                 raw_obb_corners,
                 raw_heading_hints,
+                raw_heading_confidences,
                 raw_directed_mask,
                 _raw_affines,
             )
@@ -1275,6 +1374,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             obb_corners_list,
             _,
             _heading_hints,
+            _heading_confidences,
             _directed_mask,
         ) = self.filter_raw_detections(
             raw_meas,
@@ -1285,6 +1385,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             roi_mask=None,
             detection_ids=None,
             heading_hints=raw_heading_hints,
+            heading_confidences=raw_heading_confidences,
             directed_mask=raw_directed_mask,
         )
         return (meas, sizes, shapes, confidences, obb_corners_list)
@@ -1310,7 +1411,8 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
               - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
               - return_raw=True:  (
                     raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners,
-                    raw_heading_hints, raw_directed_mask, raw_canonical_affines
+                  raw_heading_hints, raw_heading_confidences,
+                  raw_directed_mask, raw_canonical_affines
                 )
         """
         if self.model is None:

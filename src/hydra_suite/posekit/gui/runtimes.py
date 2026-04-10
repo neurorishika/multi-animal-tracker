@@ -14,6 +14,7 @@ except Exception:
         "mps",
         "cuda",
         "rocm",
+        "onnx_coreml",
         "onnx_cpu",
         "onnx_cuda",
         "onnx_rocm",
@@ -39,6 +40,8 @@ except Exception:
             return "onnx_rocm"
         if flavor.startswith("onnx_cuda"):
             return "onnx_cuda"
+        if flavor.startswith("onnx_mps") or flavor.startswith("onnx_coreml"):
+            return "onnx_coreml"
         if flavor.startswith("onnx"):
             return "onnx_cpu"
         return "cpu"
@@ -46,6 +49,8 @@ except Exception:
     def derive_pose_runtime_settings(compute_runtime: str, backend_family: str):
         """Translate a canonical compute-runtime key into backend-specific runtime settings dict."""
         rt = str(compute_runtime or "cpu").strip().lower()
+        if rt == "onnx_coreml":
+            return {"pose_runtime_flavor": "onnx_mps", "pose_sleap_device": "mps"}
         if rt == "onnx_cpu":
             return {"pose_runtime_flavor": "onnx_cpu", "pose_sleap_device": "cpu"}
         if rt in {"onnx_cuda", "onnx_rocm"}:

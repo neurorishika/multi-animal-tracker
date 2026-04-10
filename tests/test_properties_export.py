@@ -4,9 +4,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from hydra_suite.core.identity.classification.cnn import (
+    ClassPrediction,
+    CNNIdentityCache,
+)
 from hydra_suite.core.identity.properties.cache import IndividualPropertiesCache
+from hydra_suite.core.identity.properties.detected_cache import DetectedPropertiesCache
 from hydra_suite.core.identity.properties.export import (
+    DETECTED_HEADING_COLUMNS,
     POSE_SUMMARY_COLUMNS,
+    augment_trajectories_with_detected_cnn_cache,
+    augment_trajectories_with_detected_properties_cache,
     augment_trajectories_with_pose_cache,
     merge_interpolated_pose_df,
 )
@@ -238,3 +246,72 @@ def test_augment_trajectories_with_pose_cache_coordinate_scale(tmp_path):
     assert out_scaled.iloc[0]["PoseKpt_tail_Conf"] == pytest.approx(0.8)
     # Summary columns should remain unchanged
     assert out_scaled.iloc[0]["PoseMeanConf"] == pytest.approx(0.85)
+
+
+def test_augment_trajectories_with_detected_properties_cache_merges_by_detection(
+    tmp_path,
+):
+    cache_path = tmp_path / "detected_props.npz"
+    with DetectedPropertiesCache(cache_path, mode="w") as cache:
+        cache.add_frame(
+            7,
+            detection_ids=[70001],
+            theta_raw=[0.1],
+            theta_resolved=[0.2],
+            heading_source=["headtail"],
+            heading_directed=[1],
+            headtail_heading=[0.2],
+            headtail_confidence=[0.92],
+            headtail_directed=[1],
+        )
+        cache.save(metadata={"cache_id": "abc"})
+
+    trajectories = pd.DataFrame(
+        [
+            {"FrameID": 7, "DetectionID": 70001, "TrajectoryID": 1},
+            {"FrameID": 7, "DetectionID": 79999, "TrajectoryID": 2},
+        ]
+    )
+    out = augment_trajectories_with_detected_properties_cache(
+        trajectories, str(cache_path)
+    )
+
+    for col in DETECTED_HEADING_COLUMNS:
+        assert col in out.columns
+
+    assert out.iloc[0]["ThetaRaw"] == pytest.approx(0.1)
+    assert out.iloc[0]["ThetaResolved"] == pytest.approx(0.2)
+    assert out.iloc[0]["HeadingSource"] == "headtail"
+    assert out.iloc[0]["HeadingDirected"] == 1
+    assert out.iloc[0]["HeadTailConfidence"] == pytest.approx(0.92)
+    assert np.isnan(out.iloc[1]["ThetaRaw"])
+
+
+def test_augment_trajectories_with_detected_cnn_cache_merges_by_detection(tmp_path):
+    cache_path = tmp_path / "cnn_cache.npz"
+    cache = CNNIdentityCache(cache_path)
+    cache.save(
+        5,
+        [
+            ClassPrediction(class_name="alpha", confidence=0.83, det_index=0),
+            ClassPrediction(class_name=None, confidence=0.1, det_index=2),
+        ],
+    )
+    cache.flush()
+
+    trajectories = pd.DataFrame(
+        [
+            {"FrameID": 5, "DetectionID": 50000, "TrajectoryID": 1},
+            {"FrameID": 5, "DetectionID": 50002, "TrajectoryID": 2},
+            {"FrameID": 6, "DetectionID": 60000, "TrajectoryID": 3},
+        ]
+    )
+    out = augment_trajectories_with_detected_cnn_cache(
+        trajectories, str(cache_path), label="idA"
+    )
+
+    assert out.iloc[0]["CNN_idA_Class"] == "alpha"
+    assert out.iloc[0]["CNN_idA_Conf"] == pytest.approx(0.83)
+    assert pd.isna(out.iloc[1]["CNN_idA_Class"])
+    assert out.iloc[1]["CNN_idA_Conf"] == pytest.approx(0.1)
+    assert pd.isna(out.iloc[2]["CNN_idA_Class"])

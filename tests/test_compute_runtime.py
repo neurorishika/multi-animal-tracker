@@ -10,6 +10,7 @@ def _load_mod():
 def test_allowed_runtimes_intersection_includes_explicit_onnx_variants(monkeypatch):
     mod = _load_mod()
     monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
@@ -42,6 +43,7 @@ def test_allowed_runtimes_for_sleap_pose_tracks_conda_availability(monkeypatch):
 def test_allowed_runtimes_for_sleap_pose_exposes_onnx_cpu_with_conda(monkeypatch):
     mod = _load_mod()
     monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
@@ -72,6 +74,30 @@ def test_derive_detection_runtime_settings_onnx_cpu():
     assert out["enable_onnx_runtime"] is True
 
 
+def test_allowed_runtimes_includes_onnx_coreml_on_mps(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
+
+    allowed = mod.allowed_runtimes_for_pipelines(["yolo_obb_detection", "yolo_pose"])
+    assert "onnx_coreml" in allowed
+
+
+def test_derive_detection_runtime_settings_onnx_coreml():
+    mod = _load_mod()
+    out = mod.derive_detection_runtime_settings("onnx_coreml")
+    assert out["yolo_device"] == "mps"
+    assert out["enable_tensorrt"] is False
+    assert out["enable_onnx_runtime"] is True
+
+
 def test_derive_detection_runtime_settings_onnx_cuda():
     mod = _load_mod()
     out = mod.derive_detection_runtime_settings("onnx_cuda")
@@ -87,8 +113,16 @@ def test_derive_pose_runtime_settings_onnx_cuda():
     assert out["pose_sleap_device"] == "cuda:0"
 
 
+def test_derive_pose_runtime_settings_onnx_coreml():
+    mod = _load_mod()
+    out = mod.derive_pose_runtime_settings("onnx_coreml", backend_family="yolo")
+    assert out["pose_runtime_flavor"] == "onnx_mps"
+    assert out["pose_sleap_device"] == "mps"
+
+
 def test_derive_pose_runtime_settings_legacy_onnx_alias(monkeypatch):
     mod = _load_mod()
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
@@ -109,3 +143,22 @@ def test_infer_compute_runtime_from_legacy_prefers_pose_runtime_hint():
         pose_runtime_flavor="onnx_cpu",
     )
     assert rt == "onnx_cpu"
+
+
+def test_infer_compute_runtime_from_legacy_maps_onnx_mps_to_onnx_coreml():
+    mod = _load_mod()
+    rt = mod.infer_compute_runtime_from_legacy(
+        yolo_device="auto",
+        enable_tensorrt=False,
+        pose_runtime_flavor="onnx_mps",
+    )
+    assert rt == "onnx_coreml"
+
+
+def test_derive_onnx_execution_providers_for_coreml(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", True)
+    providers = mod.derive_onnx_execution_providers("onnx_coreml")
+    assert providers[0][0] == "CoreMLExecutionProvider"
+    assert providers[-1] == "CPUExecutionProvider"

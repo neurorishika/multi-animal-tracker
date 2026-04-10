@@ -15,6 +15,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from hydra_suite.trackerkit.gui.main_window import MainWindow
+from hydra_suite.trackerkit.gui.orchestrators import session as session_module
 
 
 @pytest.fixture(scope="module")
@@ -572,6 +573,33 @@ def test_preview_detection_restores_analyze_individual_controls(
     window.close()
 
 
+def test_compute_runtime_tooltip_explains_coreml_hidden_for_sleap(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+) -> None:
+    monkeypatch.setattr(session_module, "ONNXRUNTIME_COREML_AVAILABLE", True)
+    monkeypatch.setattr(session_module, "MPS_AVAILABLE", True)
+
+    window = _make_main_window(monkeypatch)
+    monkeypatch.setattr(
+        window._session_orch,
+        "_compute_runtime_options_for_current_ui",
+        lambda: [("CPU", "cpu"), ("MPS", "mps"), ("ONNX (CPU)", "onnx_cpu")],
+    )
+    monkeypatch.setattr(
+        window._session_orch,
+        "_runtime_pipelines_for_current_ui",
+        lambda: ["yolo_obb_detection", "sleap_pose"],
+    )
+
+    window._on_runtime_context_changed()
+
+    tooltip = window._setup_panel.combo_compute_runtime.toolTip()
+    assert "ONNX (CoreML) is available in this environment" in tooltip
+    assert "SLEAP pose is enabled" in tooltip
+    window.close()
+
+
 def test_pose_video_overlay_customization_controls_remain_visible(
     monkeypatch: pytest.MonkeyPatch,
     qapp: QApplication,
@@ -627,7 +655,7 @@ def test_confidence_density_toggle_roundtrip_updates_visibility(
     reloaded_window.close()
 
 
-def test_oriented_video_paths_are_split_from_individual_crop_paths(
+def test_final_media_video_paths_are_split_from_individual_crop_paths(
     monkeypatch: pytest.MonkeyPatch,
     qapp: QApplication,
     tmp_path: Path,
@@ -650,13 +678,13 @@ def test_oriented_video_paths_are_split_from_individual_crop_paths(
     assert params["INDIVIDUAL_DATASET_OUTPUT_DIR"] == str(
         tmp_path / "sample_datasets" / "individual_crops"
     )
-    assert params["ORIENTED_TRACK_VIDEO_OUTPUT_DIR"] == str(
+    assert params["FINAL_MEDIA_EXPORT_VIDEO_OUTPUT_DIR"] == str(
         tmp_path / "sample_datasets" / "oriented_videos"
     )
     window.close()
 
 
-def test_oriented_video_postprocess_controls_roundtrip(
+def test_final_media_video_postprocess_controls_roundtrip(
     monkeypatch: pytest.MonkeyPatch,
     qapp: QApplication,
     tmp_path: Path,
@@ -679,20 +707,20 @@ def test_oriented_video_postprocess_controls_roundtrip(
     params = window.get_parameters_dict()
     assert params["SUPPRESS_FOREIGN_OBB_DATASET"] is True
     assert params["SUPPRESS_FOREIGN_OBB_ORIENTED_VIDEO"] is False
-    assert params["ORIENTED_VIDEO_FIX_DIRECTION_FLIPS"] is True
-    assert params["ORIENTED_VIDEO_HEADING_FLIP_MAX_BURST"] == 7
-    assert params["ORIENTED_VIDEO_ENABLE_AFFINE_STABILIZATION"] is True
-    assert params["ORIENTED_VIDEO_STABILIZATION_WINDOW"] == 9
+    assert params["FINAL_MEDIA_EXPORT_FIX_DIRECTION_FLIPS"] is True
+    assert params["FINAL_MEDIA_EXPORT_HEADING_FLIP_MAX_BURST"] == 7
+    assert params["FINAL_MEDIA_EXPORT_ENABLE_AFFINE_STABILIZATION"] is True
+    assert params["FINAL_MEDIA_EXPORT_STABILIZATION_WINDOW"] == 9
 
     config_path = tmp_path / "oriented_video_postprocess_roundtrip.json"
     assert window.save_config(preset_mode=True, preset_path=str(config_path))
     saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_cfg["suppress_foreign_obb_individual_dataset"] is True
     assert saved_cfg["suppress_foreign_obb_oriented_videos"] is False
-    assert saved_cfg["fix_oriented_video_direction_flips"] is True
-    assert saved_cfg["oriented_video_heading_flip_burst"] == 7
-    assert saved_cfg["enable_oriented_video_affine_stabilization"] is True
-    assert saved_cfg["oriented_video_stabilization_window"] == 9
+    assert saved_cfg["final_media_export_fix_direction_flips"] is True
+    assert saved_cfg["final_media_export_heading_flip_burst"] == 7
+    assert saved_cfg["final_media_export_enable_affine_stabilization"] is True
+    assert saved_cfg["final_media_export_stabilization_window"] == 9
     window.close()
 
     reloaded_window = _make_main_window(monkeypatch)
@@ -721,6 +749,49 @@ def test_oriented_video_postprocess_controls_roundtrip(
     assert (
         reloaded_window._dataset_panel.spin_oriented_video_stabilization_window.value()
         == 9
+    )
+    reloaded_window.close()
+
+
+def test_realtime_workflow_and_final_image_export_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._sync_individual_analysis_mode_ui()
+
+    window._setup_panel.chk_use_cached_detections.setChecked(True)
+    window._setup_panel.chk_realtime_mode.setChecked(True)
+    window._dataset_panel.chk_enable_individual_dataset.setChecked(True)
+
+    assert window._setup_panel.chk_use_cached_detections.isChecked() is False
+    assert window._setup_panel.chk_use_cached_detections.isEnabled() is False
+
+    params = window.get_parameters_dict()
+    assert params["TRACKING_REALTIME_MODE"] is True
+    assert params["TRACKING_WORKFLOW_MODE"] == "realtime"
+    assert params["ENABLE_INDIVIDUAL_IMAGE_SAVE"] is False
+    assert params["ENABLE_INDIVIDUAL_DATASET"] is False
+    assert params["EXPORT_FINAL_CANONICAL_IMAGES"] is True
+
+    config_path = tmp_path / "realtime_workflow_roundtrip.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["realtime_tracking_mode"] is True
+    assert saved_cfg["tracking_workflow_mode"] == "realtime"
+    assert saved_cfg["export_final_canonical_images"] is True
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+    reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert reloaded_window._setup_panel.chk_realtime_mode.isChecked() is True
+    assert reloaded_window._setup_panel.chk_use_cached_detections.isChecked() is False
+    assert reloaded_window._setup_panel.chk_use_cached_detections.isEnabled() is False
+    assert (
+        reloaded_window._dataset_panel.chk_enable_individual_dataset.isChecked() is True
     )
     reloaded_window.close()
 

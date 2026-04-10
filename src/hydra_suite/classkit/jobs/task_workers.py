@@ -948,7 +948,7 @@ class YoloInferenceWorker(QRunnable):
     def _torch_device(rt: str) -> str:
         if rt in ("cuda", "onnx_cuda", "tensorrt"):
             return "cuda"
-        if rt == "mps":
+        if rt in ("mps", "onnx_coreml"):
             return "mps"
         if rt in ("rocm", "onnx_rocm"):
             return "cuda"  # PyTorch uses "cuda" namespace for ROCm.
@@ -1311,7 +1311,7 @@ class TinyCNNInferenceWorker(QRunnable):
         """Map a canonical runtime string to a plain PyTorch device string."""
         if rt in ("cuda", "onnx_cuda", "tensorrt"):
             return "cuda"
-        if rt == "mps":
+        if rt in ("mps", "onnx_coreml"):
             return "mps"
         if rt in ("rocm", "onnx_rocm"):
             return "cuda"  # PyTorch uses "cuda" for ROCm
@@ -1489,7 +1489,7 @@ class TorchvisionInferenceWorker(QRunnable):
         """Map canonical runtime to PyTorch device string."""
         if rt in ("cuda", "onnx_cuda", "tensorrt"):
             return "cuda"
-        if rt == "mps":
+        if rt in ("mps", "onnx_coreml"):
             return "mps"
         if rt in ("rocm", "onnx_rocm"):
             return "cuda"
@@ -1512,16 +1512,14 @@ class TorchvisionInferenceWorker(QRunnable):
     def _create_infer_fn(self, rt: str):
         import torch
 
-        use_onnx = rt in ("onnx_cpu", "onnx_cuda", "onnx_rocm", "tensorrt")
+        use_onnx = rt.startswith("onnx_") or rt == "tensorrt"
         onnx_path = self.model_path.with_suffix(".onnx")
         if use_onnx and onnx_path.exists():
             import onnxruntime as ort
 
-            providers = (
-                ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                if "cuda" in rt
-                else ["CPUExecutionProvider"]
-            )
+            from ...runtime.compute_runtime import derive_onnx_execution_providers
+
+            providers = derive_onnx_execution_providers(rt)
             sess = ort.InferenceSession(str(onnx_path), providers=providers)
             input_name = sess.get_inputs()[0].name
 

@@ -13,6 +13,7 @@ from hydra_suite.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     ONNXRUNTIME_AVAILABLE,
+    ONNXRUNTIME_COREML_AVAILABLE,
     ONNXRUNTIME_CPU_AVAILABLE,
     ONNXRUNTIME_CUDA_AVAILABLE,
     ONNXRUNTIME_ROCM_AVAILABLE,
@@ -27,11 +28,17 @@ CANONICAL_RUNTIMES: List[str] = [
     "mps",
     "cuda",
     "rocm",
+    "onnx_coreml",
     "onnx_cpu",
     "onnx_cuda",
     "onnx_rocm",
     "tensorrt",
 ]
+
+COREML_PROVIDER_OPTIONS = {
+    "ModelFormat": "MLProgram",
+    "MLComputeUnits": "ALL",
+}
 
 
 def _best_explicit_onnx_runtime() -> str:
@@ -39,6 +46,8 @@ def _best_explicit_onnx_runtime() -> str:
         return "onnx_rocm"
     if ONNXRUNTIME_CUDA_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE:
         return "onnx_cuda"
+    if ONNXRUNTIME_COREML_AVAILABLE and MPS_AVAILABLE:
+        return "onnx_coreml"
     if ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE:
         return "onnx_cpu"
     return "onnx_cpu"
@@ -60,7 +69,11 @@ def _normalize_runtime(runtime: str) -> str:
         if ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE:
             return "onnx_rocm"
         return "onnx_cuda"
-    if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+    if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm", "onnx_coreml", "onnx_mps"}:
+        return "onnx_coreml" if rt == "onnx_mps" else rt
+    if rt == "coreml":
+        return "onnx_coreml"
+    if rt in {"onnx_core_ml", "onnx_coreml", "onnx_apple", "onnx_metal"}:
         return rt
     if rt.startswith("tensorrt"):
         return "tensorrt"
@@ -79,6 +92,7 @@ def runtime_label(runtime: str) -> str:
         "mps": "MPS",
         "cuda": "CUDA",
         "rocm": "ROCm",
+        "onnx_coreml": "ONNX (CoreML)",
         "onnx_cpu": "ONNX (CPU)",
         "onnx_cuda": "ONNX (CUDA)",
         "onnx_rocm": "ONNX (ROCm)",
@@ -92,6 +106,8 @@ def _cuda_like_available() -> bool:
 
 def _onnx_available(rt: str) -> bool:
     """Check local ONNX runtime availability for the given canonical ONNX runtime."""
+    if rt == "onnx_coreml":
+        return bool(ONNXRUNTIME_COREML_AVAILABLE and MPS_AVAILABLE)
     if rt == "onnx_cpu":
         return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
     if rt == "onnx_cuda":
@@ -111,6 +127,8 @@ def _sleap_onnx_available(rt: str) -> bool:
     """SLEAP ONNX runs in the selected SLEAP conda env, not the MAT env."""
     if not shutil.which("conda"):
         return False
+    if rt == "onnx_coreml":
+        return False
     if rt == "onnx_cpu":
         return True
     if rt == "onnx_cuda":
@@ -118,6 +136,45 @@ def _sleap_onnx_available(rt: str) -> bool:
     if rt == "onnx_rocm":
         return bool(ROCM_AVAILABLE)
     return False
+
+
+def _provider_name(provider: object) -> str:
+    if isinstance(provider, tuple) and provider:
+        return str(provider[0])
+    return str(provider)
+
+
+def _append_provider(providers: list[object], provider: object) -> None:
+    name = _provider_name(provider)
+    if any(_provider_name(existing) == name for existing in providers):
+        return
+    providers.append(provider)
+
+
+def derive_onnx_execution_providers(
+    compute_runtime: str,
+    include_cpu_fallback: bool = True,
+) -> List[object]:
+    """Return an ordered ONNX Runtime provider list for a canonical runtime."""
+    rt = _normalize_runtime(compute_runtime)
+    providers: list[object] = []
+
+    if rt == "tensorrt":
+        _append_provider(providers, "TensorrtExecutionProvider")
+        _append_provider(providers, "CUDAExecutionProvider")
+    elif rt == "onnx_cuda":
+        _append_provider(providers, "CUDAExecutionProvider")
+    elif rt == "onnx_rocm":
+        _append_provider(providers, "ROCMExecutionProvider")
+    elif rt == "onnx_coreml" and ONNXRUNTIME_COREML_AVAILABLE and MPS_AVAILABLE:
+        _append_provider(
+            providers,
+            ("CoreMLExecutionProvider", dict(COREML_PROVIDER_OPTIONS)),
+        )
+
+    if include_cpu_fallback or not providers:
+        _append_provider(providers, "CPUExecutionProvider")
+    return providers
 
 
 def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
@@ -136,7 +193,7 @@ def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
 
     # SLEAP has its own ONNX/TRT availability logic.
     if p == "sleap_pose":
-        if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+        if rt in {"onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
             return _sleap_onnx_available(rt)
         if rt == "tensorrt":
             return bool(
@@ -147,7 +204,7 @@ def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
         return True
 
     # All other pipelines use the standard ONNX/TRT availability checks.
-    if rt in {"onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+    if rt in {"onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
         return _onnx_available(rt)
     if rt == "tensorrt":
         return _tensorrt_available()
@@ -191,6 +248,8 @@ def _best_auto_runtime() -> str:
         return "onnx_rocm"
     if ONNXRUNTIME_CUDA_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE:
         return "onnx_cuda"
+    if ONNXRUNTIME_COREML_AVAILABLE and MPS_AVAILABLE:
+        return "onnx_coreml"
     if ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE:
         return "onnx_cpu"
     return "cpu"
@@ -201,6 +260,8 @@ def _runtime_from_pose_flavor(pose_runtime_flavor: str) -> str | None:
     pr = str(pose_runtime_flavor or "").strip().lower()
     if pr.startswith("tensorrt"):
         return "tensorrt"
+    if pr.startswith("onnx_mps") or pr.startswith("onnx_coreml"):
+        return "onnx_coreml"
     if pr.startswith("onnx_rocm"):
         return "onnx_rocm"
     if pr.startswith("onnx_cuda"):
@@ -255,6 +316,9 @@ def derive_detection_runtime_settings(compute_runtime: str) -> dict:
     elif rt == "tensorrt":
         yolo_device = "cuda:0"
         enable_tensorrt = True
+    elif rt == "onnx_coreml":
+        yolo_device = "mps"
+        enable_onnx_runtime = True
     elif rt == "onnx_cpu":
         yolo_device = "cpu"
         enable_onnx_runtime = True
@@ -288,6 +352,8 @@ def derive_pose_runtime_settings(compute_runtime: str, backend_family: str) -> d
             "pose_sleap_device": "cuda:0",
         }
 
+    if rt == "onnx_coreml":
+        return {"pose_runtime_flavor": "onnx_mps", "pose_sleap_device": "mps"}
     if rt == "onnx_cpu":
         return {"pose_runtime_flavor": "onnx_cpu", "pose_sleap_device": "cpu"}
     if rt in {"onnx_cuda", "onnx_rocm"}:
@@ -295,6 +361,8 @@ def derive_pose_runtime_settings(compute_runtime: str, backend_family: str) -> d
 
     # Legacy alias fallback (e.g. compute_runtime="onnx").
     resolved = _best_explicit_onnx_runtime()
+    if resolved == "onnx_coreml":
+        return {"pose_runtime_flavor": "onnx_mps", "pose_sleap_device": "mps"}
     if resolved == "onnx_cpu":
         return {"pose_runtime_flavor": "onnx_cpu", "pose_sleap_device": "cpu"}
     return {"pose_runtime_flavor": resolved, "pose_sleap_device": "cuda:0"}

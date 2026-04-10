@@ -21,6 +21,7 @@ The same runtime drives:
 - `mps`
 - `cuda`
 - `rocm`
+- `onnx_coreml`
 - `onnx_cpu`
 - `onnx_cuda`
 - `onnx_rocm`
@@ -42,6 +43,7 @@ Examples:
 
 - `cpu`: CPU inference paths.
 - `mps`: Apple Metal (PyTorch-native paths).
+- `onnx_coreml`: ONNX Runtime with CoreMLExecutionProvider on Apple Silicon.
 - `cuda`: PyTorch CUDA native paths.
 - `rocm`: PyTorch ROCm native paths.
 - `onnx_cpu`: ONNX Runtime with CPU provider.
@@ -65,7 +67,7 @@ No manual exported-model-path entry is required.
 ## Platform Expectations
 
 - Apple Silicon:
-  - Typically `mps` and `onnx_cpu` (no TensorRT).
+  - Typically `mps`, `onnx_coreml`, and `onnx_cpu` (no TensorRT).
 - NVIDIA CUDA:
   - `cuda`, `onnx_cuda`, and `tensorrt` when installed correctly.
 - ROCm:

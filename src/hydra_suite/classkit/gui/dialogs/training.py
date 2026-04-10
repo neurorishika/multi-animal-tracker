@@ -484,7 +484,7 @@ class ClassKitTrainingDialog(QDialog):
 
             _train_dev = str(self.device_combo.currentData() or "cpu").strip().lower()
             if _train_dev == "mps":
-                _preferred_rt = "mps"
+                _preferred_rt = "onnx_coreml" if "onnx_coreml" in _runtimes else "mps"
             elif _train_dev == "rocm":
                 _preferred_rt = "onnx_rocm" if "onnx_rocm" in _runtimes else "rocm"
             elif _train_dev == "cuda":
@@ -500,7 +500,8 @@ class ClassKitTrainingDialog(QDialog):
 
         self.compute_runtime_combo.setToolTip(
             "Runtime used for Tiny CNN inference in ClassKit (and MAT integration).\n"
-            "ONNX / TensorRT runtimes use exported artifacts (auto-exported after training)."
+            "ONNX / TensorRT runtimes use exported artifacts (auto-exported after training).\n"
+            "On Apple Silicon, ONNX (CoreML) uses ONNX Runtime's CoreMLExecutionProvider."
         )
         form.addRow("<b>Inference Runtime:</b>", self.compute_runtime_combo)
 

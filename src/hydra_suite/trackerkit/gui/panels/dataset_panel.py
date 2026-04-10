@@ -246,26 +246,26 @@ class DatasetPanel(QWidget):
         self.active_learning_content.setVisible(False)
 
         # ============================================================
-        # Individual Dataset Generator Section (Real-time OBB crops)
+        # Final canonical image export section
         # ============================================================
         self.g_individual_dataset = QGroupBox(
-            "Should individual crop images be saved to disk?"
+            "Should final canonical crop images be exported after cleanup?"
         )
         self._main_window._set_compact_section_widget(self.g_individual_dataset)
         vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
         vl_ind_dataset.addWidget(
             self._main_window._create_help_label(
-                "Persist individual-analysis crop images to disk.\n\n"
-                "• This save option depends on Analyze Individuals pipeline being enabled\n"
-                "• Crops contain only the detected animal (OBB-masked)\n"
-                "• Intended for downstream labeling/training workflows\n"
-                "• Saved under individual_crops/<run_id or dataset_run>/images\n\n"
+                "Export final canonical still images only after backward tracking and cleanup finish.\n\n"
+                "• Uses the final cleaned track orientation instead of transient forward-pass orientation\n"
+                "• Includes both detected frames and interpolated frames from the final trajectory set\n"
+                "• Intended for downstream labeling/training workflows that need stable head-tail direction\n"
+                "• Saved under individual_crops/<run_id>/images\n\n"
                 "Note: Available only in YOLO OBB mode."
             )
         )
 
         self.chk_enable_individual_dataset = QCheckBox(
-            "Save Individual Analysis Images to Disk"
+            "Export final canonical crop images after cleanup"
         )
         self.chk_enable_individual_dataset.toggled.connect(
             self._on_individual_dataset_toggled
@@ -274,7 +274,7 @@ class DatasetPanel(QWidget):
 
         # Output Configuration
         self.ind_output_group = QGroupBox(
-            "Where should individual-analysis outputs go?"
+            "How should final canonical images be written?"
         )
         ind_output_layout = QFormLayout(self.ind_output_group)
         ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
@@ -292,7 +292,7 @@ class DatasetPanel(QWidget):
         self.spin_individual_interval.setValue(1)
         self.spin_individual_interval.setSingleStep(1)
         self.spin_individual_interval.setToolTip(
-            "Save crops every N frames.\n"
+            "Export canonical images every N frames during the final media pass.\n"
             "1 = every frame, 10 = every 10th frame, etc."
         )
         _ind_fmt_row = QHBoxLayout()
@@ -304,7 +304,7 @@ class DatasetPanel(QWidget):
 
         vl_ind_dataset.addWidget(
             self._main_window._create_help_label(
-                "Interpolation, padding, and crop background settings are configured in:\n"
+                "Padding, background, interpolation, and head-tail settings are configured in:\n"
                 "Analyze Individuals -> Individual Analysis Pipeline Settings"
             )
         )
@@ -317,7 +317,7 @@ class DatasetPanel(QWidget):
         self.chk_suppress_foreign_obb_individual_dataset.setChecked(False)
         self.chk_suppress_foreign_obb_individual_dataset.setToolTip(
             "Fill overlapping animals' OBB areas with the background color before\n"
-            "saving individual crop images to disk.\n"
+            "writing final canonical crop images to disk.\n"
             "\n"
             "Prevents other animals from appearing inside saved crops used for\n"
             "downstream labeling or training. Only applies to YOLO OBB detections\n"
@@ -327,8 +327,8 @@ class DatasetPanel(QWidget):
 
         # Info label about filtering
         self.lbl_individual_info = self._main_window._create_help_label(
-            "Note: Crops use detections already filtered by ROI and size settings.\n"
-            "No additional filtering parameters needed.",
+            "Final canonical images reuse detections already filtered by ROI and size settings.\n"
+            "No forward-pass media export is performed.",
             attach_to_title=False,
         )
         vl_ind_dataset.addWidget(self.lbl_individual_info)

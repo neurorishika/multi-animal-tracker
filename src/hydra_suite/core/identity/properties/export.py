@@ -1,4 +1,4 @@
-"""Utilities for exporting pose properties into wide trajectory CSV outputs."""
+"""Utilities for exporting per-detection analysis properties into wide CSV outputs."""
 
 from __future__ import annotations
 
@@ -8,7 +8,10 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 import pandas as pd
 
+from hydra_suite.core.identity.classification.cnn import CNNIdentityCache
+
 from .cache import IndividualPropertiesCache
+from .detected_cache import DetectedPropertiesCache
 
 POSE_SUMMARY_COLUMNS = [
     "PoseMeanConf",
@@ -17,9 +20,27 @@ POSE_SUMMARY_COLUMNS = [
     "PoseNumKeypoints",
 ]
 
+DETECTED_HEADING_COLUMNS = [
+    "ThetaRaw",
+    "ThetaResolved",
+    "HeadingSource",
+    "HeadingDirected",
+    "HeadTailHeadingRad",
+    "HeadTailConfidence",
+    "HeadTailDirected",
+]
+
 
 def _pose_value_columns(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if str(c).startswith("Pose")]
+
+
+def _cnn_value_columns(df: pd.DataFrame) -> List[str]:
+    return [c for c in df.columns if str(c).startswith("CNN_")]
+
+
+def _detected_heading_columns(df: pd.DataFrame) -> List[str]:
+    return [c for c in df.columns if c in DETECTED_HEADING_COLUMNS]
 
 
 def _sanitize_keypoint_name(name: str, idx: int) -> str:
@@ -385,6 +406,229 @@ def augment_trajectories_with_pose_cache(
         cache.close()
     return augment_trajectories_with_pose_df(
         trajectories_df, lookup, coordinate_scale=coordinate_scale
+    )
+
+
+def build_detected_properties_lookup_dataframe(
+    cache: DetectedPropertiesCache,
+) -> pd.DataFrame:
+    """Flatten detected-properties cache entries into frame+detection keyed rows."""
+    entries: List[Dict[str, Any]] = []
+    for frame_idx in cache.get_cached_frames():
+        frame = cache.get_frame(int(frame_idx))
+        detection_ids = frame.get("detection_ids", [])
+        theta_raw = frame.get("ThetaRaw", [])
+        theta_resolved = frame.get("ThetaResolved", [])
+        heading_source = frame.get("HeadingSource", [])
+        heading_directed = frame.get("HeadingDirected", [])
+        headtail_heading = frame.get("HeadTailHeadingRad", [])
+        headtail_confidence = frame.get("HeadTailConfidence", [])
+        headtail_directed = frame.get("HeadTailDirected", [])
+        count = min(
+            len(detection_ids),
+            len(theta_raw),
+            len(theta_resolved),
+            len(heading_source),
+            len(heading_directed),
+            len(headtail_heading),
+            len(headtail_confidence),
+            len(headtail_directed),
+        )
+        for idx in range(count):
+            try:
+                det_id = int(detection_ids[idx])
+            except Exception:
+                continue
+            entries.append(
+                {
+                    "_detprop_frame_id": int(frame_idx),
+                    "_detprop_detection_id": det_id,
+                    "ThetaRaw": theta_raw[idx],
+                    "ThetaResolved": theta_resolved[idx],
+                    "HeadingSource": heading_source[idx],
+                    "HeadingDirected": heading_directed[idx],
+                    "HeadTailHeadingRad": headtail_heading[idx],
+                    "HeadTailConfidence": headtail_confidence[idx],
+                    "HeadTailDirected": headtail_directed[idx],
+                }
+            )
+    return pd.DataFrame(
+        entries,
+        columns=[
+            "_detprop_frame_id",
+            "_detprop_detection_id",
+            *DETECTED_HEADING_COLUMNS,
+        ],
+    )
+
+
+def augment_trajectories_with_detected_properties_df(
+    trajectories_df: pd.DataFrame,
+    detected_lookup_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Merge detected-frame heading metadata into trajectory rows by detection."""
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        "FrameID" not in trajectories_df.columns
+        or "DetectionID" not in trajectories_df.columns
+    ):
+        return trajectories_df.copy()
+
+    out = trajectories_df.copy()
+    out = out.drop(columns=_detected_heading_columns(out), errors="ignore")
+    if detected_lookup_df is None or detected_lookup_df.empty:
+        return _ensure_interp_columns(out, DETECTED_HEADING_COLUMNS)
+
+    out["_frame_join"] = (
+        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
+    )
+    out["_detection_join"] = (
+        pd.to_numeric(out["DetectionID"], errors="coerce").round().astype("Int64")
+    )
+
+    lookup = detected_lookup_df.copy()
+    lookup["_detprop_frame_id"] = (
+        pd.to_numeric(lookup["_detprop_frame_id"], errors="coerce")
+        .round()
+        .astype("Int64")
+    )
+    lookup["_detprop_detection_id"] = (
+        pd.to_numeric(lookup["_detprop_detection_id"], errors="coerce")
+        .round()
+        .astype("Int64")
+    )
+
+    merged = out.merge(
+        lookup[
+            ["_detprop_frame_id", "_detprop_detection_id", *DETECTED_HEADING_COLUMNS]
+        ],
+        how="left",
+        left_on=["_frame_join", "_detection_join"],
+        right_on=["_detprop_frame_id", "_detprop_detection_id"],
+        sort=False,
+    )
+    merged.drop(
+        columns=[
+            "_frame_join",
+            "_detection_join",
+            "_detprop_frame_id",
+            "_detprop_detection_id",
+        ],
+        inplace=True,
+        errors="ignore",
+    )
+    return _ensure_interp_columns(merged, DETECTED_HEADING_COLUMNS)
+
+
+def augment_trajectories_with_detected_properties_cache(
+    trajectories_df: pd.DataFrame,
+    cache_path: str,
+) -> pd.DataFrame:
+    """Load detected-properties cache and merge its canonical heading columns."""
+    cache = DetectedPropertiesCache(cache_path, mode="r")
+    try:
+        if not cache.is_compatible():
+            raise RuntimeError(f"Incompatible detected-properties cache: {cache_path}")
+        lookup = build_detected_properties_lookup_dataframe(cache)
+    finally:
+        cache.close()
+    return augment_trajectories_with_detected_properties_df(trajectories_df, lookup)
+
+
+def build_detected_cnn_lookup_dataframe(
+    cache: CNNIdentityCache,
+    label: str = "cnn_identity",
+) -> pd.DataFrame:
+    """Flatten detected-frame CNN predictions into frame+detection keyed rows."""
+    col_class = f"CNN_{label}_Class"
+    col_conf = f"CNN_{label}_Conf"
+    rows: List[Dict[str, Any]] = []
+    for frame_idx in cache.get_cached_frames():
+        for pred in cache.load(int(frame_idx)):
+            rows.append(
+                {
+                    "_cnn_frame_id": int(frame_idx),
+                    "_cnn_detection_id": int(frame_idx) * 10000 + int(pred.det_index),
+                    col_class: (
+                        pred.class_name if pred.class_name is not None else np.nan
+                    ),
+                    col_conf: float(pred.confidence),
+                }
+            )
+    return pd.DataFrame(
+        rows,
+        columns=["_cnn_frame_id", "_cnn_detection_id", col_class, col_conf],
+    )
+
+
+def augment_trajectories_with_detected_cnn_df(
+    trajectories_df: pd.DataFrame,
+    detected_cnn_df: pd.DataFrame,
+    label: str = "cnn_identity",
+) -> pd.DataFrame:
+    """Merge detected-frame CNN predictions into trajectory rows by detection."""
+    col_class = f"CNN_{label}_Class"
+    col_conf = f"CNN_{label}_Conf"
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        "FrameID" not in trajectories_df.columns
+        or "DetectionID" not in trajectories_df.columns
+    ):
+        return trajectories_df.copy()
+
+    out = trajectories_df.copy()
+    if detected_cnn_df is None or detected_cnn_df.empty:
+        return _ensure_interp_columns(out, [col_class, col_conf])
+
+    out["_frame_join"] = (
+        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
+    )
+    out["_detection_join"] = (
+        pd.to_numeric(out["DetectionID"], errors="coerce").round().astype("Int64")
+    )
+
+    lookup = detected_cnn_df.copy()
+    lookup["_cnn_frame_id"] = (
+        pd.to_numeric(lookup["_cnn_frame_id"], errors="coerce").round().astype("Int64")
+    )
+    lookup["_cnn_detection_id"] = (
+        pd.to_numeric(lookup["_cnn_detection_id"], errors="coerce")
+        .round()
+        .astype("Int64")
+    )
+
+    merged = out.merge(
+        lookup[["_cnn_frame_id", "_cnn_detection_id", col_class, col_conf]],
+        how="left",
+        left_on=["_frame_join", "_detection_join"],
+        right_on=["_cnn_frame_id", "_cnn_detection_id"],
+        sort=False,
+    )
+    merged.drop(
+        columns=[
+            "_frame_join",
+            "_detection_join",
+            "_cnn_frame_id",
+            "_cnn_detection_id",
+        ],
+        inplace=True,
+        errors="ignore",
+    )
+    return _ensure_interp_columns(merged, [col_class, col_conf])
+
+
+def augment_trajectories_with_detected_cnn_cache(
+    trajectories_df: pd.DataFrame,
+    cache_path: str,
+    label: str = "cnn_identity",
+) -> pd.DataFrame:
+    """Load detected-frame CNN cache and merge class/confidence columns."""
+    cache = CNNIdentityCache(cache_path)
+    lookup = build_detected_cnn_lookup_dataframe(cache, label=label)
+    return augment_trajectories_with_detected_cnn_df(
+        trajectories_df, lookup, label=label
     )
 
 
