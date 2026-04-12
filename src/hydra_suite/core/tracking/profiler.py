@@ -50,6 +50,13 @@ CATEGORY_ORDER = [
     "frame_read",
     "preprocessing",
     "detection",
+    "live_filter",
+    "live_crop_extraction",
+    "live_pose_transport",
+    "live_pose_inference",
+    "live_pose_postprocess",
+    "live_apriltag",
+    "live_cnn_identity",
     "features",
     "kf_predict",
     "cost_matrix",
@@ -74,6 +81,8 @@ PHASE_ORDER = [
     "batched_detection",
     # Sub-phases within batched_detection (engine-level)
     "yolo_obb_inference",
+    "sequential_obb_crop",
+    "sequential_obb_inference",
     "headtail_crop",
     "headtail_inference",
     "confidence_density",
@@ -85,6 +94,9 @@ PHASE_ORDER = [
     "precompute_pose",
     "precompute_apriltag",
     "precompute_cnn_identity",
+    "pose_transport",
+    "pose_inference",
+    "pose_postprocess",
     "tracking_loop",
     "cleanup",
     # Post-processing phases (separate profiler instance in MergeWorker)
@@ -121,15 +133,20 @@ class TrackingProfiler:
 
         # Running totals
         self._totals: dict[str, float] = defaultdict(float)
+        self._unit_totals: dict[str, float] = defaultdict(float)
 
         # Per-frame samples (lists of per-frame durations in seconds)
         self._samples: dict[str, list[float]] = defaultdict(list)
+        self._unit_samples: dict[str, list[float]] = defaultdict(list)
 
         # Current frame accumulators
         self._frame_totals: dict[str, float] = defaultdict(float)
+        self._frame_units: dict[str, float] = defaultdict(float)
 
         # Interval accumulators (reset after each periodic log)
         self._interval_totals: dict[str, float] = defaultdict(float)
+        self._interval_phase_totals: dict[str, float] = defaultdict(float)
+        self._interval_phase_units: dict[str, float] = defaultdict(float)
         self._interval_frames: int = 0
 
         # Tick tracking
@@ -145,6 +162,7 @@ class TrackingProfiler:
 
         # Phase-level timing (batched detection, post-processing, etc.)
         self._phase_times: dict[str, float] = {}
+        self._phase_units: dict[str, float] = defaultdict(float)
         self._phase_pending: dict[str, float] = {}
 
         # Optional run configuration metadata (set by caller)
@@ -170,7 +188,7 @@ class TrackingProfiler:
         if self._frame_start is None:
             self._frame_start = time.time()
 
-    def tock(self, category: str) -> None:
+    def tock(self, category: str, work_units: float | int | None = None) -> None:
         """Stop timing *category*, accumulate into frame totals."""
         if not self.enabled:
             return
@@ -179,6 +197,24 @@ class TrackingProfiler:
             return
         elapsed = time.time() - start
         self._frame_totals[category] += elapsed
+        self._record_frame_units(category, work_units)
+
+    def add_sample(
+        self,
+        category: str,
+        elapsed_s: float,
+        work_units: float | int | None = None,
+    ) -> None:
+        """Accumulate a pre-measured duration into the current frame."""
+        if not self.enabled:
+            return
+        elapsed = float(elapsed_s)
+        if elapsed <= 0.0:
+            return
+        self._frame_totals[category] += elapsed
+        self._record_frame_units(category, work_units)
+        if self._frame_start is None:
+            self._frame_start = time.time()
 
     # ------------------------------------------------------------------
     # Phase timing (for coarse phases: batched detection, post-processing)
@@ -189,16 +225,33 @@ class TrackingProfiler:
             return
         self._phase_pending[name] = time.time()
 
-    def phase_end(self, name: str) -> None:
+    def phase_end(self, name: str, work_units: float | int | None = None) -> None:
         """End timing a coarse pipeline phase."""
         if not self.enabled:
             return
         start = self._phase_pending.pop(name, None)
         if start is None:
             return
-        self._phase_times[name] = self._phase_times.get(name, 0.0) + (
-            time.time() - start
-        )
+        elapsed = time.time() - start
+        self._phase_times[name] = self._phase_times.get(name, 0.0) + elapsed
+        self._record_phase_units(name, work_units)
+        self._record_interval_phase(name, elapsed, work_units)
+
+    def add_phase_time(
+        self,
+        name: str,
+        elapsed_s: float,
+        work_units: float | int | None = None,
+    ) -> None:
+        """Accumulate a pre-measured duration into a coarse phase total."""
+        if not self.enabled:
+            return
+        elapsed = float(elapsed_s)
+        if elapsed <= 0.0:
+            return
+        self._phase_times[name] = self._phase_times.get(name, 0.0) + elapsed
+        self._record_phase_units(name, work_units)
+        self._record_interval_phase(name, elapsed, work_units)
 
     # ------------------------------------------------------------------
     # Frame boundary
@@ -229,12 +282,17 @@ class TrackingProfiler:
             self._totals[cat] += dur
             self._samples[cat].append(dur)
             self._interval_totals[cat] += dur
+            units = self._frame_units.get(cat, 0.0)
+            if units > 0.0:
+                self._unit_totals[cat] += units
+                self._unit_samples[cat].append(units)
 
         self._total_frames += 1
         self._interval_frames += 1
 
         # Reset frame accumulators
         self._frame_totals = defaultdict(float)
+        self._frame_units = defaultdict(float)
         self._frame_start = None
 
     # ------------------------------------------------------------------
@@ -254,7 +312,37 @@ class TrackingProfiler:
             dur = self._interval_totals[cat]
             pct = (dur / total) * 100
             avg_ms = (dur / self._interval_frames) * 1000
-            logger.info("  %-22s %5.1f%%  %7.2f ms/frame", cat, pct, avg_ms)
+            unit_suffix = ""
+            interval_units = self._interval_units_for_category(cat)
+            if interval_units > 0.0:
+                unit_suffix = f" | {(dur / interval_units) * 1000:.2f} ms/individual"
+            logger.info(
+                "  %-22s %5.1f%%  %7.2f ms/frame%s",
+                cat,
+                pct,
+                avg_ms,
+                unit_suffix,
+            )
+
+        if self._interval_phase_totals:
+            logger.info("  PHASE TIMING")
+            for name in self._ordered_phases(self._interval_phase_totals):
+                dur = self._interval_phase_totals[name]
+                pct = (dur / total) * 100 if total > 0 else 0.0
+                avg_ms = (dur / self._interval_frames) * 1000
+                unit_suffix = ""
+                interval_units = self._interval_phase_units.get(name, 0.0)
+                if interval_units > 0.0:
+                    unit_suffix = (
+                        f" | {(dur / interval_units) * 1000:.2f} ms/individual"
+                    )
+                logger.info(
+                    "    %-30s %5.1f%%  %7.2f ms/frame%s",
+                    name,
+                    pct,
+                    avg_ms,
+                    unit_suffix,
+                )
         logger.info(
             "  %-22s         %7.2f ms/frame",
             "TOTAL",
@@ -264,6 +352,8 @@ class TrackingProfiler:
 
         # Reset interval accumulators
         self._interval_totals = defaultdict(float)
+        self._interval_phase_totals = defaultdict(float)
+        self._interval_phase_units = defaultdict(float)
         self._interval_frames = 0
 
     # ------------------------------------------------------------------
@@ -300,6 +390,11 @@ class TrackingProfiler:
                 "p95_ms": round(float(np.percentile(arr, 95)) * 1000, 3),
                 "p99_ms": round(float(np.percentile(arr, 99)) * 1000, 3),
             }
+            total_units = self._unit_totals.get(cat, 0.0)
+            if total_units > 0.0:
+                categories[cat]["total_units"] = self._format_units(total_units)
+                categories[cat]["mean_units_per_frame"] = round(total_units / n, 3)
+                categories[cat]["ms_per_unit"] = round((dur / total_units) * 1000, 3)
 
         # Phase-level timing (ordered by PHASE_ORDER, then any extras)
         phases = {}
@@ -310,10 +405,15 @@ class TrackingProfiler:
             dur = self._phase_times[name]
             phases[name] = {
                 "total_s": round(dur, 4),
+                "avg_ms_per_frame": round((dur / n) * 1000, 3),
                 "percent_of_wall": (
                     round((dur / wall_clock) * 100, 2) if wall_clock > 0 else 0.0
                 ),
             }
+            total_units = self._phase_units.get(name, 0.0)
+            if total_units > 0.0:
+                phases[name]["total_units"] = self._format_units(total_units)
+                phases[name]["ms_per_unit"] = round((dur / total_units) * 1000, 3)
 
         summary = {
             "enabled": True,
@@ -377,10 +477,15 @@ class TrackingProfiler:
             logger.info("-" * 60)
             logger.info("  PHASE TIMING")
             for name, info in summary["phases"].items():
+                unit_suffix = ""
+                if "ms_per_unit" in info:
+                    unit_suffix = f" | {info['ms_per_unit']:.2f} ms/individual"
                 logger.info(
-                    "    %-30s %8.2f s  (%5.1f%%)",
+                    "    %-30s %8.2f s  %7.2f ms/frame%s  (%5.1f%%)",
                     name,
                     info["total_s"],
+                    info.get("avg_ms_per_frame", 0.0),
+                    unit_suffix,
                     info.get("percent_of_wall", 0.0),
                 )
 
@@ -396,14 +501,18 @@ class TrackingProfiler:
         )
         logger.info("-" * 60)
         for cat, info in summary["categories"].items():
+            unit_suffix = ""
+            if "ms_per_unit" in info:
+                unit_suffix = f" | {info['ms_per_unit']:.2f} ms/individual"
             logger.info(
-                "  %-22s %5.1f%% %7.2fms %7.2fms %7.2fms %7.2fms",
+                "  %-22s %5.1f%% %7.2fms %7.2fms %7.2fms %7.2fms%s",
                 cat,
                 info["percent"],
                 info["mean_ms"],
                 info["p50_ms"],
                 info["p95_ms"],
                 info["max_ms"],
+                unit_suffix,
             )
         logger.info("-" * 60)
         logger.info(
@@ -421,3 +530,62 @@ class TrackingProfiler:
         present = [c for c in CATEGORY_ORDER if c in d and d[c] > 0]
         extras = sorted(c for c in d if c not in CATEGORY_ORDER and d[c] > 0)
         return present + extras
+
+    def _ordered_phases(self, d: dict) -> list[str]:
+        """Return phase names in canonical order, extras appended alphabetically."""
+        present = [p for p in PHASE_ORDER if p in d and d[p] > 0]
+        extras = sorted(p for p in d if p not in PHASE_ORDER and d[p] > 0)
+        return present + extras
+
+    def _interval_units_for_category(self, category: str) -> float:
+        """Best-effort interval work-unit count for a category."""
+        phase_name = category.removeprefix("live_")
+        if phase_name in self._interval_phase_units:
+            return self._interval_phase_units.get(phase_name, 0.0)
+        return 0.0
+
+    def _record_interval_phase(
+        self,
+        name: str,
+        elapsed_s: float,
+        work_units: float | int | None = None,
+    ) -> None:
+        """Accumulate phase timing into the current periodic interval."""
+        elapsed = float(elapsed_s)
+        if elapsed <= 0.0:
+            return
+        self._interval_phase_totals[name] += elapsed
+        units = self._coerce_units(work_units)
+        if units > 0.0:
+            self._interval_phase_units[name] += units
+
+    def _record_frame_units(
+        self, category: str, work_units: float | int | None = None
+    ) -> None:
+        units = self._coerce_units(work_units)
+        if units > 0.0:
+            self._frame_units[category] += units
+
+    def _record_phase_units(
+        self, name: str, work_units: float | int | None = None
+    ) -> None:
+        units = self._coerce_units(work_units)
+        if units > 0.0:
+            self._phase_units[name] += units
+
+    @staticmethod
+    def _coerce_units(work_units: float | int | None) -> float:
+        try:
+            units = float(work_units)
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(units) or units <= 0.0:
+            return 0.0
+        return units
+
+    @staticmethod
+    def _format_units(units: float) -> int | float:
+        rounded = round(units)
+        if abs(units - rounded) < 1e-6:
+            return int(rounded)
+        return round(units, 3)

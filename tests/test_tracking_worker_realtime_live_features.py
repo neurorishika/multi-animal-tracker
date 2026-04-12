@@ -44,6 +44,12 @@ class _FakeProfiler:
     def tock(self, *_args, **_kwargs):
         return None
 
+    def add_sample(self, *_args, **_kwargs):
+        return None
+
+    def add_phase_time(self, *_args, **_kwargs):
+        return None
+
     def end_frame(self, *_args, **_kwargs):
         return None
 

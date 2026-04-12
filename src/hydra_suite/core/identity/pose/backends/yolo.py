@@ -198,7 +198,7 @@ class YoloNativeBackend:
             conf=self.conf,
             iou=self.iou,
             max_det=self.max_det,
-            batch=self.batch_size,
+            batch=min(self.batch_size, max(1, len(crops))),
             verbose=False,
             device=self.device,
         )

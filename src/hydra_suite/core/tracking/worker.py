@@ -67,6 +67,7 @@ from hydra_suite.core.tracking.tag_features import (
 )
 from hydra_suite.data.detection_cache import DetectionCache
 from hydra_suite.data.tag_observation_cache import TagObservationCache
+from hydra_suite.utils.batch_policy import clamp_realtime_individual_batch_size
 from hydra_suite.utils.frame_prefetcher import FramePrefetcher
 from hydra_suite.utils.geometry import estimate_detection_crop_quality
 from hydra_suite.utils.image_processing import (
@@ -610,11 +611,21 @@ class TrackingWorker(QThread):
             cnn_cfg = CNNIdentityConfig(
                 model_path=model_path,
                 confidence=float(cnn_cfg_dict.get("confidence", 0.5)),
-                batch_size=int(cnn_cfg_dict.get("batch_size", 64)),
+                batch_size=clamp_realtime_individual_batch_size(
+                    cnn_cfg_dict.get("batch_size", 64),
+                    max_animals=params.get("MAX_TARGETS", 1),
+                    realtime_enabled=params.get("TRACKING_REALTIME_MODE", False),
+                    workflow_mode=params.get("TRACKING_WORKFLOW_MODE", "non_realtime"),
+                ),
             )
             classify_id = compute_classify_cache_id(
                 model_path=model_path,
-                compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
+                compute_runtime=str(
+                    params.get(
+                        "CNN_COMPUTE_RUNTIME",
+                        params.get("COMPUTE_RUNTIME", "cpu"),
+                    )
+                ),
                 inference_model_id=str(params.get("INFERENCE_MODEL_ID", "")),
             )
             cnn_cache_path = self._build_cnn_identity_cache_path(
@@ -626,7 +637,12 @@ class TrackingWorker(QThread):
                     config=cnn_cfg,
                     model_path=model_path,
                     cache_path=cnn_cache_path,
-                    compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
+                    compute_runtime=str(
+                        params.get(
+                            "CNN_COMPUTE_RUNTIME",
+                            params.get("COMPUTE_RUNTIME", "cpu"),
+                        )
+                    ),
                     name=label,
                     ignore_existing_cache=ignore_existing_cache,
                 )
@@ -1472,7 +1488,9 @@ class TrackingWorker(QThread):
 
                 classify_id = compute_classify_cache_id(
                     model_path=model_path,
-                    compute_runtime=str(p.get("COMPUTE_RUNTIME", "cpu")),
+                    compute_runtime=str(
+                        p.get("CNN_COMPUTE_RUNTIME", p.get("COMPUTE_RUNTIME", "cpu"))
+                    ),
                     inference_model_id=str(p.get("INFERENCE_MODEL_ID", "")),
                 )
                 _path = self._build_cnn_identity_cache_path(
@@ -2003,6 +2021,8 @@ class TrackingWorker(QThread):
                 )
                 cached_frame_indices.add(actual_frame_index)
 
+            profiler.tock("detection")
+
             if (
                 live_feature_precompute is not None
                 and frame is not None
@@ -2025,9 +2045,10 @@ class TrackingWorker(QThread):
                     roi_mask=ROI_mask_current,
                     profiler=profiler,
                 )
-                live_feature_precompute.sync_live_frame()
-
-            profiler.tock("detection")
+                try:
+                    live_feature_precompute.sync_live_frame(profiler=profiler)
+                except TypeError:
+                    live_feature_precompute.sync_live_frame()
 
             profiler.tick("features")
             detection_crop_quality = np.zeros(len(meas), dtype=np.float32)

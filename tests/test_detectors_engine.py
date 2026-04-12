@@ -310,6 +310,268 @@ def test_onnx_artifact_path_is_batch_specific_and_model_adjacent(
     assert b4 == 4
 
 
+def test_onnx_export_disables_end2end_postprocess_for_obb(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        instances = []
+        export_end2end = []
+
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.overrides = {}
+            self.model = types.SimpleNamespace(
+                args={},
+                model=[types.SimpleNamespace(end2end=True)],
+            )
+            FakeYOLO.instances.append(self)
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            FakeYOLO.export_end2end.append(self.model.model[-1].end2end)
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "TENSORRT_MAX_BATCH_SIZE": 1,
+        "INFERENCE_MODEL_ID": "id-A",
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "cpu"
+    det.use_onnx = False
+    det.onnx_model_path = None
+    det.onnx_imgsz = None
+    det.onnx_batch_size = 1
+
+    det._try_load_onnx_model(str(model_path))
+
+    assert FakeYOLO.export_end2end == [False]
+    assert FakeYOLO.instances[0].model.model[-1].end2end is True
+    assert det.use_onnx
+
+
+def test_realtime_onnx_artifact_forces_batch1(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.overrides = {}
+            self.model = types.SimpleNamespace(args={})
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "TENSORRT_MAX_BATCH_SIZE": 8,
+        "INFERENCE_MODEL_ID": "id-A",
+        "TRACKING_REALTIME_MODE": True,
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "mps"
+    det.use_onnx = False
+    det.onnx_model_path = None
+    det.onnx_imgsz = None
+    det.onnx_batch_size = 1
+
+    det._try_load_onnx_model(str(model_path))
+
+    assert det.onnx_batch_size == 1
+    assert det.onnx_model_path is not None
+    assert det.onnx_model_path.endswith("_b1.onnx")
+
+
+def test_non_realtime_mps_onnx_artifact_keeps_configured_batch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.overrides = {}
+            self.model = types.SimpleNamespace(args={})
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "TENSORRT_MAX_BATCH_SIZE": 8,
+        "INFERENCE_MODEL_ID": "id-A",
+        "TRACKING_REALTIME_MODE": False,
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "mps"
+    det.use_onnx = False
+    det.onnx_model_path = None
+    det.onnx_imgsz = None
+    det.onnx_batch_size = 1
+
+    det._try_load_onnx_model(str(model_path))
+
+    assert det.onnx_batch_size == 8
+    assert det.onnx_model_path is not None
+    assert det.onnx_model_path.endswith("_b8.onnx")
+
+
+def test_detect_aux_onnx_export_uses_rawhead_profile_suffix(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        instances = []
+        export_end2end = []
+
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.model = types.SimpleNamespace(
+                args={},
+                model=[types.SimpleNamespace(end2end=True)],
+            )
+            FakeYOLO.instances.append(self)
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            FakeYOLO.export_end2end.append(self.model.model[-1].end2end)
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "detect.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "ENABLE_ONNX_RUNTIME": True,
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "cpu"
+
+    onnx_path = det._prepare_runtime_artifact_for_task(str(model_path), task="detect")
+
+    assert onnx_path.endswith("_detect_rawheadv1_b1.onnx")
+    assert FakeYOLO.export_end2end == [False]
+    assert FakeYOLO.instances[0].model.model[-1].end2end is True
+
+
+def test_detect_aux_onnx_export_uses_configured_batch_outside_realtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        instances = []
+
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.model = types.SimpleNamespace(
+                args={},
+                model=[types.SimpleNamespace(end2end=True)],
+            )
+            FakeYOLO.instances.append(self)
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "detect.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "ENABLE_ONNX_RUNTIME": True,
+        "TENSORRT_MAX_BATCH_SIZE": 8,
+        "TRACKING_REALTIME_MODE": False,
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "cpu"
+
+    onnx_path = det._prepare_runtime_artifact_for_task(str(model_path), task="detect")
+
+    assert onnx_path.endswith("_detect_rawheadv1_b8.onnx")
+
+
 def test_yolo_raw_detection_cap_is_two_x_max_targets() -> None:
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)

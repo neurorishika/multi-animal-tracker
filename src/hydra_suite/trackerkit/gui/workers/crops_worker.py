@@ -28,6 +28,15 @@ from .merge_worker import _write_csv_artifact, _write_roi_npz
 logger = logging.getLogger(__name__)
 
 
+def _runtime_to_native_device(runtime: object) -> str:
+    rt = str(runtime or "cpu").strip().lower()
+    if rt in {"mps", "onnx_coreml", "onnx_mps"}:
+        return "mps"
+    if rt in {"cuda", "onnx_cuda", "tensorrt", "rocm", "onnx_rocm"}:
+        return "cuda"
+    return "cpu"
+
+
 class InterpolatedCropsWorker(BaseWorker):
     """Worker thread for interpolating occluded crops without blocking the UI."""
 
@@ -183,7 +192,11 @@ class InterpolatedCropsWorker(BaseWorker):
                 CNNIdentityConfig,
             )
 
-            compute_rt = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
+            compute_rt = str(
+                self.params.get(
+                    "CNN_COMPUTE_RUNTIME", self.params.get("COMPUTE_RUNTIME", "cpu")
+                )
+            )
             for cnn_cfg_dict in cnn_classifiers_cfg:
                 model_path = str(cnn_cfg_dict.get("model_path", ""))
                 if not model_path or not os.path.exists(model_path):
@@ -222,9 +235,12 @@ class InterpolatedCropsWorker(BaseWorker):
                 HeadTailAnalyzer,
             )
 
-            _ht_device = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
-            if _ht_device not in ("cpu", "cuda", "mps"):
-                _ht_device = "cpu"
+            _ht_device = _runtime_to_native_device(
+                self.params.get(
+                    "HEADTAIL_COMPUTE_RUNTIME",
+                    self.params.get("COMPUTE_RUNTIME", "cpu"),
+                )
+            )
             analyzer = HeadTailAnalyzer(
                 model_path=headtail_model_path,
                 device=_ht_device,

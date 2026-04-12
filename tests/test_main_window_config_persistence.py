@@ -59,6 +59,15 @@ def _select_first_model_with_suffixes(combo, suffixes: tuple[str, ...]) -> str:
     )
 
 
+def _select_first_nonempty_model(combo) -> str:
+    for index in range(combo.count()):
+        item_data = combo.itemData(index)
+        if item_data and item_data not in ("__add_new__", "__none__"):
+            combo.setCurrentIndex(index)
+            return str(item_data)
+    raise AssertionError("No configured model entry was available in the combo")
+
+
 def _seed_trackerkit_model_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -596,7 +605,124 @@ def test_compute_runtime_tooltip_explains_coreml_hidden_for_sleap(
 
     tooltip = window._setup_panel.combo_compute_runtime.toolTip()
     assert "ONNX (CoreML) is available in this environment" in tooltip
-    assert "SLEAP pose is enabled" in tooltip
+    assert "current enabled pipeline combination" in tooltip
+    window.close()
+
+
+def test_setup_panel_pose_runtime_visibility_tracks_pose_enable(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+    window = _make_main_window(monkeypatch)
+    monkeypatch.setattr(
+        session_module,
+        "supported_runtimes_for_pipeline",
+        lambda _pipeline: ["cpu", "mps", "onnx_coreml"],
+    )
+
+    window._identity_panel.chk_enable_pose_extractor.setChecked(False)
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_pose_runtime_flavor.isHidden() is True
+
+    window._identity_panel.chk_enable_pose_extractor.setChecked(True)
+    window._identity_panel.combo_pose_model_type.setCurrentText("SLEAP")
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_pose_runtime_flavor.isHidden() is True
+
+    _select_first_nonempty_model(window._identity_panel.combo_pose_model)
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_pose_runtime_flavor.isHidden() is False
+    assert window._identity_panel.combo_pose_runtime_flavor.isHidden() is True
+    window.close()
+
+
+def test_setup_panel_headtail_and_cnn_runtime_visibility_tracks_enablement(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+    window = _make_main_window(monkeypatch)
+
+    window._identity_panel.g_identity.setChecked(True)
+    window._identity_panel.g_headtail.setChecked(False)
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_headtail_runtime.isHidden() is True
+    assert window._setup_panel.combo_cnn_runtime.isHidden() is True
+
+    window._identity_panel.g_headtail.setChecked(True)
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_headtail_runtime.isHidden() is True
+
+    _select_first_nonempty_model(window._identity_panel.combo_yolo_headtail_model)
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_headtail_runtime.isHidden() is False
+
+    window._identity_panel._add_cnn_classifier_row()
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_cnn_runtime.isHidden() is True
+
+    cnn_row = window._identity_panel._cnn_classifier_rows()[0]
+    _select_first_nonempty_model(cnn_row.combo_model)
+    window._sync_individual_analysis_mode_ui()
+    assert window._setup_panel.combo_cnn_runtime.isHidden() is False
+    window.close()
+
+
+def test_saved_config_preserves_selected_pose_runtime_flavor(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+    monkeypatch.setattr(
+        session_module,
+        "supported_runtimes_for_pipeline",
+        lambda _pipeline: ["cpu", "mps", "onnx_coreml", "onnx_cpu"],
+    )
+
+    window._identity_panel.chk_enable_pose_extractor.setChecked(True)
+    window._identity_panel.combo_pose_model_type.setCurrentText("SLEAP")
+    window._populate_pose_runtime_flavor_options("sleap", preferred="onnx_mps")
+
+    idx = window._setup_panel.combo_pose_runtime_flavor.findData("onnx_mps")
+    assert idx >= 0
+    window._setup_panel.combo_pose_runtime_flavor.setCurrentIndex(idx)
+
+    config_path = tmp_path / "pose_runtime.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["pose_runtime_flavor"] == "onnx_mps"
+    window.close()
+
+
+def test_saved_config_preserves_selected_headtail_and_cnn_runtimes(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+
+    window._identity_panel.g_identity.setChecked(True)
+    window._identity_panel.g_headtail.setChecked(True)
+    window._identity_panel._add_cnn_classifier_row()
+    window._populate_headtail_runtime_options(preferred="mps")
+    window._populate_cnn_runtime_options(preferred="onnx_cpu")
+
+    headtail_idx = window._setup_panel.combo_headtail_runtime.findData("mps")
+    cnn_idx = window._setup_panel.combo_cnn_runtime.findData("onnx_cpu")
+    assert headtail_idx >= 0
+    assert cnn_idx >= 0
+    window._setup_panel.combo_headtail_runtime.setCurrentIndex(headtail_idx)
+    window._setup_panel.combo_cnn_runtime.setCurrentIndex(cnn_idx)
+
+    config_path = tmp_path / "aux_runtime.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["headtail_runtime"] == "mps"
+    assert saved_cfg["cnn_runtime"] == "onnx_cpu"
     window.close()
 
 
@@ -794,6 +920,40 @@ def test_realtime_workflow_and_final_image_export_roundtrip(
         reloaded_window._dataset_panel.chk_enable_individual_dataset.isChecked() is True
     )
     reloaded_window.close()
+
+
+def test_realtime_batch_policy_clamps_identity_controls_to_animal_count(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._sync_individual_analysis_mode_ui()
+
+    row = window._identity_panel._add_cnn_classifier_row()
+    row.spin_batch.setValue(32)
+    window._identity_panel.spin_pose_batch.setValue(16)
+    window._setup_panel.spin_max_targets.setValue(3)
+    window._setup_panel.chk_realtime_mode.setChecked(True)
+
+    assert window._detection_panel.lbl_batch_policy_notice.isVisible() is True
+    assert (
+        "one frame at a time" in window._detection_panel.lbl_batch_policy_notice.text()
+    )
+    assert window._detection_panel.spin_yolo_batch_size.isEnabled() is False
+    assert window._identity_panel.spin_pose_batch.maximum() == 3
+    assert window._identity_panel.spin_pose_batch.value() == 3
+    assert row.spin_batch.maximum() == 3
+    assert row.spin_batch.value() == 3
+    assert window._identity_panel.lbl_individual_batch_notice.isVisible() is True
+    assert (
+        "capped to 3 animal(s) per frame"
+        in window._identity_panel.lbl_individual_batch_notice.text()
+    )
+    window.close()
 
 
 def test_legacy_shared_suppress_setting_populates_both_export_toggles(

@@ -513,16 +513,6 @@ class MainWindow(QMainWindow):
         sleap_btns.addWidget(self.btn_sleap_stop)
         sleap_layout.addRow("", sleap_btns)
 
-        self.chk_pred_sleap_experimental = QCheckBox(
-            "Allow experimental SLEAP runtimes"
-        )
-        self.chk_pred_sleap_experimental.setChecked(False)
-        self.chk_pred_sleap_experimental.setToolTip(
-            "Enable ONNX/TensorRT runtime execution for SLEAP predictions in PoseKit.\n"
-            "When disabled, PoseKit falls back to native SLEAP runtime."
-        )
-        sleap_layout.addRow("", self.chk_pred_sleap_experimental)
-
         model_layout.addWidget(self.sleap_pred_widget)
 
         self.btn_train = QPushButton("Train / Fine-tune…")
@@ -679,9 +669,6 @@ class MainWindow(QMainWindow):
         self.btn_pred_exported.clicked.connect(self._browse_pred_exported_model)
         self.combo_pred_backend.currentTextChanged.connect(self._update_pred_backend_ui)
         self.combo_pred_runtime.currentTextChanged.connect(self._update_pred_backend_ui)
-        self.chk_pred_sleap_experimental.stateChanged.connect(
-            lambda _state: self._update_pred_backend_ui()
-        )
         self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
         self.btn_sleap_model.clicked.connect(self._browse_sleap_model_dir)
         self.btn_sleap_model_latest.clicked.connect(self._use_latest_sleap_model)
@@ -1413,9 +1400,6 @@ class MainWindow(QMainWindow):
             "pred_batch": int(self.spin_pred_batch.value()),
             "sleap_env": self.combo_sleap_env.currentText().strip(),
             "sleap_model_dir": self.sleap_model_edit.text().strip(),
-            "sleap_experimental_features": bool(
-                self._sleap_experimental_features_enabled()
-            ),
             "show_predictions": bool(self.cb_show_preds.isChecked()),
             "show_pred_conf": bool(self.cb_show_pred_conf.isChecked()),
         }
@@ -1497,12 +1481,6 @@ class MainWindow(QMainWindow):
                     self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
         if "sleap_model_dir" in settings:
             self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
-        if "sleap_experimental_features" in settings and hasattr(
-            self, "chk_pred_sleap_experimental"
-        ):
-            self.chk_pred_sleap_experimental.setChecked(
-                bool(settings["sleap_experimental_features"])
-            )
 
     def _apply_prediction_visibility_settings(self, settings):
         if "show_predictions" in settings:
@@ -4312,7 +4290,6 @@ class MainWindow(QMainWindow):
             "combo_sleap_env",
             "btn_sleap_refresh",
             "sleap_model_edit",
-            "chk_pred_sleap_experimental",
             "btn_sleap_model",
             "btn_sleap_model_latest",
             "btn_sleap_start",
@@ -4674,11 +4651,6 @@ class MainWindow(QMainWindow):
         )
         return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
 
-    def _sleap_experimental_features_enabled(self) -> bool:
-        if not hasattr(self, "chk_pred_sleap_experimental"):
-            return False
-        return bool(self.chk_pred_sleap_experimental.isChecked())
-
     def _browse_pred_exported_model(self):
         backend = self._pred_backend()
         runtime = self._pred_runtime_flavor()
@@ -4962,7 +4934,6 @@ class MainWindow(QMainWindow):
             sleap_device="auto",
             sleap_batch=int(self.spin_pred_batch.value()),
             sleap_max_instances=1,
-            sleap_experimental_features=self._sleap_experimental_features_enabled(),
             cache_backend=cache_backend,
         )
         self._pred_worker.moveToThread(self._pred_thread)
@@ -5274,7 +5245,6 @@ class MainWindow(QMainWindow):
                 sleap_device="auto",
                 sleap_batch=int(pred_batch),
                 sleap_max_instances=1,
-                sleap_experimental_features=self._sleap_experimental_features_enabled(),
                 cache_backend=cache_backend,
             )
             self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)

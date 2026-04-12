@@ -454,6 +454,16 @@ class ConfigOrchestrator:
         )
         self._mw._populate_compute_runtime_options(preferred=compute_runtime_cfg)
         self._mw._on_runtime_context_changed()
+        self._mw._populate_headtail_runtime_options(
+            preferred=str(get_cfg("headtail_runtime", default=compute_runtime_cfg))
+            .strip()
+            .lower()
+        )
+        self._mw._populate_cnn_runtime_options(
+            preferred=str(get_cfg("cnn_runtime", default=compute_runtime_cfg))
+            .strip()
+            .lower()
+        )
 
         # TensorRT batch size is still configurable (runtime-derived usage).
         self._panels.detection.spin_tensorrt_batch.setValue(
@@ -1057,12 +1067,21 @@ class ConfigOrchestrator:
         self._mw._refresh_pose_model_combo(
             preferred_model_path=self._mw._pose_model_path_for_backend(active_backend)
         )
-        pose_runtime_flavor = derive_pose_runtime_settings(
-            self._mw._selected_compute_runtime(),
-            backend_family=self._panels.identity.combo_pose_model_type.currentText()
+        pose_runtime_flavor = (
+            str(
+                get_cfg(
+                    "pose_runtime_flavor",
+                    default=derive_pose_runtime_settings(
+                        self._mw._selected_compute_runtime(),
+                        backend_family=self._panels.identity.combo_pose_model_type.currentText()
+                        .strip()
+                        .lower(),
+                    )["pose_runtime_flavor"],
+                )
+            )
             .strip()
-            .lower(),
-        )["pose_runtime_flavor"]
+            .lower()
+        )
         self._mw._populate_pose_runtime_flavor_options(
             backend=self._panels.identity.combo_pose_model_type.currentText()
             .strip()
@@ -1103,10 +1122,6 @@ class ConfigOrchestrator:
             get_cfg("pose_sleap_env", default="sleap")
         )
         self._panels.identity._refresh_pose_sleap_envs()
-        if hasattr(self, "_identity_panel"):
-            self._panels.identity.chk_sleap_experimental_features.setChecked(
-                get_cfg("pose_sleap_experimental_features", default=False)
-            )
         shared_pose_batch = int(
             get_cfg(
                 "pose_batch_size",
@@ -1117,6 +1132,7 @@ class ConfigOrchestrator:
             )
         )
         self._panels.identity.spin_pose_batch.setValue(shared_pose_batch)
+        self._panels.identity._sync_realtime_individual_batch_ui()
 
         self._panels.dataset.chk_suppress_foreign_obb_individual_dataset.setChecked(
             get_cfg(
@@ -1464,6 +1480,7 @@ class ConfigOrchestrator:
                 "yolo_seq_stage2_pow2_pad": self._panels.detection.chk_yolo_seq_stage2_pow2_pad.isChecked(),
                 "yolo_seq_detect_conf_threshold": self._panels.detection.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self._panels.identity.spin_yolo_headtail_conf.value(),
+                "headtail_runtime": self._mw._selected_headtail_runtime(),
                 "reference_aspect_ratio": self._panels.detection.spin_reference_aspect_ratio.value(),
                 "enable_aspect_ratio_filtering": self._panels.detection.chk_enable_aspect_ratio_filtering.isChecked(),
                 "min_aspect_ratio_multiplier": self._panels.detection.spin_min_ar_multiplier.value(),
@@ -1686,6 +1703,7 @@ class ConfigOrchestrator:
                 "cnn_classifier_match_bonus": self._panels.identity.spin_identity_match_bonus.value(),
                 "cnn_classifier_mismatch_penalty": self._panels.identity.spin_identity_mismatch_penalty.value(),
                 "cnn_classifier_window": self._panels.identity.spin_cnn_window.value(),
+                "cnn_runtime": self._mw._selected_cnn_runtime(),
             }
         )
 
@@ -1712,7 +1730,7 @@ class ConfigOrchestrator:
                 "pose_sleap_model_dir": make_pose_model_path_relative(
                     self._mw._pose_model_path_for_backend("sleap")
                 ),
-                "pose_runtime_flavor": pose_runtime_derived["pose_runtime_flavor"],
+                "pose_runtime_flavor": self._mw._selected_pose_runtime_flavor(),
                 "pose_exported_model_path": "",
                 "pose_min_kpt_conf_valid": self._panels.identity.spin_pose_min_kpt_conf_valid.value(),
                 "pose_skeleton_file": self._panels.identity.line_pose_skeleton_file.text().strip(),
@@ -1725,7 +1743,6 @@ class ConfigOrchestrator:
                 "pose_sleap_device": pose_runtime_derived["pose_sleap_device"],
                 "pose_sleap_batch": self._panels.identity.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
-                "pose_sleap_experimental_features": self._mw._sleap_experimental_features_enabled(),
                 "tracking_workflow_mode": self._mw._session_orch._workflow_mode_key(),
                 "realtime_tracking_mode": self._mw._is_realtime_tracking_mode_enabled(),
                 # === FINAL MEDIA EXPORT ===
@@ -1967,6 +1984,8 @@ class ConfigOrchestrator:
             self._mw._selected_identity_method()
         )  # kept for backward compat
         compute_runtime = self._mw._selected_compute_runtime()
+        headtail_runtime = self._mw._selected_headtail_runtime()
+        cnn_runtime = self._mw._selected_cnn_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
             self._panels.detection.spin_yolo_batch_size.value()
@@ -1986,8 +2005,17 @@ class ConfigOrchestrator:
         pose_backend_family = (
             self._panels.identity.combo_pose_model_type.currentText().strip().lower()
         )
+        selected_pose_runtime = self._mw._selected_pose_runtime_flavor()
+        pose_runtime_canonical = {
+            "onnx_mps": "onnx_coreml",
+            "onnx_coreml": "onnx_coreml",
+            "onnx_cpu": "onnx_cpu",
+            "onnx_cuda": "onnx_cuda",
+            "onnx_rocm": "onnx_rocm",
+            "tensorrt_cuda": "tensorrt",
+        }.get(selected_pose_runtime, selected_pose_runtime)
         runtime_pose = derive_pose_runtime_settings(
-            compute_runtime, backend_family=pose_backend_family
+            pose_runtime_canonical, backend_family=pose_backend_family
         )
 
         p = {
@@ -2012,11 +2040,13 @@ class ConfigOrchestrator:
             "YOLO_SEQ_STAGE2_POW2_PAD": self._panels.detection.chk_yolo_seq_stage2_pow2_pad.isChecked(),
             "YOLO_SEQ_DETECT_CONF_THRESHOLD": self._panels.detection.spin_yolo_seq_detect_conf.value(),
             "YOLO_HEADTAIL_CONF_THRESHOLD": self._panels.identity.spin_yolo_headtail_conf.value(),
+            "HEADTAIL_COMPUTE_RUNTIME": headtail_runtime,
             "YOLO_CONFIDENCE_THRESHOLD": self._panels.detection.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self._panels.detection.spin_yolo_iou.value(),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
             "YOLO_TARGET_CLASSES": yolo_cls,
             "COMPUTE_RUNTIME": compute_runtime,
+            "CNN_COMPUTE_RUNTIME": cnn_runtime,
             "YOLO_DEVICE": runtime_detection["yolo_device"],
             "ENABLE_GPU_BACKGROUND": runtime_detection["enable_gpu_background"],
             "ENABLE_TENSORRT": runtime_detection["enable_tensorrt"],
@@ -2180,7 +2210,11 @@ class ConfigOrchestrator:
             "CNN_CLASSIFIER_MODEL_PATH": "",
             "CNN_CLASSIFIER_CONFIDENCE": 0.5,
             "CNN_CLASSIFIER_LABEL": "",
-            "CNN_CLASSIFIER_BATCH_SIZE": 64,
+            "CNN_CLASSIFIER_BATCH_SIZE": int(
+                identity_cfg.get("cnn_classifiers", [{}])[0].get("batch_size", 64)
+                if identity_cfg.get("cnn_classifiers")
+                else 64
+            ),
             "IDENTITY_MATCH_BONUS": self._panels.identity.spin_identity_match_bonus.value(),
             "IDENTITY_MISMATCH_PENALTY": self._panels.identity.spin_identity_mismatch_penalty.value(),
             "CNN_CLASSIFIER_MATCH_BONUS": self._panels.identity.spin_identity_match_bonus.value(),
@@ -2204,7 +2238,7 @@ class ConfigOrchestrator:
                 .strip()
                 .lower(),
             ),
-            "POSE_RUNTIME_FLAVOR": runtime_pose["pose_runtime_flavor"],
+            "POSE_RUNTIME_FLAVOR": self._mw._selected_pose_runtime_flavor(),
             "POSE_EXPORTED_MODEL_PATH": "",
             "POSE_MIN_KPT_CONF_VALID": self._panels.identity.spin_pose_min_kpt_conf_valid.value(),
             "POSE_SKELETON_FILE": self._panels.identity.line_pose_skeleton_file.text().strip(),
@@ -2217,7 +2251,6 @@ class ConfigOrchestrator:
             "POSE_SLEAP_DEVICE": runtime_pose["pose_sleap_device"],
             "POSE_SLEAP_BATCH": self._panels.identity.spin_pose_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
-            "POSE_SLEAP_EXPERIMENTAL_FEATURES": self._mw._sleap_experimental_features_enabled(),
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
                 self._mw.current_individual_properties_cache_path or ""
             ).strip(),

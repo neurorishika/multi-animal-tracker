@@ -34,6 +34,10 @@ from PySide6.QtWidgets import (
 )
 
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
+from hydra_suite.utils.batch_policy import (
+    clamp_realtime_individual_batch_size,
+    should_warn_for_padding_waste,
+)
 
 if TYPE_CHECKING:
     from hydra_suite.trackerkit.gui.main_window import MainWindow
@@ -183,6 +187,13 @@ class IdentityPanel(QWidget):
         self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
         self.btn_add_cnn_classifier.clicked.connect(self._add_cnn_classifier_row)
         vl_cnn.addWidget(self.btn_add_cnn_classifier)
+        self.lbl_individual_batch_notice = QLabel("")
+        self.lbl_individual_batch_notice.setWordWrap(True)
+        self.lbl_individual_batch_notice.setStyleSheet(
+            "color: #d7ba7d; font-size: 11px; padding-top: 2px;"
+        )
+        self.lbl_individual_batch_notice.setVisible(False)
+        vl_cnn.addWidget(self.lbl_individual_batch_notice)
         self.cnn_scroll_area = QScrollArea()
         self.cnn_scroll_area.setWidgetResizable(True)
         self.cnn_scroll_area.setFrameShape(QFrame.NoFrame)
@@ -488,6 +499,9 @@ class IdentityPanel(QWidget):
             ]
         )
         fl_pose.addRow("Pose inference", self.pose_runtime_thresholds_row_widget)
+        self.spin_pose_batch.valueChanged.connect(
+            self._sync_realtime_individual_batch_ui
+        )
 
         h_pose_skeleton = QHBoxLayout()
         self.line_pose_skeleton_file = QLineEdit()
@@ -597,31 +611,11 @@ class IdentityPanel(QWidget):
         self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
         fl_pose.addRow("SLEAP env", self.pose_sleap_env_row_widget)
 
-        self.chk_sleap_experimental_features = QCheckBox("Allow experimental features")
-        self.chk_sleap_experimental_features.setChecked(False)
-        self.chk_sleap_experimental_features.setToolTip(
-            "Enable experimental SLEAP features (ONNX/TensorRT runtimes).\n"
-            "When disabled, ONNX/TensorRT runtime selections will revert to native runtime.\n"
-            "Experimental features may have stability or accuracy issues."
-        )
-        self.chk_sleap_experimental_features.stateChanged.connect(
-            self._main_window._on_sleap_experimental_toggled
-        )
-        self.pose_sleap_experimental_row_widget = QWidget()
-        sleap_exp_layout = QHBoxLayout()
-        sleap_exp_layout.setContentsMargins(0, 0, 0, 0)
-        sleap_exp_layout.addWidget(self.chk_sleap_experimental_features)
-        self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
-        fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
-
         pose_runtime_content_layout.addLayout(fl_pose)
         vl_pose.addWidget(self.pose_runtime_content)
         form.addWidget(self.g_pose_runtime)
 
         # Note: pose_sleap_envs and pose_runtime_flavor will be populated post-construction
-        self._main_window._set_form_row_visible(
-            fl_pose, self.pose_sleap_experimental_row_widget, False
-        )
         self._sync_headtail_model_remove_button()
         self._sync_pose_model_remove_button()
 
@@ -659,10 +653,12 @@ class IdentityPanel(QWidget):
     def _on_identity_analysis_toggled(self, state):
         """Enable/disable identity-method controls inside individual analysis."""
         self._sync_identity_method_ui()
+        self._main_window._sync_individual_analysis_mode_ui()
 
     def _on_pose_analysis_toggled(self, state):
         """Enable/disable pose-extraction controls inside individual analysis."""
         self._sync_pose_analysis_ui()
+        self._main_window._sync_individual_analysis_mode_ui()
 
     def _on_headtail_analysis_toggled(self, state):
         """Enable/disable head-tail controls inside individual analysis."""
@@ -823,6 +819,13 @@ class IdentityPanel(QWidget):
             self.spin_window.setRange(1, 100)
             self.spin_window.setValue(10)
             form.addRow("History window", self.spin_window)
+            self.spin_batch = QSpinBox()
+            self.spin_batch.setRange(1, 256)
+            self.spin_batch.setValue(64)
+            self.spin_batch.setToolTip(
+                "Classifier batch size. In realtime, this is capped to the current animal count."
+            )
+            form.addRow("Batch size", self.spin_batch)
             outer.addLayout(form)
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
@@ -932,7 +935,7 @@ class IdentityPanel(QWidget):
                 "label": label,
                 "confidence": self.spin_confidence.value(),
                 "window": self.spin_window.value(),
-                "batch_size": 64,
+                "batch_size": self.spin_batch.value(),
                 "rel_path": rel_path,
             }
 
@@ -968,6 +971,19 @@ class IdentityPanel(QWidget):
                 self.spin_confidence.setValue(float(cfg["confidence"]))
             if "window" in cfg:
                 self.spin_window.setValue(int(cfg["window"]))
+            if "batch_size" in cfg:
+                self.spin_batch.setValue(int(cfg["batch_size"]))
+
+        def set_realtime_batch_cap(self, max_animals: int, realtime_enabled: bool):
+            """Apply realtime batch caps for this classifier row."""
+            self.spin_batch.setMaximum(max_animals if realtime_enabled else 256)
+            clamped_batch = clamp_realtime_individual_batch_size(
+                self.spin_batch.value(),
+                max_animals=max_animals,
+                realtime_enabled=realtime_enabled,
+            )
+            if clamped_batch != self.spin_batch.value():
+                self.spin_batch.setValue(clamped_batch)
 
         @staticmethod
         def _has_selected_model(rel_path: object) -> bool:
@@ -988,6 +1004,8 @@ class IdentityPanel(QWidget):
         row.remove_requested.connect(self._remove_cnn_classifier_row)
         self.cnn_rows_layout.addWidget(row)
         self.cnn_scroll_area.setVisible(True)
+        self._sync_realtime_individual_batch_ui()
+        self._main_window._sync_individual_analysis_mode_ui()
         return row
 
     def _remove_cnn_classifier_row(self, row: "IdentityPanel.CNNClassifierRow"):
@@ -996,6 +1014,8 @@ class IdentityPanel(QWidget):
         row.setParent(None)
         row.deleteLater()
         self.cnn_scroll_area.setVisible(bool(self._cnn_classifier_rows()))
+        self._sync_realtime_individual_batch_ui()
+        self._main_window._sync_individual_analysis_mode_ui()
 
     def _cnn_classifier_rows(self) -> list:
         """Return list of all CNNClassifierRow instances."""
@@ -1011,6 +1031,52 @@ class IdentityPanel(QWidget):
         self._refresh_cnn_identity_model_combo()
         for row in self._cnn_classifier_rows():
             row._populate_model_combo()
+        self._sync_realtime_individual_batch_ui()
+        self._main_window._sync_individual_analysis_mode_ui()
+
+    def _sync_realtime_individual_batch_ui(self) -> None:
+        """Reflect realtime per-animal batch policy in pose/CNN controls."""
+        max_animals = 1
+        realtime_enabled = False
+        if hasattr(self._main_window, "_setup_panel"):
+            max_animals = max(
+                1, self._main_window._setup_panel.spin_max_targets.value()
+            )
+            realtime_enabled = bool(
+                self._main_window._setup_panel.chk_realtime_mode.isChecked()
+            )
+
+        self.spin_pose_batch.setMaximum(max_animals if realtime_enabled else 256)
+        clamped_pose_batch = clamp_realtime_individual_batch_size(
+            self.spin_pose_batch.value(),
+            max_animals=max_animals,
+            realtime_enabled=realtime_enabled,
+        )
+        if clamped_pose_batch != self.spin_pose_batch.value():
+            self.spin_pose_batch.setValue(clamped_pose_batch)
+
+        effective_batches = [self.spin_pose_batch.value()]
+        for row in self._cnn_classifier_rows():
+            row.set_realtime_batch_cap(max_animals, realtime_enabled)
+            effective_batches.append(row.spin_batch.value())
+
+        if not realtime_enabled:
+            self.lbl_individual_batch_notice.clear()
+            self.lbl_individual_batch_notice.setVisible(False)
+            return
+
+        warn_waste = any(
+            should_warn_for_padding_waste(batch_size, upper_bound=max_animals)
+            for batch_size in effective_batches
+        )
+        message = (
+            f"Realtime individual inference is capped to {max_animals} animal(s) per frame. "
+            "Pose and CNN batch controls are clamped to avoid oversized per-frame batches."
+        )
+        if warn_waste:
+            message += " Reduce larger saved values when switching back to non-realtime if you want to avoid partially empty exported batches."
+        self.lbl_individual_batch_notice.setText(message)
+        self.lbl_individual_batch_notice.setVisible(True)
 
     def _refresh_cnn_identity_model_combo(self) -> None:
         """Populate the CNN identity model combo from model_registry.json."""
@@ -1185,7 +1251,10 @@ class IdentityPanel(QWidget):
 
     def _sync_pose_analysis_ui(self):
         """Show pose controls only when pose extraction is enabled."""
-        pose_enabled = self._main_window._is_pose_inference_enabled()
+        pose_enabled = bool(
+            self._main_window._is_individual_pipeline_enabled()
+            and self.chk_enable_pose_extractor.isChecked()
+        )
         self.pose_runtime_content.setVisible(pose_enabled)
         self.pose_runtime_content.setEnabled(pose_enabled)
 

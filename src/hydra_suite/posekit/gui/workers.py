@@ -42,7 +42,6 @@ class PosePredictWorker(QObject):
         sleap_device: str = "auto",
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
-        sleap_experimental_features: bool = False,
         cache_backend: Optional[str] = None,
     ):
         super().__init__()
@@ -66,7 +65,6 @@ class PosePredictWorker(QObject):
         self.sleap_batch = int(sleap_batch)
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
-        self.sleap_experimental_features = bool(sleap_experimental_features)
         self.cache_backend = str(cache_backend or self.backend).strip().lower()
 
     def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
@@ -116,9 +114,6 @@ class PosePredictWorker(QObject):
                     "POSE_SLEAP_DEVICE": self.sleap_device or "auto",
                     "POSE_SLEAP_BATCH": int(max(1, self.sleap_batch)),
                     "POSE_SLEAP_MAX_INSTANCES": 1,
-                    "POSE_SLEAP_EXPERIMENTAL_FEATURES": bool(
-                        self.sleap_experimental_features
-                    ),
                 }
                 cfg = build_runtime_config(
                     params=params,
@@ -224,7 +219,6 @@ class BulkPosePredictWorker(QObject):
         sleap_device: str = "auto",
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
-        sleap_experimental_features: bool = False,
         cache_backend: Optional[str] = None,
     ):
         super().__init__()
@@ -247,7 +241,6 @@ class BulkPosePredictWorker(QObject):
         self.sleap_batch = int(sleap_batch)
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
-        self.sleap_experimental_features = bool(sleap_experimental_features)
         self.cache_backend = str(cache_backend or self.backend).strip().lower()
         self._cancel = False
 
@@ -295,9 +288,6 @@ class BulkPosePredictWorker(QObject):
                     "POSE_SLEAP_DEVICE": self.sleap_device or "auto",
                     "POSE_SLEAP_BATCH": int(max(1, self.sleap_batch)),
                     "POSE_SLEAP_MAX_INSTANCES": 1,
-                    "POSE_SLEAP_EXPERIMENTAL_FEATURES": bool(
-                        self.sleap_experimental_features
-                    ),
                     "POSE_YOLO_CONF": float(self.conf),
                 }
                 cfg = build_runtime_config(

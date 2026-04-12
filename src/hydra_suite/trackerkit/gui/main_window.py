@@ -1331,39 +1331,6 @@ class MainWindow(QMainWindow):
             return "sleap"
         return txt
 
-    def _sleap_experimental_features_enabled(self):
-        """Return True if SLEAP experimental features (ONNX/TensorRT) are allowed."""
-        if not hasattr(self, "_identity_panel"):
-            return False
-        return self._identity_panel.chk_sleap_experimental_features.isChecked()
-
-    def _on_sleap_experimental_toggled(self):
-        """Handle experimental features checkbox toggle."""
-        if not hasattr(self, "_identity_panel"):
-            return
-        # Refresh runtime options to show warning if needed
-        backend = (
-            self._identity_panel.combo_pose_model_type.currentText().strip().lower()
-            if hasattr(self, "_identity_panel")
-            else "yolo"
-        )
-        if backend == "sleap":
-            current_flavor = self._selected_pose_runtime_flavor()
-            if (
-                current_flavor in ("onnx", "tensorrt")
-                and not self._sleap_experimental_features_enabled()
-            ):
-                # Show warning that runtime will revert to native
-                from PySide6.QtWidgets import QMessageBox
-
-                QMessageBox.warning(
-                    self,
-                    "Experimental Features Disabled",
-                    f"SLEAP {current_flavor.upper()} runtime is experimental.\\n"
-                    "With experimental features disabled, the runtime will revert to native.\\n\\n"
-                    "To use ONNX/TensorRT for SLEAP, enable experimental features.",
-                )
-
     def _runtime_pipelines_for_current_ui(self):
         """Return active pipeline keys for runtime intersection."""
         if hasattr(self, "_session_orch"):
@@ -1384,6 +1351,40 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_session_orch"):
             return self._session_orch._selected_compute_runtime()
         return "cpu"
+
+    def _headtail_runtime_options(self):
+        """Return (label, value) pairs for the head-tail runtime combo."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._headtail_runtime_options()
+        return []
+
+    def _populate_headtail_runtime_options(self, preferred=None):
+        """Populate the head-tail runtime combo."""
+        if hasattr(self, "_session_orch"):
+            self._session_orch._populate_headtail_runtime_options(preferred=preferred)
+
+    def _selected_headtail_runtime(self) -> str:
+        """Return the currently selected head-tail runtime key."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._selected_headtail_runtime()
+        return self._selected_compute_runtime()
+
+    def _cnn_runtime_options(self):
+        """Return (label, value) pairs for the CNN runtime combo."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._cnn_runtime_options()
+        return []
+
+    def _populate_cnn_runtime_options(self, preferred=None):
+        """Populate the CNN runtime combo."""
+        if hasattr(self, "_session_orch"):
+            self._session_orch._populate_cnn_runtime_options(preferred=preferred)
+
+    def _selected_cnn_runtime(self) -> str:
+        """Return the currently selected CNN runtime key."""
+        if hasattr(self, "_session_orch"):
+            return self._session_orch._selected_cnn_runtime()
+        return self._selected_compute_runtime()
 
     def _runtime_requires_fixed_yolo_batch(self, runtime=None) -> bool:
         """Return True when runtime mandates a fixed YOLO batch size."""

@@ -42,9 +42,9 @@ def test_allowed_runtimes_for_sleap_pose_tracks_conda_availability(monkeypatch):
 
 def test_allowed_runtimes_for_sleap_pose_exposes_onnx_cpu_with_conda(monkeypatch):
     mod = _load_mod()
-    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", False)
-    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
     monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
     monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
     monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
@@ -56,6 +56,23 @@ def test_allowed_runtimes_for_sleap_pose_exposes_onnx_cpu_with_conda(monkeypatch
     allowed = mod.allowed_runtimes_for_pipelines(["sleap_pose"])
     assert "onnx_cpu" in allowed
     assert "onnx_cuda" not in allowed
+
+
+def test_allowed_runtimes_for_sleap_pose_exposes_onnx_coreml_with_conda(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_COREML_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/conda")
+
+    allowed = mod.allowed_runtimes_for_pipelines(["sleap_pose"])
+    assert "onnx_coreml" in allowed
 
 
 def test_derive_detection_runtime_settings_tensorrt():

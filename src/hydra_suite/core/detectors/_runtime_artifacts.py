@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,59 @@ logger = logging.getLogger(__name__)
 
 class RuntimeArtifactMixin:
     """Mixin supplying ONNX/TensorRT artifact caching and export helpers."""
+
+    def _is_realtime_workflow(self) -> bool:
+        """Return whether the active tracking workflow is realtime."""
+        raw_value = self.params.get(
+            "TRACKING_REALTIME_MODE",
+            self.params.get("TRACKING_WORKFLOW_MODE", "non_realtime"),
+        )
+        if isinstance(raw_value, str):
+            return raw_value.strip().lower() == "realtime"
+        return bool(raw_value)
+
+    @staticmethod
+    def _is_detection_runtime_task(task: str) -> bool:
+        """Return True for detector tasks that benefit from realtime batch-1 artifacts."""
+        return str(task or "").strip().lower() in {"obb", "detect"}
+
+    def _should_export_raw_yolo_head(self, task: str) -> bool:
+        """Whether deployment exports should bypass Ultralytics end-to-end postprocess."""
+        task_name = str(task or "").strip().lower()
+        if task_name not in {"obb", "detect"}:
+            return False
+        return bool(self.params.get("YOLO_EXPORT_RAW_HEAD", True))
+
+    def _aux_export_profile_suffix(self, task: str) -> str:
+        """Return a versioned artifact suffix for auxiliary task exports."""
+        return "_rawheadv1" if self._should_export_raw_yolo_head(task) else ""
+
+    @contextmanager
+    def _yolo_runtime_export_profile(self, base_model, task: str):
+        """Temporarily disable export-time top-k postprocess for deployment artifacts."""
+        head = None
+        original_end2end = None
+        if self._should_export_raw_yolo_head(task):
+            try:
+                head = base_model.model.model[-1]
+                original_end2end = getattr(head, "end2end", None)
+                if original_end2end is True:
+                    head.end2end = False
+                    logger.info(
+                        "Exporting YOLO %s runtime artifact with raw head outputs (end2end=False).",
+                        task,
+                    )
+            except Exception:
+                head = None
+                original_end2end = None
+        try:
+            yield
+        finally:
+            if head is not None and original_end2end is not None:
+                try:
+                    head.end2end = original_end2end
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # ONNX resolution
@@ -67,12 +121,38 @@ class RuntimeArtifactMixin:
         imgsz = max(64, min(4096, int(imgsz)))
         return imgsz
 
+    def _resolve_onnx_build_batch_size(
+        self,
+        requested_batch_size: int | None = None,
+        task: str = "obb",
+    ) -> int:
+        """Resolve the fixed ONNX export batch size.
+
+        Realtime detector paths should use batch-1 artifacts to avoid padding
+        single-frame inference into a larger static export profile. Sequential
+        detector paths keep the configured batch size so batched prepasses can
+        still amortize export/runtime overhead.
+        """
+        default_batch = requested_batch_size
+        if default_batch is None:
+            default_batch = self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)
+        try:
+            default_batch = max(1, int(default_batch or 1))
+        except (TypeError, ValueError):
+            default_batch = 1
+
+        if self._is_realtime_workflow() and self._is_detection_runtime_task(task):
+            return 1
+        return default_batch
+
     # ------------------------------------------------------------------
     # TensorRT resolution helpers
     # ------------------------------------------------------------------
 
     def _resolve_tensorrt_build_batch_size(
-        self, requested_batch_size: int | None = None
+        self,
+        requested_batch_size: int | None = None,
+        task: str = "obb",
     ) -> int:
         """Resolve the fixed TensorRT engine batch size."""
         default_batch = requested_batch_size
@@ -82,6 +162,9 @@ class RuntimeArtifactMixin:
             default_batch = max(1, int(default_batch or 1))
         except (TypeError, ValueError):
             default_batch = 1
+
+        if self._is_realtime_workflow() and self._is_detection_runtime_task(task):
+            return 1
 
         raw_override = self.params.get("TENSORRT_BUILD_BATCH_SIZE", None)
         if raw_override in (None, ""):
@@ -161,7 +244,17 @@ class RuntimeArtifactMixin:
             # Keep ONNX export profile explicit in cache signature so profile changes
             # always trigger a rebuild of potentially incompatible artifacts.
             resolved_imgsz = int(onnx_imgsz or self._resolve_onnx_imgsz())
-            runtime_profile = f"onnx_v3_static_imgsz{resolved_imgsz}_opset17_nosimplify"
+            raw_head_tag = (
+                "_rawheadv1" if self._should_export_raw_yolo_head("obb") else ""
+            )
+            runtime_profile = (
+                f"onnx_v4_static_imgsz{resolved_imgsz}_opset17_nosimplify{raw_head_tag}"
+            )
+        elif str(runtime) == "tensorrt":
+            raw_head_tag = (
+                "_rawheadv1" if self._should_export_raw_yolo_head("obb") else ""
+            )
+            runtime_profile = f"tensorrt_v2{raw_head_tag}"
         return hashlib.sha1(
             f"{token}|runtime={runtime_profile}|batch={int(batch_size)}".encode("utf-8")
         ).hexdigest()[:16]
@@ -205,7 +298,10 @@ class RuntimeArtifactMixin:
             from ultralytics import YOLO
 
             resolved_model = Path(model_path_str).expanduser().resolve()
-            onnx_batch_size = max(1, int(self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)))
+            onnx_batch_size = self._resolve_onnx_build_batch_size(
+                self.params.get("TENSORRT_MAX_BATCH_SIZE", 1),
+                task="obb",
+            )
             if resolved_model.suffix.lower() == ".onnx":
                 # User supplied explicit ONNX artifact path.
                 onnx_path = resolved_model
@@ -273,16 +369,17 @@ class RuntimeArtifactMixin:
 
             logger.info("Exporting YOLO OBB model to ONNX runtime artifact...")
             base_model = YOLO(str(resolved_model), task="obb")
-            export_path = base_model.export(
-                format="onnx",
-                imgsz=onnx_imgsz,
-                dynamic=False,
-                simplify=False,
-                nms=False,
-                opset=17,
-                batch=int(onnx_batch_size),
-                verbose=False,
-            )
+            with self._yolo_runtime_export_profile(base_model, task="obb"):
+                export_path = base_model.export(
+                    format="onnx",
+                    imgsz=onnx_imgsz,
+                    dynamic=False,
+                    simplify=False,
+                    nms=False,
+                    opset=17,
+                    batch=int(onnx_batch_size),
+                    verbose=False,
+                )
             out_path = Path(export_path).expanduser().resolve()
             if not out_path.exists():
                 raise RuntimeError(f"ONNX export output missing: {out_path}")
@@ -315,7 +412,8 @@ class RuntimeArtifactMixin:
 
             requested_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
             build_batch_size = self._resolve_tensorrt_build_batch_size(
-                requested_batch_size
+                requested_batch_size,
+                task="obb",
             )
             build_workspace_gb = self._resolve_tensorrt_workspace_gb()
             build_context = self._get_tensorrt_build_context()
@@ -403,15 +501,16 @@ class RuntimeArtifactMixin:
             # Export to TensorRT engine format
             # Note: dynamic=False uses fixed batch size which is more compatible
             # but requires batches to exactly match max_batch_size
-            export_path = base_model.export(
-                format="engine",
-                device=self.device,
-                half=True,  # Use FP16 for faster inference
-                workspace=float(build_workspace_gb),
-                dynamic=False,  # Static shapes (more compatible)
-                batch=int(build_batch_size),  # Fixed batch size
-                verbose=False,
-            )
+            with self._yolo_runtime_export_profile(base_model, task="obb"):
+                export_path = base_model.export(
+                    format="engine",
+                    device=self.device,
+                    half=True,  # Use FP16 for faster inference
+                    workspace=float(build_workspace_gb),
+                    dynamic=False,  # Static shapes (more compatible)
+                    batch=int(build_batch_size),  # Fixed batch size
+                    verbose=False,
+                )
 
             # Move exported engine to cache directory
             if Path(export_path).exists():
@@ -453,7 +552,8 @@ class RuntimeArtifactMixin:
 
             # Provide helpful suggestions based on error type
             build_batch_size = self._resolve_tensorrt_build_batch_size(
-                self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+                self.params.get("TENSORRT_MAX_BATCH_SIZE", 16),
+                task="obb",
             )
             if "memory" in error_msg.lower() or "allocate" in error_msg.lower():
                 logger.warning("=" * 60)
@@ -540,8 +640,17 @@ class RuntimeArtifactMixin:
 
             # Prefer ONNX when requested, matching primary OBB runtime preference.
             if enable_onnx_runtime and ONNXRUNTIME_AVAILABLE:
+                requested_batch_size = (
+                    self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)
+                    if self._is_detection_runtime_task(task)
+                    else 1
+                )
+                onnx_batch_size = self._resolve_onnx_build_batch_size(
+                    requested_batch_size,
+                    task=task,
+                )
                 onnx_path = model_path.with_name(
-                    f"{model_path.stem}_{task_tag}_b1.onnx"
+                    f"{model_path.stem}_{task_tag}{self._aux_export_profile_suffix(task)}_b{int(onnx_batch_size)}.onnx"
                 )
                 needs_build = (not onnx_path.exists()) or (
                     onnx_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
@@ -560,16 +669,17 @@ class RuntimeArtifactMixin:
                     else:
                         onnx_imgsz = self._resolve_onnx_imgsz(model_path=model_path)
                     base_model = YOLO(str(model_path), task=task)
-                    export_path = base_model.export(
-                        format="onnx",
-                        imgsz=int(onnx_imgsz),
-                        dynamic=False,
-                        simplify=False,
-                        nms=False,
-                        opset=17,
-                        batch=1,
-                        verbose=False,
-                    )
+                    with self._yolo_runtime_export_profile(base_model, task=task):
+                        export_path = base_model.export(
+                            format="onnx",
+                            imgsz=int(onnx_imgsz),
+                            dynamic=False,
+                            simplify=False,
+                            nms=False,
+                            opset=17,
+                            batch=int(onnx_batch_size),
+                            verbose=False,
+                        )
                     out_path = Path(export_path).expanduser().resolve()
                     if out_path.exists() and out_path != onnx_path:
                         shutil.copy2(str(out_path), str(onnx_path))
@@ -577,8 +687,17 @@ class RuntimeArtifactMixin:
                     return str(onnx_path)
 
             if enable_tensorrt and TENSORRT_AVAILABLE:
+                requested_batch_size = (
+                    self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)
+                    if self._is_detection_runtime_task(task)
+                    else 1
+                )
+                build_batch_size = self._resolve_tensorrt_build_batch_size(
+                    requested_batch_size,
+                    task=task,
+                )
                 engine_path = model_path.with_name(
-                    f"{model_path.stem}_{task_tag}_b1.engine"
+                    f"{model_path.stem}_{task_tag}{self._aux_export_profile_suffix(task)}_b{int(build_batch_size)}.engine"
                 )
                 needs_build = (not engine_path.exists()) or (
                     engine_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
@@ -592,15 +711,16 @@ class RuntimeArtifactMixin:
                     )
                     base_model = YOLO(str(model_path), task=task)
                     base_model.to(self.device)
-                    export_path = base_model.export(
-                        format="engine",
-                        device=self.device,
-                        half=True,
-                        workspace=float(build_workspace_gb),
-                        dynamic=False,
-                        batch=1,
-                        verbose=False,
-                    )
+                    with self._yolo_runtime_export_profile(base_model, task=task):
+                        export_path = base_model.export(
+                            format="engine",
+                            device=self.device,
+                            half=True,
+                            workspace=float(build_workspace_gb),
+                            dynamic=False,
+                            batch=int(build_batch_size),
+                            verbose=False,
+                        )
                     out_path = Path(export_path).expanduser().resolve()
                     if out_path.exists() and out_path != engine_path:
                         shutil.copy2(str(out_path), str(engine_path))

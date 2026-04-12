@@ -40,7 +40,6 @@ class PoseRuntimeConfig:
     sleap_batch: int = 4
     sleap_max_instances: int = 1
     sleap_export_input_hw: Optional[Tuple[int, int]] = None
-    sleap_experimental_features: bool = False
     keypoint_names: List[str] = field(default_factory=list)
     skeleton_edges: List[Tuple[int, int]] = field(default_factory=list)
 

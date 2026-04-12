@@ -124,18 +124,12 @@ def _tensorrt_available() -> bool:
 
 
 def _sleap_onnx_available(rt: str) -> bool:
-    """SLEAP ONNX runs in the selected SLEAP conda env, not the MAT env."""
-    if not shutil.which("conda"):
-        return False
-    if rt == "onnx_coreml":
-        return False
-    if rt == "onnx_cpu":
-        return True
-    if rt == "onnx_cuda":
-        return bool(_cuda_like_available() and not ROCM_AVAILABLE)
-    if rt == "onnx_rocm":
-        return bool(ROCM_AVAILABLE)
-    return False
+    """Return whether exported SLEAP ONNX inference is runnable for a runtime.
+
+    Export still depends on a SLEAP conda env, but once exported the inference path
+    runs directly inside HYDRA via canonical ONNX Runtime providers.
+    """
+    return bool(shutil.which("conda") and _onnx_available(rt))
 
 
 def _provider_name(provider: object) -> str:
@@ -197,7 +191,8 @@ def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
             return _sleap_onnx_available(rt)
         if rt == "tensorrt":
             return bool(
-                (SLEAP_RUNTIME_TENSORRT_AVAILABLE or TENSORRT_AVAILABLE)
+                shutil.which("conda")
+                and (SLEAP_RUNTIME_TENSORRT_AVAILABLE or TENSORRT_AVAILABLE)
                 and _cuda_like_available()
                 and not ROCM_AVAILABLE
             )

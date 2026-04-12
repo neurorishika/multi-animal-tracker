@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.helpers.module_loader import load_src_module
 
 
@@ -137,6 +139,57 @@ def test_sleap_service_nonzero_onnx_does_not_trigger_fallback(
     assert preds[str(images[0])][0] == (11.0, 22.0, 0.6)
 
 
+def test_sleap_service_collects_chunk_timing_metrics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mod = _load_pose_inference_module()
+
+    class _FakeService:
+        log_path = None
+
+        def start(self, _env_name: str, log_path=None):
+            self.log_path = log_path
+            return True, ""
+
+        def request(self, _path: str, payload: dict, timeout: float = 3600.0):
+            _ = timeout
+            preds = {
+                str(Path(p)): [(1.0, 2.0, 0.5), (3.0, 4.0, 0.4)]
+                for p in payload.get("images", [])
+            }
+            return {
+                "ok": True,
+                "preds": preds,
+                "timings_s": {
+                    "service_decode_s": 0.01,
+                    "service_inference_s": 0.02,
+                },
+            }
+
+    monkeypatch.setattr(mod, "_get_sleap_service", lambda: _FakeService())
+
+    out_json = tmp_path / "posekit" / "tmp" / "preds.json"
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    images = [tmp_path / f"f{i}.jpg" for i in range(12)]
+    metrics = {}
+    ok, preds, err = mod._run_sleap_predict_service(
+        model_dir=tmp_path / "sleap_model",
+        image_paths=images,
+        out_json=out_json,
+        keypoint_names=["head", "tail"],
+        skeleton_edges=[],
+        env_name="sleap",
+        batch=1,
+        metrics_out=metrics,
+    )
+
+    assert ok is True
+    assert err == ""
+    assert len(preds) == len(images)
+    assert metrics["service_decode_s"] == pytest.approx(0.02)
+    assert metrics["service_inference_s"] == pytest.approx(0.04)
+
+
 def test_format_sleap_env_preflight_error_torchvision_nms() -> None:
     mod = _load_pose_inference_module()
     msg = mod._format_sleap_env_preflight_error(
@@ -210,3 +263,53 @@ def test_sleap_service_code_normalizes_export_logits() -> None:
     code = str(mod._SLEAP_SERVICE_CODE)
     assert "def _normalize_conf_values(conf):" in code
     assert "1.0 / (1.0 + np.exp(-np.clip(arr, -40.0, 40.0)))" in code
+
+
+def test_sleap_service_code_uses_rgb_letterbox_for_exported_crops() -> None:
+    mod = _load_pose_inference_module()
+    code = str(mod._SLEAP_SERVICE_CODE)
+    assert "arr = arr[:, :, ::-1].copy()" in code
+    assert "scale = min(float(w) / float(orig_w), float(h) / float(orig_h))" in code
+    assert "canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized" in code
+    assert "arr[:, 0] = (arr[:, 0] - float(pad_x)) / scale" in code
+
+
+def test_sleap_service_code_supports_in_memory_native_video_creation() -> None:
+    mod = _load_pose_inference_module()
+    code = str(mod._SLEAP_SERVICE_CODE)
+    assert "tempfile,time,uuid" in code
+    assert "def _make_video_from_arrays(image_arrays):" in code
+    assert "video = _make_video(native_images, image_arrays=image_arrays)" in code
+    assert "falling back to temporary image files" in code
+    assert "native_array_video_supported" in code
+
+
+def test_sleap_service_code_prefers_from_model_paths_predictor_factory() -> None:
+    mod = _load_pose_inference_module()
+    code = str(mod._SLEAP_SERVICE_CODE)
+    assert "if hasattr(predictor_cls, 'from_model_paths'):" in code
+    assert "pred = predictor_cls.from_model_paths(" in code
+    assert "model_paths=[model_dir]," in code
+    assert "device=device," in code
+    assert "def _load_training_preprocess_config(model_dir):" in code
+    assert "cfg_path = Path(str(model_dir)) / 'training_config.yaml'" in code
+    assert "preprocess_config=preprocess_config" in code
+    assert "queue_maxsize = max(1, min(int(batch), 8))" in code
+    assert "pred.make_pipeline(labels, queue_maxsize=queue_maxsize)" in code
+    assert "return fn(make_labels=True)" in code
+
+
+def test_pose_inference_service_reports_native_array_video_capability(
+    monkeypatch,
+) -> None:
+    mod = _load_pose_inference_module()
+
+    class _FakeService:
+        def health(self, timeout: float = 2.0):
+            _ = timeout
+            return {"ok": True, "native_array_video_supported": True}
+
+    monkeypatch.setattr(mod, "_get_sleap_service", lambda: _FakeService())
+
+    assert mod.PoseInferenceService.sleap_service_health()["ok"] is True
+    assert mod.PoseInferenceService.sleap_native_array_video_supported() is True

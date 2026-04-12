@@ -538,11 +538,9 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             return results_per_frame
 
         # ----- Phases 1-3: delegate to HeadTailAnalyzer --------------------
-        if profiler is not None:
-            profiler.phase_start("headtail_crop")
-        ht_results = analyzer.analyze_crops(frames, per_frame_obb_corners)
-        if profiler is not None:
-            profiler.phase_end("headtail_crop")
+        ht_results = analyzer.analyze_crops(
+            frames, per_frame_obb_corners, profiler=profiler
+        )
 
         # Unpack (heading, confidence, directed_flag) tuples into result arrays
         for fi in range(n_frames):
@@ -894,6 +892,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         raw_conf_floor,
         max_det,
         return_class_ids: bool = False,
+        profiler: object = None,
     ):
         if self.detect_model is None:
             if return_class_ids:
@@ -921,9 +920,13 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         if len(order) > max_det:
             order = order[:max_det]
 
+        if profiler is not None:
+            profiler.phase_start("sequential_obb_crop")
         crops, crop_offsets, crop_original_sizes = self._seq_build_crops(
             frame, xyxy, order, max_det
         )
+        if profiler is not None:
+            profiler.phase_end("sequential_obb_crop", work_units=len(crops))
 
         if not crops:
             if return_class_ids:
@@ -935,9 +938,16 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             crops_for_stage2, predict_imgsz
         )
 
+        if profiler is not None:
+            profiler.phase_start("sequential_obb_inference")
         stage2_results = self._seq_run_stage2_obb(
             crops_for_stage2, target_classes, raw_conf_floor, max_det, predict_imgsz
         )
+        if profiler is not None:
+            profiler.phase_end(
+                "sequential_obb_inference",
+                work_units=n_real_crops,
+            )
 
         (
             merged_meas,
@@ -1018,6 +1028,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     target_classes=target_classes,
                     raw_conf_floor=raw_conf_floor,
                     max_det=max_det,
+                    profiler=profiler,
                 )
             else:
                 (
@@ -1110,7 +1121,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         return meas, sizes, shapes, yolo_results, confidences
 
     def _batched_sequential_mode(
-        self, frames, start_frame_idx, return_raw, progress_callback
+        self, frames, start_frame_idx, return_raw, progress_callback, profiler=None
     ):
         batch_detections = []
         for idx, frame in enumerate(frames):
@@ -1126,7 +1137,12 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 raw_heading_confidences,
                 raw_directed_mask,
                 raw_canonical_affines,
-            ) = self.detect_objects(frame, frame_count, return_raw=True)
+            ) = self.detect_objects(
+                frame,
+                frame_count,
+                return_raw=True,
+                profiler=profiler,
+            )
 
             if return_raw:
                 batch_detections.append(
@@ -1428,7 +1444,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         # generates variable crop counts for the stage-2 OBB model.
         if self.obb_mode == "sequential":
             return self._batched_sequential_mode(
-                frames, start_frame_idx, return_raw, progress_callback
+                frames, start_frame_idx, return_raw, progress_callback, profiler
             )
 
         # -------------------------------------------------------------------

@@ -745,9 +745,6 @@ def _preview_run_pose_overlay(
             "POSE_SLEAP_BATCH": int(context.get("pose_batch_size", 4)),
             "POSE_SLEAP_ENV": str(context.get("pose_sleap_env", "sleap")),
             "POSE_SLEAP_DEVICE": str(context.get("pose_sleap_device", "auto")),
-            "POSE_SLEAP_EXPERIMENTAL_FEATURES": bool(
-                context.get("pose_sleap_experimental_features", False)
-            ),
             "COMPUTE_RUNTIME": str(context.get("compute_runtime", "cpu")),
             "YOLO_DEVICE": str(context.get("yolo_device", "cpu")),
         }
@@ -824,7 +821,12 @@ def _preview_run_cnn_overlay(filtered_corners, canonical_crops, context, label_s
                         batch_size=int(cnn_cfg.get("batch_size", 64)),
                     ),
                     model_path=model_path,
-                    compute_runtime=str(context.get("compute_runtime", "cpu")),
+                    compute_runtime=str(
+                        context.get(
+                            "cnn_runtime",
+                            context.get("compute_runtime", "cpu"),
+                        )
+                    ),
                 )
                 cnn_backends.append(backend)
                 cnn_predictions = backend.predict_batch(cnn_crops)

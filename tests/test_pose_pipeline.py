@@ -14,12 +14,14 @@ import pytest
 
 from hydra_suite.core.tracking.pose_pipeline import (
     AsyncCacheWriter,
+    FrameCropResult,
     PosePipeline,
     _expand_obb_to_aabb,
     extract_one_crop,
     invert_letterbox_keypoints,
     letterbox_crop,
 )
+from hydra_suite.core.tracking.profiler import TrackingProfiler
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -620,4 +622,89 @@ class TestPosePipeline:
         )
         # The pipeline should have picked up 128
         assert pipeline._pre_resize == 0  # 0 passed; auto-detect is in worker.py
+        pipeline.close()
+
+    def test_sync_records_realtime_pose_profile(self):
+        class _ProfilingBackend(_FakeBackend):
+            def __init__(self):
+                self._last_profile = {}
+
+            def predict_batch(self, crops):
+                self._last_profile = {
+                    "pose_transport_s": 0.002,
+                    "pose_inference_s": 0.003,
+                    "pose_postprocess_s": 0.001,
+                }
+                return super().predict_batch(crops)
+
+            def consume_last_profile(self):
+                profile = dict(self._last_profile)
+                self._last_profile = {}
+                return profile
+
+        backend = _ProfilingBackend()
+        pipeline = PosePipeline(backend, cache_writer=None, cross_frame_batch=1)
+        profiler = TrackingProfiler(enabled=True)
+
+        crop = np.zeros((24, 24, 3), dtype=np.uint8)
+        fcr = FrameCropResult(
+            frame_idx=0,
+            det_ids=[101],
+            n_dets=1,
+            crops=[crop],
+            crop_to_det=[0],
+            crop_offsets={0: (0, 0)},
+            all_obb_corners=[_square_corners(12, 12, 8)],
+            crop_transforms={},
+            crop_M_inverses={},
+        )
+
+        pipeline._inflight = pipeline._infer_pool.submit(
+            pipeline._infer_and_cache, [fcr], [crop]
+        )
+        pipeline.sync(profiler=profiler)
+        profiler.end_frame()
+        summary = profiler.get_summary()
+
+        assert summary["categories"]["live_pose_transport"]["mean_ms"] == pytest.approx(
+            2.0, abs=0.2
+        )
+        assert summary["categories"]["live_pose_transport"]["total_units"] == 1
+        assert summary["categories"]["live_pose_transport"][
+            "mean_units_per_frame"
+        ] == pytest.approx(1.0, abs=0.01)
+        assert summary["categories"]["live_pose_transport"][
+            "ms_per_unit"
+        ] == pytest.approx(2.0, abs=0.2)
+        assert summary["categories"]["live_pose_inference"]["mean_ms"] == pytest.approx(
+            3.0, abs=0.2
+        )
+        assert summary["categories"]["live_pose_inference"]["total_units"] == 1
+        assert summary["categories"]["live_pose_inference"][
+            "ms_per_unit"
+        ] == pytest.approx(3.0, abs=0.2)
+        assert summary["categories"]["live_pose_postprocess"]["mean_ms"] >= 1.0
+        assert summary["categories"]["live_pose_postprocess"]["total_units"] == 1
+        assert summary["phases"]["pose_transport"]["total_s"] == pytest.approx(
+            0.002, abs=0.0002
+        )
+        assert summary["phases"]["pose_transport"]["avg_ms_per_frame"] == pytest.approx(
+            2.0, abs=0.2
+        )
+        assert summary["phases"]["pose_transport"]["total_units"] == 1
+        assert summary["phases"]["pose_transport"]["ms_per_unit"] == pytest.approx(
+            2.0, abs=0.2
+        )
+        assert summary["phases"]["pose_inference"]["total_s"] == pytest.approx(
+            0.003, abs=0.0002
+        )
+        assert summary["phases"]["pose_inference"]["avg_ms_per_frame"] == pytest.approx(
+            3.0, abs=0.2
+        )
+        assert summary["phases"]["pose_inference"]["total_units"] == 1
+        assert summary["phases"]["pose_inference"]["ms_per_unit"] == pytest.approx(
+            3.0, abs=0.2
+        )
+        assert summary["phases"]["pose_postprocess"]["total_s"] >= 0.001
+        assert summary["phases"]["pose_postprocess"]["total_units"] == 1
         pipeline.close()

@@ -306,6 +306,7 @@ class PosePipeline:
         self._frame_result_callback = frame_result_callback
         self._closed = False
         self._async_cache_closed = False
+        self._completed_profile: Dict[str, float] = {}
 
     def set_frame_result_callback(
         self,
@@ -316,9 +317,9 @@ class PosePipeline:
         """Register a callback that receives per-frame pose outputs."""
         self._frame_result_callback = callback
 
-    def sync(self) -> None:
+    def sync(self, profiler=None) -> None:
         """Wait until any in-flight inference has completed."""
-        self._wait_inflight()
+        self._wait_inflight(profiler=profiler)
 
     def _filter_canonical_affines(self, raw_affines, raw_ids, det_ids):
         """Map raw canonical affines to filtered detection indices."""
@@ -678,9 +679,24 @@ class PosePipeline:
         Executed on the single-worker inference thread so GPU work does not
         block the main thread's frame reading and crop extraction.
         """
+        stage_profile: Dict[str, float] = {}
+        stage_profile["pose_individuals"] = float(len(flat_crops))
         all_pred = self._backend.predict_batch(flat_crops)
+        consume_profile = getattr(self._backend, "consume_last_profile", None)
+        if callable(consume_profile):
+            try:
+                backend_profile = consume_profile()
+            except Exception:
+                backend_profile = {}
+            if backend_profile:
+                for key, value in dict(backend_profile).items():
+                    try:
+                        stage_profile[str(key)] = float(value)
+                    except Exception:
+                        continue
 
         offset = 0
+        postprocess_start = time.perf_counter()
         for pf in pending:
             n_crops = len(pf.crops)
             batch_slice = all_pred[offset : offset + n_crops]
@@ -731,16 +747,53 @@ class PosePipeline:
                 self._async_cache.submit(pf.frame_idx, pf.det_ids, pose_outputs)
             if self._frame_result_callback is not None:
                 self._frame_result_callback(pf.frame_idx, pf.det_ids, pose_outputs)
+        stage_profile["pose_postprocess_s"] = stage_profile.get(
+            "pose_postprocess_s", 0.0
+        ) + (time.perf_counter() - postprocess_start)
+        self._completed_profile = stage_profile
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
 
-    def _wait_inflight(self) -> None:
+    def _wait_inflight(self, profiler=None) -> None:
         """Block until the in-flight inference future completes."""
         if self._inflight is not None:
             self._inflight.result()
             self._inflight = None
+        if profiler is not None and self._completed_profile:
+            profile = dict(self._completed_profile)
+            profiler.add_sample(
+                "live_pose_transport",
+                profile.get("pose_transport_s", 0.0),
+                work_units=profile.get("pose_individuals", 0.0),
+            )
+            profiler.add_sample(
+                "live_pose_inference",
+                profile.get("pose_inference_s", 0.0),
+                work_units=profile.get("pose_individuals", 0.0),
+            )
+            profiler.add_sample(
+                "live_pose_postprocess",
+                profile.get("pose_postprocess_s", 0.0),
+                work_units=profile.get("pose_individuals", 0.0),
+            )
+            profiler.add_phase_time(
+                "pose_transport",
+                profile.get("pose_transport_s", 0.0),
+                work_units=profile.get("pose_individuals", 0.0),
+            )
+            profiler.add_phase_time(
+                "pose_inference",
+                profile.get("pose_inference_s", 0.0),
+                work_units=profile.get("pose_individuals", 0.0),
+            )
+            profiler.add_phase_time(
+                "pose_postprocess",
+                profile.get("pose_postprocess_s", 0.0),
+                work_units=profile.get("pose_individuals", 0.0),
+            )
+        self._completed_profile = {}
 
     def _drain(self) -> None:
         """Clean up accumulators on cancellation."""

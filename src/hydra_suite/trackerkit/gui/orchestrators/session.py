@@ -18,6 +18,7 @@ from hydra_suite.runtime.compute_runtime import (
     derive_detection_runtime_settings,
     derive_pose_runtime_settings,
     runtime_label,
+    supported_runtimes_for_pipeline,
 )
 from hydra_suite.utils.geometry import fit_circle_to_points
 from hydra_suite.utils.gpu_utils import MPS_AVAILABLE, ONNXRUNTIME_COREML_AVAILABLE
@@ -30,8 +31,23 @@ logger = logging.getLogger(__name__)
 
 
 COMPUTE_RUNTIME_TOOLTIP = (
-    "Global compute runtime for detection and pose.\n"
-    "Only runtimes compatible with all enabled pipelines are shown."
+    "Detection runtime for the primary tracking detector.\n"
+    "Only runtimes compatible with the active detection pipeline are shown."
+)
+
+HEADTAIL_RUNTIME_TOOLTIP = (
+    "Head-tail runtime for oriented crop classification.\n"
+    "Visible only when head-tail analysis is enabled."
+)
+
+CNN_RUNTIME_TOOLTIP = (
+    "CNN identity runtime for per-animal classifiers.\n"
+    "Visible only when at least one CNN classifier is configured."
+)
+
+POSE_RUNTIME_TOOLTIP = (
+    "Pose runtime for the pose extraction pipeline.\n"
+    "Visible only when pose extraction is enabled."
 )
 
 
@@ -679,6 +695,31 @@ class SessionOrchestrator:
             self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
         )
         self._mw._populate_pose_runtime_flavor_options(backend=backend)
+        if hasattr(self._mw, "_setup_panel") and hasattr(
+            self._mw._setup_panel, "form_performance"
+        ):
+            if hasattr(self._mw._setup_panel, "combo_headtail_runtime"):
+                self._mw._set_form_row_visible(
+                    self._mw._setup_panel.form_performance,
+                    self._mw._setup_panel.combo_headtail_runtime,
+                    bool(self._is_headtail_compute_enabled()),
+                )
+            if hasattr(self._mw._setup_panel, "combo_cnn_runtime"):
+                self._mw._set_form_row_visible(
+                    self._mw._setup_panel.form_performance,
+                    self._mw._setup_panel.combo_cnn_runtime,
+                    bool(self._has_cnn_identity_enabled()),
+                )
+        if (
+            hasattr(self._mw, "_setup_panel")
+            and hasattr(self._mw._setup_panel, "form_performance")
+            and hasattr(self._mw._setup_panel, "combo_pose_runtime_flavor")
+        ):
+            self._mw._set_form_row_visible(
+                self._mw._setup_panel.form_performance,
+                self._mw._setup_panel.combo_pose_runtime_flavor,
+                bool(self._is_pose_inference_enabled()),
+            )
         is_sleap = backend == "sleap"
         if hasattr(self._mw, "_identity_panel") and hasattr(
             self._mw._identity_panel, "pose_sleap_env_row_widget"
@@ -689,12 +730,12 @@ class SessionOrchestrator:
                 is_sleap,
             )
         if hasattr(self._mw, "_identity_panel") and hasattr(
-            self._mw._identity_panel, "pose_sleap_experimental_row_widget"
+            self._mw._identity_panel, "combo_pose_runtime_flavor"
         ):
             self._mw._set_form_row_visible(
                 self._mw._identity_panel.form_pose_runtime,
-                self._mw._identity_panel.pose_sleap_experimental_row_widget,
-                is_sleap,
+                self._mw._identity_panel.combo_pose_runtime_flavor,
+                False,
             )
         # Refresh pose model combo to show models for the selected backend.
         self._mw._refresh_pose_model_combo(
@@ -817,10 +858,29 @@ class SessionOrchestrator:
 
     def _is_pose_inference_enabled(self) -> bool:
         """Return whether pose inference is actively enabled for the run."""
-        return bool(
+        if not (
             self._is_individual_pipeline_enabled()
             and hasattr(self._mw, "_identity_panel")
             and self._mw._identity_panel.chk_enable_pose_extractor.isChecked()
+        ):
+            return False
+        backend = (
+            self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
+        )
+        return bool(str(self._mw._pose_model_path_for_backend(backend) or "").strip())
+
+    def _is_headtail_compute_enabled(self) -> bool:
+        """Return whether head-tail analysis is actively configured for the run."""
+        if not (
+            self._is_individual_pipeline_enabled()
+            and hasattr(self._mw, "_identity_panel")
+            and self._mw._identity_panel.g_headtail.isChecked()
+        ):
+            return False
+        return bool(
+            str(
+                self._mw._identity_panel._get_selected_yolo_headtail_model_path() or ""
+            ).strip()
         )
 
     def _is_individual_pipeline_enabled(self) -> bool:
@@ -887,20 +947,10 @@ class SessionOrchestrator:
     # =========================================================================
 
     def _runtime_pipelines_for_current_ui(self):
-        """Return the list of active pipeline keys for runtime intersection."""
+        """Return the active detection pipelines for the detection runtime selector."""
         pipelines = []
         if self._mw._is_yolo_detection_mode():
             pipelines.append("yolo_obb_detection")
-        if self._is_pose_inference_enabled():
-            backend = (
-                self._mw._identity_panel.combo_pose_model_type.currentText()
-                .strip()
-                .lower()
-            )
-            if backend == "sleap":
-                pipelines.append("sleap_pose")
-            else:
-                pipelines.append("yolo_pose")
         return pipelines
 
     def _compute_runtime_options_for_current_ui(self):
@@ -917,7 +967,10 @@ class SessionOrchestrator:
         if not hasattr(self._mw, "_setup_panel"):
             return
         combo = self._mw._setup_panel.combo_compute_runtime
-        tooltip = COMPUTE_RUNTIME_TOOLTIP
+        tooltip = (
+            "Detection runtime for the primary tracking detector.\n"
+            "Only runtimes compatible with the enabled non-pose pipelines are shown."
+        )
         runtime_values = {
             value for _label, value in self._compute_runtime_options_for_current_ui()
         }
@@ -930,9 +983,7 @@ class SessionOrchestrator:
             if "sleap_pose" in pipelines:
                 tooltip += (
                     "\n\nONNX (CoreML) is available in this environment, but it is hidden "
-                    "because SLEAP pose is enabled. TrackerKit only shows runtimes "
-                    "compatible with all enabled pipelines, and SLEAP does not expose the "
-                    "CoreML path."
+                    "because the current enabled pipeline combination does not support it."
                 )
             else:
                 tooltip += (
@@ -940,6 +991,119 @@ class SessionOrchestrator:
                     "because the current enabled pipeline combination does not support it."
                 )
         combo.setToolTip(tooltip)
+        if hasattr(self._mw._setup_panel, "combo_headtail_runtime"):
+            self._mw._setup_panel.combo_headtail_runtime.setToolTip(
+                HEADTAIL_RUNTIME_TOOLTIP
+            )
+        if hasattr(self._mw._setup_panel, "combo_cnn_runtime"):
+            self._mw._setup_panel.combo_cnn_runtime.setToolTip(CNN_RUNTIME_TOOLTIP)
+        if hasattr(self._mw._setup_panel, "combo_pose_runtime_flavor"):
+            self._mw._setup_panel.combo_pose_runtime_flavor.setToolTip(
+                POSE_RUNTIME_TOOLTIP
+            )
+
+    def _headtail_runtime_options(self):
+        """Return (label, value) pairs for the head-tail runtime combo."""
+        allowed = [
+            rt
+            for rt in allowed_runtimes_for_pipelines([])
+            if rt in {"cpu", "mps", "cuda", "rocm"}
+        ]
+        if not allowed:
+            allowed = ["cpu"]
+        return [(runtime_label(rt), rt) for rt in allowed]
+
+    def _populate_headtail_runtime_options(self, preferred=None):
+        """Populate the head-tail runtime combo with native runtime options."""
+        if not hasattr(self._mw, "_setup_panel") or not hasattr(
+            self._mw._setup_panel, "combo_headtail_runtime"
+        ):
+            return
+        combo = self._mw._setup_panel.combo_headtail_runtime
+        selected = (
+            str(
+                preferred
+                or self._selected_headtail_runtime()
+                or self._selected_compute_runtime()
+            )
+            .strip()
+            .lower()
+        )
+        options = self._headtail_runtime_options()
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_headtail_runtime(self) -> str:
+        """Return the currently selected head-tail runtime key."""
+        if hasattr(self._mw, "_setup_panel") and hasattr(
+            self._mw._setup_panel, "combo_headtail_runtime"
+        ):
+            data = self._mw._setup_panel.combo_headtail_runtime.currentData()
+            if data:
+                return str(data).strip().lower()
+        return self._selected_compute_runtime()
+
+    def _cnn_runtime_options(self):
+        """Return (label, value) pairs for the CNN runtime combo."""
+        allowed = allowed_runtimes_for_pipelines([])
+        if not allowed:
+            allowed = ["cpu"]
+        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+
+    def _populate_cnn_runtime_options(self, preferred=None):
+        """Populate the CNN runtime combo with available runtimes."""
+        if not hasattr(self._mw, "_setup_panel") or not hasattr(
+            self._mw._setup_panel, "combo_cnn_runtime"
+        ):
+            return
+        combo = self._mw._setup_panel.combo_cnn_runtime
+        selected = (
+            str(
+                preferred
+                or self._selected_cnn_runtime()
+                or self._selected_compute_runtime()
+            )
+            .strip()
+            .lower()
+        )
+        options = self._cnn_runtime_options()
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_cnn_runtime(self) -> str:
+        """Return the currently selected CNN runtime key."""
+        if hasattr(self._mw, "_setup_panel") and hasattr(
+            self._mw._setup_panel, "combo_cnn_runtime"
+        ):
+            data = self._mw._setup_panel.combo_cnn_runtime.currentData()
+            if data:
+                return str(data).strip().lower()
+        return self._selected_compute_runtime()
+
+    def _has_cnn_identity_enabled(self) -> bool:
+        """Return True when CNN identity analysis is configured and enabled."""
+        if not (
+            self._is_individual_pipeline_enabled()
+            and self._mw._is_identity_analysis_enabled()
+        ):
+            return False
+        return bool(self._mw._identity_config().get("cnn_classifiers", []))
 
     def _selected_compute_runtime(self) -> str:
         """Return the currently selected compute runtime key."""
@@ -990,31 +1154,12 @@ class SessionOrchestrator:
             self._mw._detection_panel.chk_enable_tensorrt.setChecked(
                 bool(derived.get("enable_tensorrt", False))
             )
-        if (
-            self._runtime_requires_fixed_yolo_batch(selected_runtime)
-            and hasattr(self._mw, "combo_yolo_batch_mode")
-            and hasattr(self._mw, "spin_yolo_batch_size")
-            and hasattr(self._mw, "chk_enable_yolo_batching")
-        ):
-            self._mw._detection_panel.chk_enable_yolo_batching.setChecked(True)
-            self._mw._detection_panel.chk_enable_yolo_batching.setEnabled(False)
-            self._mw._detection_panel.combo_yolo_batch_mode.setCurrentIndex(1)
-            self._mw._detection_panel.combo_yolo_batch_mode.setEnabled(False)
-            self._mw._detection_panel.spin_yolo_batch_size.setEnabled(True)
-            if hasattr(self._mw, "spin_tensorrt_batch"):
-                self._mw._detection_panel.spin_tensorrt_batch.setValue(
-                    self._mw._detection_panel.spin_yolo_batch_size.value()
-                )
-        elif hasattr(self._mw, "combo_yolo_batch_mode") and hasattr(
-            self._mw, "chk_enable_yolo_batching"
-        ):
-            self._mw._detection_panel.chk_enable_yolo_batching.setEnabled(True)
-            self._mw._detection_panel.combo_yolo_batch_mode.setEnabled(
-                self._mw._detection_panel.chk_enable_yolo_batching.isChecked()
-            )
-            self._mw._detection_panel._on_yolo_batch_mode_changed(
-                self._mw._detection_panel.combo_yolo_batch_mode.currentIndex()
-            )
+        if hasattr(self._mw, "_detection_panel"):
+            self._mw._detection_panel._sync_batch_policy_controls()
+        self._populate_headtail_runtime_options(
+            preferred=self._selected_headtail_runtime()
+        )
+        self._populate_cnn_runtime_options(preferred=self._selected_cnn_runtime())
         if hasattr(self._mw, "_identity_panel"):
             self._mw._populate_pose_runtime_flavor_options(
                 backend=self._mw._identity_panel.combo_pose_model_type.currentText()
@@ -1022,20 +1167,32 @@ class SessionOrchestrator:
                 .lower(),
                 preferred=self._mw._selected_pose_runtime_flavor(),
             )
+            self._mw._identity_panel._sync_realtime_individual_batch_ui()
 
     def _pose_runtime_options_for_backend(self, backend: str):
         """Return (label, flavor) pairs for the pose runtime flavor combo."""
-        derived = derive_pose_runtime_settings(
-            self._selected_compute_runtime(), backend_family=backend
+        pipeline = (
+            "sleap_pose" if str(backend).strip().lower() == "sleap" else "yolo_pose"
         )
-        flavor = str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
-        return [(runtime_label(self._selected_compute_runtime()), flavor)]
+        runtimes = supported_runtimes_for_pipeline(pipeline) or ["cpu"]
+        options = []
+        seen_flavors = set()
+        for runtime in runtimes:
+            derived = derive_pose_runtime_settings(runtime, backend_family=backend)
+            flavor = str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+            if not flavor or flavor in seen_flavors:
+                continue
+            seen_flavors.add(flavor)
+            options.append((runtime_label(runtime), flavor))
+        return options or [("CPU", "cpu")]
 
     def _populate_pose_runtime_flavor_options(self, backend: str, preferred=None):
         """Populate the pose runtime flavor combo based on the current backend."""
-        if not hasattr(self._mw, "_identity_panel"):
+        if not hasattr(self._mw, "_setup_panel") or not hasattr(
+            self._mw._setup_panel, "combo_pose_runtime_flavor"
+        ):
             return
-        combo = self._mw._identity_panel.combo_pose_runtime_flavor
+        combo = self._mw._setup_panel.combo_pose_runtime_flavor
         selected = (
             str(preferred or self._mw._selected_pose_runtime_flavor() or "auto")
             .strip()
@@ -1055,6 +1212,12 @@ class SessionOrchestrator:
 
     def _selected_pose_runtime_flavor(self) -> str:
         """Return the currently selected pose runtime flavor key."""
+        if hasattr(self._mw, "_setup_panel") and hasattr(
+            self._mw._setup_panel, "combo_pose_runtime_flavor"
+        ):
+            data = self._mw._setup_panel.combo_pose_runtime_flavor.currentData()
+            if data:
+                return str(data).strip().lower()
         backend = (
             self._mw._identity_panel.combo_pose_model_type.currentText().strip().lower()
             if hasattr(self._mw, "_identity_panel")

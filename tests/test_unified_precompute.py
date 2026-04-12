@@ -611,6 +611,48 @@ def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
         assert cache_path.exists()
 
 
+def test_cnn_phase_realtime_callback_flushes_per_frame(tmp_path):
+    from hydra_suite.core.identity.classification.cnn import (
+        ClassPrediction,
+        CNNIdentityConfig,
+    )
+    from hydra_suite.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn_realtime.npz"
+    with patch(
+        "hydra_suite.core.tracking.precompute.CNNIdentityBackend"
+    ) as MockBackend:
+        mock_backend = MockBackend.return_value
+        mock_backend.predict_batch.return_value = [
+            ClassPrediction(class_name="tag_0", confidence=0.9, det_index=-1),
+            ClassPrediction(class_name="tag_1", confidence=0.85, det_index=-1),
+        ]
+
+        phase = CNNPrecomputePhase(
+            config=CNNIdentityConfig(model_path="/fake.pth", batch_size=8),
+            model_path="/fake.pth",
+            cache_path=cache_path,
+            name="cnn_identity",
+        )
+
+        live_updates = []
+        phase.set_frame_result_callback(
+            lambda frame_idx, preds: live_updates.append(
+                (frame_idx, [pred.det_index for pred in preds])
+            )
+        )
+
+        crop = np.zeros((20, 20, 3), dtype=np.uint8)
+        phase.process_frame(0, [crop, crop], [0, 1], [0, 1], [], [(0, 0), (0, 0)])
+
+        assert mock_backend.predict_batch.call_count == 1
+        assert live_updates == [(0, [0, 1])]
+
+        phase.finalize()
+        assert mock_backend.predict_batch.call_count == 1
+        assert cache_path.exists()
+
+
 def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
     from hydra_suite.core.identity.classification.cnn import CNNIdentityConfig
     from hydra_suite.core.tracking.precompute import CNNPrecomputePhase

@@ -22,6 +22,12 @@ def _init_batch_optimizer(params):
     advanced_config["tensorrt_max_batch_size"] = params.get(
         "TENSORRT_MAX_BATCH_SIZE", 16
     )
+    advanced_config["tracking_realtime_mode"] = params.get(
+        "TRACKING_REALTIME_MODE", False
+    )
+    advanced_config["tracking_workflow_mode"] = params.get(
+        "TRACKING_WORKFLOW_MODE", "non_realtime"
+    )
     return BatchOptimizer(advanced_config)
 
 

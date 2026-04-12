@@ -40,6 +40,7 @@ class PoseInferenceService:
         kpt_sig_src = "|".join(self.keypoint_names) + f":{len(self.keypoint_names)}"
         self.kpt_sig = hashlib.sha1(kpt_sig_src.encode("utf-8")).hexdigest()[:12]
         self._cache_mem: Dict[str, Dict[str, List[Tuple[float, float, float]]]] = {}
+        self._last_sleap_service_metrics: Dict[str, float] = {}
 
     def _weights_sig(self, weights_path: Path) -> Optional[str]:
         if not weights_path.exists() or not weights_path.is_file():
@@ -137,7 +138,6 @@ class PoseInferenceService:
             "kpt_sig": self.kpt_sig,
             "num_kpts": len(self.keypoint_names),
             "backend": backend,
-            "model_path": str(model_path),
             "model_sig": self._model_sig(model_path, backend),
         }
         payload = {"meta": meta, "preds": preds}
@@ -214,7 +214,7 @@ class PoseInferenceService:
     def predict(
         self: object,
         model_path: Path,
-        image_paths: List[Path],
+        image_paths: List[Path | str],
         device: str,
         imgsz: int,
         conf: float,
@@ -229,8 +229,11 @@ class PoseInferenceService:
         sleap_runtime_flavor: str = "native",
         sleap_exported_model_path: Optional[str] = None,
         sleap_export_input_hw: Optional[Tuple[int, int]] = None,
+        image_payloads: Optional[List[dict]] = None,
+        cache_predictions: bool = True,
     ) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
         """predict method documentation."""
+        self._last_sleap_service_metrics = {}
         if not image_paths:
             return {}, ""
         if cancel_cb and cancel_cb():
@@ -255,9 +258,11 @@ class PoseInferenceService:
                     None,
                     f"SLEAP {runtime_flavor} runtime requires an exported model path.",
                 )
+            service_metrics: Dict[str, float] = {}
             ok, preds, err = _run_sleap_predict_service(
                 model_dir=model_path,
                 image_paths=image_paths,
+                image_payloads=image_payloads,
                 out_json=out_json,
                 keypoint_names=self.keypoint_names,
                 skeleton_edges=self.skeleton_edges,
@@ -270,10 +275,13 @@ class PoseInferenceService:
                 export_input_hw=sleap_export_input_hw,
                 progress_cb=progress_cb,
                 cancel_cb=cancel_cb,
+                metrics_out=service_metrics,
             )
             if not ok:
                 return None, err
-            self.merge_cache(model_path, preds, backend=backend)
+            self._last_sleap_service_metrics = service_metrics
+            if cache_predictions:
+                self.merge_cache(model_path, preds, backend=backend)
             return preds, ""
 
         if not model_path.exists() or not model_path.is_file():
@@ -299,8 +307,13 @@ class PoseInferenceService:
         if not ok:
             return None, err
 
-        self.merge_cache(model_path, preds, backend=backend)
+        if cache_predictions:
+            self.merge_cache(model_path, preds, backend=backend)
         return preds, ""
+
+    def get_last_sleap_service_metrics(self) -> Dict[str, float]:
+        """Return timings from the most recent SLEAP service request."""
+        return dict(self._last_sleap_service_metrics)
 
     @classmethod
     def shutdown_sleap_service(cls: object) -> object:
@@ -326,6 +339,20 @@ class PoseInferenceService:
         """sleap_service_running method documentation."""
         svc = _get_sleap_service()
         return bool(svc.proc and svc.proc.poll() is None and svc.port)
+
+    @classmethod
+    def sleap_service_health(cls) -> Dict[str, object]:
+        """Return health metadata reported by the persistent SLEAP service."""
+        try:
+            return _get_sleap_service().health()
+        except Exception:
+            return {}
+
+    @classmethod
+    def sleap_native_array_video_supported(cls) -> bool:
+        """Return whether native SLEAP in the service env accepts in-memory arrays."""
+        health = cls.sleap_service_health()
+        return bool(health.get("native_array_video_supported", False))
 
 
 def _run_pose_predict_subprocess(
@@ -508,8 +535,9 @@ def _run_pose_predict_subprocess(
 
 
 _SLEAP_SERVICE_CODE = textwrap.dedent(r"""
-import json,sys,threading,traceback,shutil,inspect,gc,subprocess
+import base64,json,sys,threading,traceback,shutil,inspect,gc,subprocess,tempfile,time,uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from multiprocessing import shared_memory
 from pathlib import Path
 import numpy as np
 
@@ -538,6 +566,8 @@ _state = {
     'max_instances': None,
     'export_input_hw': None,
     'export_input_channels': None,
+    'preprocess_model_dir': None,
+    'preprocess_config': None,
 }
 _log_path = None
 
@@ -576,6 +606,8 @@ def _clear_predictor():
     _state['max_instances']=None
     _state['export_input_hw']=None
     _state['export_input_channels']=None
+    _state['preprocess_model_dir']=None
+    _state['preprocess_config']=None
     gc.collect()
     try:
         import torch
@@ -602,7 +634,77 @@ def _make_skeleton(names, edges):
                 return sk
             raise
 
-def _make_video(paths):
+def _make_video_from_arrays(image_arrays):
+    frames = [np.asarray(arr, dtype=np.uint8) for arr in (image_arrays or [])]
+    if not frames:
+        return None
+
+    stacked = None
+    if all(arr.shape == frames[0].shape for arr in frames):
+        try:
+            stacked = np.stack(frames, axis=0)
+        except Exception:
+            stacked = None
+
+    load_video = getattr(sio, 'load_video', None)
+    if callable(load_video):
+        candidates = []
+        if stacked is not None:
+            candidates.append(stacked)
+        candidates.append(frames)
+        for source in candidates:
+            try:
+                video = load_video(source)
+                if video is not None:
+                    return video
+            except Exception:
+                pass
+
+    if hasattr(sio, 'Video'):
+        V = sio.Video
+        for attr in ('from_numpy', 'from_image_array', 'from_images', 'from_frames'):
+            factory = getattr(V, attr, None)
+            if not callable(factory):
+                continue
+            candidates = []
+            if stacked is not None:
+                candidates.append((stacked, {}))
+            candidates.append((frames, {}))
+            if attr == 'from_numpy' and stacked is not None:
+                candidates.extend(
+                    [
+                        (stacked, {'channels_last': True}),
+                        (stacked, {'channels_first': False}),
+                        (stacked, {'input_format': 'channels_last'}),
+                    ]
+                )
+            for source, kwargs in candidates:
+                try:
+                    video = factory(source, **kwargs)
+                    if video is not None:
+                        return video
+                except Exception:
+                    pass
+
+    return None
+
+def _detect_native_array_video_support():
+    cached = _state.get('native_array_video_supported', None)
+    if cached is not None:
+        return bool(cached)
+    try:
+        probe = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(2)]
+        supported = _make_video_from_arrays(probe) is not None
+    except Exception:
+        supported = False
+    _state['native_array_video_supported'] = bool(supported)
+    return bool(supported)
+
+def _make_video(paths, image_arrays=None):
+    if image_arrays is not None:
+        video = _make_video_from_arrays(image_arrays)
+        if video is not None:
+            return video
     if hasattr(sio,'load_video'):
         try:
             return sio.load_video(paths)
@@ -633,22 +735,64 @@ def _make_labeled_frames(video, n):
         return frames
     return frames
 
+def _load_training_preprocess_config(model_dir):
+    if _state.get('preprocess_model_dir') == model_dir:
+        return _state.get('preprocess_config')
+    preprocess_config = None
+    cfg_path = Path(str(model_dir)) / 'training_config.yaml'
+    if cfg_path.exists():
+        try:
+            import yaml
+            raw = yaml.safe_load(cfg_path.read_text(encoding='utf-8')) or {}
+            data_cfg = raw.get('data_config') or {}
+            preprocess_config = data_cfg.get('preprocessing') or None
+        except Exception as e:
+            _log(f'predictor: failed to load preprocess_config from training_config.yaml: {e}')
+    _state['preprocess_model_dir'] = model_dir
+    _state['preprocess_config'] = preprocess_config
+    return preprocess_config
+
 def _load_predictor(model_dir, device):
     if _state.get('predictor') and _state.get('model_dir')==model_dir and _state.get('device')==device:
         return _state.get('predictor')
     _clear_predictor()
     pred = None
+    preprocess_config = _load_training_preprocess_config(model_dir)
     try:
         from sleap_nn.inference import predictors as _pred_mod
-        if hasattr(_pred_mod, 'Predictor') and hasattr(_pred_mod.Predictor, 'from_trained_models'):
-            pred = _pred_mod.Predictor.from_trained_models(model_paths=[model_dir], device=device)
+        if hasattr(_pred_mod, 'Predictor'):
+            predictor_cls = _pred_mod.Predictor
+            if hasattr(predictor_cls, 'from_model_paths'):
+                pred = predictor_cls.from_model_paths(
+                    model_paths=[model_dir],
+                    device=device,
+                    preprocess_config=preprocess_config,
+                )
+            elif hasattr(predictor_cls, 'from_trained_models'):
+                pred = predictor_cls.from_trained_models(
+                    model_paths=[model_dir],
+                    device=device,
+                    preprocess_config=preprocess_config,
+                )
     except Exception:
         pred = None
     if pred is None:
         try:
             import sleap_nn.predictors as _pred_mod2
-            if hasattr(_pred_mod2, 'Predictor') and hasattr(_pred_mod2.Predictor, 'from_trained_models'):
-                pred = _pred_mod2.Predictor.from_trained_models(model_paths=[model_dir], device=device)
+            if hasattr(_pred_mod2, 'Predictor'):
+                predictor_cls = _pred_mod2.Predictor
+                if hasattr(predictor_cls, 'from_model_paths'):
+                    pred = predictor_cls.from_model_paths(
+                        model_paths=[model_dir],
+                        device=device,
+                        preprocess_config=preprocess_config,
+                    )
+                elif hasattr(predictor_cls, 'from_trained_models'):
+                    pred = predictor_cls.from_trained_models(
+                        model_paths=[model_dir],
+                        device=device,
+                        preprocess_config=preprocess_config,
+                    )
         except Exception:
             pred = None
     if pred is not None:
@@ -659,7 +803,37 @@ def _load_predictor(model_dir, device):
     return pred
 
 def _predict_with_predictor(pred, labels, batch, max_instances):
-    for meth in ('predict','predict_labels','run'):
+    queue_maxsize = 8
+    try:
+        if batch is not None:
+            queue_maxsize = max(1, min(int(batch), 8))
+    except Exception:
+        queue_maxsize = 8
+    try:
+        if hasattr(pred, 'batch_size') and batch is not None:
+            pred.batch_size = int(batch)
+    except Exception:
+        pass
+    try:
+        if hasattr(pred, 'max_instances') and max_instances is not None:
+            pred.max_instances = int(max_instances)
+    except Exception:
+        pass
+    if hasattr(pred, 'make_pipeline'):
+        try:
+            pred.make_pipeline(labels, queue_maxsize=queue_maxsize)
+        except Exception:
+            pass
+    if hasattr(pred, 'predict'):
+        fn = getattr(pred, 'predict')
+        try:
+            return fn(make_labels=True)
+        except TypeError:
+            try:
+                return fn()
+            except Exception:
+                pass
+    for meth in ('predict_labels','run'):
         if hasattr(pred, meth):
             fn=getattr(pred,meth)
             try:
@@ -998,12 +1172,110 @@ def _load_image(path_str):
         "Unable to load image. Install either opencv-python or pillow in the SLEAP env."
     )
 
+def _decode_image_payload(payload):
+    if not isinstance(payload, dict):
+        raise RuntimeError("Invalid in-memory SLEAP image payload.")
+    image_id = str(payload.get("id") or "").strip()
+    if not image_id:
+        raise RuntimeError("In-memory SLEAP image payload is missing an id.")
+    shape = payload.get("shape")
+    if not isinstance(shape, (list, tuple)) or len(shape) not in (2, 3):
+        raise RuntimeError(f"Invalid image shape for payload {image_id}: {shape}")
+    try:
+        shape = tuple(int(v) for v in shape)
+    except Exception as exc:
+        raise RuntimeError(f"Invalid image shape for payload {image_id}: {exc}")
+    if any(dim <= 0 for dim in shape):
+        raise RuntimeError(f"Non-positive image shape for payload {image_id}: {shape}")
+    dtype_name = str(payload.get("dtype") or "uint8").strip().lower()
+    if dtype_name != "uint8":
+        raise RuntimeError(
+            f"Unsupported image dtype for payload {image_id}: {dtype_name}"
+        )
+    expected = int(np.prod(shape))
+    shm_name = str(payload.get("shm_name") or "").strip()
+    if shm_name:
+        shm = None
+        try:
+            shm = shared_memory.SharedMemory(name=shm_name)
+            if int(getattr(shm, "size", expected)) < expected:
+                raise RuntimeError(
+                    f"Shared-memory payload {image_id} size mismatch: got {getattr(shm, 'size', 0)}, expected at least {expected}"
+                )
+            arr = np.ndarray(shape, dtype=np.uint8, buffer=shm.buf).copy()
+        except Exception as exc:
+            raise RuntimeError(f"Failed opening shared-memory payload {image_id}: {exc}")
+        finally:
+            if shm is not None:
+                try:
+                    shm.close()
+                except Exception:
+                    pass
+    else:
+        data_b64 = payload.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            raise RuntimeError(f"Payload {image_id} is missing image data.")
+        try:
+            raw = base64.b64decode(data_b64.encode("ascii"), validate=True)
+        except Exception as exc:
+            raise RuntimeError(f"Failed decoding payload {image_id}: {exc}")
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        if arr.size != expected:
+            raise RuntimeError(
+                f"Payload {image_id} size mismatch: got {arr.size}, expected {expected}"
+            )
+        arr = arr.reshape(shape).copy()
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        arr = arr[:, :, :3]
+    return image_id, arr
+
+def _decode_image_payloads(payloads):
+    image_ids = []
+    image_arrays = []
+    for payload in payloads or []:
+        image_id, arr = _decode_image_payload(payload)
+        image_ids.append(image_id)
+        image_arrays.append(arr)
+    return image_ids, image_arrays
+
+def _save_array_image(path, arr):
+    arr = np.asarray(arr, dtype=np.uint8)
+    if cv2 is not None:
+        if cv2.imwrite(str(path), arr):
+            return
+    if Image is not None:
+        if arr.ndim == 2:
+            image = Image.fromarray(arr)
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            image = Image.fromarray(arr[:, :, 0])
+        else:
+            image = Image.fromarray(arr[:, :, ::-1])
+        image.save(path)
+        return
+    raise RuntimeError(
+        "Unable to persist in-memory image payload. Install either opencv-python or pillow in the SLEAP env."
+    )
+
+def _materialize_image_arrays(image_ids, image_arrays, tmp_dir):
+    if len(image_ids) != len(image_arrays):
+        raise RuntimeError("In-memory SLEAP image ids and arrays length mismatch.")
+    root = Path(tmp_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for idx, arr in enumerate(image_arrays):
+        path = root / f"img_{idx:06d}.png"
+        _save_array_image(path, arr)
+        paths.append(str(path))
+    return paths
+
 def _prepare_export_crop(crop, input_hw, input_channels):
-    arr = np.asarray(crop)
+    arr = np.asarray(crop, dtype=np.uint8)
     if arr.ndim == 2:
         arr = arr[:, :, None]
     if arr.ndim != 3:
         raise RuntimeError(f"Invalid crop shape for SLEAP export predictor: {arr.shape}")
+    if arr.shape[2] > 3:
+        arr = arr[:, :, :3]
     orig_h, orig_w = int(arr.shape[0]), int(arr.shape[1])
 
     if input_channels == 1 and arr.shape[2] != 1:
@@ -1011,28 +1283,51 @@ def _prepare_export_crop(crop, input_hw, input_channels):
             arr = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)[:, :, None]
         else:
             arr = np.mean(arr[:, :, :3], axis=2, keepdims=True).astype(arr.dtype)
-    elif (input_channels is None or input_channels == 3) and arr.shape[2] == 1:
-        arr = np.repeat(arr, 3, axis=2)
+    elif input_channels is None or input_channels == 3:
+        if arr.shape[2] == 1:
+            arr = np.repeat(arr, 3, axis=2)
+        elif arr.shape[2] == 3:
+            arr = arr[:, :, ::-1].copy()
+
+    transform = (1.0, 0.0, 0.0, orig_w, orig_h)
 
     if input_hw is not None:
         h, w = int(input_hw[0]), int(input_hw[1])
         if h > 0 and w > 0 and (orig_h != h or orig_w != w):
             if cv2 is None:
                 raise RuntimeError("OpenCV is required for resized SLEAP exported inference.")
+            scale = min(float(w) / float(orig_w), float(h) / float(orig_h))
+            new_w = max(1, int(round(float(orig_w) * scale)))
+            new_h = max(1, int(round(float(orig_h) * scale)))
+            pad_x = int((w - new_w) // 2)
+            pad_y = int((h - new_h) // 2)
             if arr.shape[2] == 1:
                 resized = cv2.resize(
-                    arr[:, :, 0], (w, h), interpolation=cv2.INTER_LINEAR
+                    arr[:, :, 0], (new_w, new_h), interpolation=cv2.INTER_LINEAR
                 )
-                arr = resized[:, :, None]
+                canvas = np.zeros((h, w, 1), dtype=np.uint8)
+                canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w, 0] = resized
+                arr = canvas
             else:
-                arr = cv2.resize(arr, (w, h), interpolation=cv2.INTER_LINEAR)
+                resized = cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                canvas = np.zeros((h, w, arr.shape[2]), dtype=np.uint8)
+                canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+                arr = canvas
+            transform = (float(scale), float(pad_x), float(pad_y), orig_w, orig_h)
 
-    pred_h, pred_w = int(arr.shape[0]), int(arr.shape[1])
-    sx = float(orig_w) / float(pred_w) if pred_w > 0 else 1.0
-    sy = float(orig_h) / float(pred_h) if pred_h > 0 else 1.0
-    if arr.shape[2] == 1:
-        arr = arr[:, :, 0]
-    return np.asarray(arr, dtype=np.uint8), sx, sy
+    return np.asarray(arr, dtype=np.uint8), transform
+
+def _restore_export_keypoints(arr, transform):
+    arr = np.asarray(arr, dtype=np.float32).copy()
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return arr
+    scale, pad_x, pad_y, orig_w, orig_h = transform
+    scale = float(scale) if float(scale) > 0.0 else 1.0
+    arr[:, 0] = (arr[:, 0] - float(pad_x)) / scale
+    arr[:, 1] = (arr[:, 1] - float(pad_y)) / scale
+    arr[:, 0] = np.clip(arr[:, 0], 0.0, float(max(0, int(orig_w) - 1)))
+    arr[:, 1] = np.clip(arr[:, 1], 0.0, float(max(0, int(orig_h) - 1)))
+    return arr
 
 def _predict_export_batch(predictor, crops, runtime_flavor):
     # Ensure all crops are 3D [H,W,C] for reliable stacking.
@@ -1304,7 +1599,7 @@ def _normalize_export_xy_conf(raw, batch_size):
         return None, None
     return xy_arr, conf_arr
 
-def _run_export_inference(cfg, images, num_kpts):
+def _run_export_inference(cfg, images, num_kpts, image_arrays=None):
     runtime = str(cfg.get("runtime_flavor", "onnx")).strip().lower()
     exported_model_path = str(cfg.get("exported_model_path", "")).strip()
     if not exported_model_path:
@@ -1341,16 +1636,20 @@ def _run_export_inference(cfg, images, num_kpts):
         _log(f"Model requires min batch={model_min_batch}, adjusting from {infer_batch}")
         infer_batch = int(model_min_batch)
     images_padded = list(images)
+    raw_crops = list(image_arrays) if image_arrays is not None else None
     if images_padded and len(images_padded) < infer_batch:
         images_padded.extend([images_padded[-1]] * (infer_batch - len(images_padded)))
+        if raw_crops is not None:
+            raw_crops.extend([raw_crops[-1]] * (infer_batch - len(raw_crops)))
 
-    raw_crops = [_load_image(p) for p in images_padded]
+    if raw_crops is None:
+        raw_crops = [_load_image(p) for p in images_padded]
     crops = []
-    scales = []
+    transforms = []
     for c in raw_crops:
-        c2, sx, sy = _prepare_export_crop(c, input_hw, input_channels)
+        c2, transform = _prepare_export_crop(c, input_hw, input_channels)
         crops.append(c2)
-        scales.append((sx, sy))
+        transforms.append(transform)
     raw = _predict_export_batch(predictor, crops, runtime)
     xy_arr, conf_arr = _normalize_export_xy_conf(raw, batch_size=len(images_padded))
 
@@ -1365,12 +1664,22 @@ def _run_export_inference(cfg, images, num_kpts):
                 else np.zeros((xy.shape[0],), dtype=np.float32)
             )
             n = min(int(xy.shape[0]), int(num_kpts))
-            sx, sy = scales[j] if j < len(scales) else (1.0, 1.0)
+            pts = np.zeros((n, 3), dtype=np.float32)
+            if n > 0:
+                pts[:, :2] = xy[:n, :2]
+                pts[:, 2] = conf[:n]
+                pts = _restore_export_keypoints(
+                    pts,
+                    transforms[j] if j < len(transforms) else (1.0, 0.0, 0.0, 0, 0),
+                )
             for k in range(n):
-                c = float(conf[k]) if k < len(conf) else 0.0
-                x = float(xy[k, 0]) * float(sx)
-                y = float(xy[k, 1]) * float(sy)
-                rows.append((x, y, float(np.clip(c, 0.0, 1.0))))
+                rows.append(
+                    (
+                        float(pts[k, 0]),
+                        float(pts[k, 1]),
+                        float(np.clip(pts[k, 2], 0.0, 1.0)),
+                    )
+                )
         if len(rows) < int(num_kpts):
             rows.extend([(0.0, 0.0, 0.0)] * (int(num_kpts) - len(rows)))
         preds[str(Path(path))] = rows
@@ -1644,7 +1953,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
     def do_GET(self):
         if self.path.startswith('/health'):
-            self._json(200, {'ok': True, 'model_dir': _state.get('model_dir')})
+            self._json(
+                200,
+                {
+                    'ok': True,
+                    'model_dir': _state.get('model_dir'),
+                    'native_array_video_supported': _detect_native_array_video_support(),
+                },
+            )
         else:
             self._json(404, {'ok': False, 'error': 'Not found'})
     def do_POST(self):
@@ -1661,24 +1977,44 @@ class Handler(BaseHTTPRequestHandler):
             length=int(self.headers.get('Content-Length','0'))
             data=self.rfile.read(length).decode('utf-8') if length>0 else '{}'
             cfg=json.loads(data)
+            image_payloads = cfg.get('image_payloads') or []
+            image_arrays = None
+            image_keys = [str(p) for p in (cfg.get('images') or [])]
+            timings = {}
+            if image_payloads:
+                _decode_start = time.perf_counter()
+                payload_ids, image_arrays = _decode_image_payloads(image_payloads)
+                timings['service_decode_s'] = time.perf_counter() - _decode_start
+                if image_keys:
+                    if len(image_keys) != len(payload_ids):
+                        raise RuntimeError('SLEAP image payload count mismatch.')
+                else:
+                    image_keys = payload_ids
             try:
-                _log(f"INFER {len(cfg.get('images') or [])} model={cfg.get('model_dir')} device={cfg.get('device')}")
+                _log(f"INFER {len(image_keys)} model={cfg.get('model_dir')} device={cfg.get('device')}")
             except Exception:
                 pass
-            images=cfg.get('images') or []
+            images=image_keys
             names=cfg.get('keypoint_names') or []
             edges=cfg.get('skeleton_edges') or []
             cfg['device'] = _normalize_device(cfg.get('device'))
             runtime_flavor = str(cfg.get("runtime_flavor", "native")).strip().lower()
             if runtime_flavor in ("onnx", "tensorrt"):
                 try:
-                    preds = _run_export_inference(cfg, images, max(1, len(names)))
+                    _export_start = time.perf_counter()
+                    preds = _run_export_inference(
+                        cfg,
+                        images,
+                        max(1, len(names)),
+                        image_arrays=image_arrays,
+                    )
+                    timings['service_inference_s'] = time.perf_counter() - _export_start
                     try:
                         nonempty = sum(1 for v in preds.values() if v)
                         _log(f"preds_nonempty={nonempty}/{len(images)} runtime={runtime_flavor}")
                     except Exception:
                         pass
-                    self._json(200, {'ok': True, 'preds': preds})
+                    self._json(200, {'ok': True, 'preds': preds, 'timings_s': timings})
                     return
                 except Exception as export_exc:
                     _log(
@@ -1686,7 +2022,28 @@ class Handler(BaseHTTPRequestHandler):
                         "falling back to native SLEAP runtime"
                     )
             sk=_make_skeleton(names, edges)
-            video=_make_video(images)
+            request_tmp_dir = None
+            native_images = images
+            if image_arrays is not None:
+                try:
+                    _video_start = time.perf_counter()
+                    video = _make_video(native_images, image_arrays=image_arrays)
+                    timings['service_materialize_s'] = timings.get('service_materialize_s', 0.0) + (time.perf_counter() - _video_start)
+                except Exception as image_array_exc:
+                    _log(
+                        f"native in-memory video construction failed: {image_array_exc}; falling back to temporary image files"
+                    )
+                    request_tmp_dir = Path(cfg.get('tmp_dir') or tempfile.gettempdir()) / f"req_{uuid.uuid4().hex}"
+                    _materialize_start = time.perf_counter()
+                    native_images = _materialize_image_arrays(images, image_arrays, request_tmp_dir)
+                    timings['service_materialize_s'] = timings.get('service_materialize_s', 0.0) + (time.perf_counter() - _materialize_start)
+                    _video_start = time.perf_counter()
+                    video = _make_video(native_images)
+                    timings['service_materialize_s'] = timings.get('service_materialize_s', 0.0) + (time.perf_counter() - _video_start)
+            else:
+                _video_start = time.perf_counter()
+                video=_make_video(native_images)
+                timings['service_materialize_s'] = timings.get('service_materialize_s', 0.0) + (time.perf_counter() - _video_start)
             try:
                 _log(f"video type={type(video)}")
             except Exception:
@@ -1700,32 +2057,47 @@ class Handler(BaseHTTPRequestHandler):
                 labels=sio.Labels(videos=[video], skeletons=[sk], labeled_frames=frames)
             except Exception:
                 labels=sio.Labels(videos=[video], skeletons=[sk])
+            _infer_start = time.perf_counter()
             out=_run_inference(labels, cfg.get('model_dir'), cfg.get('device'), int(cfg.get('batch',4)), int(cfg.get('max_instances',1)))
+            timings['service_inference_s'] = timings.get('service_inference_s', 0.0) + (time.perf_counter() - _infer_start)
             labels_out=_labels_from_output(out)
             used_cli=False
             if labels_out is None:
+                _infer_start = time.perf_counter()
                 labels_out=_predict_via_cli(cfg, labels)
+                timings['service_inference_s'] = timings.get('service_inference_s', 0.0) + (time.perf_counter() - _infer_start)
                 used_cli=True
             _log(_labels_summary(labels_out))
             _log(f"frame0: {_frame_attrs(_labels_first_frame(labels_out))}")
+            _extract_start = time.perf_counter()
             preds=_extract_preds(labels_out, images, len(names))
+            timings['service_extract_s'] = timings.get('service_extract_s', 0.0) + (time.perf_counter() - _extract_start)
             if not preds or not any(len(v)>0 for v in preds.values()):
                 if not used_cli:
+                    _infer_start = time.perf_counter()
                     labels_out=_predict_via_cli(cfg, labels)
+                    timings['service_inference_s'] = timings.get('service_inference_s', 0.0) + (time.perf_counter() - _infer_start)
                     _log("fallback: cli used")
                     _log(_labels_summary(labels_out))
                     _log(f"frame0: {_frame_attrs(_labels_first_frame(labels_out))}")
+                    _extract_start = time.perf_counter()
                     preds=_extract_preds(labels_out, images, len(names))
+                    timings['service_extract_s'] = timings.get('service_extract_s', 0.0) + (time.perf_counter() - _extract_start)
             try:
                 nonempty=sum(1 for v in preds.values() if v)
                 _log(f"preds_nonempty={nonempty}/{len(images)}")
             except Exception:
                 pass
-            self._json(200, {'ok': True, 'preds': preds})
+            self._json(200, {'ok': True, 'preds': preds, 'timings_s': timings})
         except Exception as e:
             _log(traceback.format_exc())
             self._json(500, {'ok': False, 'error': str(e)})
         finally:
+            try:
+                if 'request_tmp_dir' in locals() and request_tmp_dir is not None:
+                    shutil.rmtree(request_tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
             gc.collect()
     def log_message(self, format, *args):
         return
@@ -1845,6 +2217,15 @@ class _SleapHttpService:
         if self.log_path:
             err = f"{err} (log: {self.log_path})"
         return False, err
+
+    def health(self, timeout: float = 2.0) -> dict:
+        """Return the JSON payload from the service health endpoint."""
+        if not self.port:
+            raise RuntimeError("SLEAP service not running.")
+        url = f"http://127.0.0.1:{self.port}/health"
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
 
     def start(self, env_name: str, log_path: Optional[Path] = None) -> Tuple[bool, str]:
         """start method documentation."""
@@ -2074,7 +2455,7 @@ def _all_zero_pose_chunk(
 
 def _run_sleap_predict_service(
     model_dir: Path,
-    image_paths: List[Path],
+    image_paths: List[Path | str],
     out_json: Path,
     keypoint_names: List[str],
     skeleton_edges: List[Tuple[int, int]],
@@ -2087,6 +2468,8 @@ def _run_sleap_predict_service(
     export_input_hw: Optional[Tuple[int, int]] = None,
     progress_cb=None,
     cancel_cb=None,
+    image_payloads: Optional[List[dict]] = None,
+    metrics_out: Optional[Dict[str, float]] = None,
 ) -> Tuple[bool, Dict[str, List[Tuple[float, float, float]]], str]:
     svc = _get_sleap_service()
     log_path = None
@@ -2102,14 +2485,19 @@ def _run_sleap_predict_service(
 
     total = len(image_paths)
     preds: Dict[str, List[Tuple[float, float, float]]] = {}
+    aggregated_metrics: Dict[str, float] = {}
     chunk_size = max(1, min(total, max(8, int(batch) * 8)))
     done = 0
     for i in range(0, total, chunk_size):
         if cancel_cb and cancel_cb():
             return False, {}, "Canceled."
         chunk = image_paths[i : i + chunk_size]
+        chunk_payloads = None
+        if image_payloads is not None:
+            chunk_payloads = image_payloads[i : i + chunk_size]
         payload = {
             "images": [str(p) for p in chunk],
+            "image_payloads": chunk_payloads,
             "model_dir": str(model_dir),
             "device": device,
             "batch": int(batch),
@@ -2152,6 +2540,14 @@ def _run_sleap_predict_service(
             if svc.log_path:
                 err = f"{err} (log: {svc.log_path})"
             return False, {}, err
+        for key, value in dict(resp.get("timings_s") or {}).items():
+            try:
+                key_str = str(key)
+                aggregated_metrics[key_str] = aggregated_metrics.get(
+                    key_str, 0.0
+                ) + float(value)
+            except Exception:
+                continue
         chunk_preds = dict(resp.get("preds", {}) or {})
         runtime = str(runtime_flavor or "native").strip().lower()
         if (
@@ -2183,6 +2579,10 @@ def _run_sleap_predict_service(
         done += len(chunk)
         if progress_cb:
             progress_cb(done, total)
+
+    if metrics_out is not None:
+        metrics_out.clear()
+        metrics_out.update(aggregated_metrics)
 
     out_json.write_text(json.dumps({"preds": preds}), encoding="utf-8")
     return True, preds, ""

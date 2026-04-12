@@ -357,6 +357,12 @@ class DetectionCacheBuilderWorker(QThread):
             advanced["tensorrt_max_batch_size"] = self.params.get(
                 "TENSORRT_MAX_BATCH_SIZE", 16
             )
+            advanced["tracking_realtime_mode"] = self.params.get(
+                "TRACKING_REALTIME_MODE", False
+            )
+            advanced["tracking_workflow_mode"] = self.params.get(
+                "TRACKING_WORKFLOW_MODE", "non_realtime"
+            )
             batch_size = BatchOptimizer(advanced).estimate_batch_size(
                 fw, fh, self.params.get("YOLO_MODEL_PATH", "")
             )

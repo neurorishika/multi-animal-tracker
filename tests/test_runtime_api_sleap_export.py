@@ -26,6 +26,7 @@ def _gpu_stub(**overrides):
         "ONNXRUNTIME_AVAILABLE": True,
         "ONNXRUNTIME_PROVIDERS": ["CPUExecutionProvider"],
         "ONNXRUNTIME_CPU_AVAILABLE": True,
+        "ONNXRUNTIME_COREML_AVAILABLE": False,
         "ONNXRUNTIME_CUDA_AVAILABLE": False,
         "ONNXRUNTIME_ROCM_AVAILABLE": False,
         "ROCM_AVAILABLE": False,
@@ -48,7 +49,10 @@ def _gpu_stub(**overrides):
         "log_device_info": lambda: None,
     }
     base.update(overrides)
-    return types.SimpleNamespace(**base)
+    mod = types.ModuleType("hydra_suite.utils.gpu_utils")
+    for key, value in base.items():
+        setattr(mod, key, value)
+    return mod
 
 
 @contextmanager
@@ -109,6 +113,119 @@ def _load_sleap_backend_module(stubs: dict):
 
 
 def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> None:
+    stubs = {
+        "hydra_suite.utils.gpu_utils": _gpu_stub(
+            MPS_AVAILABLE=True,
+            ONNXRUNTIME_COREML_AVAILABLE=True,
+        ),
+    }
+    mod = _load_sleap_backend_module(stubs)
+
+    export_dir = tmp_path / "sleap_exported"
+    export_dir.mkdir()
+    (export_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (export_dir / "model.onnx").write_bytes(b"fake-onnx")
+
+    providers_seen = []
+
+    class _FakeInput:
+        name = "image"
+        shape = ["batch", 3, 64, 64]
+        type = "tensor(uint8)"
+
+    class _FakeOutput:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeSession:
+        def __init__(self, path, providers):
+            providers_seen.append((str(path), list(providers)))
+            self._providers = list(providers)
+
+        def get_inputs(self):
+            return [_FakeInput()]
+
+        def get_outputs(self):
+            return [_FakeOutput("peaks"), _FakeOutput("peak_vals")]
+
+        def run(self, _unused, feed_dict):
+            batch = feed_dict["image"]
+            count = int(batch.shape[0])
+            peaks = np.zeros((count, 3, 2), dtype=np.float32)
+            peak_vals = np.zeros((count, 3), dtype=np.float32)
+            for i in range(count):
+                peaks[i, 0] = (10.0 + i, 20.0)
+                peaks[i, 1] = (30.0 + i, 40.0)
+                peaks[i, 2] = (50.0 + i, 60.0)
+                peak_vals[i] = (0.9, 0.7, 0.1)
+            return [peaks, peak_vals]
+
+    sys.modules["onnxruntime"] = types.SimpleNamespace(InferenceSession=_FakeSession)
+
+    with _patched_modules(stubs):
+        backend = mod.SleapExportedBackend(
+            exported_model_path=str(export_dir),
+            runtime_flavor="onnx",
+            runtime_request="onnx_coreml",
+            device="mps",
+            keypoint_names=["k1", "k2", "k3"],
+            min_valid_conf=0.2,
+            batch_size=4,
+        )
+
+        crops = [
+            np.zeros((24, 24, 3), dtype=np.uint8),
+            np.zeros((26, 26, 3), dtype=np.uint8),
+        ]
+        out = backend.predict_batch(crops)
+        assert providers_seen
+        first_provider = providers_seen[0][1][0]
+        if isinstance(first_provider, tuple):
+            first_provider = first_provider[0]
+        assert first_provider == "CoreMLExecutionProvider"
+        assert len(out) == 2
+        assert out[0].num_keypoints == 3
+        assert out[0].num_valid == 2
+        assert np.isclose(out[0].mean_conf, (0.9 + 0.7 + 0.1) / 3.0)
+        assert out[0].keypoints.shape == (3, 3)
+        backend.close()
+
+
+def test_prepare_export_crop_uses_rgb_letterbox_and_inverse_mapping() -> None:
+    stubs = {
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_sleap_backend_module(stubs)
+
+    crop = np.zeros((10, 20, 3), dtype=np.uint8)
+    crop[:, :, 0] = 11
+    crop[:, :, 1] = 22
+    crop[:, :, 2] = 33
+
+    prepared, transform = mod._prepare_export_crop(crop, (64, 64), 3)
+
+    assert prepared.shape == (64, 64, 3)
+    assert np.all(prepared[:16, :, :] == 0)
+    assert np.all(prepared[48:, :, :] == 0)
+    assert np.all(prepared[16:48, :, 0] == 33)
+    assert np.all(prepared[16:48, :, 1] == 22)
+    assert np.all(prepared[16:48, :, 2] == 11)
+
+    model_space = np.array(
+        [
+            [0.0, 16.0, 0.9],
+            [60.8, 44.8, 0.7],
+        ],
+        dtype=np.float32,
+    )
+    restored = mod._restore_export_keypoints(model_space, transform)
+    assert np.allclose(restored[:, :2], np.array([[0.0, 0.0], [19.0, 9.0]]), atol=1e-3)
+    assert np.allclose(restored[:, 2], np.array([0.9, 0.7]), atol=1e-6)
+
+
+def test_sleap_native_backend_uses_temp_files_when_array_video_unsupported(
+    tmp_path: Path,
+) -> None:
     calls = []
 
     class _FakePoseInferenceService:
@@ -129,12 +246,16 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
         def shutdown_sleap_service(cls):
             return None
 
+        @classmethod
+        def sleap_native_array_video_supported(cls):
+            return False
+
         def predict(self, model_path, image_paths, **kwargs):
             calls.append(
                 {
                     "model_path": str(model_path),
+                    "image_paths": list(image_paths),
                     "kwargs": dict(kwargs),
-                    "count": len(image_paths),
                 }
             )
             preds = {}
@@ -142,7 +263,6 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
                 preds[str(p)] = [
                     (10.0 + i, 20.0, 0.9),
                     (30.0 + i, 40.0, 0.7),
-                    (50.0 + i, 60.0, 0.1),
                 ]
             return preds, ""
 
@@ -152,44 +272,122 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
             PoseInferenceService=_FakePoseInferenceService
         ),
     }
-    mod = _load_runtime_api_module(stubs)
+    mod = _load_sleap_backend_module(stubs)
 
-    export_dir = tmp_path / "sleap_exported"
-    export_dir.mkdir()
-    (export_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (export_dir / "model.onnx").write_bytes(b"fake-onnx")
-    cfg = mod.PoseRuntimeConfig(
-        backend_family="sleap",
-        runtime_flavor="onnx",
-        device="cpu",
-        model_path=str(export_dir),
-        exported_model_path=str(export_dir),
-        min_valid_conf=0.2,
-        keypoint_names=["k1", "k2", "k3"],
-        sleap_batch=4,
-        sleap_max_instances=1,
-        sleap_experimental_features=True,
-    )
+    model_dir = tmp_path / "sleap_model"
+    model_dir.mkdir()
 
     with _patched_modules(stubs):
-        backend = mod.create_pose_backend_from_config(cfg)
-        assert isinstance(backend, mod.SleapServiceBackend)
+        backend = mod.SleapServiceBackend(
+            model_dir=str(model_dir),
+            out_root=str(tmp_path),
+            keypoint_names=["k1", "k2"],
+            min_valid_conf=0.2,
+            sleap_env="sleap",
+            sleap_device="cpu",
+            sleap_batch=4,
+            sleap_max_instances=1,
+            runtime_flavor="native",
+        )
 
         crops = [
             np.zeros((24, 24, 3), dtype=np.uint8),
             np.zeros((26, 26, 3), dtype=np.uint8),
         ]
         out = backend.predict_batch(crops)
+
         assert calls
-        assert calls[0]["kwargs"]["sleap_runtime_flavor"] == "onnx"
-        assert calls[0]["kwargs"]["sleap_exported_model_path"] == str(
-            export_dir.resolve()
-        )
+        assert calls[0]["kwargs"]["sleap_runtime_flavor"] == "native"
+        assert calls[0]["kwargs"].get("image_payloads") is None
+        assert calls[0]["kwargs"]["cache_predictions"] is False
+        assert list(backend._tmp_root.glob("crop_*.png"))
         assert len(out) == 2
-        assert out[0].num_keypoints == 3
         assert out[0].num_valid == 2
-        assert np.isclose(out[0].mean_conf, (0.9 + 0.7 + 0.1) / 3.0)
-        assert out[0].keypoints.shape == (3, 3)
+        backend.close()
+
+
+def test_sleap_native_backend_uses_in_memory_transport_when_supported(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    class _FakePoseInferenceService:
+        def __init__(self, out_root, keypoint_names, skeleton_edges=None):
+            self.out_root = Path(out_root)
+            self.keypoint_names = list(keypoint_names)
+            self.skeleton_edges = list(skeleton_edges or [])
+
+        @classmethod
+        def sleap_service_running(cls):
+            return False
+
+        @classmethod
+        def start_sleap_service(cls, env_name, out_root):
+            return True, "", Path(out_root) / "log.txt"
+
+        @classmethod
+        def shutdown_sleap_service(cls):
+            return None
+
+        @classmethod
+        def sleap_native_array_video_supported(cls):
+            return True
+
+        def predict(self, model_path, image_paths, **kwargs):
+            calls.append(
+                {
+                    "model_path": str(model_path),
+                    "image_paths": list(image_paths),
+                    "kwargs": dict(kwargs),
+                }
+            )
+            preds = {}
+            for i, p in enumerate(image_paths):
+                preds[str(p)] = [
+                    (10.0 + i, 20.0, 0.9),
+                    (30.0 + i, 40.0, 0.7),
+                ]
+            return preds, ""
+
+    stubs = {
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.integrations.sleap.service": types.SimpleNamespace(
+            PoseInferenceService=_FakePoseInferenceService
+        ),
+    }
+    mod = _load_sleap_backend_module(stubs)
+
+    model_dir = tmp_path / "sleap_model"
+    model_dir.mkdir()
+
+    with _patched_modules(stubs):
+        backend = mod.SleapServiceBackend(
+            model_dir=str(model_dir),
+            out_root=str(tmp_path),
+            keypoint_names=["k1", "k2"],
+            min_valid_conf=0.2,
+            sleap_env="sleap",
+            sleap_device="cpu",
+            sleap_batch=4,
+            sleap_max_instances=1,
+            runtime_flavor="native",
+        )
+
+        crops = [
+            np.zeros((24, 24, 3), dtype=np.uint8),
+            np.zeros((26, 26, 3), dtype=np.uint8),
+        ]
+        out = backend.predict_batch(crops)
+
+        assert calls
+        assert calls[0]["kwargs"]["sleap_runtime_flavor"] == "native"
+        assert calls[0]["kwargs"]["image_payloads"] is not None
+        assert len(calls[0]["kwargs"]["image_payloads"]) == 2
+        assert calls[0]["kwargs"]["image_payloads"][0]["shm_name"]
+        assert calls[0]["kwargs"]["cache_predictions"] is False
+        assert list(backend._tmp_root.glob("crop_*.png")) == []
+        assert len(out) == 2
+        assert out[0].num_valid == 2
         backend.close()
 
 
@@ -264,6 +462,65 @@ def test_sleap_export_backend_falls_back_to_service_when_unavailable(
     with _patched_modules(stubs):
         backend = mod.create_pose_backend_from_config(cfg)
         assert isinstance(backend, mod.SleapServiceBackend)
+        backend.close()
+
+
+def test_create_pose_backend_uses_direct_exported_backend_for_sleap_onnx(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "hydra_suite.utils.gpu_utils": _gpu_stub(MPS_AVAILABLE=True),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    export_dir = tmp_path / "sleap_exported"
+    export_dir.mkdir()
+    (export_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (export_dir / "model.onnx").write_bytes(b"fake-onnx")
+
+    class _FakeInput:
+        name = "image"
+        shape = ["batch", 3, 64, 64]
+        type = "tensor(uint8)"
+
+    class _FakeOutput:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeSession:
+        def __init__(self, _path, providers=None, **_kwargs):
+            self._providers = list(providers or [])
+
+        def get_inputs(self):
+            return [_FakeInput()]
+
+        def get_outputs(self):
+            return [_FakeOutput("peaks"), _FakeOutput("peak_vals")]
+
+        def run(self, _unused, feed_dict):
+            batch = feed_dict["image"]
+            count = int(batch.shape[0])
+            peaks = np.zeros((count, 1, 2), dtype=np.float32)
+            peak_vals = np.ones((count, 1), dtype=np.float32)
+            return [peaks, peak_vals]
+
+    sys.modules["onnxruntime"] = types.SimpleNamespace(InferenceSession=_FakeSession)
+
+    cfg = mod.PoseRuntimeConfig(
+        backend_family="sleap",
+        runtime_flavor="onnx_mps",
+        device="mps",
+        model_path=str(tmp_path / "sleap_model"),
+        exported_model_path=str(export_dir),
+        min_valid_conf=0.2,
+        keypoint_names=["head"],
+        sleap_batch=2,
+        sleap_max_instances=1,
+    )
+
+    with _patched_modules(stubs):
+        backend = mod.create_pose_backend_from_config(cfg)
+        assert isinstance(backend, mod.SleapExportedBackend)
         backend.close()
 
 
@@ -462,6 +719,53 @@ def test_build_runtime_config_explicit_sleap_export_hw_overrides_model_config(
     }
     cfg = mod.build_runtime_config(params, out_root=str(tmp_path))
     assert cfg.sleap_export_input_hw == (192, 224)
+
+
+def test_build_runtime_config_clamps_realtime_individual_batches_to_animals(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    params = {
+        "POSE_MODEL_TYPE": "yolo",
+        "POSE_MODEL_DIR": str(tmp_path / "pose.pt"),
+        "POSE_RUNTIME_FLAVOR": "native",
+        "POSE_YOLO_BATCH": 16,
+        "POSE_SLEAP_BATCH": 12,
+        "TRACKING_REALTIME_MODE": True,
+        "TRACKING_WORKFLOW_MODE": "realtime",
+        "MAX_TARGETS": 5,
+    }
+
+    cfg = mod.build_runtime_config(params, out_root=str(tmp_path))
+
+    assert cfg.batch_size == 5
+    assert cfg.yolo_batch == 5
+    assert cfg.sleap_batch == 5
+
+
+def test_build_runtime_config_respects_explicit_pose_runtime_flavor_over_compute_runtime(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    params = {
+        "POSE_MODEL_TYPE": "sleap",
+        "POSE_MODEL_DIR": str(tmp_path / "sleap_model"),
+        "POSE_RUNTIME_FLAVOR": "mps",
+        "POSE_SLEAP_DEVICE": "mps",
+        "COMPUTE_RUNTIME": "onnx_coreml",
+    }
+
+    cfg = mod.build_runtime_config(params, out_root=str(tmp_path))
+
+    assert cfg.runtime_flavor == "mps"
 
 
 def test_attempt_sleap_cli_export_prefers_size_aware_commands_first(

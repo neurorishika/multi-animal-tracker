@@ -213,6 +213,7 @@ class SetupPanel(QWidget):
             "Set this to the expected number of animals in your video.\n"
             "Higher values use more memory and may slow down processing."
         )
+        self.spin_max_targets.valueChanged.connect(self._sync_batch_policy_controls)
         acquisition_row.addWidget(self.spin_max_targets)
         acquisition_row.addStretch(1)
         fl.addRow("Acquisition", acquisition_row)
@@ -567,6 +568,7 @@ class SetupPanel(QWidget):
         )
         fl_sys = QFormLayout(None)
         fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.form_performance = fl_sys
 
         self.spin_resize = QDoubleSpinBox()
         self.spin_resize.setRange(0.1, 1.0)
@@ -582,8 +584,8 @@ class SetupPanel(QWidget):
         self.combo_compute_runtime = QComboBox()
         self.combo_compute_runtime.setFixedHeight(30)
         self.combo_compute_runtime.setToolTip(
-            "Global compute runtime for detection and pose.\n"
-            "Only runtimes compatible with all enabled pipelines are shown."
+            "Detection runtime for the primary tracking detector.\n"
+            "Only runtimes compatible with the active detection pipeline are shown."
         )
         self.combo_compute_runtime.currentIndexChanged.connect(
             self._main_window._on_runtime_context_changed
@@ -597,13 +599,44 @@ class SetupPanel(QWidget):
         _perf_row.addWidget(_perf_scale_label)
         _perf_row.addWidget(self.spin_resize, 1)
         _perf_row.addSpacing(4)
-        _perf_runtime_label = QLabel("Runtime")
+        _perf_runtime_label = QLabel("Detection")
         _perf_runtime_label.setStyleSheet(
             "font-size: 10px; font-weight: 600; color: #bdbdbd;"
         )
         _perf_row.addWidget(_perf_runtime_label)
         _perf_row.addWidget(self.combo_compute_runtime, 2)
         fl_sys.addRow(_perf_row)
+
+        self.combo_headtail_runtime = QComboBox()
+        self.combo_headtail_runtime.setFixedHeight(30)
+        self.combo_headtail_runtime.setToolTip(
+            "Head-tail runtime for oriented crop classification.\n"
+            "Visible only when head-tail analysis is enabled."
+        )
+        fl_sys.addRow("Head-tail runtime", self.combo_headtail_runtime)
+        self._main_window._set_form_row_visible(
+            fl_sys, self.combo_headtail_runtime, False
+        )
+
+        self.combo_cnn_runtime = QComboBox()
+        self.combo_cnn_runtime.setFixedHeight(30)
+        self.combo_cnn_runtime.setToolTip(
+            "CNN identity runtime for per-animal classifiers.\n"
+            "Visible only when at least one CNN classifier is configured."
+        )
+        fl_sys.addRow("CNN runtime", self.combo_cnn_runtime)
+        self._main_window._set_form_row_visible(fl_sys, self.combo_cnn_runtime, False)
+
+        self.combo_pose_runtime_flavor = QComboBox()
+        self.combo_pose_runtime_flavor.setFixedHeight(30)
+        self.combo_pose_runtime_flavor.setToolTip(
+            "Pose runtime used by the pose extraction pipeline.\n"
+            "This can be set independently from detection when pose is enabled."
+        )
+        fl_sys.addRow("Pose runtime", self.combo_pose_runtime_flavor)
+        self._main_window._set_form_row_visible(
+            fl_sys, self.combo_pose_runtime_flavor, False
+        )
 
         self.check_save_confidence = QCheckBox("Save metrics")
         self.check_save_confidence.setChecked(True)
@@ -806,14 +839,22 @@ class SetupPanel(QWidget):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def _sync_realtime_cache_controls(self) -> None:
+    def _sync_realtime_cache_controls(self, *_args) -> None:
         """Disable cache reuse whenever realtime workflow is enabled."""
         realtime_enabled = bool(self.chk_realtime_mode.isChecked())
         if realtime_enabled and self.chk_use_cached_detections.isChecked():
             self.chk_use_cached_detections.setChecked(False)
         self.chk_use_cached_detections.setEnabled(not realtime_enabled)
+        self._sync_batch_policy_controls()
         # NOTE: _populate_compute_runtime_options and _on_runtime_context_changed
         # are called after panel construction in main_window.py
+
+    def _sync_batch_policy_controls(self, *_args) -> None:
+        """Notify dependent panels when realtime or animal-count policy changes."""
+        if hasattr(self._main_window, "_detection_panel"):
+            self._main_window._detection_panel._sync_batch_policy_controls()
+        if hasattr(self._main_window, "_identity_panel"):
+            self._main_window._identity_panel._sync_realtime_individual_batch_ui()
 
     def apply_config(self, config: TrackerConfig) -> None:
         """Update panel widgets to reflect a new config object."""

@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from hydra_suite.core.identity.pose.backends.sleap import (
+    SleapExportedBackend,
     SleapServiceBackend,
     auto_export_sleap_model,
+    looks_like_sleap_export_path,
 )
 from hydra_suite.core.identity.pose.backends.sleap_utils import (
     derive_sleap_export_input_hw,
@@ -29,6 +31,7 @@ from hydra_suite.core.identity.pose.utils import (
     parse_runtime_request,
 )
 from hydra_suite.runtime.compute_runtime import derive_pose_runtime_settings
+from hydra_suite.utils.batch_policy import clamp_realtime_individual_batch_size
 
 logger = logging.getLogger(__name__)
 
@@ -131,17 +134,33 @@ def build_runtime_config(
         ]
 
     derived_device = ""
+    explicit_runtime_flavor = runtime_flavor not in {"", "auto"}
     if compute_runtime:
         derived = derive_pose_runtime_settings(compute_runtime, backend_family)
-        runtime_flavor = (
-            str(derived.get("pose_runtime_flavor", runtime_flavor)).strip().lower()
-        )
-        derived_device = str(derived.get("pose_sleap_device", "auto")).strip() or "auto"
+        if not explicit_runtime_flavor:
+            runtime_flavor = (
+                str(derived.get("pose_runtime_flavor", runtime_flavor)).strip().lower()
+            )
+            derived_device = (
+                str(derived.get("pose_sleap_device", "auto")).strip() or "auto"
+            )
 
     device, batch_size = _resolve_device_and_batch(
         params,
         backend_family,
         derived_device,
+    )
+    batch_size = clamp_realtime_individual_batch_size(
+        batch_size,
+        max_animals=params.get("MAX_TARGETS", 1),
+        realtime_enabled=params.get("TRACKING_REALTIME_MODE", False),
+        workflow_mode=params.get("TRACKING_WORKFLOW_MODE", "non_realtime"),
+    )
+    sleap_batch_size = clamp_realtime_individual_batch_size(
+        params.get("POSE_SLEAP_BATCH", batch_size),
+        max_animals=params.get("MAX_TARGETS", 1),
+        realtime_enabled=params.get("TRACKING_REALTIME_MODE", False),
+        workflow_mode=params.get("TRACKING_WORKFLOW_MODE", "non_realtime"),
     )
     export_hw = _resolve_export_hw(params, backend_family, model_path)
 
@@ -160,12 +179,9 @@ def build_runtime_config(
         yolo_batch=max(1, int(batch_size)),
         sleap_env=str(params.get("POSE_SLEAP_ENV", "sleap")).strip() or "sleap",
         sleap_device=derived_device or str(params.get("POSE_SLEAP_DEVICE", "auto")),
-        sleap_batch=int(params.get("POSE_SLEAP_BATCH", 4)),
+        sleap_batch=max(1, int(sleap_batch_size)),
         sleap_max_instances=int(params.get("POSE_SLEAP_MAX_INSTANCES", 1)),
         sleap_export_input_hw=export_hw,
-        sleap_experimental_features=bool(
-            params.get("POSE_SLEAP_EXPERIMENTAL_FEATURES", False)
-        ),
         keypoint_names=skeleton_names,
         skeleton_edges=skeleton_edges,
     )
@@ -244,24 +260,33 @@ def create_pose_backend_from_config(config: PoseRuntimeConfig) -> PoseInferenceB
                 "SLEAP backend requires keypoint_names (from skeleton JSON or override)."
             )
 
-        if (
-            runtime_flavor in ("onnx", "tensorrt")
-            and not config.sleap_experimental_features
-        ):
-            logger.warning(
-                "SLEAP %s runtime is experimental and disabled. Reverting to native runtime.",
-                runtime_flavor,
-            )
-            runtime_flavor = "native"
-
         exported_candidate = ""
         if runtime_flavor in ("onnx", "tensorrt"):
             try:
-                exported_candidate = auto_export_sleap_model(config, runtime_flavor)
+                requested_export = str(config.exported_model_path or "").strip()
+                if requested_export and looks_like_sleap_export_path(
+                    requested_export,
+                    runtime_flavor,
+                ):
+                    exported_candidate = str(
+                        Path(requested_export).expanduser().resolve()
+                    )
+                else:
+                    exported_candidate = auto_export_sleap_model(config, runtime_flavor)
                 logger.info(
                     "SLEAP model exported for %s runtime: %s",
                     runtime_flavor,
                     exported_candidate,
+                )
+                return SleapExportedBackend(
+                    exported_model_path=exported_candidate,
+                    runtime_flavor=runtime_flavor,
+                    runtime_request=requested_runtime,
+                    device=effective_device,
+                    keypoint_names=config.keypoint_names,
+                    min_valid_conf=config.min_valid_conf,
+                    batch_size=config.sleap_batch,
+                    export_input_hw=config.sleap_export_input_hw,
                 )
             except Exception as exc:
                 logger.warning(

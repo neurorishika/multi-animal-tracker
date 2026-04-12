@@ -565,12 +565,22 @@ class UnifiedPrecompute:
         canonical_M_inv,
         use_canonical,
         profiler,
+        live_profile: bool = False,
     ):
         """Send extracted crops to every registered phase."""
         for phase in phases:
             _phase_prof_name = f"precompute_{phase.name}"
+            live_category = None
+            work_units = len(crop_det_indices)
+            if live_profile:
+                if phase.name == "apriltag":
+                    live_category = "live_apriltag"
+                elif str(phase.name).startswith("cnn"):
+                    live_category = "live_cnn_identity"
             if profiler:
                 profiler.phase_start(_phase_prof_name)
+                if live_category:
+                    profiler.tick(live_category)
             if getattr(phase, "_prefer_aabb_crops", False):
                 phase.process_frame(
                     frame_idx,
@@ -591,7 +601,9 @@ class UnifiedPrecompute:
                     canonical_affines=(canonical_M_inv if use_canonical else None),
                 )
             if profiler:
-                profiler.phase_end(_phase_prof_name)
+                if live_category:
+                    profiler.tock(live_category, work_units=work_units)
+                profiler.phase_end(_phase_prof_name, work_units=work_units)
 
     def process_live_frame(
         self,
@@ -620,6 +632,8 @@ class UnifiedPrecompute:
         if not self._phases:
             return
 
+        if profiler:
+            profiler.tick("live_filter")
         filt_obb, det_ids = self._filter_detections(
             detector,
             raw_meas,
@@ -634,12 +648,16 @@ class UnifiedPrecompute:
             roi_mask,
             profiler,
         )
+        if profiler:
+            profiler.tock("live_filter")
         all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
         use_canonical, filtered_affines = self._filter_canonical_affines(
             raw_canonical_affines,
             raw_ids,
             det_ids,
         )
+        if profiler:
+            profiler.tick("live_crop_extraction")
         (
             aabb_crops,
             aabb_offsets,
@@ -653,6 +671,8 @@ class UnifiedPrecompute:
             use_canonical,
             profiler,
         )
+        if profiler:
+            profiler.tock("live_crop_extraction")
         frame_detection_ids = [
             int(det_ids[i]) if det_ids and i < len(det_ids) else i
             for i in range(len(all_obb))
@@ -669,13 +689,20 @@ class UnifiedPrecompute:
             canonical_M_inv,
             use_canonical,
             profiler,
+            live_profile=True,
         )
 
-    def sync_live_frame(self) -> None:
+    def sync_live_frame(self, profiler=None) -> None:
         """Wait for any live phase that needs per-frame synchronization."""
         for phase in self._phases:
             sync = getattr(phase, "sync", None)
             if callable(sync):
+                if profiler is not None:
+                    try:
+                        sync(profiler=profiler)
+                        continue
+                    except TypeError:
+                        pass
                 sync()
 
     def finalize_live(self, warning_cb: Optional[Callable[[str, str], None]] = None):
@@ -1078,6 +1105,31 @@ class CNNPrecomputePhase(PrecomputePhase):
         """Register a callback for live per-frame CNN outputs."""
         self._frame_result_callback = callback
 
+    def _flush_frame_batch(
+        self,
+        frame_idx: int,
+        frame_crops: List[np.ndarray],
+        frame_det_ids: List[int],
+    ) -> None:
+        """Run one frame's CNN crops immediately for realtime/live consumers."""
+        if not frame_crops or self._backend is None or self._cache is None:
+            return
+
+        frame_preds: List[ClassPrediction] = []
+        batch_size = max(1, int(self._cfg.batch_size))
+        for chunk_start in range(0, len(frame_crops), batch_size):
+            chunk_end = min(chunk_start + batch_size, len(frame_crops))
+            chunk_crops = frame_crops[chunk_start:chunk_end]
+            chunk_det_ids = frame_det_ids[chunk_start:chunk_end]
+            preds = self._backend.predict_batch(chunk_crops)
+            for pred, det_id in zip(preds, chunk_det_ids):
+                pred.det_index = int(det_id)
+                frame_preds.append(pred)
+
+        self._cache.save(frame_idx, frame_preds)
+        if self._frame_result_callback is not None:
+            self._frame_result_callback(frame_idx, frame_preds)
+
     def process_frame(
         self,
         frame_idx: int,
@@ -1093,7 +1145,18 @@ class CNNPrecomputePhase(PrecomputePhase):
             return
         if not crops:
             self._cache.save(frame_idx, [])
+            if self._frame_result_callback is not None:
+                self._frame_result_callback(frame_idx, [])
             return
+
+        if self._frame_result_callback is not None:
+            self._flush_frame_batch(
+                frame_idx,
+                list(crops),
+                [int(det_idx) for det_idx in crop_det_indices],
+            )
+            return
+
         for crop, det_idx in zip(crops, crop_det_indices):
             self._pending_crops.append(crop)
             self._pending_frame_idx.append(frame_idx)

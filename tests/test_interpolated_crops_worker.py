@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 import pandas as pd
 
 from hydra_suite.trackerkit.gui.workers.crops_worker import InterpolatedCropsWorker
@@ -78,3 +80,65 @@ def test_interpolated_worker_skips_backend_init_when_no_eligible_gaps(
     assert emitted[0]["eligible_rows"] == 0
     assert emitted[0]["pose_rows_produced"] == 0
     assert emitted[0]["cnn_rows_produced"] == 0
+
+
+def test_interpolated_worker_uses_split_cnn_and_headtail_runtimes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    cnn_module = importlib.import_module("hydra_suite.core.identity.classification.cnn")
+    headtail_module = importlib.import_module(
+        "hydra_suite.core.identity.classification.headtail"
+    )
+
+    cnn_model = tmp_path / "cnn_model.pth"
+    cnn_model.write_text("cnn", encoding="utf-8")
+    headtail_model = tmp_path / "headtail_model.pt"
+    headtail_model.write_text("ht", encoding="utf-8")
+
+    observed: dict[str, object] = {}
+
+    class FakeCNNConfig:
+        def __init__(self, model_path: str, confidence: float, batch_size: int) -> None:
+            self.model_path = model_path
+            self.confidence = confidence
+            self.batch_size = batch_size
+
+    class FakeCNNBackend:
+        def __init__(
+            self, config, model_path: str | None = None, compute_runtime: str = "cpu"
+        ) -> None:
+            observed["cnn_runtime"] = compute_runtime
+
+    class FakeHeadTailAnalyzer:
+        def __init__(self, model_path: str, device: str = "cpu", **kwargs) -> None:
+            observed["headtail_device"] = device
+            self.is_available = True
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(cnn_module, "CNNIdentityConfig", FakeCNNConfig)
+    monkeypatch.setattr(cnn_module, "CNNIdentityBackend", FakeCNNBackend)
+    monkeypatch.setattr(headtail_module, "HeadTailAnalyzer", FakeHeadTailAnalyzer)
+
+    worker = InterpolatedCropsWorker(
+        "tracks.csv",
+        "source.mp4",
+        "cache.npz",
+        {
+            "CNN_CLASSIFIERS": [
+                {"label": "cnn_identity", "model_path": str(cnn_model), "batch_size": 4}
+            ],
+            "CNN_COMPUTE_RUNTIME": "onnx_cpu",
+            "COMPUTE_RUNTIME": "mps",
+            "YOLO_HEADTAIL_MODEL_PATH": str(headtail_model),
+            "HEADTAIL_COMPUTE_RUNTIME": "rocm",
+        },
+    )
+
+    worker._init_cnn_backends()
+    worker._init_headtail_analyzer()
+
+    assert observed["cnn_runtime"] == "onnx_cpu"
+    assert observed["headtail_device"] == "cuda"

@@ -121,6 +121,7 @@ class HeadTailAnalyzer:
         self,
         frames: List[np.ndarray],
         per_frame_obb_corners: List[List[np.ndarray]],
+        profiler=None,
     ) -> List[List[Tuple[float, float, int]]]:
         """Run head-tail analysis on multiple frames.
 
@@ -140,9 +141,13 @@ class HeadTailAnalyzer:
             ]
 
         # Phase 1: collect canonical crops across all frames
+        if profiler is not None:
+            profiler.phase_start("headtail_crop")
         all_crops, all_meta = self._collect_canonical_crops(
             frames, per_frame_obb_corners
         )
+        if profiler is not None:
+            profiler.phase_end("headtail_crop", work_units=len(all_crops))
 
         # Pre-allocate results
         results: List[List[Tuple[float, float, int]]] = [
@@ -153,7 +158,11 @@ class HeadTailAnalyzer:
             return results
 
         # Phase 2: single GPU inference pass
+        if profiler is not None:
+            profiler.phase_start("headtail_inference")
         cls_results = self._predict(all_crops)
+        if profiler is not None:
+            profiler.phase_end("headtail_inference", work_units=len(all_crops))
         if cls_results is None or len(cls_results) == 0:
             return results
 

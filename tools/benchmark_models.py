@@ -1,9 +1,10 @@
 #!/home/tracking/miniforge3/envs/hydra-suite-cuda/bin/python
 """Benchmark MAT model inference across different runtimes.
 
-Measures latency and throughput for each model type (OBB detection, pose
-estimation, classification) under every available compute runtime. Produces
-a summary table and optional JSON/CSV reports.
+Measures latency and throughput for each model path used by MAT, including
+direct OBB detection, first-stage detect models, sequential detect-plus-crop
+pipelines, pose estimation, generic classification, and detector-side
+head-tail analysis. Produces a summary table and optional JSON/CSV reports.
 
 Usage
 -----
@@ -13,8 +14,15 @@ Usage
     # Specify particular model paths:
     python tools/benchmark_models.py \
         --obb-model models/obb/my_obb.pt \
+        --detect-model models/detection/my_detect.pt \
         --pose-model models/pose/YOLO/my_pose.pt \
-        --classify-model models/classification/orientation/tiny/my_cls.pth
+        --classify-model models/classification/orientation/tiny/my_cls.pth \
+        --headtail-model models/classification/orientation/my_headtail.pt
+
+    # Benchmark the full sequential detect + crop OBB path:
+    python tools/benchmark_models.py \
+        --seq-detect-model models/detection/my_detect.pt \
+        --seq-crop-obb-model models/obb/cropped/my_crop_obb.pt
 
     # Restrict runtimes:
     python tools/benchmark_models.py --runtimes cpu cuda tensorrt
@@ -75,8 +83,10 @@ logger = logging.getLogger("mat_benchmark")
 PIPELINE_NAMES = {
     "obb": "yolo_obb_detection",
     "detect": "yolo_obb_detection",
+    "sequential": "yolo_obb_detection",
     "pose": "yolo_pose",
     "classify": "tiny_classify",
+    "headtail": "tiny_classify",
 }
 
 
@@ -176,6 +186,31 @@ def _resolve_pose_artifact_path(model_path: str, runtime: str) -> Path | None:
     return None
 
 
+def _resolve_aux_artifact_path(
+    model_path: str,
+    runtime: str,
+    task: str,
+    batch_size: int,
+) -> Path | None:
+    resolved_model = Path(model_path).expanduser().resolve()
+    rt = _normalize_runtime(runtime)
+    if rt == "tensorrt":
+        ext = ".engine"
+    elif rt.startswith("onnx"):
+        ext = ".onnx"
+    else:
+        return None
+    task_tag = str(task or "task").strip().lower().replace(" ", "_")
+    rawhead_suffix = "_rawheadv1" if task_tag in {"obb", "detect"} else ""
+    return resolved_model.with_name(
+        f"{resolved_model.stem}_{task_tag}{rawhead_suffix}_b{int(batch_size)}{ext}"
+    )
+
+
+def _resolve_classify_artifact_path(model_path: str) -> Path:
+    return Path(model_path).expanduser().resolve().with_suffix(".onnx")
+
+
 # ---------------------------------------------------------------------------
 # Synthetic input generation
 # ---------------------------------------------------------------------------
@@ -214,6 +249,31 @@ def make_synthetic_crops(
         )
         crops.append(crop)
     return crops
+
+
+def make_synthetic_obb_corners(
+    n: int,
+    frame_height: int,
+    frame_width: int,
+    crop_size: int = 160,
+) -> list[np.ndarray]:
+    """Generate simple oriented boxes for head-tail and sequential tests."""
+    if n <= 0:
+        return []
+    corners_list: list[np.ndarray] = []
+    step_x = max(1, frame_width // (n + 1))
+    box_w = float(max(24, min(crop_size, frame_width // 4)))
+    box_h = float(max(16, min(max(24, crop_size // 2), frame_height // 3)))
+    for idx in range(n):
+        cx = float(min(frame_width - 1, max(0, step_x * (idx + 1))))
+        cy = float(frame_height * (0.35 + 0.3 * ((idx % 2) == 0)))
+        angle = float((idx * 23) % 180)
+        rect = ((cx, cy), (box_w, box_h), angle)
+        box = cv2.boxPoints(rect).astype(np.float32)
+        box[:, 0] = np.clip(box[:, 0], 0, frame_width - 1)
+        box[:, 1] = np.clip(box[:, 1], 0, frame_height - 1)
+        corners_list.append(box)
+    return corners_list
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +316,9 @@ def _runtime_to_obb_params(
     elif rt == "tensorrt":
         device = "cuda:0"
         enable_trt = True
+    elif rt == "onnx_coreml":
+        device = "mps"
+        enable_onnx = True
     elif rt in ("onnx_cpu",):
         device = "cpu"
         enable_onnx = True
@@ -284,6 +347,523 @@ def _runtime_to_obb_params(
         "MAX_TARGETS": 25,
         "YOLO_IMGSZ": imgsz,
     }
+
+
+def _make_detector_runtime_stub(
+    runtime: str,
+    model_path: str,
+    *,
+    batch_size: int,
+    trt_workspace_gb: float = 4.0,
+    trt_build_batch_size: int | None = None,
+):
+    from hydra_suite.core.detectors import YOLOOBBDetector
+
+    params = _runtime_to_obb_params(
+        runtime,
+        model_path,
+        imgsz=640,
+        batch_size=batch_size,
+        trt_workspace_gb=trt_workspace_gb,
+        trt_build_batch_size=trt_build_batch_size,
+    )
+    params["TRACKING_REALTIME_MODE"] = False
+    detector = YOLOOBBDetector.__new__(YOLOOBBDetector)
+    detector.params = params
+    detector.model = None
+    detector.detect_model = None
+    detector._headtail_analyzer = None
+    detector.device = str(params.get("YOLO_DEVICE", "cpu"))
+    detector.use_tensorrt = False
+    detector.use_onnx = False
+    detector.onnx_imgsz = None
+    detector.onnx_batch_size = 1
+    detector.tensorrt_batch_size = 1
+    detector.obb_predict_device = None
+    detector.detect_predict_device = None
+    return detector
+
+
+def _predict_detect_results(detector, frames: list[np.ndarray]):
+    source = frames[0] if len(frames) == 1 else list(frames)
+    detect_predict_device = getattr(detector, "detect_predict_device", None) or getattr(
+        detector, "device", "cpu"
+    )
+    target_classes = detector.params.get(
+        "YOLO_DETECT_TARGET_CLASSES", detector.params.get("YOLO_TARGET_CLASSES", None)
+    )
+    max_det = max(1, int(detector.params.get("MAX_TARGETS", 25))) * 2
+    detect_kwargs = dict(
+        source=source,
+        conf=max(
+            1e-4,
+            float(
+                detector.params.get(
+                    "YOLO_SEQ_DETECT_CONF_THRESHOLD",
+                    detector.params.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3),
+                )
+            ),
+        ),
+        iou=1.0,
+        classes=target_classes,
+        max_det=max_det,
+        verbose=False,
+    )
+    if detect_predict_device is not None:
+        detect_kwargs["device"] = detect_predict_device
+    seq_detect_imgsz = int(detector.params.get("YOLO_SEQ_DETECT_IMGSZ", 0))
+    if seq_detect_imgsz > 0:
+        detect_kwargs["imgsz"] = seq_detect_imgsz
+    try:
+        return detector.detect_model.predict(**detect_kwargs)
+    except Exception as exc:
+        if str(
+            detect_predict_device
+        ).strip().lower() != "mps" or not detector._is_coreml_failure(exc):
+            raise
+        logger.warning(
+            "Detect benchmark ONNX inference failed on mps/CoreML path. Retrying on CPU ORT provider."
+        )
+        detector.detect_predict_device = "cpu"
+        try:
+            if hasattr(detector.detect_model, "predictor"):
+                detector.detect_model.predictor = None
+        except Exception:
+            pass
+        retry_kwargs = dict(detect_kwargs)
+        retry_kwargs["device"] = "cpu"
+        return detector.detect_model.predict(**retry_kwargs)
+
+
+def bench_detect(
+    model_path: str,
+    runtime: str,
+    warmup: int,
+    iterations: int,
+    batch_size: int,
+    frame_size: tuple[int, int],
+    trt_workspace_gb: float = 4.0,
+    trt_build_batch_size: int | None = None,
+) -> BenchmarkResult:
+    """Benchmark first-stage detection using the detector's auxiliary runtime path."""
+    result = BenchmarkResult(
+        model_type="detect",
+        model_path=model_path,
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=batch_size,
+        input_shape=frame_size,
+        warmup_iters=warmup,
+        bench_iters=iterations,
+    )
+    try:
+        detector = _make_detector_runtime_stub(
+            runtime,
+            model_path,
+            batch_size=batch_size,
+            trt_workspace_gb=trt_workspace_gb,
+            trt_build_batch_size=trt_build_batch_size,
+        )
+        detector.params["YOLO_SEQ_DETECT_IMGSZ"] = max(frame_size)
+        detector.detect_model, detector.detect_predict_device = (
+            detector._load_model_for_task(model_path, task="detect")
+        )
+        frames = [make_synthetic_frame(*frame_size) for _ in range(batch_size)]
+
+        for _ in range(warmup):
+            _predict_detect_results(detector, frames)
+
+        for _ in range(iterations):
+            gc.disable()
+            t0 = time.perf_counter()
+            _predict_detect_results(detector, frames)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            gc.enable()
+            result.latencies_ms.append(elapsed_ms)
+
+        result.compute_stats()
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Detect benchmark failed [%s]: %s", runtime, exc)
+    return result
+
+
+def bench_detect_compile(
+    model_path: str,
+    runtime: str,
+    batch_size: int,
+    *,
+    force_rebuild: bool = True,
+    trt_workspace_gb: float = 4.0,
+    trt_build_batch_size: int | None = None,
+) -> CompileBenchmarkResult:
+    """Benchmark export/build time for first-stage detect auxiliary artifacts."""
+    rt = _normalize_runtime(runtime)
+    build_batch_size = int(trt_build_batch_size or batch_size)
+    result = CompileBenchmarkResult(
+        model_type="detect",
+        model_path=model_path,
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=build_batch_size,
+    )
+    if rt not in {"tensorrt", "onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+        result.success = False
+        result.error = "compile benchmark only supports TensorRT/ONNX runtimes"
+        return result
+
+    artifact_path = _resolve_aux_artifact_path(
+        model_path, runtime, "detect", build_batch_size
+    )
+    if artifact_path is not None:
+        result.artifact_path = str(artifact_path)
+        result.reused_existing = artifact_path.exists()
+        if force_rebuild:
+            _remove_artifact_pair(artifact_path)
+
+    try:
+        detector = _make_detector_runtime_stub(
+            runtime,
+            model_path,
+            batch_size=build_batch_size,
+            trt_workspace_gb=trt_workspace_gb,
+            trt_build_batch_size=trt_build_batch_size,
+        )
+        t0 = time.perf_counter()
+        artifact = detector._prepare_runtime_artifact_for_task(
+            model_path, task="detect"
+        )
+        result.compile_ms = (time.perf_counter() - t0) * 1000.0
+        result.artifact_path = str(artifact)
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Detect compile benchmark failed [%s]: %s", runtime, exc)
+    return result
+
+
+def bench_sequential(
+    detect_model_path: str,
+    crop_obb_model_path: str,
+    runtime: str,
+    warmup: int,
+    iterations: int,
+    batch_size: int,
+    frame_size: tuple[int, int],
+    crop_size: int,
+    trt_workspace_gb: float = 4.0,
+    trt_build_batch_size: int | None = None,
+) -> BenchmarkResult:
+    """Benchmark the full sequential detect-plus-crop OBB pipeline."""
+    result = BenchmarkResult(
+        model_type="sequential",
+        model_path=f"{detect_model_path} | {crop_obb_model_path}",
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=batch_size,
+        input_shape=frame_size,
+        warmup_iters=warmup,
+        bench_iters=iterations,
+    )
+    try:
+        from hydra_suite.core.detectors import YOLOOBBDetector
+
+        params = _runtime_to_obb_params(
+            runtime,
+            crop_obb_model_path,
+            imgsz=crop_size,
+            batch_size=batch_size,
+            trt_workspace_gb=trt_workspace_gb,
+            trt_build_batch_size=trt_build_batch_size,
+        )
+        params.update(
+            {
+                "YOLO_OBB_MODE": "sequential",
+                "YOLO_DETECT_MODEL_PATH": detect_model_path,
+                "YOLO_CROP_OBB_MODEL_PATH": crop_obb_model_path,
+                "YOLO_OBB_DIRECT_MODEL_PATH": crop_obb_model_path,
+                "YOLO_SEQ_DETECT_IMGSZ": max(frame_size),
+                "YOLO_SEQ_STAGE2_IMGSZ": crop_size,
+            }
+        )
+        detector = YOLOOBBDetector(params)
+        frames = [make_synthetic_frame(*frame_size) for _ in range(batch_size)]
+
+        for _ in range(warmup):
+            if batch_size == 1:
+                detector.detect_objects(frames[0], frame_count=0)
+            else:
+                detector.detect_objects_batched(frames, start_frame_idx=0)
+
+        for _ in range(iterations):
+            gc.disable()
+            t0 = time.perf_counter()
+            if batch_size == 1:
+                detector.detect_objects(frames[0], frame_count=0)
+            else:
+                detector.detect_objects_batched(frames, start_frame_idx=0)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            gc.enable()
+            result.latencies_ms.append(elapsed_ms)
+
+        result.compute_stats()
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Sequential benchmark failed [%s]: %s", runtime, exc)
+    return result
+
+
+def bench_sequential_compile(
+    detect_model_path: str,
+    crop_obb_model_path: str,
+    runtime: str,
+    batch_size: int,
+    frame_size: tuple[int, int],
+    crop_size: int,
+    *,
+    force_rebuild: bool = True,
+    trt_workspace_gb: float = 4.0,
+    trt_build_batch_size: int | None = None,
+) -> CompileBenchmarkResult:
+    """Benchmark artifact build time for the full sequential detector pair."""
+    rt = _normalize_runtime(runtime)
+    build_batch_size = int(trt_build_batch_size or batch_size)
+    result = CompileBenchmarkResult(
+        model_type="sequential",
+        model_path=f"{detect_model_path} | {crop_obb_model_path}",
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=build_batch_size,
+    )
+    if rt not in {"tensorrt", "onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+        result.success = False
+        result.error = "compile benchmark only supports TensorRT/ONNX runtimes"
+        return result
+
+    crop_artifact = _resolve_obb_artifact_path(
+        crop_obb_model_path, runtime, build_batch_size
+    )
+    detect_artifact = _resolve_aux_artifact_path(
+        detect_model_path, runtime, "detect", build_batch_size
+    )
+    artifact_paths = [str(p) for p in (crop_artifact, detect_artifact) if p is not None]
+    result.artifact_path = ";".join(artifact_paths)
+    result.reused_existing = any(
+        p.exists() for p in (crop_artifact, detect_artifact) if p is not None
+    )
+    if force_rebuild:
+        for path in (crop_artifact, detect_artifact):
+            if path is not None:
+                _remove_artifact_pair(path)
+
+    try:
+        from hydra_suite.core.detectors import YOLOOBBDetector
+
+        params = _runtime_to_obb_params(
+            runtime,
+            crop_obb_model_path,
+            imgsz=crop_size,
+            batch_size=batch_size,
+            trt_workspace_gb=trt_workspace_gb,
+            trt_build_batch_size=trt_build_batch_size,
+        )
+        params.update(
+            {
+                "YOLO_OBB_MODE": "sequential",
+                "YOLO_DETECT_MODEL_PATH": detect_model_path,
+                "YOLO_CROP_OBB_MODEL_PATH": crop_obb_model_path,
+                "YOLO_OBB_DIRECT_MODEL_PATH": crop_obb_model_path,
+                "YOLO_SEQ_DETECT_IMGSZ": max(frame_size),
+                "YOLO_SEQ_STAGE2_IMGSZ": crop_size,
+            }
+        )
+        t0 = time.perf_counter()
+        YOLOOBBDetector(params)
+        result.compile_ms = (time.perf_counter() - t0) * 1000.0
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Sequential compile benchmark failed [%s]: %s", runtime, exc)
+    return result
+
+
+def bench_headtail(
+    model_path: str,
+    runtime: str,
+    warmup: int,
+    iterations: int,
+    batch_size: int,
+    frame_size: tuple[int, int],
+    crop_size: int,
+    trt_workspace_gb: float = 4.0,
+    trt_build_batch_size: int | None = None,
+) -> BenchmarkResult:
+    """Benchmark detector-side head-tail analysis over synthetic OBB crops."""
+    result = BenchmarkResult(
+        model_type="headtail",
+        model_path=model_path,
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=batch_size,
+        input_shape=(crop_size, crop_size),
+        warmup_iters=warmup,
+        bench_iters=iterations,
+    )
+    try:
+        detector = _make_detector_runtime_stub(
+            runtime,
+            model_path,
+            batch_size=batch_size,
+            trt_workspace_gb=trt_workspace_gb,
+            trt_build_batch_size=trt_build_batch_size,
+        )
+        detector.params["YOLO_HEADTAIL_MODEL_PATH"] = model_path
+        detector._load_headtail_model(model_path)
+        analyzer = detector._headtail_analyzer
+        if analyzer is None or not analyzer.is_available:
+            raise RuntimeError("failed to load head-tail model")
+        if (
+            _normalize_runtime(runtime)
+            in {
+                "tensorrt",
+                "onnx_coreml",
+                "onnx_cpu",
+                "onnx_cuda",
+                "onnx_rocm",
+            }
+            and analyzer.backend != "yolo"
+        ):
+            raise RuntimeError(
+                "head-tail exported runtimes are only supported for YOLO classify checkpoints"
+            )
+
+        frame = make_synthetic_frame(*frame_size)
+        obb_corners = make_synthetic_obb_corners(
+            batch_size, frame_size[0], frame_size[1], crop_size
+        )
+
+        for _ in range(warmup):
+            detector._compute_headtail_hints(frame, obb_corners)
+
+        for _ in range(iterations):
+            gc.disable()
+            t0 = time.perf_counter()
+            detector._compute_headtail_hints(frame, obb_corners)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            gc.enable()
+            result.latencies_ms.append(elapsed_ms)
+
+        result.compute_stats()
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Head-tail benchmark failed [%s]: %s", runtime, exc)
+    return result
+
+
+def bench_headtail_compile(
+    model_path: str,
+    runtime: str,
+    *,
+    force_rebuild: bool = True,
+) -> CompileBenchmarkResult:
+    """Benchmark export/build time for detector-side YOLO head-tail models."""
+    rt = _normalize_runtime(runtime)
+    result = CompileBenchmarkResult(
+        model_type="headtail",
+        model_path=model_path,
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=1,
+    )
+    if rt not in {"tensorrt", "onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+        result.success = False
+        result.error = "compile benchmark only supports TensorRT/ONNX runtimes"
+        return result
+
+    source_path = Path(model_path).expanduser().resolve()
+    if source_path.suffix.lower() != ".pt":
+        result.success = False
+        result.error = (
+            "head-tail compile benchmark only supports YOLO classify .pt checkpoints"
+        )
+        return result
+
+    artifact_path = _resolve_aux_artifact_path(model_path, runtime, "classify", 1)
+    if artifact_path is not None:
+        result.artifact_path = str(artifact_path)
+        result.reused_existing = artifact_path.exists()
+        if force_rebuild:
+            _remove_artifact_pair(artifact_path)
+
+    try:
+        detector = _make_detector_runtime_stub(runtime, model_path, batch_size=1)
+        t0 = time.perf_counter()
+        artifact = detector._prepare_runtime_artifact_for_task(
+            model_path, task="classify"
+        )
+        result.compile_ms = (time.perf_counter() - t0) * 1000.0
+        result.artifact_path = str(artifact)
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Head-tail compile benchmark failed [%s]: %s", runtime, exc)
+    return result
+
+
+def bench_classify_compile(
+    model_path: str,
+    runtime: str,
+    batch_size: int,
+    *,
+    force_rebuild: bool = True,
+) -> CompileBenchmarkResult:
+    """Benchmark export time for classification models that derive ONNX artifacts."""
+    rt = _normalize_runtime(runtime)
+    result = CompileBenchmarkResult(
+        model_type="classify",
+        model_path=model_path,
+        runtime=runtime,
+        runtime_label=runtime_label(runtime),
+        batch_size=int(batch_size),
+    )
+    if rt not in {"tensorrt", "onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+        result.success = False
+        result.error = "compile benchmark only supports TensorRT/ONNX runtimes"
+        return result
+
+    artifact_path = _resolve_classify_artifact_path(model_path)
+    result.artifact_path = str(artifact_path)
+    result.reused_existing = artifact_path.exists()
+    if force_rebuild:
+        artifact_path.unlink(missing_ok=True)
+
+    try:
+        from hydra_suite.core.identity.classification.cnn import (
+            CNNIdentityBackend,
+            CNNIdentityConfig,
+        )
+
+        backend = CNNIdentityBackend(
+            config=CNNIdentityConfig(
+                model_path=model_path,
+                confidence=0.5,
+                batch_size=batch_size,
+            ),
+            model_path=model_path,
+            compute_runtime=runtime,
+        )
+        t0 = time.perf_counter()
+        backend._ensure_loaded()
+        result.compile_ms = (time.perf_counter() - t0) * 1000.0
+        backend.close()
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        logger.warning("Classification compile benchmark failed [%s]: %s", runtime, exc)
+    return result
 
 
 def bench_obb(
@@ -377,7 +957,7 @@ def bench_obb_compile(
         runtime_label=runtime_label(runtime),
         batch_size=int(trt_build_batch_size or batch_size),
     )
-    if rt not in {"tensorrt", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+    if rt not in {"tensorrt", "onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
         result.success = False
         result.error = "compile benchmark only supports TensorRT/ONNX runtimes"
         return result
@@ -430,6 +1010,7 @@ def _runtime_to_pose_flavor(runtime: str) -> tuple[str, str]:
         "mps": ("native", "mps"),
         "cuda": ("native", "cuda:0"),
         "rocm": ("native", "cuda:0"),
+        "onnx_coreml": ("onnx", "mps"),
         "onnx_cpu": ("onnx", "cpu"),
         "onnx_cuda": ("onnx", "cuda:0"),
         "onnx_rocm": ("onnx", "cuda:0"),
@@ -535,7 +1116,7 @@ def bench_pose_compile(
         runtime_label=runtime_label(runtime),
         batch_size=int(batch_size),
     )
-    if rt not in {"tensorrt", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
+    if rt not in {"tensorrt", "onnx_coreml", "onnx_cpu", "onnx_cuda", "onnx_rocm"}:
         result.success = False
         result.error = "compile benchmark only supports TensorRT/ONNX runtimes"
         return result
@@ -652,6 +1233,12 @@ def _append_model_path(found: dict[str, list[str]], task_key: str, path: Path) -
         found[task_key].append(full)
 
 
+def _maybe_append_headtail_path(found: dict[str, list[str]], path: Path) -> None:
+    parts = {part.lower() for part in path.parts}
+    if "orientation" in parts or "headtail" in parts or "head_tail" in parts:
+        _append_model_path(found, "headtail", path)
+
+
 def _load_registry_models(
     registry_path: Path,
     found: dict[str, list[str]],
@@ -674,6 +1261,8 @@ def _load_registry_models(
         task_key = family_map.get(family)
         if task_key is not None:
             _append_model_path(found, task_key, path)
+            if task_key == "classify":
+                _maybe_append_headtail_path(found, path)
 
 
 def _scan_registered_model_dirs(found: dict[str, list[str]]) -> None:
@@ -690,12 +1279,20 @@ def _scan_registered_model_dirs(found: dict[str, list[str]]) -> None:
             continue
         for path in scan_dir.rglob(pattern):
             _append_model_path(found, task_key, path)
+            if task_key == "classify":
+                _maybe_append_headtail_path(found, path)
 
 
 def _find_models_in_registry() -> dict[str, list[str]]:
     """Scan the model registry for available models by task family."""
     registry_path = _MODELS_DIR / "model_registry.json"
-    found: dict[str, list[str]] = {"obb": [], "detect": [], "pose": [], "classify": []}
+    found: dict[str, list[str]] = {
+        "obb": [],
+        "detect": [],
+        "pose": [],
+        "classify": [],
+        "headtail": [],
+    }
 
     _load_registry_models(registry_path, found)
     _scan_registered_model_dirs(found)
@@ -823,12 +1420,14 @@ def _print_results_summary(results: list["BenchmarkResult"]) -> None:
     print("║" + " FINAL RESULTS SUMMARY ".center(148) + "║")
     print("╚" + "═" * 148 + "╝")
 
-    section_order = ["obb", "detect", "pose", "classify"]
+    section_order = ["obb", "detect", "sequential", "pose", "classify", "headtail"]
     section_labels = {
         "obb": "OBB Detection",
         "detect": "Detection (first-stage)",
+        "sequential": "Sequential Detect + Crop OBB",
         "pose": "Pose Estimation",
         "classify": "Classification",
+        "headtail": "Head-Tail Analysis",
     }
 
     for model_type in section_order:
@@ -962,6 +1561,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to a classification model (.pth/.pt). Auto-discovered if omitted.",
     )
     p.add_argument(
+        "--headtail-model",
+        type=str,
+        default=None,
+        help="Path to a detector-side head-tail model (.pt/.pth). Auto-discovered from orientation models when possible.",
+    )
+    p.add_argument(
+        "--seq-detect-model",
+        type=str,
+        default=None,
+        help="Path to the stage-1 detect model for sequential benchmarking.",
+    )
+    p.add_argument(
+        "--seq-crop-obb-model",
+        type=str,
+        default=None,
+        help="Path to the stage-2 cropped OBB model for sequential benchmarking.",
+    )
+    p.add_argument(
         "--runtimes",
         nargs="*",
         default=None,
@@ -1049,6 +1666,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip classification benchmarks.",
     )
     p.add_argument(
+        "--skip-headtail",
+        action="store_true",
+        help="Skip detector-side head-tail benchmarks.",
+    )
+    p.add_argument(
+        "--skip-sequential",
+        action="store_true",
+        help="Skip sequential detect-plus-crop OBB benchmarks.",
+    )
+    p.add_argument(
         "--output-json",
         type=str,
         default=None,
@@ -1078,6 +1705,7 @@ def _discover_models(args, registry: dict) -> dict:
         "detect": ("skip_detect", "detect_model"),
         "pose": ("skip_pose", "pose_model"),
         "classify": ("skip_classify", "classify_model"),
+        "headtail": ("skip_headtail", "headtail_model"),
     }
     result: dict[str, list[str]] = {}
     for task, (skip_flag, model_flag) in tasks.items():
@@ -1094,6 +1722,38 @@ def _discover_models(args, registry: dict) -> dict:
     return result
 
 
+def _discover_sequential_pair(args, models: dict) -> tuple[str, str] | None:
+    if bool(getattr(args, "skip_sequential", False)):
+        return None
+
+    seq_detect_model = str(getattr(args, "seq_detect_model", "") or "").strip()
+    seq_crop_obb_model = str(getattr(args, "seq_crop_obb_model", "") or "").strip()
+    if bool(seq_detect_model) != bool(seq_crop_obb_model):
+        logger.info(
+            "Sequential benchmarking requires both --seq-detect-model and --seq-crop-obb-model."
+        )
+        return None
+    if seq_detect_model and seq_crop_obb_model:
+        return seq_detect_model, seq_crop_obb_model
+
+    detect_models = list(models.get("detect", []) or [])
+    cropped_obb_models = [
+        m for m in (models.get("obb", []) or []) if _is_cropped_model(m)
+    ]
+    if len(detect_models) == 1 and len(cropped_obb_models) == 1:
+        logger.info(
+            "Auto-paired sequential benchmark: detect=%s crop_obb=%s",
+            Path(detect_models[0]).name,
+            Path(cropped_obb_models[0]).name,
+        )
+        return detect_models[0], cropped_obb_models[0]
+    if detect_models and cropped_obb_models:
+        logger.info(
+            "Multiple sequential candidates found; pass --seq-detect-model and --seq-crop-obb-model to select a pair."
+        )
+    return None
+
+
 def _run_compile_benchmarks(
     args,
     models: dict,
@@ -1104,7 +1764,13 @@ def _run_compile_benchmarks(
     """Run compile-time benchmarks and export results."""
     compile_results: list[CompileBenchmarkResult] = []
     force_rebuild = not args.keep_existing_artifacts
-    compile_runtimes = {"tensorrt", "onnx_cpu", "onnx_cuda", "onnx_rocm"}
+    compile_runtimes = {
+        "tensorrt",
+        "onnx_coreml",
+        "onnx_cpu",
+        "onnx_cuda",
+        "onnx_rocm",
+    }
 
     _run_obb_compile_benchmarks(
         args,
@@ -1134,10 +1800,35 @@ def _run_compile_benchmarks(
         compile_results,
     )
 
-    if models.get("classify"):
-        logger.info(
-            "Classification compile benchmark is not implemented; skipping classification models."
+    sequential_pair = _discover_sequential_pair(args, models)
+    if sequential_pair is not None:
+        _run_sequential_compile_benchmarks(
+            args,
+            sequential_pair,
+            runtimes,
+            frame_size,
+            force_rebuild,
+            compile_runtimes,
+            compile_results,
         )
+
+    _run_classify_compile_benchmarks(
+        args,
+        models.get("classify", []),
+        runtimes,
+        force_rebuild,
+        compile_runtimes,
+        compile_results,
+    )
+
+    _run_headtail_compile_benchmarks(
+        args,
+        models.get("headtail", []),
+        runtimes,
+        force_rebuild,
+        compile_runtimes,
+        compile_results,
+    )
 
     _print_compile_overall_summary(compile_results)
 
@@ -1284,6 +1975,115 @@ def _run_pose_compile_benchmarks(
     _print_footer(len(group), sum(1 for r in group if r.success))
 
 
+def _run_sequential_compile_benchmarks(
+    args,
+    sequential_pair: tuple[str, str],
+    runtimes: list,
+    frame_size: tuple,
+    force_rebuild: bool,
+    compile_runtimes: set[str],
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    seq_runtimes = _compile_runtimes_for_pipeline(
+        runtimes,
+        "yolo_obb_detection",
+        compile_runtimes,
+    )
+    if not seq_runtimes:
+        return
+    detect_model, crop_obb_model = sequential_pair
+    start_idx = len(compile_results)
+    print(f"\n{'═' * 60}")
+    print("  Sequential Detect + Crop OBB Compile Benchmarks")
+    print(f"{'═' * 60}")
+    _print_compile_header()
+    for rt in seq_runtimes:
+        for bs in args.batch_sizes:
+            result = bench_sequential_compile(
+                detect_model,
+                crop_obb_model,
+                rt,
+                bs,
+                frame_size,
+                args.crop_size,
+                force_rebuild=force_rebuild,
+                trt_workspace_gb=args.tensorrt_workspace_gb,
+                trt_build_batch_size=args.tensorrt_build_batch_size,
+            )
+            compile_results.append(result)
+            _print_compile_result(result)
+    group = compile_results[start_idx:]
+    _print_footer(len(group), sum(1 for r in group if r.success))
+
+
+def _run_classify_compile_benchmarks(
+    args,
+    classify_models: list[str],
+    runtimes: list,
+    force_rebuild: bool,
+    compile_runtimes: set[str],
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    if not classify_models:
+        return
+    cls_runtimes = _compile_runtimes_for_pipeline(
+        runtimes,
+        "tiny_classify",
+        compile_runtimes,
+    )
+    if not cls_runtimes:
+        return
+    start_idx = len(compile_results)
+    print(f"\n{'═' * 60}")
+    print("  Classification Compile Benchmarks")
+    print(f"{'═' * 60}")
+    _print_compile_header()
+    for model in classify_models:
+        for rt in cls_runtimes:
+            for bs in args.batch_sizes:
+                result = bench_classify_compile(
+                    model,
+                    rt,
+                    bs,
+                    force_rebuild=force_rebuild,
+                )
+                compile_results.append(result)
+                _print_compile_result(result)
+    group = compile_results[start_idx:]
+    _print_footer(len(group), sum(1 for r in group if r.success))
+
+
+def _run_headtail_compile_benchmarks(
+    args,
+    headtail_models: list[str],
+    runtimes: list,
+    force_rebuild: bool,
+    compile_runtimes: set[str],
+    compile_results: list[CompileBenchmarkResult],
+) -> None:
+    if not headtail_models:
+        return
+    ht_runtimes = [runtime for runtime in runtimes if runtime in compile_runtimes]
+    if not ht_runtimes:
+        return
+    start_idx = len(compile_results)
+    print(f"\n{'═' * 60}")
+    print("  Head-Tail Compile Benchmarks")
+    print(f"{'═' * 60}")
+    _print_compile_header()
+    for model in headtail_models:
+        for rt in ht_runtimes:
+            result = bench_headtail_compile(
+                model,
+                rt,
+                force_rebuild=force_rebuild,
+            )
+            compile_results.append(result)
+            _print_compile_result(result)
+    group = compile_results[start_idx:]
+    _print_footer(len(group), sum(1 for r in group if r.success))
+
+
 def _print_compile_overall_summary(
     compile_results: list[CompileBenchmarkResult],
 ) -> None:
@@ -1369,15 +2169,13 @@ def _run_detect_benchmarks(
         logger.info("Benchmarking detect model: %s", Path(model).name)
         for rt in det_runtimes:
             for bs in args.batch_sizes:
-                r = bench_obb(
+                r = bench_detect(
                     model,
                     rt,
                     args.warmup,
                     args.iterations,
                     bs,
                     frame_size,
-                    imgsz=max(frame_size),
-                    model_type="detect",
                     trt_workspace_gb=args.tensorrt_workspace_gb,
                     trt_build_batch_size=args.tensorrt_build_batch_size,
                 )
@@ -1453,6 +2251,95 @@ def _run_classify_benchmarks(
     )
 
 
+def _run_headtail_benchmarks(
+    args,
+    headtail_models: list,
+    runtimes: list,
+    frame_size: tuple,
+    all_results: list,
+) -> None:
+    if not headtail_models:
+        return
+    headtail_runtimes = [
+        r
+        for r in runtimes
+        if r in supported_runtimes_for_pipeline("tiny_classify")
+        or r in supported_runtimes_for_pipeline("yolo_obb_detection")
+    ]
+    print(f"\n{'═' * 60}")
+    print("  Head-Tail Benchmarks")
+    print(
+        f"  Models: {len(headtail_models)} │ Runtimes: {len(headtail_runtimes)} │ Batch sizes: {args.batch_sizes}"
+    )
+    print(f"{'═' * 60}")
+    _print_header()
+    for model in headtail_models:
+        logger.info("Benchmarking head-tail model: %s", Path(model).name)
+        for rt in headtail_runtimes:
+            for bs in args.batch_sizes:
+                r = bench_headtail(
+                    model,
+                    rt,
+                    args.warmup,
+                    args.iterations,
+                    bs,
+                    frame_size,
+                    args.crop_size,
+                    trt_workspace_gb=args.tensorrt_workspace_gb,
+                    trt_build_batch_size=args.tensorrt_build_batch_size,
+                )
+                all_results.append(r)
+                _print_result(r)
+    _print_footer(
+        sum(1 for r in all_results if r.model_type == "headtail"),
+        sum(1 for r in all_results if r.model_type == "headtail" and r.success),
+    )
+
+
+def _run_sequential_benchmarks(
+    args,
+    sequential_pair: tuple[str, str],
+    runtimes: list,
+    frame_size: tuple,
+    all_results: list,
+) -> None:
+    seq_runtimes = [
+        r
+        for r in runtimes
+        if r in supported_runtimes_for_pipeline("yolo_obb_detection")
+    ]
+    if not seq_runtimes:
+        return
+    detect_model, crop_obb_model = sequential_pair
+    print(f"\n{'═' * 60}")
+    print("  Sequential Detect + Crop OBB Benchmarks")
+    print(
+        f"  Detect: {Path(detect_model).name} │ Crop OBB: {Path(crop_obb_model).name} │ Runtimes: {len(seq_runtimes)} │ Batch sizes: {args.batch_sizes}"
+    )
+    print(f"{'═' * 60}")
+    _print_header()
+    for rt in seq_runtimes:
+        for bs in args.batch_sizes:
+            r = bench_sequential(
+                detect_model,
+                crop_obb_model,
+                rt,
+                args.warmup,
+                args.iterations,
+                bs,
+                frame_size,
+                args.crop_size,
+                trt_workspace_gb=args.tensorrt_workspace_gb,
+                trt_build_batch_size=args.tensorrt_build_batch_size,
+            )
+            all_results.append(r)
+            _print_result(r)
+    _print_footer(
+        sum(1 for r in all_results if r.model_type == "sequential"),
+        sum(1 for r in all_results if r.model_type == "sequential" and r.success),
+    )
+
+
 def _print_overall_summary(all_results: list) -> None:
     """Print overall benchmark summary and top-5 fastest configs."""
     n_total = len(all_results)
@@ -1491,6 +2378,7 @@ def main() -> None:
 
     registry = _find_models_in_registry()
     models = _discover_models(args, registry)
+    sequential_pair = _discover_sequential_pair(args, models)
 
     if args.runtimes:
         runtimes = [_normalize_runtime(r) for r in args.runtimes]
@@ -1516,11 +2404,21 @@ def main() -> None:
             args, models["detect"], runtimes, frame_size, all_results
         )
 
+    if sequential_pair is not None:
+        _run_sequential_benchmarks(
+            args, sequential_pair, runtimes, frame_size, all_results
+        )
+
     if models["pose"]:
         _run_pose_benchmarks(args, models["pose"], runtimes, all_results)
 
     if models["classify"]:
         _run_classify_benchmarks(args, models["classify"], runtimes, all_results)
+
+    if models["headtail"]:
+        _run_headtail_benchmarks(
+            args, models["headtail"], runtimes, frame_size, all_results
+        )
 
     _print_overall_summary(all_results)
 

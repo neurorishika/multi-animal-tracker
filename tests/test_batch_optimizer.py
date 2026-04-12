@@ -46,3 +46,21 @@ def test_batch_optimizer_auto_mode_returns_positive_batch() -> None:
     optimizer.available_memory = 16000
     batch = optimizer.estimate_batch_size(1280, 720, "yolo26s-obb.pt")
     assert batch >= 1
+
+
+def test_batch_optimizer_realtime_forces_frame_batch_one() -> None:
+    optimizer = BatchOptimizer(
+        {
+            "enable_yolo_batching": True,
+            "yolo_batch_size_mode": "manual",
+            "yolo_manual_batch_size": 32,
+            "tracking_realtime_mode": True,
+            "tracking_workflow_mode": "realtime",
+        }
+    )
+    optimizer.device_type = "mps"
+    optimizer.available_memory = 16000
+
+    batch = optimizer.estimate_batch_size(1280, 720, "yolo26s-obb.pt")
+
+    assert batch == 1

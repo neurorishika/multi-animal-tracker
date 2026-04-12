@@ -8,6 +8,8 @@ import hashlib
 import logging
 import shutil
 import tempfile
+import time
+from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -20,13 +22,702 @@ from hydra_suite.core.identity.pose.artifacts import (
     write_artifact_meta,
 )
 from hydra_suite.core.identity.pose.backends.sleap_utils import (
+    derive_sleap_export_input_hw,
     looks_like_sleap_export_path,
     run_cli_command,
 )
 from hydra_suite.core.identity.pose.types import PoseResult, PoseRuntimeConfig
-from hydra_suite.core.identity.pose.utils import empty_pose_result, summarize_keypoints
+from hydra_suite.core.identity.pose.utils import (
+    coerce_prediction_batch,
+    empty_pose_result,
+    summarize_keypoints,
+)
+from hydra_suite.runtime.compute_runtime import derive_onnx_execution_providers
 
 logger = logging.getLogger(__name__)
+
+ExportTransform = Tuple[float, float, float, int, int]
+
+
+def _resolve_export_model_path(
+    exported_model_path: str,
+    runtime_flavor: str,
+) -> Path:
+    path = Path(str(exported_model_path or "")).expanduser().resolve()
+    runtime = str(runtime_flavor or "onnx").strip().lower()
+    if path.is_dir():
+        if runtime == "onnx":
+            matches = sorted(path.rglob("*.onnx"))
+            if not matches:
+                raise RuntimeError(
+                    f"No ONNX artifact found in export directory: {path}"
+                )
+            return matches[0]
+        matches = sorted(list(path.rglob("*.engine")) + list(path.rglob("*.trt")))
+        if not matches:
+            onnx_matches = sorted(path.rglob("*.onnx"))
+            if onnx_matches:
+                return onnx_matches[0]
+            raise RuntimeError(
+                f"No TensorRT artifact found in export directory: {path}"
+            )
+        return matches[0]
+    return path
+
+
+def _extract_meta_value(meta: Any, keys: Sequence[str], default: Any = None) -> Any:
+    for key in keys:
+        if isinstance(meta, dict) and key in meta:
+            return meta.get(key)
+        if hasattr(meta, key):
+            return getattr(meta, key)
+    return default
+
+
+def _detect_export_input_spec(
+    exported_model_path: str,
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    input_hw: Optional[Tuple[int, int]] = None
+    input_channels: Optional[int] = None
+    try:
+        meta_path = Path(str(exported_model_path)).expanduser().resolve()
+        if meta_path.is_file():
+            meta_path = meta_path.parent
+        metadata_file = None
+        for candidate_name in (
+            "metadata.json",
+            "export_metadata.json",
+            ".runtime_meta.json",
+        ):
+            candidate = meta_path / candidate_name
+            if candidate.exists() and candidate.is_file():
+                metadata_file = candidate
+                break
+        if metadata_file is None:
+            return None, None
+        import json
+
+        meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+
+    hw = _extract_meta_value(
+        meta,
+        ("crop_size", "crop_hw", "input_hw", "image_hw"),
+        None,
+    )
+    if isinstance(hw, (list, tuple)) and len(hw) >= 2:
+        try:
+            input_hw = (int(hw[0]), int(hw[1]))
+        except Exception:
+            input_hw = None
+
+    input_shape = _extract_meta_value(meta, ("input_image_shape", "input_shape"), None)
+    if input_shape is not None:
+        try:
+            arr = np.asarray(input_shape).reshape((-1,))
+            if arr.size >= 4:
+                if int(arr[-1]) in (1, 3):
+                    input_channels = int(arr[-1])
+                    input_hw = (int(arr[-3]), int(arr[-2]))
+                elif int(arr[1]) in (1, 3):
+                    input_channels = int(arr[1])
+                    input_hw = (int(arr[-2]), int(arr[-1]))
+        except Exception:
+            pass
+
+    channels = _extract_meta_value(
+        meta, ("input_channels", "channels", "num_channels"), None
+    )
+    if channels is not None:
+        try:
+            input_channels = int(channels)
+        except Exception:
+            pass
+    return input_hw, input_channels
+
+
+def _detect_onnx_input_spec(
+    session: Any,
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    if session is None or not hasattr(session, "get_inputs"):
+        return None, None
+    try:
+        inputs = session.get_inputs()
+    except Exception:
+        return None, None
+    if not inputs:
+        return None, None
+
+    try:
+        shape = list(getattr(inputs[0], "shape", []) or [])
+    except Exception:
+        shape = []
+    dims: List[int] = []
+    for dim in shape:
+        try:
+            dims.append(int(dim))
+        except Exception:
+            dims.append(-1)
+
+    input_hw = None
+    input_channels = None
+    if len(dims) >= 4:
+        if dims[-1] in (1, 3):
+            input_channels = int(dims[-1])
+            if dims[-3] > 0 and dims[-2] > 0:
+                input_hw = (int(dims[-3]), int(dims[-2]))
+        elif dims[1] in (1, 3):
+            input_channels = int(dims[1])
+            if dims[-2] > 0 and dims[-1] > 0:
+                input_hw = (int(dims[-2]), int(dims[-1]))
+    return input_hw, input_channels
+
+
+def _detect_onnx_input_format(session: Any) -> Optional[Dict[str, Any]]:
+    if session is None or not hasattr(session, "get_inputs"):
+        return None
+    try:
+        inputs = session.get_inputs()
+        if not inputs:
+            return None
+        inp = inputs[0]
+        raw_type = str(getattr(inp, "type", "")).lower()
+        shape = list(getattr(inp, "shape", []) or [])
+    except Exception:
+        return None
+
+    dims: List[int] = []
+    for dim in shape:
+        try:
+            dims.append(int(dim))
+        except Exception:
+            dims.append(-1)
+
+    layout = "nhwc"
+    if len(dims) >= 4:
+        if dims[1] in (1, 3):
+            layout = "nchw"
+        elif dims[-1] in (1, 3):
+            layout = "nhwc"
+    return {"layout": layout, "is_float": "float" in raw_type}
+
+
+def _detect_onnx_min_batch(session: Any) -> Optional[int]:
+    if session is None or not hasattr(session, "get_inputs"):
+        return None
+    try:
+        inputs = session.get_inputs()
+        if not inputs:
+            return None
+        shape = getattr(inputs[0], "shape", [])
+        if not shape:
+            return None
+        batch = int(shape[0])
+        return batch if batch > 0 else None
+    except Exception:
+        return None
+
+
+def _prepare_export_crop(
+    crop: np.ndarray,
+    input_hw: Tuple[int, int],
+    input_channels: Optional[int],
+) -> Tuple[np.ndarray, ExportTransform]:
+    arr = np.asarray(crop, dtype=np.uint8)
+    if arr.ndim == 2:
+        arr = arr[:, :, None]
+    if arr.ndim != 3:
+        raise RuntimeError(
+            f"Invalid crop shape for SLEAP exported inference: {arr.shape}"
+        )
+    if arr.shape[2] > 3:
+        arr = arr[:, :, :3]
+
+    orig_h, orig_w = int(arr.shape[0]), int(arr.shape[1])
+    if input_channels == 1 and arr.shape[2] != 1:
+        arr = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)[:, :, None]
+    elif input_channels is None or input_channels == 3:
+        if arr.shape[2] == 1:
+            arr = np.repeat(arr, 3, axis=2)
+        elif arr.shape[2] == 3:
+            arr = arr[:, :, ::-1].copy()
+
+    transform: ExportTransform = (1.0, 0.0, 0.0, orig_w, orig_h)
+
+    if input_hw is not None:
+        out_h, out_w = int(input_hw[0]), int(input_hw[1])
+        if out_h > 0 and out_w > 0 and (orig_h != out_h or orig_w != out_w):
+            scale = min(float(out_w) / float(orig_w), float(out_h) / float(orig_h))
+            new_w = max(1, int(round(float(orig_w) * scale)))
+            new_h = max(1, int(round(float(orig_h) * scale)))
+            pad_x = int((out_w - new_w) // 2)
+            pad_y = int((out_h - new_h) // 2)
+            if arr.shape[2] == 1:
+                resized = cv2.resize(
+                    arr[:, :, 0],
+                    (new_w, new_h),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                canvas = np.zeros((out_h, out_w, 1), dtype=np.uint8)
+                canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w, 0] = resized
+                arr = canvas
+            else:
+                resized = cv2.resize(
+                    arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR
+                )
+                canvas = np.zeros((out_h, out_w, arr.shape[2]), dtype=np.uint8)
+                canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+                arr = canvas
+            transform = (float(scale), float(pad_x), float(pad_y), orig_w, orig_h)
+
+    return np.asarray(arr, dtype=np.uint8), transform
+
+
+def _restore_export_keypoints(
+    keypoints: np.ndarray,
+    transform: ExportTransform,
+) -> np.ndarray:
+    arr = np.asarray(keypoints, dtype=np.float32).copy()
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return arr
+    scale, pad_x, pad_y, orig_w, orig_h = transform
+    scale = float(scale) if float(scale) > 0.0 else 1.0
+    arr[:, 0] = (arr[:, 0] - float(pad_x)) / scale
+    arr[:, 1] = (arr[:, 1] - float(pad_y)) / scale
+    arr[:, 0] = np.clip(arr[:, 0], 0.0, float(max(0, int(orig_w) - 1)))
+    arr[:, 1] = np.clip(arr[:, 1], 0.0, float(max(0, int(orig_h) - 1)))
+    return arr
+
+
+def _coerce_export_output(
+    outputs: Any,
+    output_names: Sequence[str],
+    batch_size: int,
+) -> List[Optional[np.ndarray]]:
+    if isinstance(outputs, dict):
+        raw = outputs
+    elif isinstance(outputs, (list, tuple)):
+        raw = {
+            str(name): value for name, value in zip(list(output_names), list(outputs))
+        }
+    else:
+        raw = outputs
+    return coerce_prediction_batch(raw, batch_size)
+
+
+def _canonical_export_runtime(
+    runtime_request: str,
+    runtime_flavor: str,
+    device: str,
+) -> str:
+    req = str(runtime_request or "").strip().lower().replace("-", "_")
+    rt = str(runtime_flavor or "onnx").strip().lower()
+    dev = str(device or "cpu").strip().lower()
+    if req in {"onnx_coreml", "onnx_mps"}:
+        return "onnx_coreml"
+    if req == "onnx_rocm":
+        return "onnx_rocm"
+    if req == "onnx_cuda":
+        return "onnx_cuda"
+    if req == "onnx_cpu":
+        return "onnx_cpu"
+    if req.startswith("tensorrt") or rt == "tensorrt":
+        return "tensorrt"
+    if dev == "mps":
+        return "onnx_coreml"
+    if dev.startswith("cuda"):
+        return "onnx_cuda"
+    return "onnx_cpu"
+
+
+class _DirectOnnxSession:
+    def __init__(
+        self,
+        model_path: Path,
+        compute_runtime: str,
+    ) -> None:
+        import onnxruntime as ort
+
+        self._session = ort.InferenceSession(
+            str(model_path),
+            providers=derive_onnx_execution_providers(compute_runtime),
+        )
+        self.input_name = self._session.get_inputs()[0].name
+        self.output_names = [output.name for output in self._session.get_outputs()]
+        self.input_hw, self.input_channels = _detect_onnx_input_spec(self._session)
+        self.input_format = _detect_onnx_input_format(self._session)
+        self.model_min_batch = _detect_onnx_min_batch(self._session)
+
+    def run(self, batch: np.ndarray) -> Any:
+        return self._session.run(None, {self.input_name: batch})
+
+    def close(self) -> None:
+        self._session = None
+
+
+class _DirectTensorRTEngine:
+    def __init__(self, model_path: Path) -> None:
+        import tensorrt as trt
+        import torch
+
+        self._trt = trt
+        self._torch = torch
+        self._logger = trt.Logger(trt.Logger.WARNING)
+        self._runtime = trt.Runtime(self._logger)
+        self._engine_bytes = model_path.read_bytes()
+        self._engine = self._runtime.deserialize_cuda_engine(self._engine_bytes)
+        if self._engine is None:
+            raise RuntimeError(f"Failed to deserialize TensorRT engine: {model_path}")
+        self._context = self._engine.create_execution_context()
+        if self._context is None:
+            raise RuntimeError(f"Failed to create TensorRT context: {model_path}")
+
+        self.input_name = self._first_tensor_name(self._trt.TensorIOMode.INPUT)
+        self.output_names = self._tensor_names(self._trt.TensorIOMode.OUTPUT)
+        self.input_hw, self.input_channels = self._detect_input_spec()
+        self.input_format = self._detect_input_format()
+        self.model_min_batch = self._detect_min_batch()
+
+    def _tensor_names(self, mode: Any) -> List[str]:
+        names: List[str] = []
+        if hasattr(self._engine, "num_io_tensors"):
+            for idx in range(int(self._engine.num_io_tensors)):
+                name = self._engine.get_tensor_name(idx)
+                if self._engine.get_tensor_mode(name) == mode:
+                    names.append(str(name))
+            return names
+        if hasattr(self._engine, "num_bindings"):
+            for idx in range(int(self._engine.num_bindings)):
+                is_input = bool(self._engine.binding_is_input(idx))
+                if is_input == (mode == self._trt.TensorIOMode.INPUT):
+                    names.append(str(self._engine.get_binding_name(idx)))
+        return names
+
+    def _first_tensor_name(self, mode: Any) -> str:
+        names = self._tensor_names(mode)
+        if not names:
+            raise RuntimeError("TensorRT engine is missing an input tensor.")
+        return names[0]
+
+    def _tensor_shape(self, name: str) -> Tuple[int, ...]:
+        if hasattr(self._engine, "get_tensor_shape"):
+            return tuple(int(v) for v in self._engine.get_tensor_shape(name))
+        if hasattr(self._engine, "get_binding_shape"):
+            index = self._engine.get_binding_index(name)
+            return tuple(int(v) for v in self._engine.get_binding_shape(index))
+        raise RuntimeError("TensorRT engine does not expose tensor shapes.")
+
+    def _tensor_dtype(self, name: str):
+        if hasattr(self._engine, "get_tensor_dtype"):
+            return self._engine.get_tensor_dtype(name)
+        if hasattr(self._engine, "get_binding_dtype"):
+            index = self._engine.get_binding_index(name)
+            return self._engine.get_binding_dtype(index)
+        raise RuntimeError("TensorRT engine does not expose tensor dtypes.")
+
+    def _detect_input_spec(self) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+        shape = list(self._tensor_shape(self.input_name))
+        dims: List[int] = []
+        for dim in shape:
+            dims.append(int(dim) if int(dim) > 0 else -1)
+        input_hw = None
+        input_channels = None
+        if len(dims) >= 4:
+            if dims[1] in (1, 3):
+                input_channels = int(dims[1])
+                if dims[-2] > 0 and dims[-1] > 0:
+                    input_hw = (int(dims[-2]), int(dims[-1]))
+            elif dims[-1] in (1, 3):
+                input_channels = int(dims[-1])
+                if dims[-3] > 0 and dims[-2] > 0:
+                    input_hw = (int(dims[-3]), int(dims[-2]))
+        return input_hw, input_channels
+
+    def _detect_input_format(self) -> Dict[str, Any]:
+        shape = list(self._tensor_shape(self.input_name))
+        layout = "nhwc"
+        if len(shape) >= 4:
+            if int(shape[1]) in (1, 3):
+                layout = "nchw"
+            elif int(shape[-1]) in (1, 3):
+                layout = "nhwc"
+        dtype_name = str(self._tensor_dtype(self.input_name)).lower()
+        return {"layout": layout, "is_float": "float" in dtype_name}
+
+    def _detect_min_batch(self) -> Optional[int]:
+        if hasattr(self._engine, "get_tensor_profile_shape"):
+            try:
+                min_shape, _opt_shape, _max_shape = (
+                    self._engine.get_tensor_profile_shape(
+                        self.input_name,
+                        0,
+                    )
+                )
+                batch = int(min_shape[0])
+                return batch if batch > 0 else None
+            except Exception:
+                pass
+        if hasattr(self._engine, "get_profile_shape"):
+            try:
+                index = self._engine.get_binding_index(self.input_name)
+                min_shape, _opt_shape, _max_shape = self._engine.get_profile_shape(
+                    0, index
+                )
+                batch = int(min_shape[0])
+                return batch if batch > 0 else None
+            except Exception:
+                pass
+        shape = self._tensor_shape(self.input_name)
+        if shape and int(shape[0]) > 0:
+            return int(shape[0])
+        return None
+
+    def _torch_dtype(self, trt_dtype: Any):
+        np_dtype = np.dtype(self._trt.nptype(trt_dtype))
+        mapping = {
+            np.dtype(np.float32): self._torch.float32,
+            np.dtype(np.float16): self._torch.float16,
+            np.dtype(np.int32): self._torch.int32,
+            np.dtype(np.int8): self._torch.int8,
+            np.dtype(np.uint8): self._torch.uint8,
+            np.dtype(np.bool_): self._torch.bool,
+        }
+        if np_dtype not in mapping:
+            raise RuntimeError(f"Unsupported TensorRT dtype: {np_dtype}")
+        return mapping[np_dtype]
+
+    def run(self, batch: np.ndarray) -> Dict[str, np.ndarray]:
+        input_shape = tuple(int(v) for v in batch.shape)
+        if hasattr(self._context, "set_input_shape"):
+            self._context.set_input_shape(self.input_name, input_shape)
+        elif hasattr(self._context, "set_binding_shape"):
+            index = self._engine.get_binding_index(self.input_name)
+            self._context.set_binding_shape(index, input_shape)
+
+        input_dtype = self._torch_dtype(self._tensor_dtype(self.input_name))
+        input_tensor = self._torch.as_tensor(
+            np.ascontiguousarray(batch),
+            device="cuda",
+            dtype=input_dtype,
+        )
+        output_tensors: Dict[str, Any] = {}
+        if hasattr(self._context, "set_tensor_address"):
+            self._context.set_tensor_address(
+                self.input_name, int(input_tensor.data_ptr())
+            )
+            for name in self.output_names:
+                out_shape = tuple(int(v) for v in self._context.get_tensor_shape(name))
+                out_tensor = self._torch.empty(
+                    out_shape,
+                    device="cuda",
+                    dtype=self._torch_dtype(self._tensor_dtype(name)),
+                )
+                self._context.set_tensor_address(name, int(out_tensor.data_ptr()))
+                output_tensors[name] = out_tensor
+            stream = self._torch.cuda.current_stream().cuda_stream
+            ok = self._context.execute_async_v3(stream_handle=stream)
+        else:
+            bindings: List[int] = [0] * int(self._engine.num_bindings)
+            in_index = self._engine.get_binding_index(self.input_name)
+            bindings[in_index] = int(input_tensor.data_ptr())
+            for name in self.output_names:
+                out_index = self._engine.get_binding_index(name)
+                out_shape = tuple(
+                    int(v) for v in self._context.get_binding_shape(out_index)
+                )
+                out_tensor = self._torch.empty(
+                    out_shape,
+                    device="cuda",
+                    dtype=self._torch_dtype(self._tensor_dtype(name)),
+                )
+                bindings[out_index] = int(out_tensor.data_ptr())
+                output_tensors[name] = out_tensor
+            stream = self._torch.cuda.current_stream().cuda_stream
+            ok = self._context.execute_async_v2(bindings=bindings, stream_handle=stream)
+        if not ok:
+            raise RuntimeError("TensorRT inference failed.")
+        self._torch.cuda.current_stream().synchronize()
+        return {
+            name: tensor.detach().cpu().numpy()
+            for name, tensor in output_tensors.items()
+        }
+
+    def close(self) -> None:
+        self._context = None
+        self._engine = None
+        self._runtime = None
+
+
+class SleapExportedBackend:
+    """Direct HYDRA-side execution for exported SLEAP ONNX and TensorRT artifacts."""
+
+    def __init__(
+        self,
+        exported_model_path: str,
+        runtime_flavor: str,
+        runtime_request: str,
+        device: str,
+        keypoint_names: Sequence[str],
+        min_valid_conf: float = 0.2,
+        batch_size: int = 4,
+        export_input_hw: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        self.runtime_flavor = str(runtime_flavor or "onnx").strip().lower()
+        self.runtime_request = (
+            str(runtime_request or self.runtime_flavor).strip().lower()
+        )
+        self.device = str(device or "cpu").strip() or "cpu"
+        self.output_keypoint_names = [str(value) for value in keypoint_names]
+        self.min_valid_conf = float(min_valid_conf)
+        self.batch_size = max(1, int(batch_size))
+        self.model_path = _resolve_export_model_path(
+            exported_model_path, self.runtime_flavor
+        )
+        self._last_profile: Dict[str, float] = {}
+
+        metadata_hw, metadata_channels = _detect_export_input_spec(str(self.model_path))
+        derived_hw = None
+        try:
+            derived_hw = derive_sleap_export_input_hw(str(self.model_path.parent))
+        except Exception:
+            derived_hw = None
+        self._input_hw = (
+            (int(export_input_hw[0]), int(export_input_hw[1]))
+            if isinstance(export_input_hw, (tuple, list))
+            and len(export_input_hw) >= 2
+            and int(export_input_hw[0]) > 0
+            and int(export_input_hw[1]) > 0
+            else metadata_hw or derived_hw
+        )
+        self._input_channels = metadata_channels
+        self._output_names: List[str] = []
+
+        if self.runtime_flavor == "tensorrt" and self.model_path.suffix.lower() in {
+            ".engine",
+            ".trt",
+        }:
+            self._runner = _DirectTensorRTEngine(self.model_path)
+        else:
+            canonical_runtime = _canonical_export_runtime(
+                self.runtime_request,
+                self.runtime_flavor,
+                self.device,
+            )
+            self._runner = _DirectOnnxSession(self.model_path, canonical_runtime)
+
+        self._output_names = list(getattr(self._runner, "output_names", []) or [])
+        self._input_hw = getattr(self._runner, "input_hw", None) or self._input_hw
+        self._input_channels = (
+            getattr(self._runner, "input_channels", None) or self._input_channels
+        )
+        self._input_format = getattr(self._runner, "input_format", None) or {
+            "layout": "nchw",
+            "is_float": False,
+        }
+        self._model_min_batch = getattr(self._runner, "model_min_batch", None)
+
+        if self._input_hw is None:
+            raise RuntimeError(
+                "SLEAP exported runtime requires fixed input shape metadata or explicit export_input_hw."
+            )
+
+    @property
+    def preferred_input_size(self) -> int:
+        return int(max(self._input_hw or (0, 0))) if self._input_hw else 0
+
+    def warmup(self) -> None:
+        try:
+            dummy = np.zeros((32, 32, 3), dtype=np.uint8)
+            self.predict_batch([dummy])
+        except Exception:
+            logger.debug("SLEAP exported warmup skipped.", exc_info=True)
+
+    def consume_last_profile(self) -> Dict[str, float]:
+        profile = dict(self._last_profile)
+        self._last_profile = {}
+        return profile
+
+    def _prepare_batch(
+        self, crops: Sequence[np.ndarray]
+    ) -> Tuple[np.ndarray, List[ExportTransform]]:
+        prepared: List[np.ndarray] = []
+        transforms: List[ExportTransform] = []
+        for crop in crops:
+            arr, transform = _prepare_export_crop(
+                crop,
+                self._input_hw,
+                self._input_channels,
+            )
+            prepared.append(arr)
+            transforms.append(transform)
+
+        batch = np.stack(prepared, axis=0)
+        if self._input_format.get("is_float", True):
+            batch = batch.astype(np.float32) / 255.0
+        else:
+            batch = batch.astype(np.uint8, copy=False)
+        if self._input_format.get("layout") == "nchw" and batch.ndim == 4:
+            batch = np.transpose(batch, (0, 3, 1, 2))
+        return np.ascontiguousarray(batch), transforms
+
+    def predict_batch(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
+        self._last_profile = {}
+        if not crops:
+            return []
+
+        effective_batch = max(self.batch_size, int(self._model_min_batch or 1))
+        outputs: List[PoseResult] = []
+        total_transport_s = 0.0
+        total_inference_s = 0.0
+        total_postprocess_s = 0.0
+
+        for start in range(0, len(crops), effective_batch):
+            chunk = list(crops[start : start + effective_batch])
+            if not chunk:
+                continue
+            raw_count = len(chunk)
+            if raw_count < effective_batch:
+                chunk.extend([chunk[-1]] * (effective_batch - raw_count))
+
+            prep_start = time.perf_counter()
+            batch, transforms = self._prepare_batch(chunk)
+            total_transport_s += time.perf_counter() - prep_start
+
+            infer_start = time.perf_counter()
+            raw_outputs = self._runner.run(batch)
+            total_inference_s += time.perf_counter() - infer_start
+
+            postprocess_start = time.perf_counter()
+            parsed = _coerce_export_output(raw_outputs, self._output_names, len(chunk))
+            for index in range(raw_count):
+                arr = parsed[index] if index < len(parsed) else None
+                if arr is None:
+                    outputs.append(empty_pose_result())
+                    continue
+                arr = np.asarray(arr, dtype=np.float32)
+                if arr.ndim != 2 or arr.shape[1] < 2:
+                    outputs.append(empty_pose_result())
+                    continue
+                arr = _restore_export_keypoints(arr, transforms[index])
+                if arr.shape[1] == 2:
+                    arr = np.column_stack(
+                        (arr, np.zeros((arr.shape[0],), dtype=np.float32))
+                    )
+                outputs.append(summarize_keypoints(arr[:, :3], self.min_valid_conf))
+            total_postprocess_s += time.perf_counter() - postprocess_start
+
+        self._last_profile = {
+            "pose_transport_s": total_transport_s,
+            "pose_inference_s": total_inference_s,
+            "pose_postprocess_s": total_postprocess_s,
+        }
+        return outputs
+
+    def close(self) -> None:
+        closer = getattr(self._runner, "close", None)
+        if callable(closer):
+            closer()
 
 
 def _build_sleap_export_kwargs(
@@ -360,8 +1051,10 @@ class SleapServiceBackend:
             self.out_root, self.output_keypoint_names, self.skeleton_edges
         )
         self._service_started_here = False
+        self._native_in_memory_supported: Optional[bool] = None
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="hydra_posekit_")
         self._tmp_root = Path(self._tmp_dir.name)
+        self._last_profile: Dict[str, float] = {}
 
     @property
     def preferred_input_size(self) -> int:
@@ -377,13 +1070,183 @@ class SleapServiceBackend:
             self._service_started_here = (
                 not was_running
             ) and self._infer.sleap_service_running()
+            if self.runtime_flavor == "native":
+                self._native_in_memory_supported = bool(
+                    self._infer.sleap_native_array_video_supported()
+                )
         except Exception as exc:
             logger.warning("SLEAP service warmup failed: %s", exc)
 
+    def _native_in_memory_enabled(self) -> bool:
+        if self.runtime_flavor in {"onnx", "tensorrt"}:
+            return True
+        if self._native_in_memory_supported is None:
+            try:
+                self._native_in_memory_supported = bool(
+                    self._infer.sleap_native_array_video_supported()
+                )
+            except Exception:
+                self._native_in_memory_supported = False
+        return bool(self._native_in_memory_supported)
+
     def predict_batch(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
+        self._last_profile = {}
+        if not crops:
+            return []
+        if not self._native_in_memory_enabled():
+            return self._predict_batch_via_temp_files(crops)
+        try:
+            return self._predict_batch_via_shared_memory(crops)
+        except Exception:
+            logger.debug(
+                "Falling back to temporary-file SLEAP crop transport.",
+                exc_info=True,
+            )
+            return self._predict_batch_via_temp_files(crops)
+
+    def consume_last_profile(self) -> Dict[str, float]:
+        """Return and clear the most recent SLEAP batch timing profile."""
+        profile = dict(self._last_profile)
+        self._last_profile = {}
+        return profile
+
+    def _consume_service_metrics(self) -> Dict[str, float]:
+        getter = getattr(self._infer, "get_last_sleap_service_metrics", None)
+        if not callable(getter):
+            return {}
+        try:
+            return dict(getter() or {})
+        except Exception:
+            return {}
+
+    def _finalize_profile(
+        self,
+        transport_s: float,
+        service_call_s: float,
+        service_metrics: Dict[str, float],
+        local_postprocess_s: float,
+    ) -> None:
+        decode_s = float(service_metrics.get("service_decode_s", 0.0) or 0.0)
+        materialize_s = float(service_metrics.get("service_materialize_s", 0.0) or 0.0)
+        extract_s = float(service_metrics.get("service_extract_s", 0.0) or 0.0)
+        inference_s = float(service_metrics.get("service_inference_s", 0.0) or 0.0)
+        if inference_s <= 0.0:
+            inference_s = max(
+                0.0, float(service_call_s) - decode_s - materialize_s - extract_s
+            )
+        self._last_profile = {
+            "pose_transport_s": max(0.0, float(transport_s) + decode_s + materialize_s),
+            "pose_inference_s": max(0.0, inference_s),
+            "pose_postprocess_s": max(0.0, float(local_postprocess_s) + extract_s),
+        }
+
+    def _predict_batch_via_shared_memory(
+        self, crops: Sequence[np.ndarray]
+    ) -> List[PoseResult]:
         if not crops:
             return []
 
+        def _share_crop(i: int, crop: np.ndarray):
+            image_id = f"inmem_crop_{i:06d}"
+            try:
+                arr = np.ascontiguousarray(np.asarray(crop, dtype=np.uint8))
+            except Exception:
+                return image_id, None, None
+            if arr.ndim not in (2, 3) or any(int(v) <= 0 for v in arr.shape):
+                return image_id, None, None
+            shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
+            np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+            payload = {
+                "id": image_id,
+                "shape": [int(v) for v in arr.shape],
+                "dtype": "uint8",
+                "shm_name": shm.name,
+                "nbytes": int(arr.nbytes),
+            }
+            return image_id, payload, shm
+
+        transport_start = time.perf_counter()
+        encoded = [_share_crop(i, crop) for i, crop in enumerate(crops)]
+        transport_s = time.perf_counter() - transport_start
+
+        image_payloads = [payload for _, payload, _ in encoded if payload is not None]
+        valid_ids = [
+            image_id for image_id, payload, _ in encoded if payload is not None
+        ]
+        preds: Dict[str, List[Any]] = {}
+        try:
+            if valid_ids:
+                service_call_start = time.perf_counter()
+                pred_map, err = self._infer.predict(
+                    model_path=self.model_dir,
+                    image_paths=valid_ids,
+                    device="auto",
+                    imgsz=640,
+                    conf=1e-4,
+                    batch=min(self.sleap_batch, max(1, len(valid_ids))),
+                    backend="sleap",
+                    sleap_env=self.sleap_env,
+                    sleap_device=self.sleap_device,
+                    sleap_batch=min(self.sleap_batch, max(1, len(valid_ids))),
+                    sleap_max_instances=self.sleap_max_instances,
+                    sleap_runtime_flavor=self.runtime_flavor,
+                    sleap_exported_model_path=self.exported_model_path,
+                    sleap_export_input_hw=self.export_input_hw,
+                    image_payloads=image_payloads,
+                    cache_predictions=False,
+                )
+                service_call_s = time.perf_counter() - service_call_start
+                if pred_map is None:
+                    raise RuntimeError(err or "SLEAP inference failed.")
+                preds = pred_map
+            else:
+                service_call_s = 0.0
+        finally:
+            for _, _, shm in encoded:
+                if shm is None:
+                    continue
+                try:
+                    shm.close()
+                except Exception:
+                    pass
+                try:
+                    shm.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    logger.debug(
+                        "Failed to unlink temporary SLEAP shared-memory payload.",
+                        exc_info=True,
+                    )
+
+        outputs: List[PoseResult] = []
+        postprocess_start = time.perf_counter()
+        for image_id, payload, _ in encoded:
+            if payload is None:
+                outputs.append(empty_pose_result())
+                continue
+            pred = preds.get(image_id)
+            if not pred:
+                outputs.append(empty_pose_result())
+                continue
+            arr = np.asarray(pred, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[1] != 3:
+                outputs.append(empty_pose_result())
+                continue
+            outputs.append(summarize_keypoints(arr, self.min_valid_conf))
+
+        self._finalize_profile(
+            transport_s,
+            service_call_s,
+            self._consume_service_metrics(),
+            time.perf_counter() - postprocess_start,
+        )
+
+        return outputs
+
+    def _predict_batch_via_temp_files(
+        self, crops: Sequence[np.ndarray]
+    ) -> List[PoseResult]:
         from concurrent.futures import ThreadPoolExecutor
 
         def _write_crop(args):
@@ -392,36 +1255,44 @@ class SleapServiceBackend:
             ok = cv2.imwrite(str(p), crop)
             return p if ok else Path("__invalid__")
 
+        transport_start = time.perf_counter()
         with ThreadPoolExecutor(
             max_workers=min(4, len(crops)),
             thread_name_prefix="sleap-crop-write",
         ) as pool:
             paths: List[Path] = list(pool.map(_write_crop, enumerate(crops)))
+        transport_s = time.perf_counter() - transport_start
 
         valid_paths = [p for p in paths if p.exists()]
         preds: Dict[str, List[Any]] = {}
         if valid_paths:
+            service_call_start = time.perf_counter()
             pred_map, err = self._infer.predict(
                 model_path=self.model_dir,
                 image_paths=valid_paths,
                 device="auto",
                 imgsz=640,
                 conf=1e-4,
-                batch=self.sleap_batch,
+                batch=min(self.sleap_batch, max(1, len(valid_paths))),
                 backend="sleap",
                 sleap_env=self.sleap_env,
                 sleap_device=self.sleap_device,
-                sleap_batch=self.sleap_batch,
+                sleap_batch=min(self.sleap_batch, max(1, len(valid_paths))),
                 sleap_max_instances=self.sleap_max_instances,
                 sleap_runtime_flavor=self.runtime_flavor,
                 sleap_exported_model_path=self.exported_model_path,
                 sleap_export_input_hw=self.export_input_hw,
+                cache_predictions=False,
             )
+            service_call_s = time.perf_counter() - service_call_start
             if pred_map is None:
                 raise RuntimeError(err or "SLEAP inference failed.")
             preds = pred_map
+        else:
+            service_call_s = 0.0
 
         outputs: List[PoseResult] = []
+        postprocess_start = time.perf_counter()
         for p in paths:
             if not p.exists():
                 outputs.append(empty_pose_result())
@@ -437,6 +1308,13 @@ class SleapServiceBackend:
                 outputs.append(empty_pose_result())
                 continue
             outputs.append(summarize_keypoints(arr, self.min_valid_conf))
+
+        self._finalize_profile(
+            transport_s,
+            service_call_s,
+            self._consume_service_metrics(),
+            time.perf_counter() - postprocess_start,
+        )
 
         return outputs
 

@@ -4,6 +4,7 @@ Batch size optimizer for YOLO detection based on available device memory.
 
 import logging
 
+from .batch_policy import clamp_realtime_frame_batch_size, is_realtime_workflow
 from .gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE, torch
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,13 @@ class BatchOptimizer:
         if self.device_type is None:
             self.detect_device()
 
+        if is_realtime_workflow(
+            self.advanced_config.get("tracking_realtime_mode", False),
+            self.advanced_config.get("tracking_workflow_mode", "non_realtime"),
+        ):
+            logger.info("Realtime workflow: frame-level detection batch size = 1")
+            return 1
+
         # CPU never batches
         if self.device_type == "cpu":
             logger.info("CPU device: batch size = 1 (no batching)")
@@ -114,9 +122,23 @@ class BatchOptimizer:
         # Check for manual override
         manual = self._manual_batch_size()
         if manual is not None:
-            return manual
+            return clamp_realtime_frame_batch_size(
+                manual,
+                realtime_enabled=self.advanced_config.get(
+                    "tracking_realtime_mode", False
+                ),
+                workflow_mode=self.advanced_config.get(
+                    "tracking_workflow_mode", "non_realtime"
+                ),
+            )
 
-        return self._auto_batch_size(frame_width, frame_height, model_name)
+        return clamp_realtime_frame_batch_size(
+            self._auto_batch_size(frame_width, frame_height, model_name),
+            realtime_enabled=self.advanced_config.get("tracking_realtime_mode", False),
+            workflow_mode=self.advanced_config.get(
+                "tracking_workflow_mode", "non_realtime"
+            ),
+        )
 
     def _get_max_allowed_batch(self) -> int:
         """Return max allowed batch size considering TensorRT config."""

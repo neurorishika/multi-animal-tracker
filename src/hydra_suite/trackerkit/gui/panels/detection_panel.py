@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from hydra_suite.trackerkit.config.schemas import TrackerConfig
+from hydra_suite.utils.batch_policy import is_realtime_workflow
 from hydra_suite.utils.gpu_utils import (
     MPS_AVAILABLE,
     TENSORRT_AVAILABLE,
@@ -889,6 +890,14 @@ class DetectionPanel(QWidget):
         accel_controls_grid.setColumnStretch(1, 1)
         accel_controls_grid.setColumnStretch(2, 1)
         vl_gpu.addLayout(accel_controls_grid)
+
+        self.lbl_batch_policy_notice = QLabel("")
+        self.lbl_batch_policy_notice.setWordWrap(True)
+        self.lbl_batch_policy_notice.setStyleSheet(
+            "color: #d7ba7d; font-size: 11px; padding-top: 2px;"
+        )
+        self.lbl_batch_policy_notice.setVisible(False)
+        vl_gpu.addWidget(self.lbl_batch_policy_notice)
         l_yolo.addWidget(self.g_gpu_accel)
 
         # Set initial visibility for TensorRT widgets
@@ -904,6 +913,7 @@ class DetectionPanel(QWidget):
         self.lbl_yolo_batch_size.setVisible(initial_batching_enabled)
         self.combo_yolo_batch_mode.setEnabled(initial_batching_enabled)
         self.spin_yolo_batch_size.setEnabled(False)  # Auto mode by default
+        self._sync_batch_policy_controls()
         # Add pages to stack
         self.stack_detection.addWidget(page_bg)
         self.stack_detection.addWidget(page_yolo)
@@ -1212,26 +1222,7 @@ class DetectionPanel(QWidget):
 
     def _on_yolo_batching_toggled(self, state):
         """Enable/disable YOLO batching controls based on checkbox."""
-        if self._main_window._runtime_requires_fixed_yolo_batch():
-            if not self.chk_enable_yolo_batching.isChecked():
-                self.chk_enable_yolo_batching.setChecked(True)
-            self.chk_enable_yolo_batching.setEnabled(False)
-            self.combo_yolo_batch_mode.setVisible(True)
-            self.lbl_yolo_batch_mode.setVisible(True)
-            self.spin_yolo_batch_size.setVisible(True)
-            self.lbl_yolo_batch_size.setVisible(True)
-            self.combo_yolo_batch_mode.setCurrentIndex(1)
-            self.combo_yolo_batch_mode.setEnabled(False)
-            self.spin_yolo_batch_size.setEnabled(True)
-            return
-        enabled = self.chk_enable_yolo_batching.isChecked()
-        self.combo_yolo_batch_mode.setVisible(enabled)
-        self.lbl_yolo_batch_mode.setVisible(enabled)
-        self.spin_yolo_batch_size.setVisible(enabled)
-        self.lbl_yolo_batch_size.setVisible(enabled)
-        self.combo_yolo_batch_mode.setEnabled(enabled)
-        manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
-        self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
+        self._sync_batch_policy_controls()
 
     def _on_yolo_manual_batch_size_changed(self, value: int):
         """Keep legacy fixed-batch field synchronized for fixed runtimes."""
@@ -1239,17 +1230,11 @@ class DetectionPanel(QWidget):
             self, "spin_tensorrt_batch"
         ):
             self.spin_tensorrt_batch.setValue(int(value))
+        self._sync_batch_policy_controls()
 
     def _on_yolo_batch_mode_changed(self, index):
         """Show/hide manual batch size based on selected mode."""
-        if self._main_window._runtime_requires_fixed_yolo_batch():
-            if self.combo_yolo_batch_mode.currentIndex() != 1:
-                self.combo_yolo_batch_mode.setCurrentIndex(1)
-            self.spin_yolo_batch_size.setEnabled(True)
-            return
-        is_manual = index == 1
-        batching_enabled = self.chk_enable_yolo_batching.isChecked()
-        self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
+        self._sync_batch_policy_controls()
 
     def _on_tensorrt_toggled(self, state):
         """Enable/disable TensorRT batch size control based on checkbox."""
@@ -1257,11 +1242,71 @@ class DetectionPanel(QWidget):
             self.spin_tensorrt_batch.setVisible(False)
             self.lbl_tensorrt_batch.setVisible(False)
             return
-        enabled = self.chk_enable_tensorrt.isChecked()
-        self.spin_tensorrt_batch.setVisible(enabled)
-        self.lbl_tensorrt_batch.setVisible(enabled)
-        self.spin_tensorrt_batch.setEnabled(enabled)
-        self.lbl_tensorrt_batch.setEnabled(enabled)
+        self._sync_batch_policy_controls()
+
+    def _sync_batch_policy_controls(self) -> None:
+        """Keep detection batching controls aligned with runtime policy."""
+        realtime_enabled = False
+        if hasattr(self._main_window, "_setup_panel"):
+            realtime_enabled = is_realtime_workflow(
+                self._main_window._setup_panel.chk_realtime_mode.isChecked(),
+                getattr(
+                    self._main_window, "_workflow_mode_key", lambda: "non_realtime"
+                )(),
+            )
+        fixed_runtime = self._main_window._runtime_requires_fixed_yolo_batch()
+
+        if fixed_runtime and self.combo_yolo_batch_mode.currentIndex() != 1:
+            self.combo_yolo_batch_mode.blockSignals(True)
+            self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.combo_yolo_batch_mode.blockSignals(False)
+        if fixed_runtime and not self.chk_enable_yolo_batching.isChecked():
+            self.chk_enable_yolo_batching.blockSignals(True)
+            self.chk_enable_yolo_batching.setChecked(True)
+            self.chk_enable_yolo_batching.blockSignals(False)
+
+        batching_enabled = self.chk_enable_yolo_batching.isChecked() or fixed_runtime
+        manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
+        tensorrt_enabled = (
+            self.chk_enable_tensorrt.isVisible()
+            and self.chk_enable_tensorrt.isChecked()
+        )
+
+        self.combo_yolo_batch_mode.setVisible(batching_enabled)
+        self.lbl_yolo_batch_mode.setVisible(batching_enabled)
+        self.spin_yolo_batch_size.setVisible(batching_enabled)
+        self.lbl_yolo_batch_size.setVisible(batching_enabled)
+        self.spin_tensorrt_batch.setVisible(tensorrt_enabled)
+        self.lbl_tensorrt_batch.setVisible(tensorrt_enabled)
+
+        if realtime_enabled:
+            self.chk_enable_yolo_batching.setEnabled(False)
+            self.combo_yolo_batch_mode.setEnabled(False)
+            self.spin_yolo_batch_size.setEnabled(False)
+            self.spin_tensorrt_batch.setEnabled(False)
+            self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
+            self.lbl_batch_policy_notice.setText(
+                "Realtime tracking processes detection one frame at a time. Frame-level YOLO and ONNX/TensorRT batch settings are ignored during realtime runs."
+            )
+            self.lbl_batch_policy_notice.setVisible(True)
+            return
+
+        self.chk_enable_yolo_batching.setEnabled(not fixed_runtime)
+        self.combo_yolo_batch_mode.setEnabled(batching_enabled and not fixed_runtime)
+        self.spin_yolo_batch_size.setEnabled(
+            batching_enabled and (manual_mode or fixed_runtime)
+        )
+        self.spin_tensorrt_batch.setEnabled(tensorrt_enabled)
+        self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
+
+        if fixed_runtime:
+            self.lbl_batch_policy_notice.setText(
+                "The selected runtime uses a fixed exported batch. Manual batch size controls the non-realtime detector artifact size."
+            )
+            self.lbl_batch_policy_notice.setVisible(True)
+        else:
+            self.lbl_batch_policy_notice.clear()
+            self.lbl_batch_policy_notice.setVisible(False)
 
     # =========================================================================
     # DETECTION METHOD CHANGED UI (moved from MainWindow)
@@ -1635,6 +1680,16 @@ class DetectionPanel(QWidget):
             "min_object_size": self.spin_min_object_size.value(),
             "max_object_size": self.spin_max_object_size.value(),
             "compute_runtime": selected_runtime,
+            "headtail_runtime": (
+                self._main_window._selected_headtail_runtime()
+                if hasattr(self._main_window, "_selected_headtail_runtime")
+                else selected_runtime
+            ),
+            "cnn_runtime": (
+                self._main_window._selected_cnn_runtime()
+                if hasattr(self._main_window, "_selected_cnn_runtime")
+                else selected_runtime
+            ),
             "yolo_obb_mode": (
                 "sequential"
                 if self.combo_yolo_obb_mode.currentIndex() == 1
@@ -1698,7 +1753,6 @@ class DetectionPanel(QWidget):
             "pose_batch_size": ip.spin_pose_batch.value() if ip is not None else 1,
             "pose_sleap_env": self._main_window._selected_pose_sleap_env(),
             "pose_sleap_device": runtime_pose["pose_sleap_device"],
-            "pose_sleap_experimental_features": self._main_window._sleap_experimental_features_enabled(),
             "individual_crop_padding": (
                 ip.spin_individual_padding.value() if ip is not None else 0.1
             ),

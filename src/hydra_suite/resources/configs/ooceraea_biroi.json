@@ -222,7 +222,6 @@
   "pose_sleap_device": "mps",
   "pose_sleap_batch": 64,
   "pose_sleap_max_instances": 1,
-  "pose_sleap_experimental_features": false,
   "enable_individual_dataset": false,
   "enable_individual_image_save": false,
   "generate_oriented_track_videos": false,
