@@ -215,18 +215,34 @@ class ClassKitDB:
             """)
         conn.commit()
 
-    def add_images(self, paths: List[Path], hashes: List[str] = None):
+    def add_images(
+        self,
+        paths: List[Path],
+        hashes: List[str] = None,
+        metadata_by_path: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
         """Batch insert images, storing resolved absolute paths."""
         if hashes is None:
             hashes = [None] * len(paths)
+        metadata_by_path = metadata_by_path or {}
 
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             # Resolve paths to canonical absolute form to prevent duplicates
             # caused by symlinks or relative path representations.
-            data = [(str(Path(p).resolve()), h) for p, h in zip(paths, hashes)]
+            data = []
+            for p, h in zip(paths, hashes):
+                resolved_path = str(Path(p).resolve())
+                payload = metadata_by_path.get(resolved_path)
+                data.append(
+                    (
+                        resolved_path,
+                        h,
+                        json.dumps(payload) if payload is not None else None,
+                    )
+                )
             c.executemany(
-                "INSERT OR IGNORE INTO images (file_path, file_hash) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO images (file_path, file_hash, meta_json) VALUES (?, ?, ?)",
                 data,
             )
             conn.commit()
@@ -1454,13 +1470,21 @@ class ClassKitDB:
         """
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT file_path FROM images ORDER BY id")
+            c.execute("SELECT file_path, meta_json FROM images ORDER BY id")
             rows = c.fetchall()
 
         folder_counts: Dict[str, int] = {}
-        for (fp,) in rows:
-            parent = str(Path(fp).parent)
-            folder_counts[parent] = folder_counts.get(parent, 0) + 1
+        for fp, meta_json in rows:
+            metadata = self._decode_meta_json(meta_json)
+            source_root = metadata.get("source_root")
+            if source_root:
+                try:
+                    folder = str(Path(str(source_root)).resolve())
+                except Exception:
+                    folder = str(source_root)
+            else:
+                folder = str(Path(fp).parent)
+            folder_counts[folder] = folder_counts.get(folder, 0) + 1
 
         return sorted(
             [{"folder": f, "count": n} for f, n in folder_counts.items()],
@@ -1506,9 +1530,17 @@ class ClassKitDB:
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             # Fetch ids to delete (SQLite doesn't have dirname())
-            c.execute("SELECT id, file_path FROM images")
+            c.execute("SELECT id, file_path, meta_json FROM images")
             ids_to_delete = []
-            for row_id, fp in c.fetchall():
+            for row_id, fp, meta_json in c.fetchall():
+                metadata = self._decode_meta_json(meta_json)
+                source_root = metadata.get("source_root")
+                if (
+                    source_root
+                    and str(Path(str(source_root)).resolve()) == folder_resolved
+                ):
+                    ids_to_delete.append(row_id)
+                    continue
                 if str(Path(fp).parent) == folder_resolved:
                     ids_to_delete.append(row_id)
 

@@ -66,6 +66,7 @@ class SourceManagerDialog(QDialog):
             "Each source folder should contain an images/ subdirectory. "
             "If a folder contains images directly, ClassKit can standardize it "
             "by creating images/ and copying those files first. "
+            "COCO JSON and YOLO OBB dataset roots are also supported for import. "
             "Adding a folder will ingest its images; removing one will "
             "delete those images from the database."
         )
@@ -162,6 +163,11 @@ class SourceManagerDialog(QDialog):
             f"{n_sources} source(s)  \u00b7  ~{total_images:,} images total"
         )
 
+    @staticmethod
+    def _count_images(folder: Path) -> int:
+        """Return the display count for a pending source folder."""
+        return count_classkit_images(folder)
+
     def _browse_add(self):
         path = QFileDialog.getExistingDirectory(
             self, "Select folder containing images", str(Path.home())
@@ -170,7 +176,6 @@ class SourceManagerDialog(QDialog):
             return
 
         d = Path(path).expanduser().resolve()
-
         try:
             resolved = self._resolve_selected_source(d)
         except ValueError as exc:

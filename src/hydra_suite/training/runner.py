@@ -1176,8 +1176,21 @@ def _stream_ultralytics_output(proc, log_cb, progress_cb, should_cancel, command
     """
     assert proc.stdout is not None
     ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-    progress_re_1 = re.compile(r"Epoch\s+(\d+)\s*/\s*(\d+)")
-    progress_re_2 = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s")
+
+    def _extract_progress(msg: str) -> tuple[int, int] | None:
+        progress_patterns = (
+            re.compile(r"Epoch\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE),
+            re.compile(r"Epoch\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE),
+            re.compile(r"^\s*(\d+)\s*/\s*(\d+)(?:\s|$)"),
+            re.compile(
+                r"\bepoch\s*[=:]\s*(\d+)\b.*\btotal\s*[=:]\s*(\d+)\b", re.IGNORECASE
+            ),
+        )
+        for regex in progress_patterns:
+            match = regex.search(msg)
+            if match:
+                return int(match.group(1)), int(match.group(2))
+        return None
 
     for line in proc.stdout:
         if should_cancel and should_cancel():
@@ -1186,14 +1199,12 @@ def _stream_ultralytics_output(proc, log_cb, progress_cb, should_cancel, command
         msg = ansi_re.sub("", line).rstrip()
         if msg:
             _safe_log(log_cb, msg)
-        for regex in (progress_re_1, progress_re_2):
-            m = regex.search(msg)
-            if m and progress_cb is not None:
-                try:
-                    progress_cb(int(m.group(1)), int(m.group(2)))
-                except Exception:
-                    pass
-                break
+        parsed_progress = _extract_progress(msg)
+        if parsed_progress is not None and progress_cb is not None:
+            try:
+                progress_cb(*parsed_progress)
+            except Exception as exc:
+                _safe_log(log_cb, f"Progress callback failed: {exc}")
     return None
 
 

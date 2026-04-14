@@ -78,8 +78,9 @@ def test_add_source_dialog_rejects_folder_without_images_subdir(
     assert warnings == [
         (
             "Invalid Source Folder",
-            "Selected source folder must contain an images/ subdirectory, or the "
-            "folder itself must contain compatible .jpg / .jpeg / .png files.\n\n"
+            "Selected source folder must contain an images/ subdirectory, the "
+            "folder itself must contain compatible .jpg / .jpeg / .png files, "
+            "or it must be a supported COCO or YOLO OBB dataset root.\n\n"
             f"{source_root}",
         )
     ]
@@ -191,11 +192,76 @@ def test_source_manager_dialog_rejects_folder_without_images_subdir(
     assert warnings == [
         (
             "Invalid Source Folder",
-            "Selected source folder must contain an images/ subdirectory, or the "
-            "folder itself must contain compatible .jpg / .jpeg / .png files.\n\n"
+            "Selected source folder must contain an images/ subdirectory, the "
+            "folder itself must contain compatible .jpg / .jpeg / .png files, "
+            "or it must be a supported COCO or YOLO OBB dataset root.\n\n"
             f"{source_root}",
         )
     ]
+
+
+def test_source_manager_dialog_accepts_coco_dataset_root(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "coco_dataset"
+    images_dir = source_root / "images"
+    images_dir.mkdir(parents=True)
+    (images_dir / "frame001.jpg").write_bytes(b"image-bytes")
+    (source_root / "annotations.json").write_text(
+        """
+        {
+          "images": [{"id": 1, "file_name": "frame001.jpg"}],
+          "annotations": [{"id": 1, "image_id": 1, "category_id": 0}],
+          "categories": [{"id": 0, "name": "ant"}]
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        SourceManagerDialog, "_load_existing_sources", lambda self: None
+    )
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.source_manager.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(source_root),
+    )
+
+    dialog = SourceManagerDialog(db_path=tmp_path / "classkit.db")
+    dialog._browse_add()
+
+    assert dialog.folders_to_add == [source_root.resolve()]
+
+
+def test_source_manager_dialog_accepts_yolo_obb_dataset_root(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "obb_dataset"
+    train_images = source_root / "images" / "train"
+    train_labels = source_root / "labels" / "train"
+    train_images.mkdir(parents=True)
+    train_labels.mkdir(parents=True)
+    (train_images / "frame001.jpg").write_bytes(b"image-bytes")
+    (train_labels / "frame001.txt").write_text(
+        "0 0.1 0.1 0.2 0.1 0.2 0.2 0.1 0.2\n",
+        encoding="utf-8",
+    )
+    (source_root / "dataset.yaml").write_text(
+        "train: images/train\nnames:\n  0: ant\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        SourceManagerDialog, "_load_existing_sources", lambda self: None
+    )
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.source_manager.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(source_root),
+    )
+
+    dialog = SourceManagerDialog(db_path=tmp_path / "classkit.db")
+    dialog._browse_add()
+
+    assert dialog.folders_to_add == [source_root.resolve()]
 
 
 def test_source_manager_dialog_standardizes_flat_image_folder_when_user_accepts(

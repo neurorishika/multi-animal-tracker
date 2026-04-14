@@ -27,11 +27,17 @@ class TaskSignals(QObject):
 class IngestWorker(QRunnable):
     """Worker for ingesting images from folders/videos."""
 
-    def __init__(self, source_path: Path, db_path: Path):
+    def __init__(
+        self,
+        source_path: Path,
+        db_path: Path,
+        project_classes: Optional[List[str]] = None,
+    ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.source_path = source_path
         self.db_path = db_path
+        self.project_classes = list(project_classes or [])
         self.signals = TaskSignals()
 
     @Slot()
@@ -41,6 +47,7 @@ class IngestWorker(QRunnable):
             self.signals.progress.emit(0, "Initializing ingestion...")
 
             from ..core.data.ingest import IngestWorker as Ingester
+            from ..core.data.source_import import build_source_import_plan
             from ..core.store.db import ClassKitDB
 
             # Initialize
@@ -50,20 +57,53 @@ class IngestWorker(QRunnable):
 
             # Scan and ingest
             self.signals.progress.emit(10, f"Scanning folder: {self.source_path}...")
-            # Prefer images/ subdirectory when present (PoseKit convention).
-            from ..core.data.ingest import scan_images as _scan
-
-            image_paths = list(_scan(self.source_path))
+            plan = build_source_import_plan(self.source_path)
+            image_paths = list(plan.image_paths)
             self.signals.progress.emit(40, f"Found {len(image_paths):,} images")
 
+            project_labels = {
+                str(label) for label in self.project_classes if str(label).strip()
+            }
+            imported_labels = {
+                str(label) for label in plan.discovered_labels if str(label).strip()
+            }
+            default_placeholder_labels = {"class_1", "class_2"}
+            if (
+                imported_labels
+                and project_labels
+                and project_labels != default_placeholder_labels
+            ):
+                missing = sorted(imported_labels - project_labels)
+                if missing:
+                    raise ValueError(
+                        "Imported dataset labels do not match the current project classes: "
+                        + ", ".join(missing)
+                    )
+
             self.signals.progress.emit(50, "Computing image hashes...")
-            ingester.ingest(image_paths)
+            ingester.ingest(image_paths, metadata_by_path=plan.metadata_by_path)
+
+            if plan.label_updates:
+                self.signals.progress.emit(80, "Applying imported labels...")
+                db.update_labels_with_confidence_batch(
+                    plan.label_updates,
+                    label_source="import",
+                    verified=True,
+                    metadata_by_path=plan.metadata_by_path,
+                )
+
             self.signals.progress.emit(90, "Writing to database...")
 
             self.signals.progress.emit(
                 100, f"Complete! Ingested {len(image_paths):,} images"
             )
-            self.signals.success.emit({"num_images": len(image_paths)})
+            self.signals.success.emit(
+                {
+                    "num_images": len(image_paths),
+                    "source_kind": plan.source_kind,
+                    "imported_labels": list(plan.discovered_labels),
+                }
+            )
 
         except Exception as e:
             self.signals.error.emit(str(e))
@@ -518,15 +558,18 @@ class ClassKitTrainingWorker(QRunnable):
 
                 def log_cb(msg: str, _i: int = i) -> None:
                     prefix = f"[factor {_i}] " if self.multi_head else ""
-                    self.signals.progress.emit(0, f"{prefix}{msg}")
+                    self.signals.progress.emit(-1, f"{prefix}{msg}")
 
                 def progress_cb(
                     current: int, total: int, _i: int = i, _n: int = n_specs
                 ) -> None:
-                    if self.multi_head:
-                        overall = int((_i * 100 + current * 100 // max(1, total)) / _n)
-                    else:
-                        overall = current * 100 // max(1, total)
+                    total = max(1, int(total))
+                    current = max(0, min(int(current), total))
+                    completed_fraction = (
+                        float(_i) + (float(current) / float(total))
+                    ) / max(1.0, float(_n))
+                    overall = int(round(completed_fraction * 100.0))
+                    overall = max(0, min(100, overall))
                     self.signals.progress.emit(overall, "")
 
                 result = run_training(

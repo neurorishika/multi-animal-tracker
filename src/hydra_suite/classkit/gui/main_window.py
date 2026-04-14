@@ -5,6 +5,7 @@ ClassKit Main Window - Polished and feature-complete UI
 import hashlib
 import json
 import time
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -2092,6 +2093,20 @@ class MainWindow(QMainWindow):
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
 
+    def _save_project_classes(self, classes: list[str]) -> None:
+        """Persist the current project class list into project config."""
+        if not self.project_path:
+            return
+        project_config_path = self._project_config_path()
+        config = {}
+        if project_config_path.exists():
+            with open(project_config_path, "r") as f:
+                config = json.load(f)
+        config["classes"] = list(classes)
+        project_config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(project_config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
     def _save_last_training_settings(self) -> None:
         """Persist the most recent training dialog settings into the project config."""
         if not self.project_path or not isinstance(self._last_training_settings, dict):
@@ -3158,6 +3173,100 @@ class MainWindow(QMainWindow):
                 out[i] = f"pred_{pred_idx}"
         return out
 
+    @staticmethod
+    def _format_prediction_confidence(value: float | None) -> str:
+        """Format prediction confidence for compact panel and tooltip display."""
+        if value is None:
+            return "n/a"
+        try:
+            numeric = float(value)
+        except Exception:
+            return "n/a"
+        if 0.0 <= numeric <= 1.0:
+            return f"{numeric:.1%}"
+        return f"{numeric:.3f}"
+
+    def _prediction_summary_for_index(
+        self, index: int, *, top_k: int = 3
+    ) -> dict | None:
+        """Return predicted class details for one point in the current model output."""
+        if index is None or index < 0 or self._model_probs is None:
+            return None
+
+        probs = np.asarray(self._model_probs)
+        if probs.ndim != 2 or index >= probs.shape[0]:
+            return None
+
+        row = np.asarray(probs[index], dtype=float).reshape(-1)
+        if row.size == 0:
+            return None
+
+        finite_row = np.nan_to_num(row, nan=-np.inf, neginf=-np.inf, posinf=np.inf)
+        pred_idx = int(np.argmax(finite_row))
+        class_names = list(self._model_class_names or [])
+
+        def _label_for(class_index: int) -> str:
+            if 0 <= class_index < len(class_names):
+                return str(class_names[class_index])
+            return f"pred_{class_index}"
+
+        top_count = max(1, min(int(top_k), finite_row.size))
+        top_indices = np.argsort(finite_row)[::-1][:top_count]
+        top_predictions = [
+            {
+                "index": int(class_index),
+                "label": _label_for(int(class_index)),
+                "confidence": float(row[int(class_index)]),
+            }
+            for class_index in top_indices
+        ]
+
+        return {
+            "predicted_index": pred_idx,
+            "predicted_label": _label_for(pred_idx),
+            "confidence": float(row[pred_idx]),
+            "top_predictions": top_predictions,
+        }
+
+    def _prediction_tooltips_for_plot(self, *, top_k: int = 3) -> list[str | None]:
+        """Return per-point tooltip strings used in prediction mode."""
+        tooltips: list[str | None] = [None] * len(self.image_paths)
+        for index in range(len(tooltips)):
+            summary = self._prediction_summary_for_index(index, top_k=top_k)
+            if summary is None:
+                continue
+            lines = [
+                f"Prediction: {summary['predicted_label']} ({self._format_prediction_confidence(summary['confidence'])})"
+            ]
+            if summary["top_predictions"]:
+                lines.append("Top predictions:")
+                for item in summary["top_predictions"]:
+                    lines.append(
+                        f"  {item['label']}: {self._format_prediction_confidence(item['confidence'])}"
+                    )
+            tooltips[index] = "\n".join(lines)
+        return tooltips
+
+    def _prediction_details_html(self, index: int, *, top_k: int = 3) -> str:
+        """Return formatted prediction details for preview-side panels."""
+        summary = self._prediction_summary_for_index(index, top_k=top_k)
+        if summary is None:
+            return "<b>Prediction:</b> unavailable"
+
+        top_html = "<br>".join(
+            f"&nbsp;&nbsp;{rank}. {escape(item['label'])} ({self._format_prediction_confidence(item['confidence'])})"
+            for rank, item in enumerate(summary["top_predictions"], start=1)
+        )
+        if top_html:
+            top_html = (
+                f"<br><b>Top-{len(summary['top_predictions'])}:</b><br>{top_html}"
+            )
+        return (
+            f"<b>Prediction:</b> {escape(summary['predicted_label'])} "
+            f"({self._format_prediction_confidence(summary['confidence'])})"
+            f"{top_html}"
+        )
+
     def set_explorer_mode(self, mode: str):
         """Set explorer mode to cluster, labeling, or prediction coloring."""
         if mode not in {"explore", "labeling", "review", "predictions"}:
@@ -3609,14 +3718,16 @@ class MainWindow(QMainWindow):
             self.cluster_assignments
         ):
             cluster_id = self.cluster_assignments[index]
+        prediction_html = self._prediction_details_html(index, top_k=3)
 
         self.preview_info.setText(
             "<div style='line-height:1.55;'>"
             f"<b>Point:</b> {index}<br>"
             f"<b>Cluster:</b> {cluster_id if cluster_id is not None else 'n/a'}<br>"
             f"<b>Label:</b> {current_label if current_label else 'unlabeled'}<br>"
+            f"{prediction_html}<br>"
             f"<b>Source:</b> {source}<br>"
-            f"<span style='color:#9e9e9e; font-size:11px;'>{image_path.name}</span>"
+            f"<span style='color:#9e9e9e; font-size:11px;'>{escape(image_path.name)}</span>"
             "</div>"
         )
 
@@ -3625,6 +3736,7 @@ class MainWindow(QMainWindow):
             f"<b>Selected Point:</b> {self.selected_point_index if self.selected_point_index is not None else 'none'}<br>"
             f"<b>Hovered Point:</b> {index}<br>"
             f"<b>Current Label:</b> {current_label if current_label else 'unlabeled'}<br>"
+            f"{prediction_html}<br>"
             "Assign using number keys 1-9 or class buttons."
             "</div>"
         )
@@ -3952,6 +4064,9 @@ class MainWindow(QMainWindow):
         if coords is None:
             return
 
+        category_order = None
+        point_tooltips = None
+
         if self.explorer_mode == "explore":
             color_values = self.cluster_assignments
             candidate_indices = []
@@ -3971,9 +4086,9 @@ class MainWindow(QMainWindow):
             color_values = review_labels
             candidate_indices = self._review_candidate_indices
         else:
-            seeded_preds = self._prediction_labels_for_plot()
-            seeded_preds.extend(list(self._model_class_names or []))
-            color_values = seeded_preds
+            color_values = self._prediction_labels_for_plot()
+            category_order = list(self._model_class_names or [])
+            point_tooltips = self._prediction_tooltips_for_plot(top_k=3)
             candidate_indices = []
 
         if not force_fit and self.explorer.update_state(
@@ -3984,6 +4099,8 @@ class MainWindow(QMainWindow):
             selected_index=self.selected_point_index,
             labeling_mode=(self.explorer_mode in {"labeling", "review"}),
             prediction_mode=(self.explorer_mode == "predictions"),
+            category_order=category_order,
+            point_tooltips=point_tooltips,
         ):
             return
 
@@ -3996,6 +4113,8 @@ class MainWindow(QMainWindow):
             selected_index=self.selected_point_index,
             labeling_mode=(self.explorer_mode in {"labeling", "review"}),
             prediction_mode=(self.explorer_mode == "predictions"),
+            category_order=category_order,
+            point_tooltips=point_tooltips,
             preserve_view=(not force_fit),
         )
 
@@ -4038,6 +4157,11 @@ class MainWindow(QMainWindow):
         if folders_to_add:
             self._ingest_queue = list(folders_to_add)
             self._ingest_batch_total = len(self._ingest_queue)
+            self._ingest_imported_labels = []
+            self._ingest_can_adopt_classes = self.classes == [
+                "class_1",
+                "class_2",
+            ] and not any(bool(label) for label in (self.image_labels or []))
             self._run_next_ingest()
         elif folders_to_remove:
             # Removals only — reload and offer to redo pipeline
@@ -4059,7 +4183,7 @@ class MainWindow(QMainWindow):
 
         from ..jobs.task_workers import IngestWorker
 
-        worker = IngestWorker(folder, self.db_path)
+        worker = IngestWorker(folder, self.db_path, project_classes=self.classes)
         worker.signals.started.connect(
             lambda f=folder: self.status.showMessage(f"[Step 1/5] Ingesting {f.name}…")
         )
@@ -4074,6 +4198,9 @@ class MainWindow(QMainWindow):
 
     def _on_ingest_batch_item_done(self, result):
         """Called when one folder in the ingest batch finishes."""
+        for label in result.get("imported_labels", []) or []:
+            if label not in self._ingest_imported_labels:
+                self._ingest_imported_labels.append(label)
         self._ingest_queue.pop(0)
         if self._ingest_queue:
             # More folders to go
@@ -4085,6 +4212,12 @@ class MainWindow(QMainWindow):
             total = (
                 num_images  # accumulative count not tracked per-folder; just show last
             )
+            if self._ingest_can_adopt_classes and self._ingest_imported_labels:
+                self.classes = list(self._ingest_imported_labels)
+                self._save_project_classes(self.classes)
+                self.rebuild_label_buttons()
+                self.setup_label_shortcuts()
+                self._refresh_shortcut_help()
             QMessageBox.information(
                 self,
                 "Ingestion Complete",

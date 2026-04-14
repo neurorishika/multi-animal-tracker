@@ -53,6 +53,8 @@ class ExplorerView(QGraphicsView):
         self._base_colors = []
         self._base_radii = []
         self._point_centers = []
+        self._category_order = None
+        self._point_tooltips = None
         self._zoom_redraw_limit = 4000
         self.uncertainty_outline_threshold = 0.6
         self.prediction_mode = False
@@ -78,6 +80,8 @@ class ExplorerView(QGraphicsView):
         self._base_colors = []
         self._base_radii = []
         self._point_centers = []
+        self._category_order = None
+        self._point_tooltips = None
         self.prediction_mode = False
 
     def _radius_scale(self) -> float:
@@ -112,6 +116,8 @@ class ExplorerView(QGraphicsView):
         selected_index,
         labeling_mode,
         prediction_mode,
+        category_order,
+        point_tooltips,
         point_count: int,
     ) -> None:
         """Apply the current interaction state shared by update and rebuild flows."""
@@ -122,6 +128,12 @@ class ExplorerView(QGraphicsView):
         self.round_labeled_indices = set(round_labeled_indices or [])
         self.labeling_mode = labeling_mode
         self.prediction_mode = prediction_mode
+        self._category_order = (
+            list(category_order) if category_order is not None else None
+        )
+        self._point_tooltips = (
+            list(point_tooltips) if point_tooltips is not None else None
+        )
         if self.labeling_mode:
             if self._has_active_labeling_batch():
                 self.interactive_indices = set(self.candidate_indices) | set(
@@ -227,6 +239,10 @@ class ExplorerView(QGraphicsView):
                 base_radius * 2,
             )
         item.setBrush(QBrush(color))
+        if self._point_tooltips is not None and index < len(self._point_tooltips):
+            item.setToolTip(self._point_tooltips[index] or "")
+        else:
+            item.setToolTip("")
         self._apply_item_style(index, item, radius_scale)
 
     def _create_point_item(
@@ -254,6 +270,8 @@ class ExplorerView(QGraphicsView):
         item.setAcceptHoverEvents(True)
         item.setAcceptedMouseButtons(Qt.LeftButton)
         item.setFlag(QGraphicsItem.ItemIgnoresTransformations, False)
+        if self._point_tooltips is not None and index < len(self._point_tooltips):
+            item.setToolTip(self._point_tooltips[index] or "")
         self.scene.addItem(item)
         self.points.append(item)
         self._point_centers.append((x, y))
@@ -383,6 +401,8 @@ class ExplorerView(QGraphicsView):
         selected_index: int = None,
         labeling_mode: bool = False,
         prediction_mode: bool = False,
+        category_order: list | None = None,
+        point_tooltips: list | None = None,
     ) -> bool:
         """Update point styling/labels without rebuilding scene geometry.
 
@@ -403,13 +423,18 @@ class ExplorerView(QGraphicsView):
             selected_index,
             labeling_mode,
             prediction_mode,
+            category_order,
+            point_tooltips,
             point_count,
         )
 
         radius_scale = self._radius_scale()
         self._base_colors = []
         self._base_radii = []
-        category_colors = build_category_color_map(self._labels_for_color_map(labels))
+        category_colors = build_category_color_map(
+            self._labels_for_color_map(labels),
+            category_order=self._category_order,
+        )
 
         for i, item in enumerate(self.points):
             self._update_existing_point_item(
@@ -428,6 +453,8 @@ class ExplorerView(QGraphicsView):
         selected_index: int = None,
         labeling_mode: bool = False,
         prediction_mode: bool = False,
+        category_order: list | None = None,
+        point_tooltips: list | None = None,
         preserve_view: bool = True,
     ):
         """
@@ -443,6 +470,8 @@ class ExplorerView(QGraphicsView):
             selected_index,
             labeling_mode,
             prediction_mode,
+            category_order,
+            point_tooltips,
             len(coords),
         )
         self.candidate_indices = set(candidate_indices or [])
@@ -463,7 +492,10 @@ class ExplorerView(QGraphicsView):
         self._base_colors = []
         self._base_radii = []
         self._point_centers = []
-        category_colors = build_category_color_map(self._labels_for_color_map(labels))
+        category_colors = build_category_color_map(
+            self._labels_for_color_map(labels),
+            category_order=self._category_order,
+        )
         radius_scale = self._radius_scale()
 
         for i, (x, y) in enumerate(norm_coords):

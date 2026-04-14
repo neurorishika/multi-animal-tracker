@@ -73,7 +73,8 @@ class AddSourceDialog(QDialog):
             "Add one or more dataset root folders. Each source must contain an "
             f"<b>{CLASSKIT_IMAGES_SUBDIR}/</b> subdirectory with images. If a "
             "selected folder contains images directly, ClassKit can standardize "
-            "it by creating an images/ folder and copying those files."
+            "it by creating an images/ folder and copying those files. "
+            "Supported external dataset roots include COCO JSON and YOLO OBB layouts."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -119,6 +120,7 @@ class AddSourceDialog(QDialog):
         d = Path(path).expanduser().resolve()
 
         try:
+            inspection = inspect_classkit_source_dir(d)
             resolved = self._resolve_selected_source(d)
         except ValueError as exc:
             QMessageBox.warning(
@@ -180,8 +182,13 @@ class AddSourceDialog(QDialog):
                 return
 
         self._sources.append((d, resolved, d.name))
+        usage_text = (
+            f"detected {inspection.source_kind} import"
+            if inspection.source_kind != "images"
+            else f"using {CLASSKIT_IMAGES_SUBDIR}/"
+        )
         item = QListWidgetItem(
-            f"{d.name}  \u2014  {count:,} images  (using {CLASSKIT_IMAGES_SUBDIR}/)\n{d}"
+            f"{d.name}  \u2014  {count:,} images  ({usage_text})\n{d}"
         )
         self._list.addItem(item)
 

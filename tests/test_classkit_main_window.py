@@ -650,6 +650,74 @@ def test_leaving_review_mode_clears_selection_and_restores_hover_preview(
     assert window.last_preview_index == 1
 
 
+def test_preview_panel_shows_prediction_details(qapp, tmp_path: Path) -> None:
+    window = MainWindow()
+    image_path = tmp_path / "prediction_preview.png"
+    image_path.write_bytes(b"image-bytes")
+
+    window.image_paths = [image_path]
+    window.image_labels = ["reviewed"]
+    window.cluster_assignments = np.array([4], dtype=np.int32)
+    window._model_class_names = ["zebra", "ant", "bee"]
+    window._model_probs = np.array([[0.15, 0.80, 0.05]], dtype=np.float32)
+
+    window.load_preview_for_index(0)
+
+    preview_html = window.preview_info.text()
+    selection_html = window.selection_info.text()
+    assert "Prediction:" in preview_html
+    assert "ant" in preview_html
+    assert "80.0%" in preview_html
+    assert "Top-3:" in preview_html
+    assert "Prediction:" in selection_html
+    assert "ant" in selection_html
+
+
+def test_prediction_mode_uses_model_class_order_for_colors(qapp) -> None:
+    from hydra_suite.classkit.gui.widgets.color_utils import build_category_color_map
+
+    window = MainWindow()
+    window.image_paths = [Path("/tmp/a.png"), Path("/tmp/b.png")]
+    window.image_labels = [None, None]
+    window.cluster_assignments = np.array([0, 1], dtype=np.int32)
+    window.umap_coords = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
+    window._model_class_names = ["zebra", "ant"]
+    window._model_probs = np.array([[0.05, 0.95], [0.99, 0.01]], dtype=np.float32)
+
+    window.set_explorer_mode("predictions")
+    window.update_explorer_plot(force_fit=True)
+
+    expected_map = build_category_color_map(
+        ["ant", "zebra"],
+        category_order=["zebra", "ant"],
+    )
+    point_colors = [item.brush().color().name() for item in window.explorer.points]
+
+    assert point_colors[0] == expected_map["ant"].name()
+    assert point_colors[1] == expected_map["zebra"].name()
+
+
+def test_prediction_tooltip_only_exists_in_prediction_mode(qapp) -> None:
+    window = MainWindow()
+    window.image_paths = [Path("/tmp/a.png")]
+    window.image_labels = [None]
+    window.cluster_assignments = np.array([0], dtype=np.int32)
+    window.umap_coords = np.array([[0.0, 0.0]], dtype=np.float32)
+    window._model_class_names = ["zebra", "ant"]
+    window._model_probs = np.array([[0.1, 0.9]], dtype=np.float32)
+
+    window.set_explorer_mode("predictions")
+    window.update_explorer_plot(force_fit=True)
+
+    assert "Prediction: ant (90.0%)" in window.explorer.points[0].toolTip()
+    assert "Top predictions:" in window.explorer.points[0].toolTip()
+
+    window.set_explorer_mode("explore")
+    window.update_explorer_plot(force_fit=True)
+
+    assert window.explorer.points[0].toolTip() == ""
+
+
 def test_training_settings_persist_in_project_config(qapp, tmp_path: Path) -> None:
     window = MainWindow()
     window.project_path = tmp_path
