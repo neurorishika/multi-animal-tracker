@@ -54,6 +54,7 @@ class ExplorerView(QGraphicsView):
         self._base_radii = []
         self._point_centers = []
         self._category_order = None
+        self._category_colors = None
         self._point_tooltips = None
         self._zoom_redraw_limit = 4000
         self.uncertainty_outline_threshold = 0.6
@@ -81,6 +82,7 @@ class ExplorerView(QGraphicsView):
         self._base_radii = []
         self._point_centers = []
         self._category_order = None
+        self._category_colors = None
         self._point_tooltips = None
         self.prediction_mode = False
 
@@ -117,6 +119,7 @@ class ExplorerView(QGraphicsView):
         labeling_mode,
         prediction_mode,
         category_order,
+        category_colors,
         point_tooltips,
         point_count: int,
     ) -> None:
@@ -130,6 +133,9 @@ class ExplorerView(QGraphicsView):
         self.prediction_mode = prediction_mode
         self._category_order = (
             list(category_order) if category_order is not None else None
+        )
+        self._category_colors = (
+            dict(category_colors) if category_colors is not None else None
         )
         self._point_tooltips = (
             list(point_tooltips) if point_tooltips is not None else None
@@ -402,6 +408,7 @@ class ExplorerView(QGraphicsView):
         labeling_mode: bool = False,
         prediction_mode: bool = False,
         category_order: list | None = None,
+        category_colors: dict | None = None,
         point_tooltips: list | None = None,
     ) -> bool:
         """Update point styling/labels without rebuilding scene geometry.
@@ -424,6 +431,7 @@ class ExplorerView(QGraphicsView):
             labeling_mode,
             prediction_mode,
             category_order,
+            category_colors,
             point_tooltips,
             point_count,
         )
@@ -431,7 +439,7 @@ class ExplorerView(QGraphicsView):
         radius_scale = self._radius_scale()
         self._base_colors = []
         self._base_radii = []
-        category_colors = build_category_color_map(
+        category_colors = self._category_colors or build_category_color_map(
             self._labels_for_color_map(labels),
             category_order=self._category_order,
         )
@@ -454,6 +462,7 @@ class ExplorerView(QGraphicsView):
         labeling_mode: bool = False,
         prediction_mode: bool = False,
         category_order: list | None = None,
+        category_colors: dict | None = None,
         point_tooltips: list | None = None,
         preserve_view: bool = True,
     ):
@@ -471,6 +480,7 @@ class ExplorerView(QGraphicsView):
             labeling_mode,
             prediction_mode,
             category_order,
+            category_colors,
             point_tooltips,
             len(coords),
         )
@@ -492,7 +502,7 @@ class ExplorerView(QGraphicsView):
         self._base_colors = []
         self._base_radii = []
         self._point_centers = []
-        category_colors = build_category_color_map(
+        category_colors = self._category_colors or build_category_color_map(
             self._labels_for_color_map(labels),
             category_order=self._category_order,
         )

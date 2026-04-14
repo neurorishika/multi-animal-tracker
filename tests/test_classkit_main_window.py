@@ -651,6 +651,8 @@ def test_leaving_review_mode_clears_selection_and_restores_hover_preview(
 
 
 def test_preview_panel_shows_prediction_details(qapp, tmp_path: Path) -> None:
+    from hydra_suite.classkit.gui.widgets.color_utils import to_hex
+
     window = MainWindow()
     image_path = tmp_path / "prediction_preview.png"
     image_path.write_bytes(b"image-bytes")
@@ -660,6 +662,7 @@ def test_preview_panel_shows_prediction_details(qapp, tmp_path: Path) -> None:
     window.cluster_assignments = np.array([4], dtype=np.int32)
     window._model_class_names = ["zebra", "ant", "bee"]
     window._model_probs = np.array([[0.15, 0.80, 0.05]], dtype=np.float32)
+    window.classes = ["ant", "zebra"]
 
     window.load_preview_for_index(0)
 
@@ -671,14 +674,21 @@ def test_preview_panel_shows_prediction_details(qapp, tmp_path: Path) -> None:
     assert "Top-3:" in preview_html
     assert "Prediction:" in selection_html
     assert "ant" in selection_html
+    expected_color = to_hex(
+        window._schema_category_color_map(extra_categories=["zebra", "ant", "bee"])[
+            "ant"
+        ]
+    )
+    assert f"background-color:{expected_color}" in preview_html
 
 
-def test_prediction_mode_uses_model_class_order_for_colors(qapp) -> None:
+def test_prediction_mode_uses_schema_map_colors(qapp) -> None:
     from hydra_suite.classkit.gui.widgets.color_utils import build_category_color_map
 
     window = MainWindow()
     window.image_paths = [Path("/tmp/a.png"), Path("/tmp/b.png")]
     window.image_labels = [None, None]
+    window.classes = ["ant", "zebra"]
     window.cluster_assignments = np.array([0, 1], dtype=np.int32)
     window.umap_coords = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
     window._model_class_names = ["zebra", "ant"]
@@ -688,8 +698,8 @@ def test_prediction_mode_uses_model_class_order_for_colors(qapp) -> None:
     window.update_explorer_plot(force_fit=True)
 
     expected_map = build_category_color_map(
-        ["ant", "zebra"],
-        category_order=["zebra", "ant"],
+        ["ant", "zebra", "unknown"],
+        category_order=["ant", "zebra", "unknown"],
     )
     point_colors = [item.brush().color().name() for item in window.explorer.points]
 

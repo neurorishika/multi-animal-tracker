@@ -3074,10 +3074,41 @@ class MainWindow(QMainWindow):
             bg = class_color_map.get("unknown")
         return bg
 
+    def _schema_category_order(
+        self, extra_categories: list[str] | None = None
+    ) -> list[str]:
+        """Return the canonical schema-first category order used for ClassKit colors."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw_value in [*(self.classes or []), "unknown", *(extra_categories or [])]:
+            category = str(raw_value).strip()
+            if not category or category in seen:
+                continue
+            seen.add(category)
+            ordered.append(category)
+        return ordered
+
+    def _schema_category_color_map(self, extra_categories: list[str] | None = None):
+        """Return the shared category color map for buttons, explorer points, and tags."""
+        order = self._schema_category_order(extra_categories=extra_categories)
+        return build_category_color_map(order, category_order=order)
+
+    def _label_tag_html(self, label: str | None, *, class_color_map) -> str:
+        """Render a label as a colored chip using the shared schema color map."""
+        if not label:
+            return "unlabeled"
+        bg = self._resolve_class_button_color(class_color_map, str(label))
+        fg = best_text_color(bg)
+        return (
+            "<span style='display:inline-block; padding:1px 7px; border-radius:9px; "
+            f"background-color:{to_hex(bg)}; color:{to_hex(fg)}; border:1px solid #2f2f2f;'>"
+            f"{escape(str(label))}</span>"
+        )
+
     def _build_flat_label_buttons(self, scheme_shortcuts: dict[str, str]) -> None:
         """Build one button per class plus the unknown class button."""
         self._stepper = None
-        class_color_map = build_category_color_map([*self.classes, "unknown"])
+        class_color_map = self._schema_category_color_map()
 
         for i, class_name in enumerate(self.classes):
             shortcut = self._resolve_label_button_shortcut(
@@ -3253,8 +3284,13 @@ class MainWindow(QMainWindow):
         if summary is None:
             return "<b>Prediction:</b> unavailable"
 
+        class_color_map = self._schema_category_color_map(
+            extra_categories=list(self._model_class_names or [])
+        )
+
         top_html = "<br>".join(
-            f"&nbsp;&nbsp;{rank}. {escape(item['label'])} ({self._format_prediction_confidence(item['confidence'])})"
+            f"&nbsp;&nbsp;{rank}. {self._label_tag_html(item['label'], class_color_map=class_color_map)} "
+            f"({self._format_prediction_confidence(item['confidence'])})"
             for rank, item in enumerate(summary["top_predictions"], start=1)
         )
         if top_html:
@@ -3262,7 +3298,7 @@ class MainWindow(QMainWindow):
                 f"<br><b>Top-{len(summary['top_predictions'])}:</b><br>{top_html}"
             )
         return (
-            f"<b>Prediction:</b> {escape(summary['predicted_label'])} "
+            f"<b>Prediction:</b> {self._label_tag_html(summary['predicted_label'], class_color_map=class_color_map)} "
             f"({self._format_prediction_confidence(summary['confidence'])})"
             f"{top_html}"
         )
@@ -3719,12 +3755,19 @@ class MainWindow(QMainWindow):
         ):
             cluster_id = self.cluster_assignments[index]
         prediction_html = self._prediction_details_html(index, top_k=3)
+        class_color_map = self._schema_category_color_map(
+            extra_categories=list(self._model_class_names or [])
+        )
+        current_label_html = self._label_tag_html(
+            current_label if current_label else None,
+            class_color_map=class_color_map,
+        )
 
         self.preview_info.setText(
             "<div style='line-height:1.55;'>"
             f"<b>Point:</b> {index}<br>"
             f"<b>Cluster:</b> {cluster_id if cluster_id is not None else 'n/a'}<br>"
-            f"<b>Label:</b> {current_label if current_label else 'unlabeled'}<br>"
+            f"<b>Label:</b> {current_label_html}<br>"
             f"{prediction_html}<br>"
             f"<b>Source:</b> {source}<br>"
             f"<span style='color:#9e9e9e; font-size:11px;'>{escape(image_path.name)}</span>"
@@ -3735,7 +3778,7 @@ class MainWindow(QMainWindow):
             "<div style='line-height:1.5;'>"
             f"<b>Selected Point:</b> {self.selected_point_index if self.selected_point_index is not None else 'none'}<br>"
             f"<b>Hovered Point:</b> {index}<br>"
-            f"<b>Current Label:</b> {current_label if current_label else 'unlabeled'}<br>"
+            f"<b>Current Label:</b> {current_label_html}<br>"
             f"{prediction_html}<br>"
             "Assign using number keys 1-9 or class buttons."
             "</div>"
@@ -4065,6 +4108,7 @@ class MainWindow(QMainWindow):
             return
 
         category_order = None
+        category_colors = None
         point_tooltips = None
 
         if self.explorer_mode == "explore":
@@ -4075,6 +4119,7 @@ class MainWindow(QMainWindow):
             seeded_labels.extend(list(self.classes or []))
             seeded_labels.append("unknown")
             color_values = seeded_labels
+            category_colors = self._schema_category_color_map()
             candidate_indices = self.candidate_indices
         elif self.explorer_mode == "review":
             review_labels = [
@@ -4084,10 +4129,16 @@ class MainWindow(QMainWindow):
             review_labels.extend(list(self.classes or []))
             review_labels.append("unknown")
             color_values = review_labels
+            category_colors = self._schema_category_color_map()
             candidate_indices = self._review_candidate_indices
         else:
             color_values = self._prediction_labels_for_plot()
-            category_order = list(self._model_class_names or [])
+            category_order = self._schema_category_order(
+                extra_categories=list(self._model_class_names or [])
+            )
+            category_colors = self._schema_category_color_map(
+                extra_categories=list(self._model_class_names or [])
+            )
             point_tooltips = self._prediction_tooltips_for_plot(top_k=3)
             candidate_indices = []
 
@@ -4100,6 +4151,7 @@ class MainWindow(QMainWindow):
             labeling_mode=(self.explorer_mode in {"labeling", "review"}),
             prediction_mode=(self.explorer_mode == "predictions"),
             category_order=category_order,
+            category_colors=category_colors,
             point_tooltips=point_tooltips,
         ):
             return
@@ -4114,6 +4166,7 @@ class MainWindow(QMainWindow):
             labeling_mode=(self.explorer_mode in {"labeling", "review"}),
             prediction_mode=(self.explorer_mode == "predictions"),
             category_order=category_order,
+            category_colors=category_colors,
             point_tooltips=point_tooltips,
             preserve_view=(not force_fit),
         )
