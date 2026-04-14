@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://neurorishika.github.io/hydra-suite/nightly/getting-started/environments/">
       
       
-        <link rel="prev" href="../installation/">
+        <link rel="prev" href="../rocm/">
       
       
         <link rel="next" href="../integrations/">
@@ -433,6 +433,27 @@
   
   <span class="md-ellipsis">
     Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rocm/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ROCm Setup
   </span>
   
 
@@ -1924,25 +1945,25 @@
 <tbody>
 <tr>
 <td><code>environment.yml</code></td>
-<td><code>hydra-suite</code></td>
+<td><code>hydra</code></td>
 <td>All</td>
 <td>Python, NumPy, SciPy, PySide6, Qt6, OpenCV, Numba</td>
 </tr>
 <tr>
 <td><code>environment-mps.yml</code></td>
-<td><code>hydra-suite-mps</code></td>
+<td><code>hydra-mps</code></td>
 <td>macOS M1-M4</td>
 <td>Same as CPU</td>
 </tr>
 <tr>
 <td><code>environment-cuda.yml</code></td>
-<td><code>hydra-suite-cuda</code></td>
+<td><code>hydra-cuda</code></td>
 <td>Linux/Windows (NVIDIA)</td>
-<td>Same + CUDA 12 runtime libs (cublas, cudnn, cufft)</td>
+<td>Same + CUDA 12 runtime libs (cublas, cudnn, curand, cufft)</td>
 </tr>
 <tr>
 <td><code>environment-rocm.yml</code></td>
-<td><code>hydra-suite-rocm</code></td>
+<td><code>hydra-rocm</code></td>
 <td>Linux (AMD)</td>
 <td>Same as CPU (ROCm is system-level)</td>
 </tr>
@@ -1998,10 +2019,10 @@
 </table>
 <p>All requirements files include <code>-e .</code> which installs the package in editable mode, pulling base dependencies from <code>pyproject.toml</code>. This means dependencies are declared once — in <code>pyproject.toml</code> — and requirements files only add what <code>pyproject.toml</code> cannot express (torch index URLs, GPU-specific wheels).</p>
 <h2 id="onnx-runtime-and-cuda-compatibility">ONNX Runtime and CUDA compatibility<a class="headerlink" href="#onnx-runtime-and-cuda-compatibility" title="Permanent link">&para;</a></h2>
-<p><code>onnxruntime-gpu==1.24.1</code> links against CUDA 12 user-space libraries (<code>libcublasLt.so.12</code>, <code>libcudart.so.12</code>). This is handled differently by each install path:</p>
+<p><code>onnxruntime-gpu==1.24.1</code> links against CUDA 12 user-space libraries (<code>libcublasLt.so.12</code>, <code>libcudart.so.12</code>, <code>libcurand.so.10</code>). This is handled differently by each install path:</p>
 <ul>
 <li><strong>pip path:</strong> PyTorch's CUDA wheel installs <code>nvidia-cublas-cu12</code>, <code>nvidia-cudnn-cu12</code>, etc. as pip dependencies and preloads them via <code>ctypes</code> at import time. ONNX Runtime finds them in the same process.</li>
-<li><strong>conda path:</strong> <code>environment-cuda.yml</code> installs CUDA 12 runtime libs via conda packages. <code>make install-cuda</code> writes <code>LD_LIBRARY_PATH</code> activation hooks.</li>
+<li><strong>conda path:</strong> <code>environment-cuda.yml</code> installs CUDA 12 runtime libs via conda packages, including <code>libcurand</code>. <code>make install-cuda</code> writes <code>LD_LIBRARY_PATH</code> activation hooks.</li>
 </ul>
 <p>Both approaches work on CUDA 13 systems — CUDA 12 user-space libs coexist with a CUDA 13 driver.</p>
 <h2 id="makefile-targets">Makefile targets<a class="headerlink" href="#makefile-targets" title="Permanent link">&para;</a></h2>

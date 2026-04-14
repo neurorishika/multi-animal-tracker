@@ -446,6 +446,27 @@
   
   
     <li class="md-nav__item">
+      <a href="../../getting-started/rocm/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ROCm Setup
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../getting-started/environments/" class="md-nav__link">
         
   
@@ -1406,15 +1427,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#legacy-directory-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      legacy/ Directory Policy
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#recommended-cadence" class="md-nav__link">
     <span class="md-ellipsis">
       Recommended Cadence
@@ -1971,15 +1983,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#legacy-directory-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      legacy/ Directory Policy
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#recommended-cadence" class="md-nav__link">
     <span class="md-ellipsis">
       Recommended Cadence
@@ -2132,20 +2135,6 @@ are written to:</p>
 <li><code>hydra_suite.svg</code> — visual dependency graph</li>
 <li><code>htmlcov/index.html</code> — coverage report</li>
 </ul>
-<hr />
-<h2 id="legacy-directory-policy"><code>legacy/</code> Directory Policy<a class="headerlink" href="#legacy-directory-policy" title="Permanent link">&para;</a></h2>
-<p>The <a href="../../legacy/"><code>legacy/</code></a> directory holds superseded code intentionally kept for
-reference. It is excluded from:</p>
-<ul>
-<li>test coverage (<code>pyproject.toml</code> <code>[tool.coverage.run]</code>)</li>
-<li>mypy (<code>pyproject.toml</code> <code>[tool.mypy]</code>)</li>
-<li>black/isort formatting</li>
-</ul>
-<p>Before deleting any source module, move it to <code>legacy/</code> for one release cycle. This
-gives dependents time to adapt without losing the reference implementation.</p>
-<p>Confirm nothing in <code>src/</code> imports from <code>legacy/</code> before each release:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>grep<span class="w"> </span>-r<span class="w"> </span><span class="s2">&quot;from.*legacy\|import.*legacy&quot;</span><span class="w"> </span>src/<span class="w"> </span>tests/
-</span></code></pre></div>
 <hr />
 <h2 id="recommended-cadence">Recommended Cadence<a class="headerlink" href="#recommended-cadence" title="Permanent link">&para;</a></h2>
 <table>

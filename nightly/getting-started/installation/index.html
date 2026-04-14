@@ -16,7 +16,7 @@
         <link rel="prev" href="../..">
       
       
-        <link rel="next" href="../environments/">
+        <link rel="next" href="../rocm/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -828,6 +828,27 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rocm/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    ROCm Setup
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -2515,7 +2536,7 @@
 <td>Python 3.11+</td>
 <td>Python 3.11+</td>
 <td>Python 3.11+</td>
-<td>Python 3.11+, ROCm 6.0+</td>
+<td>Python 3.11+, system ROCm install</td>
 </tr>
 </tbody>
 </table>
@@ -2569,10 +2590,10 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/cu130
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;hydra-suite[cuda13]&quot;</span>
 </span></code></pre></div>
-<p><strong>You do not need the CUDA toolkit installed.</strong> PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (<code>nvidia-cublas-cu12</code>, <code>nvidia-cudnn-cu12</code>, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.</p>
+<p><strong>You do not need the CUDA toolkit installed.</strong> PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (<code>nvidia-cublas-cu12</code>, <code>nvidia-cudnn-cu12</code>, <code>nvidia-curand-cu12</code>, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.</p>
 <h3 id="amd-gpu-rocm-linux-only">AMD GPU / ROCm (Linux only)<a class="headerlink" href="#amd-gpu-rocm-linux-only" title="Permanent link">&para;</a></h3>
-<p>Requires <a href="https://rocm.docs.amd.com/">ROCm 6.0+</a> installed system-wide first.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/rocm6.2
+<p>Requires ROCm installed system-wide first. See the dedicated <a href="../rocm/">ROCm setup guide</a>.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/rocm7.2
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;hydra-suite[rocm]&quot;</span>
 </span></code></pre></div>
 <h3 id="why-is-gpu-install-two-commands">Why is GPU install two commands?<a class="headerlink" href="#why-is-gpu-install-two-commands" title="Permanent link">&para;</a></h3>
@@ -2602,7 +2623,7 @@
 </span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;hydra-suite[cuda13] @ git+https://github.com/neurorishika/hydra-suite.git&quot;</span>
 </span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>
 </span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1"># ROCm</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/rocm6.2
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/rocm7.2
 </span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;hydra-suite[rocm] @ git+https://github.com/neurorishika/hydra-suite.git&quot;</span>
 </span></code></pre></div>
 <h3 id="install-a-specific-branch-or-tag">Install a specific branch or tag<a class="headerlink" href="#install-a-specific-branch-or-tag" title="Permanent link">&para;</a></h3>
@@ -2627,22 +2648,22 @@
 <p>Pick your platform:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># CPU</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>make<span class="w"> </span>setup
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>make<span class="w"> </span>install
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="c1"># Apple Silicon (MPS)</span>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>make<span class="w"> </span>setup-mps
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite-mps
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-mps
 </span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>make<span class="w"> </span>install-mps
 </span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>
 </span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="c1"># NVIDIA GPU (CUDA)</span>
 </span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>make<span class="w"> </span>setup-cuda
-</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite-cuda
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-cuda
 </span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>make<span class="w"> </span>install-cuda<span class="w"> </span><span class="nv">CUDA_MAJOR</span><span class="o">=</span><span class="m">13</span><span class="w">     </span><span class="c1"># or CUDA_MAJOR=12</span>
 </span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>
-</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="c1"># AMD GPU (ROCm — requires system-wide ROCm 6.0+)</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="c1"># AMD GPU (ROCm — requires system ROCm; see getting-started/rocm.md)</span>
 </span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>make<span class="w"> </span>setup-rocm
-</span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite-rocm
+</span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-rocm
 </span><span id="__span-10-19"><a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a>make<span class="w"> </span>install-rocm
 </span></code></pre></div>
 <h3 id="step-3-install-dev-tools-optional">Step 3: Install dev tools (optional)<a class="headerlink" href="#step-3-install-dev-tools-optional" title="Permanent link">&para;</a></h3>
@@ -2657,7 +2678,7 @@
 </ol>
 <p>Base dependencies (numpy, scipy, PySide6, ultralytics, etc.) are declared once in <code>pyproject.toml</code>. The requirements files only add what <code>pyproject.toml</code> cannot express (torch GPU index URLs). This means there is <strong>one source of truth</strong> for dependencies.</p>
 <h3 id="development-workflow">Development workflow<a class="headerlink" href="#development-workflow" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite-mps<span class="w">   </span><span class="c1"># or your env</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-mps<span class="w">   </span><span class="c1"># or your env</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="c1"># Edit code — changes are live immediately (editable install)</span>
 </span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>make<span class="w"> </span>pytest<span class="w">                               </span><span class="c1"># run tests</span>
 </span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>make<span class="w"> </span>format<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>make<span class="w"> </span>lint<span class="w">                  </span><span class="c1"># format and lint before committing</span>
@@ -2772,7 +2793,7 @@
 </span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">    </span><span class="s2">&quot;hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git&quot;</span>
 </span></code></pre></div>
 <h3 id="conda-pip-developer">conda + pip (developer)<a class="headerlink" href="#conda-pip-developer" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite-mps<span class="w">  </span><span class="c1"># or your env</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-mps<span class="w">  </span><span class="c1"># or your env</span>
 </span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>git<span class="w"> </span>pull
 </span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>mamba<span class="w"> </span>env<span class="w"> </span>update<span class="w"> </span>-f<span class="w"> </span>environment-mps.yml<span class="w"> </span>--prune<span class="w">   </span><span class="c1"># if conda deps changed</span>
 </span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>make<span class="w"> </span>install-mps<span class="w">                                  </span><span class="c1"># reinstall pip packages</span>
@@ -2784,7 +2805,9 @@
 <li>Ensure you installed with <code>[cuda]</code> or <code>[cuda13]</code> extra</li>
 <li>Ensure PyTorch is imported before ONNX Runtime (PyTorch preloads CUDA libs)</li>
 <li>Verify: <code>python -c "import torch; import onnxruntime as ort; print(ort.get_available_providers())"</code></li>
-<li><strong>conda path:</strong> re-run <code>make install-cuda CUDA_MAJOR=13</code> to refresh hooks</li>
+<li>For a direct ONNX Runtime session check, use: <code>python -c "import onnxruntime as ort; s=ort.InferenceSession('model.onnx', providers=['CUDAExecutionProvider']); print(s.get_providers())"</code></li>
+<li>If you see <code>libcurand.so.10: cannot open shared object file</code>, update the conda env: <code>conda install -n hydra-cuda -c nvidia -c conda-forge libcurand=10.*</code></li>
+<li><strong>conda path:</strong> re-run <code>make install-cuda CUDA_MAJOR=13</code> (or <code>CUDA_MAJOR=12</code>) and reactivate the environment to refresh hooks; the Makefile now runs a CUDA runtime self-check and fails fast if ONNX Runtime libraries are still missing</li>
 </ul>
 <h3 id="pyside6-qt-errors-on-linux-pip-only">PySide6 / Qt errors on Linux (pip only)<a class="headerlink" href="#pyside6-qt-errors-on-linux-pip-only" title="Permanent link">&para;</a></h3>
 <p>pip-installed PySide6 may need system libraries:</p>
@@ -2801,9 +2824,9 @@
 </span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;hydra-suite[cuda]&quot;</span>
 </span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a>
 </span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="c1"># conda</span>
-</span><span id="__span-24-6"><a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>conda<span class="w"> </span>env<span class="w"> </span>remove<span class="w"> </span>-n<span class="w"> </span>hydra-suite-cuda
+</span><span id="__span-24-6"><a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>conda<span class="w"> </span>env<span class="w"> </span>remove<span class="w"> </span>-n<span class="w"> </span>hydra-cuda
 </span><span id="__span-24-7"><a id="__codelineno-24-7" name="__codelineno-24-7" href="#__codelineno-24-7"></a>make<span class="w"> </span>setup-cuda
-</span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-suite-cuda
+</span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a>conda<span class="w"> </span>activate<span class="w"> </span>hydra-cuda
 </span><span id="__span-24-9"><a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a>make<span class="w"> </span>install-cuda<span class="w"> </span><span class="nv">CUDA_MAJOR</span><span class="o">=</span><span class="m">13</span>
 </span></code></pre></div>
 <hr />
@@ -2811,7 +2834,7 @@
 <ul>
 <li><a href="../environments/">Environments</a> — conda environment matrix and Makefile reference</li>
 <li><a href="../integrations/">Integrations</a> — SLEAP, X-AnyLabeling setup</li>
-<li><code>ROCM_SETUP.md</code> — ROCm system prerequisites</li>
+<li><a href="../rocm/">ROCm Setup</a> — system ROCm install and HYDRA-specific notes</li>
 <li><a href="../../developer-guide/publishing/">Publishing to PyPI</a> — releasing new versions</li>
 </ul>
 
