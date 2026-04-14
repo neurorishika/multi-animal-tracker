@@ -708,6 +708,22 @@ class DetectionPanel(QWidget):
             "Crop OBB stage input size in pixels. Set 0 to disable pre-resize."
         )
         f_seq_adv.addRow("Stage-2 imgsz (px)", self.spin_yolo_seq_stage2_imgsz)
+        self.spin_yolo_seq_individual_batch_size = QSpinBox()
+        self.spin_yolo_seq_individual_batch_size.setRange(1, 1024)
+        self.spin_yolo_seq_individual_batch_size.setValue(
+            int(
+                self._main_window.advanced_config.get(
+                    "yolo_seq_individual_batch_size", 16
+                )
+            )
+        )
+        self.spin_yolo_seq_individual_batch_size.setFixedHeight(30)
+        self.spin_yolo_seq_individual_batch_size.setToolTip(
+            "Maximum number of sequential crops to send to stage-2 OBB at once.\n"
+            "Non-realtime mode first batches frames, then groups crops across those frames using this size.\n"
+            "Realtime mode still fixes frame batching to 1, but stage-2 crop batching uses this value."
+        )
+        f_seq_adv.addRow("Stage-2 crop batch", self.spin_yolo_seq_individual_batch_size)
         self.chk_yolo_seq_stage2_pow2_pad = QCheckBox(
             "Pad stage-2 batch to power-of-two"
         )
@@ -854,14 +870,14 @@ class DetectionPanel(QWidget):
         )
         self.spin_yolo_batch_size.setFixedHeight(30)
         self.spin_yolo_batch_size.setToolTip(
-            "Manual batch size (only used when mode is Manual).\n"
+            "Manual frame batch size (only used when mode is Manual).\n"
             "Larger = faster but uses more GPU memory.\n"
             "Typical values: 8-32 depending on GPU."
         )
         self.spin_yolo_batch_size.valueChanged.connect(
             self._on_yolo_manual_batch_size_changed
         )
-        self.lbl_yolo_batch_size = QLabel("Manual batch")
+        self.lbl_yolo_batch_size = QLabel("Frame batch")
         self.lbl_yolo_batch_size.setStyleSheet(
             "font-size: 10px; font-weight: 600; color: #bdbdbd;"
         )
@@ -1285,9 +1301,12 @@ class DetectionPanel(QWidget):
             self.spin_yolo_batch_size.setEnabled(False)
             self.spin_tensorrt_batch.setEnabled(False)
             self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
-            self.lbl_batch_policy_notice.setText(
-                "Realtime tracking processes detection one frame at a time. Frame-level YOLO and ONNX/TensorRT batch settings are ignored during realtime runs."
-            )
+            sequential = self.combo_yolo_obb_mode.currentIndex() == 1
+            if sequential:
+                message = "Realtime tracking fixes the frame batch to 1. Sequential stage-2 crop batching still uses the Stage-2 crop batch setting."
+            else:
+                message = "Realtime tracking processes detection one frame at a time. Frame-level YOLO and ONNX/TensorRT batch settings are ignored during realtime runs."
+            self.lbl_batch_policy_notice.setText(message)
             self.lbl_batch_policy_notice.setVisible(True)
             return
 
@@ -1299,14 +1318,33 @@ class DetectionPanel(QWidget):
         self.spin_tensorrt_batch.setEnabled(tensorrt_enabled)
         self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
 
-        if fixed_runtime:
-            self.lbl_batch_policy_notice.setText(
-                "The selected runtime uses a fixed exported batch. Manual batch size controls the non-realtime detector artifact size."
+        recommendation = self._main_window._current_detection_benchmark_recommendation()
+        recommendation_text = ""
+        if recommendation is not None:
+            individual_batch_size = getattr(
+                recommendation, "individual_batch_size", None
             )
+            if individual_batch_size:
+                recommendation_text = (
+                    "Benchmark recommendation: "
+                    f"{recommendation.runtime_label} at frame batch {recommendation.batch_size} / crop batch {int(individual_batch_size)}."
+                )
+            else:
+                recommendation_text = f"Benchmark recommendation: {recommendation.runtime_label} at batch {recommendation.batch_size}."
+
+        if fixed_runtime:
+            message = "The selected runtime uses a fixed exported batch. Manual batch size controls the non-realtime detector artifact size."
+            if recommendation_text:
+                message += "\n" + recommendation_text
+            self.lbl_batch_policy_notice.setText(message)
             self.lbl_batch_policy_notice.setVisible(True)
         else:
-            self.lbl_batch_policy_notice.clear()
-            self.lbl_batch_policy_notice.setVisible(False)
+            if recommendation_text:
+                self.lbl_batch_policy_notice.setText(recommendation_text)
+                self.lbl_batch_policy_notice.setVisible(True)
+            else:
+                self.lbl_batch_policy_notice.clear()
+                self.lbl_batch_policy_notice.setVisible(False)
 
     # =========================================================================
     # DETECTION METHOD CHANGED UI (moved from MainWindow)
@@ -1709,6 +1747,7 @@ class DetectionPanel(QWidget):
             "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
             "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
             "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
+            "yolo_seq_individual_batch_size": self.spin_yolo_seq_individual_batch_size.value(),
             "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
             "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
             "yolo_headtail_conf_threshold": (

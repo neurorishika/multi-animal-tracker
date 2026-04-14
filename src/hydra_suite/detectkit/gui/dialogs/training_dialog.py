@@ -1,15 +1,16 @@
-"""Training panel (right) for DetectKit -- full config, run controls, loss plot, log."""
+"""TrainingDialog — full training configuration and run control for DetectKit."""
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -29,33 +30,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.trackerkit.gui.widgets.loss_plot_widget import LossPlotWidget
-from hydra_suite.training import (
-    AugmentationProfile,
-    PublishPolicy,
-    SourceDataset,
-    SplitConfig,
-    TrainingHyperParams,
-    TrainingOrchestrator,
-    TrainingRole,
-    TrainingRunSpec,
-)
-from hydra_suite.training.validation import format_validation_report
-from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
-from hydra_suite.utils.gpu_utils import get_device_info
+from hydra_suite.widgets.dialogs import BaseDialog
 from hydra_suite.widgets.workers import BaseWorker
 
-from ..models import DEFAULT_CLASS_NAME, normalize_class_names
+if TYPE_CHECKING:
+    from ..models import DetectKitProject
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Worker -- copied from train_yolo_dialog to avoid cross-app dependency
+# Worker
 # ---------------------------------------------------------------------------
 
 
-class RoleTrainingWorker(BaseWorker):
+class _TrainingWorker(BaseWorker):
     """Run selected role trainings sequentially in a background thread."""
 
     log_signal = Signal(str)
@@ -70,20 +59,14 @@ class RoleTrainingWorker(BaseWorker):
         self.role_entries = role_entries
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self) -> None:
         """Request cancellation; the running role loop checks this flag before each role."""
         self._cancel = True
 
     def _should_cancel(self) -> bool:
         return bool(self._cancel)
 
-    def execute(self):
-        """Run each role's training sequentially, emitting per-role signals and a final summary.
-
-        Iterates over ``role_entries``, calling the orchestrator for each role and emitting
-        ``role_started``, ``role_finished``, and ``progress_signal`` along the way.
-        Stops early if ``cancel()`` was called.  Emits ``done_signal`` with the full results list.
-        """
+    def execute(self) -> None:
         results = []
         parent_run = ""
         for entry in self.role_entries:
@@ -136,59 +119,69 @@ class RoleTrainingWorker(BaseWorker):
 
 
 # ---------------------------------------------------------------------------
-# Training Panel
+# Dialog
 # ---------------------------------------------------------------------------
 
 
-class TrainingPanel(QWidget):
-    """Right-side training panel for DetectKit."""
+class TrainingDialog(BaseDialog):
+    """Full training configuration and run control."""
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
+    training_completed = Signal(list)
 
-        self._main_window = None
-        self._proj = None
-        self.worker = None
+    def __init__(self, project: "DetectKitProject", parent=None) -> None:
+        super().__init__(
+            "Train Model",
+            parent=parent,
+            buttons=QDialogButtonBox.StandardButton.Close,
+        )
+        self._project = project
+        self._worker = None
         self._last_training_results: list[dict] = []
         self.role_dataset_dirs: dict[str, str] = {}
 
-        from hydra_suite.paths import get_training_workspace_dir
+        try:
+            from hydra_suite.paths import get_training_workspace_dir
+            from hydra_suite.training import TrainingOrchestrator
 
-        self.workspace_default = get_training_workspace_dir("YOLO")
-        self.orchestrator = TrainingOrchestrator(self.workspace_default)
+            self._workspace_default = get_training_workspace_dir("YOLO")
+            self._orchestrator = TrainingOrchestrator(self._workspace_default)
+        except ImportError:
+            self._workspace_default = Path("./training_workspace")
+            self._orchestrator = None
 
-        self._build_ui()
+        self.resize(720, 860)
+        self._build_content()
+        self._load_from_project()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
+    def _build_content(self) -> None:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        content = QWidget()
-        layout = QVBoxLayout(content)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setSpacing(10)
 
-        layout.addWidget(self._build_roles_group())
-        layout.addWidget(self._build_config_group())
-        layout.addWidget(self._build_hyperparams_group())
-        layout.addWidget(self._build_base_models_group())
-        layout.addWidget(self._build_augmentation_group())
-        layout.addWidget(self._build_publish_group())
-        layout.addWidget(self._build_run_group())
-        layout.addWidget(self._build_loss_plot())
-        layout.addWidget(self._build_log())
+        v.addWidget(self._build_roles_group())
+        v.addWidget(self._build_config_group())
+        v.addWidget(self._build_hyperparams_group())
+        v.addWidget(self._build_base_models_group())
+        v.addWidget(self._build_augmentation_group())
+        v.addWidget(self._build_publish_group())
+        v.addWidget(self._build_run_group())
+        v.addWidget(self._build_loss_plot())
+        v.addWidget(self._build_log())
+        v.addStretch(1)
 
-        layout.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll)
+        scroll.setWidget(inner)
+        self.add_content(scroll)
 
     # --- 1. Roles ---
 
-    def _build_roles_group(self):
+    def _build_roles_group(self) -> QGroupBox:
         gb = QGroupBox("Roles")
         v = QVBoxLayout(gb)
 
@@ -211,17 +204,17 @@ class TrainingPanel(QWidget):
 
     # --- 2. Config ---
 
-    def _build_config_group(self):
+    def _build_config_group(self) -> QGroupBox:
         gb = QGroupBox("Config")
         form = QFormLayout(gb)
 
-        self.class_names_edit = QPlainTextEdit(DEFAULT_CLASS_NAME)
+        self.class_names_edit = QPlainTextEdit()
         self.class_names_edit.setPlaceholderText("ant\nbee")
         self.class_names_edit.setFixedHeight(84)
         form.addRow("Class names", self.class_names_edit)
 
-        self.line_workspace = QLineEdit(str(self.workspace_default))
-        self.btn_workspace = QPushButton("Browse...")
+        self.line_workspace = QLineEdit(str(self._workspace_default))
+        self.btn_workspace = QPushButton("Browse…")
         h_ws = QHBoxLayout()
         h_ws.addWidget(self.line_workspace, 1)
         h_ws.addWidget(self.btn_workspace)
@@ -284,7 +277,7 @@ class TrainingPanel(QWidget):
 
     # --- 3. Hyperparameters ---
 
-    def _build_hyperparams_group(self):
+    def _build_hyperparams_group(self) -> QGroupBox:
         gb = QGroupBox("Hyperparameters")
         g = QGridLayout(gb)
 
@@ -336,7 +329,7 @@ class TrainingPanel(QWidget):
         self.chk_cache = QCheckBox("Cache")
         g.addWidget(self.chk_cache, 1, 4, 1, 2)
 
-        # Row 2: imgsz per role
+        # Row 2: per-role imgsz
         self.spin_imgsz_obb_direct = QSpinBox()
         self.spin_imgsz_obb_direct.setRange(64, 2048)
         self.spin_imgsz_obb_direct.setValue(640)
@@ -362,7 +355,7 @@ class TrainingPanel(QWidget):
 
     # --- 4. Base Models ---
 
-    def _build_base_models_group(self):
+    def _build_base_models_group(self) -> QGroupBox:
         gb = QGroupBox("Base Models")
         form = QFormLayout(gb)
 
@@ -383,13 +376,7 @@ class TrainingPanel(QWidget):
         self.combo_model_seq_detect = QComboBox()
         self.combo_model_seq_detect.setEditable(True)
         self.combo_model_seq_detect.addItems(
-            [
-                "yolo26n.pt",
-                "yolo26s.pt",
-                "yolo26m.pt",
-                "yolo26l.pt",
-                "yolo26x.pt",
-            ]
+            ["yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt"]
         )
         self.combo_model_seq_detect.setCurrentText("yolo26s.pt")
         form.addRow("seq_detect", self.combo_model_seq_detect)
@@ -397,11 +384,7 @@ class TrainingPanel(QWidget):
         self.combo_model_seq_crop_obb = QComboBox()
         self.combo_model_seq_crop_obb.setEditable(True)
         self.combo_model_seq_crop_obb.addItems(
-            [
-                "yolo26n-obb.pt",
-                "yolo26s-obb.pt",
-                "yolo26m-obb.pt",
-            ]
+            ["yolo26n-obb.pt", "yolo26s-obb.pt", "yolo26m-obb.pt"]
         )
         self.combo_model_seq_crop_obb.setCurrentText("yolo26s-obb.pt")
         form.addRow("seq_crop_obb", self.combo_model_seq_crop_obb)
@@ -410,7 +393,7 @@ class TrainingPanel(QWidget):
 
     # --- 5. Augmentation ---
 
-    def _build_augmentation_group(self):
+    def _build_augmentation_group(self) -> QGroupBox:
         self.aug_group = QGroupBox("Augmentation")
         self.aug_group.setCheckable(True)
         self.aug_group.setChecked(True)
@@ -455,7 +438,7 @@ class TrainingPanel(QWidget):
 
     # --- 6. Publish ---
 
-    def _build_publish_group(self):
+    def _build_publish_group(self) -> QGroupBox:
         gb = QGroupBox("Publish")
         form = QFormLayout(gb)
 
@@ -479,15 +462,15 @@ class TrainingPanel(QWidget):
 
     # --- 7. Run Controls ---
 
-    def _build_run_group(self):
+    def _build_run_group(self) -> QGroupBox:
         gb = QGroupBox("Run Controls")
         v = QVBoxLayout(gb)
 
         row1 = QHBoxLayout()
         self.btn_build = QPushButton("Build Role Datasets")
-        self.btn_train = QPushButton("Start Training")
-        self.btn_stop = QPushButton("Stop")
-        self.btn_stop.setEnabled(False)
+        self.btn_start = QPushButton("Start Training")
+        self.btn_cancel = QPushButton("Stop")
+        self.btn_cancel.setEnabled(False)
         self.btn_resume = QPushButton("Resume")
         self.btn_resume.setEnabled(False)
         self.btn_resume.setToolTip(
@@ -496,8 +479,8 @@ class TrainingPanel(QWidget):
         self.btn_detach = QPushButton("Start Detached")
         self.btn_detach.setToolTip("Launch training as a background process.")
         row1.addWidget(self.btn_build)
-        row1.addWidget(self.btn_train)
-        row1.addWidget(self.btn_stop)
+        row1.addWidget(self.btn_start)
+        row1.addWidget(self.btn_cancel)
         row1.addWidget(self.btn_resume)
         row1.addWidget(self.btn_detach)
         v.addLayout(row1)
@@ -505,11 +488,9 @@ class TrainingPanel(QWidget):
         row2 = QHBoxLayout()
         self.btn_quick_test = QPushButton("Quick Test")
         self.btn_quick_test.setEnabled(False)
-        self.btn_history = QPushButton("Run History")
         self.btn_save_config = QPushButton("Save Config")
         self.btn_load_config = QPushButton("Load Config")
         row2.addWidget(self.btn_quick_test)
-        row2.addWidget(self.btn_history)
         row2.addWidget(self.btn_save_config)
         row2.addWidget(self.btn_load_config)
         v.addLayout(row2)
@@ -519,14 +500,12 @@ class TrainingPanel(QWidget):
         self.progress.setValue(0)
         v.addWidget(self.progress)
 
-        # Connect signals
         self.btn_build.clicked.connect(self._build_role_datasets)
-        self.btn_train.clicked.connect(self._start_training)
-        self.btn_stop.clicked.connect(self._stop_training)
+        self.btn_start.clicked.connect(self._start_training)
+        self.btn_cancel.clicked.connect(self._cancel_training)
         self.btn_resume.clicked.connect(self._resume_training)
         self.btn_detach.clicked.connect(self._start_detached)
         self.btn_quick_test.clicked.connect(self._quick_test)
-        self.btn_history.clicked.connect(self._show_history)
         self.btn_save_config.clicked.connect(self._save_training_config)
         self.btn_load_config.clicked.connect(self._load_training_config)
 
@@ -534,59 +513,58 @@ class TrainingPanel(QWidget):
 
     # --- 8. Loss Plot ---
 
-    def _build_loss_plot(self):
-        self.loss_plot = LossPlotWidget()
-        self.loss_plot.setMinimumHeight(180)
-        return self.loss_plot
+    def _build_loss_plot(self) -> QWidget:
+        try:
+            from hydra_suite.trackerkit.gui.widgets.loss_plot_widget import (
+                LossPlotWidget,
+            )
+
+            self.loss_plot = LossPlotWidget()
+            self.loss_plot.setMinimumHeight(180)
+            return self.loss_plot
+        except ImportError:
+            self.loss_plot = None
+            placeholder = QLabel("Loss plot not available (trackerkit not installed).")
+            placeholder.setStyleSheet("color: gray; font-style: italic;")
+            return placeholder
 
     # --- 9. Log ---
 
-    def _build_log(self):
+    def _build_log(self) -> QTextEdit:
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setPlaceholderText("Training log output appears here.")
+        self.log_view.setMinimumHeight(150)
         return self.log_view
 
     # ------------------------------------------------------------------
-    # Project interface
+    # Project round-trip
     # ------------------------------------------------------------------
 
-    def set_project(self, proj, main_window):
-        """Populate all widgets from *proj* fields. Store references."""
-        self._proj = proj
-        self._main_window = main_window
+    def _load_from_project(self) -> None:
+        proj = self._project
 
-        self._set_class_names(proj.class_names)
-        self.line_species.setText(proj.species or "")
-        self.line_model_tag.setText(proj.model_tag or "train")
+        from ..models import normalize_class_names
 
-        # Roles
+        self.class_names_edit.setPlainText(
+            "\n".join(normalize_class_names(proj.class_names))
+        )
+
         self.chk_role_obb_direct.setChecked(proj.role_obb_direct)
         self.chk_role_seq_detect.setChecked(proj.role_seq_detect)
         self.chk_role_seq_crop_obb.setChecked(proj.role_seq_crop_obb)
 
-        # Split
         self.spin_train.setValue(proj.split_train)
         self.spin_val.setValue(proj.split_val)
         self.spin_seed.setValue(proj.seed)
         self.chk_dedup.setChecked(proj.dedup)
 
-        # Crop
         self.spin_crop_pad.setValue(proj.crop_pad_ratio)
         self.spin_crop_min_px.setValue(proj.min_crop_size_px)
         self.chk_crop_square.setChecked(proj.enforce_square)
 
-        # Imgsz
-        self.spin_imgsz_obb_direct.setValue(proj.imgsz_obb_direct)
-        self.spin_imgsz_seq_detect.setValue(proj.imgsz_seq_detect)
-        self.spin_imgsz_seq_crop_obb.setValue(proj.imgsz_seq_crop_obb)
+        self.combo_device.setCurrentText(proj.device or "auto")
 
-        # Base models
-        self.combo_model_obb_direct.setCurrentText(proj.model_obb_direct)
-        self.combo_model_seq_detect.setCurrentText(proj.model_seq_detect)
-        self.combo_model_seq_crop_obb.setCurrentText(proj.model_seq_crop_obb)
-
-        # Hyperparams
         self.spin_epochs.setValue(proj.epochs)
         self.spin_batch.setValue(proj.batch)
         self.chk_auto_batch.setChecked(proj.auto_batch)
@@ -595,7 +573,14 @@ class TrainingPanel(QWidget):
         self.spin_workers.setValue(proj.workers)
         self.chk_cache.setChecked(proj.cache)
 
-        # Augmentation
+        self.spin_imgsz_obb_direct.setValue(proj.imgsz_obb_direct)
+        self.spin_imgsz_seq_detect.setValue(proj.imgsz_seq_detect)
+        self.spin_imgsz_seq_crop_obb.setValue(proj.imgsz_seq_crop_obb)
+
+        self.combo_model_obb_direct.setCurrentText(proj.model_obb_direct)
+        self.combo_model_seq_detect.setCurrentText(proj.model_seq_detect)
+        self.combo_model_seq_crop_obb.setCurrentText(proj.model_seq_crop_obb)
+
         self.aug_group.setChecked(proj.aug_enabled)
         self.aug_fliplr.setValue(proj.aug_fliplr)
         self.aug_flipud.setValue(proj.aug_flipud)
@@ -606,46 +591,35 @@ class TrainingPanel(QWidget):
         self.aug_hsv_s.setValue(proj.aug_hsv_s)
         self.aug_hsv_v.setValue(proj.aug_hsv_v)
 
-        # Device
-        self.combo_device.setCurrentText(proj.device or "auto")
-
-        # Publish
+        self.line_species.setText(proj.species or "")
+        self.line_model_tag.setText(proj.model_tag or "train")
         self.chk_auto_import.setChecked(proj.auto_import)
         self.chk_auto_select.setChecked(proj.auto_select)
 
-    def collect_state(self, proj):
-        """Write all widget values back to *proj* fields."""
-        proj.class_names = self._class_names()
-        proj.species = self.line_species.text().strip()
-        proj.model_tag = self.line_model_tag.text().strip() or "train"
+    def _write_to_project(self) -> None:
+        proj = self._project
 
-        # Roles
+        from ..models import normalize_class_names
+
+        proj.class_names = normalize_class_names(
+            self.class_names_edit.toPlainText().splitlines()
+        )
+
         proj.role_obb_direct = self.chk_role_obb_direct.isChecked()
         proj.role_seq_detect = self.chk_role_seq_detect.isChecked()
         proj.role_seq_crop_obb = self.chk_role_seq_crop_obb.isChecked()
 
-        # Split
         proj.split_train = self.spin_train.value()
         proj.split_val = self.spin_val.value()
         proj.seed = self.spin_seed.value()
         proj.dedup = self.chk_dedup.isChecked()
 
-        # Crop
         proj.crop_pad_ratio = self.spin_crop_pad.value()
         proj.min_crop_size_px = self.spin_crop_min_px.value()
         proj.enforce_square = self.chk_crop_square.isChecked()
 
-        # Imgsz
-        proj.imgsz_obb_direct = self.spin_imgsz_obb_direct.value()
-        proj.imgsz_seq_detect = self.spin_imgsz_seq_detect.value()
-        proj.imgsz_seq_crop_obb = self.spin_imgsz_seq_crop_obb.value()
+        proj.device = self.combo_device.currentText().strip() or "auto"
 
-        # Base models
-        proj.model_obb_direct = self.combo_model_obb_direct.currentText()
-        proj.model_seq_detect = self.combo_model_seq_detect.currentText()
-        proj.model_seq_crop_obb = self.combo_model_seq_crop_obb.currentText()
-
-        # Hyperparams
         proj.epochs = self.spin_epochs.value()
         proj.batch = self.spin_batch.value()
         proj.auto_batch = self.chk_auto_batch.isChecked()
@@ -654,7 +628,14 @@ class TrainingPanel(QWidget):
         proj.workers = self.spin_workers.value()
         proj.cache = self.chk_cache.isChecked()
 
-        # Augmentation
+        proj.imgsz_obb_direct = self.spin_imgsz_obb_direct.value()
+        proj.imgsz_seq_detect = self.spin_imgsz_seq_detect.value()
+        proj.imgsz_seq_crop_obb = self.spin_imgsz_seq_crop_obb.value()
+
+        proj.model_obb_direct = self.combo_model_obb_direct.currentText()
+        proj.model_seq_detect = self.combo_model_seq_detect.currentText()
+        proj.model_seq_crop_obb = self.combo_model_seq_crop_obb.currentText()
+
         proj.aug_enabled = self.aug_group.isChecked()
         proj.aug_fliplr = self.aug_fliplr.value()
         proj.aug_flipud = self.aug_flipud.value()
@@ -665,35 +646,27 @@ class TrainingPanel(QWidget):
         proj.aug_hsv_s = self.aug_hsv_s.value()
         proj.aug_hsv_v = self.aug_hsv_v.value()
 
-        # Device
-        proj.device = self.combo_device.currentText().strip() or "auto"
-
-        # Publish
+        proj.species = self.line_species.text().strip()
+        proj.model_tag = self.line_model_tag.text().strip() or "train"
         proj.auto_import = self.chk_auto_import.isChecked()
         proj.auto_select = self.chk_auto_select.isChecked()
-
-    def _class_names(self) -> list[str]:
-        """Return normalized class names from the config editor."""
-        return normalize_class_names(self.class_names_edit.toPlainText().splitlines())
-
-    def _set_class_names(self, class_names: list[str]) -> None:
-        """Populate the config editor from a class-name list."""
-        self.class_names_edit.setPlainText(
-            "\n".join(normalize_class_names(class_names))
-        )
-
-    def refresh_class_names_from_project(self) -> None:
-        """Refresh only the class-name editor from the current project."""
-        if self._proj is None:
-            return
-        self._set_class_names(self._proj.class_names)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _build_device_options(self):
-        info = get_device_info()
+    def _class_names(self) -> list[str]:
+        from ..models import normalize_class_names
+
+        return normalize_class_names(self.class_names_edit.toPlainText().splitlines())
+
+    def _build_device_options(self) -> list[str]:
+        try:
+            from hydra_suite.utils.gpu_utils import get_device_info
+
+            info = get_device_info()
+        except ImportError:
+            info = {}
         options = ["auto", "cpu"]
         if info.get("torch_cuda_available"):
             options.append("cuda")
@@ -706,25 +679,39 @@ class TrainingPanel(QWidget):
             options.append("rocm")
         return options
 
-    def _imgsz_for_role(self, role: TrainingRole) -> int:
-        if role == TrainingRole.OBB_DIRECT:
-            return self.spin_imgsz_obb_direct.value()
-        if role == TrainingRole.SEQ_DETECT:
-            return self.spin_imgsz_seq_detect.value()
-        if role == TrainingRole.SEQ_CROP_OBB:
-            return self.spin_imgsz_seq_crop_obb.value()
+    def _imgsz_for_role(self, role) -> int:
+        try:
+            from hydra_suite.training import TrainingRole
+
+            if role == TrainingRole.OBB_DIRECT:
+                return self.spin_imgsz_obb_direct.value()
+            if role == TrainingRole.SEQ_DETECT:
+                return self.spin_imgsz_seq_detect.value()
+            if role == TrainingRole.SEQ_CROP_OBB:
+                return self.spin_imgsz_seq_crop_obb.value()
+        except ImportError:
+            pass
         return 640
 
-    def _base_model_for_role(self, role: TrainingRole) -> str:
-        if role == TrainingRole.OBB_DIRECT:
-            return self.combo_model_obb_direct.currentText().strip()
-        if role == TrainingRole.SEQ_DETECT:
-            return self.combo_model_seq_detect.currentText().strip()
-        if role == TrainingRole.SEQ_CROP_OBB:
-            return self.combo_model_seq_crop_obb.currentText().strip()
+    def _base_model_for_role(self, role) -> str:
+        try:
+            from hydra_suite.training import TrainingRole
+
+            if role == TrainingRole.OBB_DIRECT:
+                return self.combo_model_obb_direct.currentText().strip()
+            if role == TrainingRole.SEQ_DETECT:
+                return self.combo_model_seq_detect.currentText().strip()
+            if role == TrainingRole.SEQ_CROP_OBB:
+                return self.combo_model_seq_crop_obb.currentText().strip()
+        except ImportError:
+            pass
         return ""
 
-    def _selected_roles(self):
+    def _selected_roles(self) -> list:
+        try:
+            from hydra_suite.training import TrainingRole
+        except ImportError:
+            return []
         roles = []
         if self.chk_role_obb_direct.isChecked():
             roles.append(TrainingRole.OBB_DIRECT)
@@ -734,36 +721,19 @@ class TrainingPanel(QWidget):
             roles.append(TrainingRole.SEQ_CROP_OBB)
         return roles
 
-    def _collect_sources(self):
-        """Get sources from the main window project, convert to SourceDataset list."""
-        if self._main_window is None:
+    def _collect_sources(self) -> list:
+        try:
+            from hydra_suite.training import SourceDataset
+        except ImportError:
             return []
-        proj = self._main_window.project()
-        if proj is None:
-            return []
-        obb_sources = []
-        for src in proj.sources:
+        sources = []
+        for src in self._project.sources:
             p = src.path.strip()
             if p:
-                obb_sources.append(
-                    SourceDataset(
-                        path=p,
-                        source_type="yolo_obb",
-                        name=Path(p).name,
-                    )
+                sources.append(
+                    SourceDataset(path=p, source_type="yolo_obb", name=Path(p).name)
                 )
-        return obb_sources
-
-    def _append_log(self, text: str):
-        self.log_view.append(str(text))
-        if hasattr(self, "loss_plot"):
-            self.loss_plot.ingest_log_line(str(text))
-
-    def _choose_workspace(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Workspace Root")
-        if d:
-            self.line_workspace.setText(d)
-            self.orchestrator = TrainingOrchestrator(d)
+        return sources
 
     @staticmethod
     def _infer_size_token(model_path: str) -> str:
@@ -784,16 +754,19 @@ class TrainingPanel(QWidget):
                 return token
         return "unknown"
 
-    def _publish_meta_for_role(self, role: TrainingRole, base_model: str) -> dict:
+    def _publish_meta_for_role(self, role, base_model: str) -> dict:
         species = self.line_species.text().strip() or "species"
         tag = self.line_model_tag.text().strip() or "train"
-        training_params: dict = {
-            "imgsz": self._imgsz_for_role(role),
-        }
-        if role == TrainingRole.SEQ_CROP_OBB:
-            training_params["crop_pad_ratio"] = self.spin_crop_pad.value()
-            training_params["min_crop_size_px"] = self.spin_crop_min_px.value()
-            training_params["enforce_square"] = self.chk_crop_square.isChecked()
+        training_params: dict = {"imgsz": self._imgsz_for_role(role)}
+        try:
+            from hydra_suite.training import TrainingRole
+
+            if role == TrainingRole.SEQ_CROP_OBB:
+                training_params["crop_pad_ratio"] = self.spin_crop_pad.value()
+                training_params["min_crop_size_px"] = self.spin_crop_min_px.value()
+                training_params["enforce_square"] = self.chk_crop_square.isChecked()
+        except ImportError:
+            pass
         return {
             "size": self._infer_size_token(base_model),
             "species": species,
@@ -801,11 +774,46 @@ class TrainingPanel(QWidget):
             "training_params": training_params,
         }
 
+    def _append_log(self, text: str) -> None:
+        self.log_view.append(str(text))
+        if self.loss_plot is not None:
+            self.loss_plot.ingest_log_line(str(text))
+
+    def _choose_workspace(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Select Workspace Root")
+        if d:
+            self.line_workspace.setText(d)
+            try:
+                from hydra_suite.training import TrainingOrchestrator
+
+                self._orchestrator = TrainingOrchestrator(d)
+            except ImportError:
+                pass
+
+    def _get_orchestrator(self):
+        if self._orchestrator is None:
+            try:
+                from hydra_suite.training import TrainingOrchestrator
+
+                ws_text = self.line_workspace.text().strip()
+                ws = Path(ws_text) if ws_text else self._workspace_default
+                self._orchestrator = TrainingOrchestrator(ws)
+            except ImportError:
+                return None
+        return self._orchestrator
+
     # ------------------------------------------------------------------
-    # Validation
+    # Dataset building
     # ------------------------------------------------------------------
 
-    def _validate_sources(self):
+    def _build_role_datasets(self) -> bool:
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            QMessageBox.critical(
+                self, "Not Available", "Training dependencies not available."
+            )
+            return False
+
         obb_sources = self._collect_sources()
         if not obb_sources:
             QMessageBox.warning(
@@ -813,47 +821,20 @@ class TrainingPanel(QWidget):
             )
             return False
 
-        try:
-            report = self.orchestrator.preflight_obb_sources(
-                obb_sources, require_train_val=False
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Validation Error", str(exc))
-            return False
-
-        text = format_validation_report(report)
-        self._append_log(text)
-
-        if not report.valid:
-            QMessageBox.warning(
-                self,
-                "Validation Failed",
-                "Source validation failed. See log for details.",
-            )
-            return False
-        return True
-
-    # ------------------------------------------------------------------
-    # Dataset building
-    # ------------------------------------------------------------------
-
-    def _build_role_datasets(self):
-        if not self._validate_sources():
-            return False
-
         roles = self._selected_roles()
         if not roles:
             QMessageBox.warning(self, "No Roles", "Select at least one training role.")
             return False
 
-        obb_sources = self._collect_sources()
         try:
+            from hydra_suite.training import SplitConfig
+
             split = SplitConfig(
                 train=self.spin_train.value(),
                 val=self.spin_val.value(),
                 test=0.0,
             )
-            merged = self.orchestrator.build_merged_obb_dataset(
+            merged = orchestrator.build_merged_obb_dataset(
                 obb_sources,
                 class_names=self._class_names(),
                 split_cfg=split,
@@ -864,7 +845,7 @@ class TrainingPanel(QWidget):
             self._append_log(f"Merged dataset: {merged.dataset_dir}")
 
             for role in roles:
-                build = self.orchestrator.build_role_dataset(
+                build = orchestrator.build_role_dataset(
                     role,
                     merged.dataset_dir,
                     class_names=self._class_names(),
@@ -889,8 +870,8 @@ class TrainingPanel(QWidget):
     # Training execution
     # ------------------------------------------------------------------
 
-    def _start_training(self):
-        if self.worker is not None and self.worker.isRunning():
+    def _start_training(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
             QMessageBox.warning(self, "Busy", "Training is already running.")
             return
 
@@ -911,6 +892,24 @@ class TrainingPanel(QWidget):
             )
             return
 
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            self._append_log("Training dependencies not available.")
+            return
+
+        self._write_to_project()
+
+        try:
+            from hydra_suite.training import (
+                AugmentationProfile,
+                PublishPolicy,
+                TrainingHyperParams,
+                TrainingRunSpec,
+            )
+        except ImportError as exc:
+            self._append_log(f"Training dependencies not available: {exc}")
+            return
+
         source_obb = self._collect_sources()
         role_entries = []
         for role in roles:
@@ -926,7 +925,9 @@ class TrainingPanel(QWidget):
             base_model = self._base_model_for_role(role)
             if not base_model:
                 QMessageBox.warning(
-                    self, "Base Model", f"Set base model for role: {role.value}"
+                    self,
+                    "Base Model",
+                    f"Set base model for role: {role.value}",
                 )
                 return
 
@@ -979,51 +980,48 @@ class TrainingPanel(QWidget):
                 }
             )
 
-        self.worker = RoleTrainingWorker(self.orchestrator, role_entries)
-        self.worker.log_signal.connect(self._append_log)
-        self.worker.role_started.connect(self._on_role_started)
-        self.worker.role_finished.connect(self._on_role_finished)
-        self.worker.progress_signal.connect(self._on_role_progress)
-        self.worker.done_signal.connect(self._on_training_done)
+        self._worker = _TrainingWorker(orchestrator, role_entries)
+        self._worker.log_signal.connect(self._append_log)
+        self._worker.role_started.connect(self._on_role_started)
+        self._worker.role_finished.connect(self._on_role_finished)
+        self._worker.progress_signal.connect(self._on_role_progress)
+        self._worker.done_signal.connect(self._on_done)
+        self._worker.finished.connect(self._on_worker_finished)
 
-        self.btn_train.setEnabled(False)
-        self.btn_stop.setEnabled(True)
+        self.btn_start.setEnabled(False)
+        self.btn_cancel.setEnabled(True)
         self.progress.setValue(0)
-        self.loss_plot.clear()
-        self.worker.start()
+        if self.loss_plot is not None:
+            self.loss_plot.clear()
+        self._worker.start()
 
-    def _stop_training(self):
-        if self.worker is not None:
-            self.worker.cancel()
-            self._append_log("Cancellation requested...")
+    def _cancel_training(self) -> None:
+        if self._worker:
+            self._worker.cancel()
+        self._append_log("Cancellation requested…")
 
-    def _on_role_started(self, role: str):
+    def _on_role_started(self, role: str) -> None:
         self._append_log(f"=== START {role} ===")
 
-    def _on_role_finished(self, role: str, ok: bool, message: str):
+    def _on_role_finished(self, role: str, ok: bool, message: str) -> None:
         self._append_log(f"=== {'OK' if ok else 'FAIL'} {role}: {message} ===")
 
-    def _on_role_progress(self, role: str, cur: int, total: int):
+    def _on_role_progress(self, role: str, cur: int, total: int) -> None:
         total = max(1, int(total))
         cur = max(0, min(total, int(cur)))
         pct = int((cur / total) * 100.0)
         self.progress.setValue(pct)
         self.progress.setFormat(f"{role}: {cur}/{total} ({pct}%)")
 
-    def _on_training_done(self, results: list):
-        self.btn_train.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.progress.setFormat("Done")
-
+    def _on_done(self, results: list) -> None:
         self._last_training_results = results
         for r in results:
-            run_dir = ""
             artifact = r.get("artifact_path", "")
             if artifact:
-                _wdir = Path(artifact).parent
-                if _wdir.name == "weights":
-                    run_dir = str(_wdir.parent)
-            r["_run_dir"] = run_dir
+                wdir = Path(artifact).parent
+                r["_run_dir"] = str(wdir.parent) if wdir.name == "weights" else ""
+            else:
+                r["_run_dir"] = ""
 
         self.btn_resume.setEnabled(
             any(
@@ -1040,13 +1038,13 @@ class TrainingPanel(QWidget):
         self._append_log(
             f"Session complete: {len(succeeded)} success, {len(failed)} failed"
         )
+        self.training_completed.emit(results)
 
         if failed:
             QMessageBox.warning(
                 self,
                 "Training Completed with Failures",
-                f"Succeeded: {len(succeeded)}\nFailed: {len(failed)}\n"
-                "See logs for details.",
+                f"Succeeded: {len(succeeded)}\nFailed: {len(failed)}\nSee logs for details.",
             )
         else:
             QMessageBox.information(
@@ -1055,8 +1053,17 @@ class TrainingPanel(QWidget):
                 f"All {len(succeeded)} selected roles completed successfully.",
             )
 
-    def _resume_training(self):
-        """Resume training from last.pt checkpoint of the most recent run."""
+    def _on_worker_finished(self) -> None:
+        self.btn_start.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+        self.progress.setFormat("Done")
+        self.progress.setValue(100)
+
+    # ------------------------------------------------------------------
+    # Resume
+    # ------------------------------------------------------------------
+
+    def _resume_training(self) -> None:
         last_pt = None
         resume_result = None
         for r in reversed(self._last_training_results):
@@ -1078,14 +1085,18 @@ class TrainingPanel(QWidget):
 
         role_str = str(resume_result.get("role", ""))
         try:
-            role = TrainingRole(role_str)
-        except ValueError:
-            QMessageBox.warning(
-                self, "Resume Failed", f"Unknown training role: {role_str}"
+            from hydra_suite.training import (
+                TrainingHyperParams,
+                TrainingRole,
+                TrainingRunSpec,
             )
+
+            role = TrainingRole(role_str)
+        except (ImportError, ValueError) as exc:
+            QMessageBox.warning(self, "Resume Failed", f"Cannot resume: {exc}")
             return
 
-        resume_batch_val = (
+        batch_val = (
             -1 if self.chk_auto_batch.isChecked() else int(self.spin_batch.value())
         )
         spec = TrainingRunSpec(
@@ -1096,7 +1107,7 @@ class TrainingPanel(QWidget):
             hyperparams=TrainingHyperParams(
                 epochs=int(self.spin_epochs.value()),
                 imgsz=self._imgsz_for_role(role),
-                batch=resume_batch_val,
+                batch=batch_val,
                 lr0=float(self.spin_lr0.value()),
                 patience=int(self.spin_patience.value()),
                 workers=int(self.spin_workers.value()),
@@ -1105,30 +1116,38 @@ class TrainingPanel(QWidget):
         )
 
         class_names = self._class_names()
-        publish_meta = {
-            "class_names": class_names,
-            "class_name": class_names[0],
-            "resumed_from": str(last_pt),
+        entry = {
+            "role": role,
+            "spec": spec,
+            "publish_meta": {"class_names": class_names, "resumed_from": str(last_pt)},
         }
-        entry = {"role": role, "spec": spec, "publish_meta": publish_meta}
+
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            self._append_log("Training dependencies not available.")
+            return
 
         self._append_log(f"Resuming training from {last_pt}")
-        self.btn_train.setEnabled(False)
+        self.btn_start.setEnabled(False)
         self.btn_resume.setEnabled(False)
-        self.btn_stop.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
         self.progress.setValue(0)
-        self.progress.setFormat("Resuming...")
+        self.progress.setFormat("Resuming…")
 
-        self.worker = RoleTrainingWorker(self.orchestrator, [entry])
-        self.worker.log_signal.connect(self._append_log)
-        self.worker.role_started.connect(self._on_role_started)
-        self.worker.role_finished.connect(self._on_role_finished)
-        self.worker.progress_signal.connect(self._on_role_progress)
-        self.worker.done_signal.connect(self._on_training_done)
-        self.worker.start()
+        self._worker = _TrainingWorker(orchestrator, [entry])
+        self._worker.log_signal.connect(self._append_log)
+        self._worker.role_started.connect(self._on_role_started)
+        self._worker.role_finished.connect(self._on_role_finished)
+        self._worker.progress_signal.connect(self._on_role_progress)
+        self._worker.done_signal.connect(self._on_done)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.start()
 
-    def _start_detached(self):
-        """Launch training as a detached subprocess."""
+    # ------------------------------------------------------------------
+    # Detached training
+    # ------------------------------------------------------------------
+
+    def _start_detached(self) -> None:
         import subprocess as _subprocess
 
         roles = self._selected_roles()
@@ -1139,7 +1158,17 @@ class TrainingPanel(QWidget):
             if not self._build_role_datasets():
                 return
 
+        try:
+            from hydra_suite.training import TrainingHyperParams, TrainingRunSpec
+            from hydra_suite.training.runner import build_ultralytics_command
+        except ImportError as exc:
+            QMessageBox.critical(self, "Not Available", f"Training dependencies: {exc}")
+            return
+
         launched = []
+        ws_text = self.line_workspace.text().strip()
+        ws = Path(ws_text) if ws_text else self._workspace_default
+
         for role in roles:
             ds = self.role_dataset_dirs.get(role.value, "")
             if not ds:
@@ -1168,10 +1197,7 @@ class TrainingPanel(QWidget):
                 device=self.combo_device.currentText().strip() or "auto",
                 seed=self.spin_seed.value(),
             )
-            from hydra_suite.training.runner import build_ultralytics_command
 
-            ws_text = self.line_workspace.text().strip()
-            ws = Path(ws_text) if ws_text else self.workspace_default
             run_dir = ws / "runs" / ("detached_" + role.value)
             run_dir.mkdir(parents=True, exist_ok=True)
             cmd = build_ultralytics_command(spec, str(run_dir))
@@ -1191,24 +1217,21 @@ class TrainingPanel(QWidget):
 
         if launched:
             msg = "\n".join(
-                f"* {role}: PID {pid}\n  Log: {log}" for role, pid, log in launched
+                f"* {r}: PID {pid}\n  Log: {log}" for r, pid, log in launched
             )
             QMessageBox.information(
                 self,
                 "Detached Training Started",
                 f"Training launched in background:\n\n{msg}\n\n"
-                "You can close this panel. Check Run History for results.",
+                "You can close this dialog. Check Run History for results.",
             )
 
     # ------------------------------------------------------------------
-    # Quick Test / History
+    # Quick Test
     # ------------------------------------------------------------------
 
-    def _quick_test(self):
-        """Open ModelTestDialog for the last successful training result."""
-        from hydra_suite.trackerkit.gui.dialogs.model_test_dialog import ModelTestDialog
-
-        results = getattr(self, "_last_training_results", [])
+    def _quick_test(self) -> None:
+        results = self._last_training_results
         succeeded = [r for r in results if r.get("success")]
         if not succeeded:
             QMessageBox.warning(
@@ -1228,6 +1251,16 @@ class TrainingPanel(QWidget):
             )
             return
 
+        try:
+            from hydra_suite.trackerkit.gui.dialogs.model_test_dialog import (
+                ModelTestDialog,
+            )
+        except ImportError:
+            QMessageBox.information(
+                self, "Not Available", "Model test dialog is not available."
+            )
+            return
+
         role = result.get("role", "obb_direct")
         dataset_dir = self.role_dataset_dirs.get(role, "")
         if not dataset_dir:
@@ -1236,301 +1269,147 @@ class TrainingPanel(QWidget):
             )
             return
 
-        device = self.combo_device.currentText() or "cpu"
-        imgsz_map = {
-            "obb_direct": self.spin_imgsz_obb_direct.value(),
-            "seq_detect": self.spin_imgsz_seq_detect.value(),
-            "seq_crop_obb": self.spin_imgsz_seq_crop_obb.value(),
-        }
-        imgsz = imgsz_map.get(role, 640)
-
         dlg = ModelTestDialog(
             model_path=model_path,
-            role=role,
             dataset_dir=dataset_dir,
-            device=device,
-            imgsz=imgsz,
-            crop_pad_ratio=self.spin_crop_pad.value(),
-            min_crop_size_px=self.spin_crop_min_px.value(),
-            enforce_square=self.chk_crop_square.isChecked(),
+            device=self.combo_device.currentText() or "cpu",
             parent=self,
         )
-        dlg.exec()
-
-    def _show_history(self):
-        """Open the training run history viewer dialog."""
-        from hydra_suite.trackerkit.gui.dialogs.run_history_dialog import (
-            RunHistoryDialog,
-        )
-
-        dlg = RunHistoryDialog(parent=self)
-        dlg.exec()
+        dlg.open()
 
     # ------------------------------------------------------------------
-    # Save / Load training config
+    # Save / Load Config
     # ------------------------------------------------------------------
 
-    def _save_training_config(self):
-        """Export all panel settings to a JSON file."""
+    def _save_training_config(self) -> None:
+        import json
+
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Training Config",
-            str(self.workspace_default),
-            "JSON Files (*.json)",
+            self, "Save Training Config", "", "JSON (*.json)"
         )
         if not path:
             return
-
-        roles = []
-        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
-            chk = getattr(self, f"chk_role_{role_key}", None)
-            if chk and chk.isChecked():
-                roles.append(role_key)
-
-        config = {
-            "version": 1,
-            "class_names": self._class_names(),
-            "class_name": self._class_names()[0],
-            "roles": roles,
-            "hyperparams": {
-                "epochs": self.spin_epochs.value(),
-                "batch": self.spin_batch.value(),
-                "auto_batch": self.chk_auto_batch.isChecked(),
-                "lr0": self.spin_lr0.value(),
-                "patience": self.spin_patience.value(),
-                "workers": self.spin_workers.value(),
-                "cache": self.chk_cache.isChecked(),
+        self._write_to_project()
+        proj = self._project
+        data = {
+            "roles": {
+                "obb_direct": proj.role_obb_direct,
+                "seq_detect": proj.role_seq_detect,
+                "seq_crop_obb": proj.role_seq_crop_obb,
             },
-            "imgsz": {
-                "obb_direct": self.spin_imgsz_obb_direct.value(),
-                "seq_detect": self.spin_imgsz_seq_detect.value(),
-                "seq_crop_obb": self.spin_imgsz_seq_crop_obb.value(),
-            },
-            "split": {
-                "train": self.spin_train.value(),
-                "val": self.spin_val.value(),
-            },
-            "seed": self.spin_seed.value(),
-            "dedup": self.chk_dedup.isChecked(),
-            "crop_derivation": {
-                "pad_ratio": self.spin_crop_pad.value(),
-                "min_crop_size_px": self.spin_crop_min_px.value(),
-                "enforce_square": self.chk_crop_square.isChecked(),
-            },
-            "base_models": {
-                "obb_direct": self.combo_model_obb_direct.currentText(),
-                "seq_detect": self.combo_model_seq_detect.currentText(),
-                "seq_crop_obb": self.combo_model_seq_crop_obb.currentText(),
-            },
-            "augmentation": {
-                "enabled": self.aug_group.isChecked(),
-                "fliplr": self.aug_fliplr.value(),
-                "flipud": self.aug_flipud.value(),
-                "degrees": self.aug_degrees.value(),
-                "mosaic": self.aug_mosaic.value(),
-                "mixup": self.aug_mixup.value(),
-                "hsv_h": self.aug_hsv_h.value(),
-                "hsv_s": self.aug_hsv_s.value(),
-                "hsv_v": self.aug_hsv_v.value(),
-            },
-            "device": self.combo_device.currentText(),
-            "publish": {
-                "species": self.line_species.text().strip(),
-                "model_tag": self.line_model_tag.text().strip(),
-                "auto_import": self.chk_auto_import.isChecked(),
-                "auto_select": self.chk_auto_select.isChecked(),
-            },
+            "split_train": proj.split_train,
+            "split_val": proj.split_val,
+            "seed": proj.seed,
+            "dedup": proj.dedup,
+            "crop_pad_ratio": proj.crop_pad_ratio,
+            "min_crop_size_px": proj.min_crop_size_px,
+            "enforce_square": proj.enforce_square,
+            "epochs": proj.epochs,
+            "batch": proj.batch,
+            "auto_batch": proj.auto_batch,
+            "lr0": proj.lr0,
+            "patience": proj.patience,
+            "workers": proj.workers,
+            "cache": proj.cache,
+            "imgsz_obb_direct": proj.imgsz_obb_direct,
+            "imgsz_seq_detect": proj.imgsz_seq_detect,
+            "imgsz_seq_crop_obb": proj.imgsz_seq_crop_obb,
+            "model_obb_direct": proj.model_obb_direct,
+            "model_seq_detect": proj.model_seq_detect,
+            "model_seq_crop_obb": proj.model_seq_crop_obb,
+            "aug_enabled": proj.aug_enabled,
+            "aug_fliplr": proj.aug_fliplr,
+            "aug_flipud": proj.aug_flipud,
+            "aug_degrees": proj.aug_degrees,
+            "aug_mosaic": proj.aug_mosaic,
+            "aug_mixup": proj.aug_mixup,
+            "aug_hsv_h": proj.aug_hsv_h,
+            "aug_hsv_s": proj.aug_hsv_s,
+            "aug_hsv_v": proj.aug_hsv_v,
+            "device": proj.device,
+            "species": proj.species,
+            "model_tag": proj.model_tag,
+            "auto_import": proj.auto_import,
+            "auto_select": proj.auto_select,
         }
-
         try:
-            Path(path).write_text(json.dumps(config, indent=2), encoding="utf-8")
-            self._append_log(f"Config saved to {path}")
+            Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            QMessageBox.information(self, "Saved", f"Config saved to:\n{path}")
         except Exception as exc:
-            self._append_log(f"Failed to save config: {exc}")
+            QMessageBox.critical(self, "Save Failed", str(exc))
 
-    def _load_training_config(self):
-        """Restore panel settings from a JSON config file."""
+    def _load_training_config(self) -> None:
+        import json
+
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Training Config",
-            str(self.workspace_default),
-            "JSON Files (*.json)",
+            self, "Load Training Config", "", "JSON (*.json)"
         )
         if not path:
             return
-
         try:
-            config = json.loads(Path(path).read_text(encoding="utf-8"))
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
         except Exception as exc:
-            self._append_log(f"Failed to load config: {exc}")
+            QMessageBox.critical(self, "Load Failed", str(exc))
             return
 
-        if "class_names" in config:
-            self._set_class_names(config["class_names"])
-        elif "class_name" in config:
-            self._set_class_names([config["class_name"]])
+        roles = data.get("roles", {})
+        if "obb_direct" in roles:
+            self.chk_role_obb_direct.setChecked(bool(roles["obb_direct"]))
+        if "seq_detect" in roles:
+            self.chk_role_seq_detect.setChecked(bool(roles["seq_detect"]))
+        if "seq_crop_obb" in roles:
+            self.chk_role_seq_crop_obb.setChecked(bool(roles["seq_crop_obb"]))
 
-        self._apply_roles_config(config.get("roles", []))
-        self._apply_hyperparams_config(config.get("hyperparams", {}))
-        self._apply_imgsz_config(config.get("imgsz", {}))
-        self._apply_split_config(config.get("split", {}))
-        self._apply_seed_dedup_config(config)
-        self._apply_crop_derivation_config(config.get("crop_derivation", {}))
-        self._apply_base_models_config(config.get("base_models", {}))
-        self._apply_augmentation_config(config.get("augmentation", {}))
+        for attr, widget in [
+            ("split_train", self.spin_train),
+            ("split_val", self.spin_val),
+            ("seed", self.spin_seed),
+            ("crop_pad_ratio", self.spin_crop_pad),
+            ("min_crop_size_px", self.spin_crop_min_px),
+            ("epochs", self.spin_epochs),
+            ("batch", self.spin_batch),
+            ("lr0", self.spin_lr0),
+            ("patience", self.spin_patience),
+            ("workers", self.spin_workers),
+            ("imgsz_obb_direct", self.spin_imgsz_obb_direct),
+            ("imgsz_seq_detect", self.spin_imgsz_seq_detect),
+            ("imgsz_seq_crop_obb", self.spin_imgsz_seq_crop_obb),
+            ("aug_fliplr", self.aug_fliplr),
+            ("aug_flipud", self.aug_flipud),
+            ("aug_degrees", self.aug_degrees),
+            ("aug_mosaic", self.aug_mosaic),
+            ("aug_mixup", self.aug_mixup),
+            ("aug_hsv_h", self.aug_hsv_h),
+            ("aug_hsv_s", self.aug_hsv_s),
+            ("aug_hsv_v", self.aug_hsv_v),
+        ]:
+            if attr in data:
+                widget.setValue(data[attr])
 
-        if "device" in config:
-            self.combo_device.setCurrentText(config["device"])
+        for attr, widget in [
+            ("dedup", self.chk_dedup),
+            ("enforce_square", self.chk_crop_square),
+            ("auto_batch", self.chk_auto_batch),
+            ("cache", self.chk_cache),
+            ("aug_enabled", self.aug_group),
+            ("auto_import", self.chk_auto_import),
+            ("auto_select", self.chk_auto_select),
+        ]:
+            if attr in data:
+                widget.setChecked(bool(data[attr]))
 
-        self._apply_publish_config(config.get("publish", {}))
-        self._append_log(f"Config loaded from {path}")
+        for attr, widget in [
+            ("model_obb_direct", self.combo_model_obb_direct),
+            ("model_seq_detect", self.combo_model_seq_detect),
+            ("model_seq_crop_obb", self.combo_model_seq_crop_obb),
+            ("device", self.combo_device),
+        ]:
+            if attr in data:
+                widget.setCurrentText(str(data[attr]))
 
-    def _apply_roles_config(self, roles):
-        """Apply role checkboxes from loaded config."""
-        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
-            chk = getattr(self, f"chk_role_{role_key}", None)
-            if chk:
-                chk.setChecked(role_key in roles)
+        if "species" in data:
+            self.line_species.setText(str(data["species"]))
+        if "model_tag" in data:
+            self.line_model_tag.setText(str(data["model_tag"]))
 
-    def _apply_hyperparams_config(self, hp):
-        """Apply hyperparameter widgets from loaded config."""
-        for key, widget_name in (
-            ("epochs", "spin_epochs"),
-            ("batch", "spin_batch"),
-            ("lr0", "spin_lr0"),
-            ("patience", "spin_patience"),
-            ("workers", "spin_workers"),
-        ):
-            if key in hp:
-                w = getattr(self, widget_name, None)
-                if w:
-                    w.setValue(hp[key])
-        if "cache" in hp:
-            self.chk_cache.setChecked(hp["cache"])
-        if "auto_batch" in hp:
-            self.chk_auto_batch.setChecked(hp["auto_batch"])
-
-    def _apply_imgsz_config(self, isz):
-        """Apply image-size spinners from loaded config."""
-        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
-            if role_key in isz:
-                w = getattr(self, f"spin_imgsz_{role_key}", None)
-                if w:
-                    w.setValue(isz[role_key])
-
-    def _apply_split_config(self, sp):
-        """Apply train/val split values from loaded config."""
-        if "train" in sp:
-            self.spin_train.setValue(sp["train"])
-        if "val" in sp:
-            self.spin_val.setValue(sp["val"])
-
-    def _apply_seed_dedup_config(self, config):
-        """Apply seed and dedup settings from loaded config."""
-        if "seed" in config:
-            self.spin_seed.setValue(config["seed"])
-        if "dedup" in config:
-            self.chk_dedup.setChecked(config["dedup"])
-
-    def _apply_crop_derivation_config(self, cd):
-        """Apply crop derivation settings from loaded config."""
-        if "pad_ratio" in cd:
-            self.spin_crop_pad.setValue(cd["pad_ratio"])
-        if "min_crop_size_px" in cd:
-            self.spin_crop_min_px.setValue(cd["min_crop_size_px"])
-        if "enforce_square" in cd:
-            self.chk_crop_square.setChecked(cd["enforce_square"])
-
-    def _apply_base_models_config(self, bm):
-        """Apply base model combo boxes from loaded config."""
-        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
-            if role_key in bm:
-                combo = getattr(self, f"combo_model_{role_key}", None)
-                if combo:
-                    combo.setCurrentText(bm[role_key])
-
-    def _apply_augmentation_config(self, aug):
-        """Apply augmentation settings from loaded config."""
-        if "enabled" in aug:
-            self.aug_group.setChecked(aug["enabled"])
-        for key in (
-            "fliplr",
-            "flipud",
-            "degrees",
-            "mosaic",
-            "mixup",
-            "hsv_h",
-            "hsv_s",
-            "hsv_v",
-        ):
-            if key in aug:
-                w = getattr(self, f"aug_{key}", None)
-                if w:
-                    w.setValue(aug[key])
-
-    def _apply_publish_config(self, pub):
-        """Apply publish settings from loaded config."""
-        if "species" in pub:
-            self.line_species.setText(pub["species"])
-        if "model_tag" in pub:
-            self.line_model_tag.setText(pub["model_tag"])
-        if "auto_import" in pub:
-            self.chk_auto_import.setChecked(pub["auto_import"])
-        if "auto_select" in pub:
-            self.chk_auto_select.setChecked(pub["auto_select"])
-
-    # ------------------------------------------------------------------
-    # Analysis / preview (delegate to canvas if available)
-    # ------------------------------------------------------------------
-
-    def _analyze_and_preview(self):
-        """Run analysis and show crop previews in canvas."""
-        obb_sources = self._collect_sources()
-        if not obb_sources:
-            QMessageBox.warning(
-                self, "No Sources", "Add at least one OBB source dataset."
-            )
-            return
-
-        from hydra_suite.training.dataset_inspector import (
-            DatasetInspection,
-            analyze_obb_sizes,
-            format_size_analysis,
-            inspect_obb_or_detect_dataset,
-        )
-
-        pad = self.spin_crop_pad.value()
-        min_px = self.spin_crop_min_px.value()
-        square = self.chk_crop_square.isChecked()
-        crop_imgsz = self.spin_imgsz_seq_crop_obb.value()
-
-        merged = DatasetInspection(root_dir="(merged)")
-        for src in obb_sources:
-            try:
-                insp = inspect_obb_or_detect_dataset(src.path)
-            except Exception as exc:
-                self._append_log(f"Skip {src.path}: {exc}")
-                continue
-            for split, items in insp.splits.items():
-                merged.splits.setdefault(split, []).extend(items)
-
-        if not any(merged.splits.values()):
-            QMessageBox.warning(self, "No Data", "No valid images found in sources.")
-            return
-
-        try:
-            stats = analyze_obb_sizes(
-                merged,
-                pad_ratio=pad,
-                min_crop_size_px=min_px,
-                enforce_square=square,
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Analysis Failed", str(exc))
-            return
-
-        report, warnings = format_size_analysis(stats, training_imgsz=crop_imgsz)
-        self._append_log(report)
-        if warnings:
-            for w in warnings:
-                self._append_log(f"  WARNING: {w}")
+        QMessageBox.information(self, "Loaded", f"Config loaded from:\n{path}")

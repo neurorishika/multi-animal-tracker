@@ -26,9 +26,9 @@ warnings.filterwarnings(
     module=r"shibokensupport\.signature\.parser",
 )
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QFont, QIcon, QPixmap
-from PySide6.QtWidgets import (
+from PySide6.QtCore import QSize, Qt  # noqa: E402
+from PySide6.QtGui import QFont, QIcon, QPixmap  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QFileDialog,
     QGridLayout,
@@ -44,7 +44,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+from hydra_suite.utils.file_dialogs import (  # noqa: E402,F811
+    HydraFileDialog as QFileDialog,
+)
 
 _DARK_STYLESHEET = """
 QWidget {
@@ -567,5 +569,7 @@ def main() -> None:
     sys.exit(app.exec())
 
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()

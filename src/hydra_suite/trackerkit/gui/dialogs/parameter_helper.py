@@ -184,7 +184,7 @@ class ParameterHelperDialog(BaseDialog):
             f"\u25cf\u00a0Motion anisotropy\u00a0(fwd\u00f7lat): <b>{_aniso:.1f}</b>"
         )
         summary.setTextFormat(Qt.RichText)
-        summary.setStyleSheet("font-size: 11px; color: #ddd; font-weight: normal;")
+        summary.setStyleSheet("font-size: 11px; color: #ffffff; font-weight: normal;")
         summary.setToolTip(
             "These values come directly from the Main Window tracking tab.\n"
             "Body size         \u2192 REFERENCE_BODY_SIZE \u00d7 RESIZE_FACTOR\n"
@@ -215,7 +215,7 @@ class ParameterHelperDialog(BaseDialog):
         left.addWidget(self.progress)
 
         self.status_label = QLabel("Select parameters above, then click Run.")
-        self.status_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        self.status_label.setStyleSheet("color: #ffffff; font-size: 11px;")
         left.addWidget(self.status_label)
 
         # Results table — 9 columns: Rank | Score | Cov↑ | Asn↓ | Frg↓ | Occ↓ | Vel↓ | Crd↓ | Key Changes
@@ -478,7 +478,7 @@ class ParameterHelperDialog(BaseDialog):
             "(it is also excluded from the balance-penalty)."
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #aaa; font-size: 11px;")
+        note.setStyleSheet("color: #ffffff; font-size: 11px;")
         outer.addWidget(note)
 
         # ── Preset selector ──────────────────────────────────────────────────
@@ -530,8 +530,8 @@ class ParameterHelperDialog(BaseDialog):
 
         def _hint(up: str, down: str) -> QLabel:
             lbl = QLabel(
-                f"<span style='color:#6ec07a'>↑</span> <span style='color:#bbb'>{up}</span>"
-                f"<br><span style='color:#e0875a'>↓</span> <span style='color:#bbb'>{down}</span>"
+                f"<span style='color:#6ec07a'>↑</span> <span style='color:#ffffff'>{up}</span>"
+                f"<br><span style='color:#e0875a'>↓</span> <span style='color:#ffffff'>{down}</span>"
             )
             lbl.setWordWrap(True)
             lbl.setTextFormat(Qt.RichText)
@@ -842,7 +842,7 @@ class ParameterHelperDialog(BaseDialog):
             "No preview yet.\nRun optimizer, select a result row,\nthen click ▶ Preview Selected."
         )
         self._prev_label.setAlignment(Qt.AlignCenter)
-        self._prev_label.setStyleSheet("color: #6a6a6a; font-size: 12px;")
+        self._prev_label.setStyleSheet("color: #ffffff; font-size: 12px;")
         self._prev_label.setMinimumSize(200, 150)
         self._prev_label.setMouseTracking(True)
         self._prev_label.mousePressEvent = self._on_prev_mouse_press
@@ -887,7 +887,7 @@ class ParameterHelperDialog(BaseDialog):
         lay.addLayout(zoom_row)
 
         hint = QLabel("Ctrl+wheel: zoom  •  drag: pan  •  double-click: fit")
-        hint.setStyleSheet("color: #555; font-size: 9px;")
+        hint.setStyleSheet("color: #ffffff; font-size: 9px;")
         hint.setAlignment(Qt.AlignCenter)
         lay.addWidget(hint)
 

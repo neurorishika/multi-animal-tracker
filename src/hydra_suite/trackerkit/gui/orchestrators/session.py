@@ -29,15 +29,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-COMPUTE_RUNTIME_TOOLTIP = (
-    "Detection runtime for the primary tracking detector.\n"
-    "Only runtimes compatible with the active detection pipeline are shown."
-)
-
 HEADTAIL_RUNTIME_TOOLTIP = (
     "Head-tail runtime for oriented crop classification.\n"
-    "Visible only when head-tail analysis is enabled."
+    "Visible only when head-tail analysis is enabled.\n"
+    "Exported ONNX/TensorRT runtimes are shown when available."
 )
 
 CNN_RUNTIME_TOOLTIP = (
@@ -960,7 +955,19 @@ class SessionOrchestrator:
         )
         if not allowed:
             allowed = ["cpu"]
-        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+        recommended = None
+        recommendation = self._mw._current_detection_benchmark_recommendation()
+        if recommendation is not None:
+            recommended = recommendation.runtime
+        options = []
+        for runtime in allowed:
+            if runtime not in CANONICAL_RUNTIMES:
+                continue
+            label = runtime_label(runtime)
+            if runtime == recommended:
+                label += " (Recommended)"
+            options.append((label, runtime))
+        return options
 
     def _update_compute_runtime_tooltip(self) -> None:
         """Explain when CoreML is available in the env but filtered by UI state."""
@@ -1004,14 +1011,21 @@ class SessionOrchestrator:
 
     def _headtail_runtime_options(self):
         """Return (label, value) pairs for the head-tail runtime combo."""
-        allowed = [
-            rt
-            for rt in allowed_runtimes_for_pipelines([])
-            if rt in {"cpu", "mps", "cuda", "rocm"}
-        ]
+        allowed = supported_runtimes_for_pipeline("headtail")
         if not allowed:
             allowed = ["cpu"]
-        return [(runtime_label(rt), rt) for rt in allowed]
+        recommended = None
+        recommendation = self._mw._current_headtail_benchmark_recommendation()
+        if recommendation is not None:
+            recommended = recommendation.runtime
+        return [
+            (
+                runtime_label(runtime)
+                + (" (Recommended)" if runtime == recommended else ""),
+                runtime,
+            )
+            for runtime in allowed
+        ]
 
     def _populate_headtail_runtime_options(self, preferred=None):
         """Populate the head-tail runtime combo with native runtime options."""
@@ -1056,7 +1070,19 @@ class SessionOrchestrator:
         allowed = allowed_runtimes_for_pipelines([])
         if not allowed:
             allowed = ["cpu"]
-        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+        recommended = None
+        recommendation = self._mw._current_cnn_runtime_recommendation()
+        if recommendation is not None:
+            recommended = recommendation.runtime
+        return [
+            (
+                runtime_label(runtime)
+                + (" (Recommended)" if runtime == recommended else ""),
+                runtime,
+            )
+            for runtime in allowed
+            if runtime in CANONICAL_RUNTIMES
+        ]
 
     def _populate_cnn_runtime_options(self, preferred=None):
         """Populate the CNN runtime combo with available runtimes."""
@@ -1138,6 +1164,7 @@ class SessionOrchestrator:
 
     def _on_runtime_context_changed(self, *_args):
         """Update runtime combo and sync dependent controls when context changes."""
+        self._mw._refresh_benchmark_recommendations()
         previous = self._selected_compute_runtime()
         self._mw._populate_compute_runtime_options(preferred=previous)
         self._update_compute_runtime_tooltip()
@@ -1175,6 +1202,10 @@ class SessionOrchestrator:
             "sleap_pose" if str(backend).strip().lower() == "sleap" else "yolo_pose"
         )
         runtimes = supported_runtimes_for_pipeline(pipeline) or ["cpu"]
+        recommended = None
+        recommendation = self._mw._current_pose_benchmark_recommendation()
+        if recommendation is not None:
+            recommended = recommendation.runtime
         options = []
         seen_flavors = set()
         for runtime in runtimes:
@@ -1183,7 +1214,10 @@ class SessionOrchestrator:
             if not flavor or flavor in seen_flavors:
                 continue
             seen_flavors.add(flavor)
-            options.append((runtime_label(runtime), flavor))
+            label = runtime_label(runtime)
+            if runtime == recommended:
+                label += " (Recommended)"
+            options.append((label, flavor))
         return options or [("CPU", "cpu")]
 
     def _populate_pose_runtime_flavor_options(self, backend: str, preferred=None):
@@ -1230,6 +1264,13 @@ class SessionOrchestrator:
 
     def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
         """Show/hide a QFormLayout row by field widget."""
+        setup_panel = getattr(self._mw, "_setup_panel", None)
+        if setup_panel is not None:
+            perf_handler = getattr(
+                setup_panel, "_set_performance_control_visible", None
+            )
+            if callable(perf_handler) and perf_handler(field_widget, visible):
+                return
         if form_layout is None or field_widget is None:
             return
         label = form_layout.labelForField(field_widget)

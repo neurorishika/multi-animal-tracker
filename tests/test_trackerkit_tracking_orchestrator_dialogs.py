@@ -345,6 +345,104 @@ def test_start_tracking_on_video_restores_csv_and_worker_imports(
     assert captured["worker_kwargs"]["preview_mode"] is False
 
 
+def test_start_preview_on_video_uses_tracking_worker_when_cache_is_valid(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            return None
+
+    class FakeProgress:
+        def setVisible(self, _visible: bool) -> None:
+            return None
+
+        def setValue(self, _value: int) -> None:
+            return None
+
+        def setText(self, _text: str) -> None:
+            return None
+
+    class FakeTrackingWorker:
+        def __init__(self, *args, **kwargs) -> None:
+            captured["worker_args"] = args
+            captured["worker_kwargs"] = kwargs
+            self.frame_signal = FakeSignal()
+            self.finished_signal = FakeSignal()
+            self.progress_signal = FakeSignal()
+            self.stats_signal = FakeSignal()
+            self.warning_signal = FakeSignal()
+            self.pose_exported_model_resolved_signal = FakeSignal()
+
+        def set_parameters(self, params) -> None:
+            captured["params"] = dict(params)
+
+        def start(self) -> None:
+            captured["worker_started"] = True
+
+        def isRunning(self) -> bool:
+            return False
+
+    video_path = tmp_path / "video.mp4"
+    cache_path = tmp_path / "preview_cache.npz"
+    video_path.write_bytes(b"video")
+    cache_path.write_bytes(b"cache")
+
+    panels = SimpleNamespace(
+        setup=SimpleNamespace(file_line=SimpleNamespace(text=lambda: str(video_path)))
+    )
+
+    main_window = SimpleNamespace(
+        tracking_worker=None,
+        _stop_all_requested=False,
+        _pending_finish_after_interp=False,
+        is_playing=False,
+        _tracking_first_frame=False,
+        csv_writer_thread="stale-writer",
+        progress_bar=FakeProgress(),
+        progress_label=FakeProgress(),
+        get_parameters_dict=lambda: {"COMPUTE_RUNTIME": "cpu"},
+        _preview_safe_runtime=lambda runtime: runtime,
+        _find_or_plan_optimizer_cache_path=lambda *_args, **_kwargs: (
+            str(cache_path),
+            True,
+        ),
+        _prepare_tracking_display=lambda: captured.setdefault("prepared", True),
+        _apply_ui_state=lambda state: captured.setdefault("ui_state", state),
+        _stop_playback=lambda: captured.setdefault("playback_stopped", True),
+    )
+
+    orchestrator = TrackingOrchestrator(
+        main_window=main_window,
+        config=object(),
+        panels=panels,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_validate_yolo_model_requirements",
+        lambda params, mode_label="": True,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.core.tracking.TrackingWorker",
+        FakeTrackingWorker,
+    )
+
+    orchestrator.start_preview_on_video(str(video_path))
+
+    assert captured["worker_started"] is True
+    assert captured["worker_args"][0] == str(video_path)
+    assert captured["worker_kwargs"]["detection_cache_path"] == str(cache_path)
+    assert captured["worker_kwargs"]["preview_mode"] is True
+    assert captured["worker_kwargs"]["use_cached_detections"] is True
+    assert captured["params"]["VISUALIZATION_FREE_MODE"] is False
+    assert main_window.csv_writer_thread is None
+    assert main_window.tracking_worker is not None
+    assert captured["prepared"] is True
+    assert captured["ui_state"] == "preview"
+
+
 def test_generate_final_media_export_uses_main_window_export_state() -> None:
     orchestrator, _main_window = _make_orchestrator()
     calls = {"video_export_state": 0}
@@ -633,11 +731,13 @@ def test_build_pose_augmented_dataframe_includes_detected_only_rich_exports(
     assert np.isclose(out.iloc[0]["CNN_demo_Conf"], 0.84)
 
 
-def test_export_pose_augmented_csv_writes_with_individual_and_legacy_alias(
+def test_export_pose_augmented_csv_writes_only_with_individual_and_cleans_legacy_alias(
     tmp_path: Path,
 ) -> None:
     final_csv_path = tmp_path / "tracks_final.csv"
     final_csv_path.write_text("FrameID,TrajectoryID,DetectionID\n1,1,10000\n")
+    legacy_path = tmp_path / "tracks_final_with_pose.csv"
+    legacy_path.write_text("stale", encoding="utf-8")
 
     orchestrator, _main_window = _make_orchestrator()
     sample_df = pd.DataFrame(
@@ -649,7 +749,7 @@ def test_export_pose_augmented_csv_writes_with_individual_and_legacy_alias(
 
     assert out_path == str(tmp_path / "tracks_final_with_individual.csv")
     assert (tmp_path / "tracks_final_with_individual.csv").exists()
-    assert (tmp_path / "tracks_final_with_pose.csv").exists()
+    assert legacy_path.exists() is False
 
 
 def test_load_video_trajectories_prefers_with_individual_then_legacy_alias(

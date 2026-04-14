@@ -24,6 +24,10 @@ from hydra_suite.classkit.gui.dialogs.source_validation import (
     standardize_classkit_source_dir,
 )
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
+from hydra_suite.widgets.dialogs import (
+    HYDRA_DIALOG_MUTED_TEXT_COLOR,
+    HYDRA_DIALOG_STYLE,
+)
 
 CLASSKIT_SIEVE_THRESHOLD = 5000
 
@@ -39,36 +43,6 @@ def _get_transaction_mtime(dataset_root: Path) -> "float | None":
         return None
 
 
-_DARK_STYLE = """
-    QDialog { background-color: #1e1e1e; }
-    QGroupBox {
-        border: 1px solid #3e3e42; border-radius: 6px;
-        margin-top: 12px; padding-top: 12px; color: #cccccc;
-    }
-    QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
-    QLabel { color: #cccccc; }
-    QLineEdit, QTextEdit, QPlainTextEdit, QListWidget {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QLineEdit:focus, QTextEdit:focus { border: 1px solid #007acc; }
-    QComboBox, QSpinBox, QDoubleSpinBox {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QComboBox:focus, QSpinBox:focus { border: 1px solid #007acc; }
-    QCheckBox { color: #cccccc; }
-    QPushButton {
-        background-color: #0e639c; color: #ffffff;
-        border: none; border-radius: 4px;
-        padding: 8px 16px; font-weight: 500;
-    }
-    QPushButton:hover { background-color: #1177bb; }
-    QPushButton:pressed { background-color: #0d5a8f; }
-    QPushButton:disabled { background-color: #3e3e42; color: #888888; }
-"""
-
-
 class SourceManagerDialog(QDialog):
     """Full source manager showing existing sources with add/remove capability."""
 
@@ -76,7 +50,7 @@ class SourceManagerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Source Manager")
         self.setMinimumSize(640, 480)
-        self.setStyleSheet(_DARK_STYLE)
+        self.setStyleSheet(HYDRA_DIALOG_STYLE)
 
         self._db_path = db_path
         self._to_add: List[Path] = []
@@ -133,7 +107,9 @@ class SourceManagerDialog(QDialog):
         )
 
         self._summary = QLabel("")
-        self._summary.setStyleSheet("color: #888888; font-size: 11px;")
+        self._summary.setStyleSheet(
+            f"color: {HYDRA_DIALOG_MUTED_TEXT_COLOR}; font-size: 11px;"
+        )
         layout.addWidget(self._summary)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -236,7 +212,6 @@ class SourceManagerDialog(QDialog):
             if clicked == btn_sieve:
                 pre_mtime = _get_transaction_mtime(d)
                 proc = QProcess(self)
-                self._filterkit_proc = proc
                 proc.finished.connect(
                     lambda _ec, _es, _d=d, _r=resolved, _m=pre_mtime: (
                         self._on_filterkit_closed(_d, _r, _m)

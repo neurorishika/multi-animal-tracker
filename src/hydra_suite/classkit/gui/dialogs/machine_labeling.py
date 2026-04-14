@@ -79,7 +79,7 @@ class MachineLabelingDialog(BaseDialog):
             "Verified human labels are preserved by default."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color:#aaaaaa;")
+        intro.setStyleSheet("color:#ffffff;")
         layout.addWidget(intro)
 
         launch_group = QGroupBox("Machine Labeling Run")
@@ -106,7 +106,7 @@ class MachineLabelingDialog(BaseDialog):
         self.method_summary = QLabel()
         self.method_summary.setWordWrap(True)
         self.method_summary.setStyleSheet(
-            "padding: 8px; background:#252526; border-radius:6px; color:#cfcfcf;"
+            "padding: 8px; background:#252526; border-radius:6px; color:#ffffff;"
         )
         launch_form.addRow("", self.method_summary)
 
@@ -138,7 +138,7 @@ class MachineLabelingDialog(BaseDialog):
             f"This can target a subset or all {image_count:,} images in the project."
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color:#bbbbbb;")
+        note.setStyleSheet("color:#ffffff;")
         layout.addWidget(note)
 
         source_group = QGroupBox("Model Source")
@@ -176,7 +176,7 @@ class MachineLabelingDialog(BaseDialog):
         self.model_source_detail = QLabel()
         self.model_source_detail.setWordWrap(True)
         self.model_source_detail.setStyleSheet(
-            "padding: 6px 0; color:#9a9a9a; font-size:11px;"
+            "padding: 6px 0; color:#ffffff; font-size:11px;"
         )
         source_form.addRow("", self.model_source_detail)
 
@@ -409,7 +409,7 @@ class MachineLabelingDialog(BaseDialog):
                     self.model_source_detail.setText(
                         f"Selected model history entry: <b>{display_name}</b>"
                         + (
-                            f"<br><span style='color:#777'>{path_name}</span>"
+                            f"<br><span style='color:#ffffff'>{path_name}</span>"
                             if path_name
                             else ""
                         )
@@ -437,7 +437,7 @@ class MachineLabelingDialog(BaseDialog):
                     selected_path = Path(self._selected_checkpoint_path)
                     self.model_source_detail.setText(
                         f"Selected checkpoint file: <b>{selected_path.name}</b><br>"
-                        f"<span style='color:#777'>{selected_path}</span>"
+                        f"<span style='color:#ffffff'>{selected_path}</span>"
                     )
                     self.model_warning.setText(
                         "ClassKit will load this checkpoint, run inference on the current project's images, and apply matching labels as unverified review candidates."

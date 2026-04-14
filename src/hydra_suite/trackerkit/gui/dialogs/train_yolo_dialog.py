@@ -261,7 +261,7 @@ class TrainYoloDialog(BaseDialog):
         info.setWordWrap(True)
         info.setStyleSheet(
             "padding: 8px; background: #1a2a1a; border-left: 3px solid #4caf50;"
-            " color: #aaa; border-radius: 3px;"
+            " color: #ffffff; border-radius: 3px;"
         )
         g.addWidget(info, 1, 0, 1, 3)
 

@@ -177,7 +177,6 @@ class PostProcessPanel(QWidget):
             "occlusion recovery. Enable relinking only if you see fragmented trajectories\n"
             "that bidirectional tracking could not repair, and verify results carefully."
         )
-        self.lbl_enable_tracklet_relinking = QLabel("Enable relinking")
         f_relinking.addRow(self.chk_enable_tracklet_relinking)
 
         self.spin_relink_pose_max_distance = QDoubleSpinBox()

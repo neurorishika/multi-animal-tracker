@@ -572,6 +572,236 @@ def test_detect_aux_onnx_export_uses_configured_batch_outside_realtime(
     assert onnx_path.endswith("_detect_rawheadv1_b8.onnx")
 
 
+def test_sequential_crop_onnx_artifact_uses_stage2_build_batch_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.overrides = {}
+            self.model = types.SimpleNamespace(args={})
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "crop.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "TENSORRT_MAX_BATCH_SIZE": 1,
+        "INFERENCE_MODEL_ID": "id-A",
+        "YOLO_OBB_MODE": "sequential",
+        "YOLO_SEQ_STAGE2_RUNTIME_BUILD_BATCH_SIZE": 25,
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "mps"
+    det.use_onnx = False
+    det.onnx_model_path = None
+    det.onnx_imgsz = None
+    det.onnx_batch_size = 1
+
+    det._try_load_onnx_model(str(model_path))
+
+    assert det.onnx_batch_size == 25
+    assert det.onnx_model_path is not None
+    assert det.onnx_model_path.endswith("_b25.onnx")
+
+
+def test_detect_aux_onnx_artifact_can_override_detect_build_batch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        instances = []
+
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.model = types.SimpleNamespace(
+                args={},
+                model=[types.SimpleNamespace(end2end=True)],
+            )
+            FakeYOLO.instances.append(self)
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "detect.pt"
+    model_path.write_bytes(b"model")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "ENABLE_ONNX_RUNTIME": True,
+        "TENSORRT_MAX_BATCH_SIZE": 25,
+        "YOLO_DETECT_RUNTIME_BUILD_BATCH_SIZE": 1,
+        "YOLO_EXPORT_RAW_HEAD": True,
+    }
+    det.device = "cpu"
+
+    onnx_path = det._prepare_runtime_artifact_for_task(str(model_path), task="detect")
+
+    assert onnx_path.endswith("_detect_rawheadv1_b1.onnx")
+
+
+def test_coreml_failed_onnx_artifact_reuses_cached_model_on_cpu_in_same_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+    mod.YOLOOBBDetector._SESSION_ONNX_CPU_FALLBACK_ARTIFACTS.clear()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        export_calls = []
+
+        def __init__(self, path, task=None):
+            self.path = str(path)
+            self.task = task
+            self.overrides = {}
+            self.model = types.SimpleNamespace(args={})
+
+        def to(self, _device):
+            return self
+
+        def export(self, **kwargs):
+            FakeYOLO.export_calls.append(kwargs)
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"model")
+
+    det1 = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det1.params = {
+        "TENSORRT_MAX_BATCH_SIZE": 1,
+        "INFERENCE_MODEL_ID": "id-A",
+    }
+    det1.device = "mps"
+    det1.use_onnx = False
+    det1.onnx_model_path = None
+    det1.onnx_imgsz = None
+    det1.onnx_batch_size = 1
+    det1._onnx_predict_device = None
+    det1._try_load_onnx_model(str(model_path))
+
+    onnx_path = Path(det1.onnx_model_path)
+    meta_path = onnx_path.with_suffix(f"{onnx_path.suffix}.runtime_meta.json")
+    meta_path.unlink()
+
+    class FailingPredictor:
+        def __init__(self, artifact_path: Path):
+            self.predictor = object()
+            self._hydra_runtime_artifact_path = str(artifact_path)
+            self.calls = []
+
+        def predict(self, **kwargs):
+            self.calls.append(kwargs.get("device"))
+            if kwargs.get("device") == "mps":
+                raise RuntimeError(
+                    "CoreMLExecutionProvider failure: Unable to compute the prediction using a neural network model"
+                )
+            return ["ok"]
+
+    failing = FailingPredictor(onnx_path)
+    result = det1._predict_with_coreml_fallback(
+        failing,
+        {"device": "mps"},
+        context="OBB inference",
+    )
+
+    assert result == ["ok"]
+    assert failing.calls == ["mps", "cpu"]
+    assert det1.obb_predict_device == "cpu"
+
+    det2 = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det2.params = {
+        "TENSORRT_MAX_BATCH_SIZE": 1,
+        "INFERENCE_MODEL_ID": "id-A",
+    }
+    det2.device = "mps"
+    det2.use_onnx = False
+    det2.onnx_model_path = None
+    det2.onnx_imgsz = None
+    det2.onnx_batch_size = 1
+    det2._onnx_predict_device = None
+    det2._try_load_onnx_model(str(model_path))
+
+    assert len(FakeYOLO.export_calls) == 1
+    assert det2.use_onnx is True
+    assert det2.onnx_model_path == str(onnx_path)
+    assert det2._onnx_predict_device == "cpu"
+
+
+def test_load_model_for_task_uses_cpu_for_blacklisted_onnx_artifact_on_mps(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+    mod.YOLOOBBDetector._SESSION_ONNX_CPU_FALLBACK_ARTIFACTS.clear()
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = str(path)
+            self.task = task
+
+        def to(self, _device):
+            return self
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+
+    onnx_path = tmp_path / "detect.onnx"
+    onnx_path.write_bytes(b"onnx")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "mps"
+    det._mark_onnx_artifact_for_cpu_fallback(onnx_path)
+
+    _model, predict_device = det._load_model_for_task(str(onnx_path), task="detect")
+
+    assert predict_device == "cpu"
+
+
 def test_yolo_raw_detection_cap_is_two_x_max_targets() -> None:
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -796,6 +1026,34 @@ def test_sequential_stage2_obb_runs_in_batched_crop_call() -> None:
     assert calls["count"] == 1
     assert calls["source_len"] == 2
     assert len(raw_meas) == 2
+
+
+def test_sequential_stage2_obb_chunks_by_individual_batch_size() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {"YOLO_SEQ_INDIVIDUAL_BATCH_SIZE": 3}
+
+    calls = []
+
+    def _fake_stage2(chunk, _target_classes, _raw_conf_floor, _max_det, _predict_imgsz):
+        calls.append(len(chunk))
+        return [
+            types.SimpleNamespace(obb=f"obb_{index}") for index in range(len(chunk))
+        ]
+
+    det._seq_run_stage2_obb = _fake_stage2
+
+    crops = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(5)]
+    results = det._seq_run_stage2_obb_batched(
+        crops,
+        target_classes=None,
+        raw_conf_floor=0.01,
+        max_det=8,
+        predict_imgsz=16,
+    )
+
+    assert calls == [3, 3]
+    assert len(results) == 5
 
 
 def test_headtail_hint_uses_batched_classify_call() -> None:

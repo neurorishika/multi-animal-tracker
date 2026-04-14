@@ -165,7 +165,7 @@ class BgParameterHelperDialog(BaseDialog):
         left.addWidget(self.progress)
 
         self.status_label = QLabel("Select parameters above, then click Run.")
-        self.status_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        self.status_label.setStyleSheet("color: #ffffff; font-size: 11px;")
         left.addWidget(self.status_label)
 
         # ── Results table ─────────────────────────────────────────────────
@@ -238,7 +238,7 @@ class BgParameterHelperDialog(BaseDialog):
             f"\u25cf\u00a0Frames: <b>{_start}\u2013{_end}</b>"
         )
         summary.setTextFormat(Qt.RichText)
-        summary.setStyleSheet("font-size: 11px; color: #ddd; font-weight: normal;")
+        summary.setStyleSheet("font-size: 11px; color: #ffffff; font-weight: normal;")
         summary.setToolTip(
             "These values come from the Main Window.\n"
             "MAX_TARGETS controls the count-accuracy objective.\n"
@@ -269,7 +269,7 @@ class BgParameterHelperDialog(BaseDialog):
             "Set a weight to <b>0</b> to disable that term entirely."
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #aaa; font-size: 11px;")
+        note.setStyleSheet("color: #ffffff; font-size: 11px;")
         outer.addWidget(note)
 
         # Preset selector
@@ -315,9 +315,9 @@ class BgParameterHelperDialog(BaseDialog):
         def _hint(up: str, down: str) -> QLabel:
             lbl = QLabel(
                 f"<span style='color:#6ec07a'>\u2191</span> "
-                f"<span style='color:#bbb'>{up}</span>"
+                f"<span style='color:#ffffff'>{up}</span>"
                 f"<br><span style='color:#e0875a'>\u2193</span> "
-                f"<span style='color:#bbb'>{down}</span>"
+                f"<span style='color:#ffffff'>{down}</span>"
             )
             lbl.setWordWrap(True)
             lbl.setTextFormat(Qt.RichText)
@@ -472,7 +472,7 @@ class BgParameterHelperDialog(BaseDialog):
             "conditionally collapsed."
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #aaa; font-size: 11px;")
+        note.setStyleSheet("color: #ffffff; font-size: 11px;")
         lay.addWidget(note)
 
         quick_row = QHBoxLayout()
@@ -1018,7 +1018,7 @@ class BgParameterHelperDialog(BaseDialog):
             "then click \u25b6 Preview Selected."
         )
         self._prev_label.setAlignment(Qt.AlignCenter)
-        self._prev_label.setStyleSheet("color: #6a6a6a; font-size: 12px;")
+        self._prev_label.setStyleSheet("color: #ffffff; font-size: 12px;")
         self._prev_label.setMinimumSize(200, 150)
         self._prev_label.setMouseTracking(True)
         self._prev_label.mousePressEvent = self._on_prev_mouse_press
@@ -1083,7 +1083,7 @@ class BgParameterHelperDialog(BaseDialog):
         lay.addLayout(zoom_row)
 
         hint = QLabel("Ctrl+wheel: zoom  \u2022  drag: pan  \u2022  double-click: fit")
-        hint.setStyleSheet("color: #555; font-size: 9px;")
+        hint.setStyleSheet("color: #ffffff; font-size: 9px;")
         hint.setAlignment(Qt.AlignCenter)
         lay.addWidget(hint)
 

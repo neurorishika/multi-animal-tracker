@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import platform
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -28,7 +27,6 @@ from PySide6.QtWidgets import (
 
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
-from ..models import OBBSource
 from ..utils import (
     ensure_detectkit_source_structure,
     list_images_in_source,
@@ -42,7 +40,9 @@ logger = logging.getLogger(__name__)
 
 
 class DatasetPanel(QWidget):
-    """Left panel: source list, image browser, X-AnyLabeling launch."""
+    """Left panel: source selector, image browser, X-AnyLabeling launch."""
+
+    manage_sources_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -51,28 +51,20 @@ class DatasetPanel(QWidget):
 
         layout = QVBoxLayout(self)
 
-        # --- Source list ---
-        layout.addWidget(QLabel("Sources"))
-        self.source_list = QListWidget()
-        self.source_list.currentRowChanged.connect(self._on_source_changed)
-        layout.addWidget(self.source_list)
+        # --- Source combo + manage button ---
+        src_row = QHBoxLayout()
+        src_row.addWidget(QLabel("Source:"))
+        self.source_combo = QComboBox()
+        self.source_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        self.source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
+        src_row.addWidget(self.source_combo, 1)
+        layout.addLayout(src_row)
 
-        # --- Source action buttons ---
-        btn_row = QHBoxLayout()
-        self.btn_add = QPushButton("Add...")
-        self.btn_remove = QPushButton("Remove")
-        self.btn_save_list = QPushButton("Save List...")
-        self.btn_load_list = QPushButton("Load List...")
-        btn_row.addWidget(self.btn_add)
-        btn_row.addWidget(self.btn_remove)
-        btn_row.addWidget(self.btn_save_list)
-        btn_row.addWidget(self.btn_load_list)
-        layout.addLayout(btn_row)
-
-        self.btn_add.clicked.connect(self._add_sources)
-        self.btn_remove.clicked.connect(self._remove_source)
-        self.btn_save_list.clicked.connect(self._save_list)
-        self.btn_load_list.clicked.connect(self._load_list)
+        self.btn_manage_sources = QPushButton("Manage Sources…")
+        self.btn_manage_sources.clicked.connect(self.manage_sources_requested)
+        layout.addWidget(self.btn_manage_sources)
 
         # --- Image list ---
         layout.addWidget(QLabel("Images"))
@@ -112,44 +104,51 @@ class DatasetPanel(QWidget):
         """Populate from project state."""
         self._project = proj
         self._main_window = main_window
-
-        self.source_list.blockSignals(True)
-        self.source_list.clear()
-        for src in proj.sources:
-            self._add_source_item(src)
-        self.source_list.blockSignals(False)
+        self.refresh_sources(proj)
 
         # Restore last selection
-        if 0 <= proj.last_source_index < self.source_list.count():
-            self.source_list.setCurrentRow(proj.last_source_index)
-        elif self.source_list.count() > 0:
-            self.source_list.setCurrentRow(0)
+        if 0 <= proj.last_source_index < self.source_combo.count():
+            self.source_combo.setCurrentIndex(proj.last_source_index)
+        elif self.source_combo.count() > 0:
+            self.source_combo.setCurrentIndex(0)
+
+    def refresh_sources(self, proj: DetectKitProject) -> None:
+        """Repopulate the source combo from *proj.sources*."""
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        for src in proj.sources:
+            display = src.name if src.name else src.path
+            self.source_combo.addItem(display, userData=src.path)
+        self.source_combo.blockSignals(False)
+        if self.source_combo.count() > 0:
+            self._on_source_combo_changed(self.source_combo.currentIndex())
 
     def collect_state(self, proj: DetectKitProject) -> None:
         """Write panel state back into the project."""
-        proj.sources = []
-        for i in range(self.source_list.count()):
-            item = self.source_list.item(i)
-            path = item.data(Qt.UserRole)
-            proj.sources.append(OBBSource(path=path, name=item.text()))
-        proj.last_source_index = max(self.source_list.currentRow(), 0)
+        proj.last_source_index = max(self.source_combo.currentIndex(), 0)
+
+    def navigate_prev(self) -> None:
+        """Navigate to the previous image in the current source."""
+        row = self.image_list.currentRow()
+        if row > 0:
+            self.image_list.setCurrentRow(row - 1)
+
+    def navigate_next(self) -> None:
+        """Navigate to the next image in the current source."""
+        row = self.image_list.currentRow()
+        if row < self.image_list.count() - 1:
+            self.image_list.setCurrentRow(row + 1)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _add_source_item(self, src: OBBSource) -> None:
-        """Add an OBBSource as a list widget item."""
-        item = QListWidgetItem(src.name or Path(src.path).name)
-        item.setData(Qt.UserRole, src.path)
-        self.source_list.addItem(item)
-
     def _selected_source_path(self) -> str | None:
         """Return the path of the currently selected source, or None."""
-        item = self.source_list.currentItem()
-        if item is None:
+        idx = self.source_combo.currentIndex()
+        if idx < 0:
             return None
-        return item.data(Qt.UserRole)
+        return self.source_combo.itemData(idx)
 
     def _get_multiple_dirs(self, title: str) -> list[str]:
         """Open a non-native file dialog that allows multi-directory selection."""
@@ -253,15 +252,14 @@ class DatasetPanel(QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_source_changed(self, row: int) -> None:
-        """Populate image list when source selection changes."""
+    def _on_source_combo_changed(self, index: int) -> None:
+        """Populate image list when source combo selection changes."""
         self.image_list.clear()
-        if row < 0:
+        if index < 0:
             return
-        item = self.source_list.item(row)
-        if item is None:
+        source_path = self.source_combo.itemData(index)
+        if not source_path:
             return
-        source_path = item.data(Qt.UserRole)
         images = list_images_in_source(source_path)
         self.image_list.blockSignals(True)
         for img in images:
@@ -284,80 +282,6 @@ class DatasetPanel(QWidget):
             return
         image_path = img_item.data(Qt.UserRole)
         self._main_window.show_image(source_path, str(image_path))
-
-    def _add_sources(self) -> None:
-        """Add one or more source directories."""
-        dirs = self._get_multiple_dirs("Select OBB Source Datasets")
-        if not dirs:
-            return
-        added_rows: list[int] = []
-        skipped: list[str] = []
-        for d in dirs:
-            p = Path(d)
-            try:
-                self._validate_source(str(p))
-            except Exception as exc:
-                skipped.append(f"{p.name}: {exc}")
-                continue
-            src = OBBSource(path=str(p), name=p.name, validated=True)
-            self._add_source_item(src)
-            added_rows.append(self.source_list.count() - 1)
-
-        if added_rows:
-            self.source_list.setCurrentRow(added_rows[0])
-
-        if skipped:
-            QMessageBox.warning(
-                self,
-                "Skipped Invalid Sources",
-                "\n\n".join(skipped),
-            )
-
-    def _remove_source(self) -> None:
-        """Remove the selected source from the list."""
-        row = self.source_list.currentRow()
-        if row >= 0:
-            self.source_list.takeItem(row)
-
-    def _save_list(self) -> None:
-        """Save source paths to a JSON file."""
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Source List", "", "JSON Files (*.json)"
-        )
-        if not path:
-            return
-        data = []
-        for i in range(self.source_list.count()):
-            item = self.source_list.item(i)
-            data.append({"source_type": "obb", "path": item.data(Qt.UserRole)})
-        Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    def _load_list(self) -> None:
-        """Load sources from a JSON file and append to current list."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Source List", "", "JSON Files (*.json)"
-        )
-        if not path:
-            return
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                raise ValueError("Expected a JSON array")
-        except Exception as exc:
-            QMessageBox.warning(self, "Load Error", str(exc))
-            return
-        for entry in data:
-            p = str(entry.get("path", ""))
-            if not p:
-                continue
-            try:
-                self._validate_source(p)
-            except Exception as exc:
-                skipped = f"{Path(p).name}: {exc}"
-                QMessageBox.warning(self, "Skipped Invalid Source", skipped)
-                continue
-            src = OBBSource(path=p, name=Path(p).name, validated=True)
-            self._add_source_item(src)
 
     def _open_xanylabeling(self) -> None:
         """Launch X-AnyLabeling for the selected source in the selected conda env."""
@@ -458,4 +382,4 @@ class DatasetPanel(QWidget):
         self._try_xlabel_convert(source_path)
         self._validate_source(source_path)
         # Refresh image list
-        self._on_source_changed(self.source_list.currentRow())
+        self._on_source_combo_changed(self.source_combo.currentIndex())

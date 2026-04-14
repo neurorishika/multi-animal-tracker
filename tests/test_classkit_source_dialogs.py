@@ -19,6 +19,10 @@ from hydra_suite.classkit.gui.dialogs.add_source import AddSourceDialog  # noqa:
 from hydra_suite.classkit.gui.dialogs.source_manager import (  # noqa: E402
     SourceManagerDialog,
 )
+from hydra_suite.widgets.dialogs import (  # noqa: E402
+    HYDRA_DIALOG_MUTED_TEXT_COLOR,
+    HYDRA_DIALOG_STYLE,
+)
 
 
 @pytest.fixture()
@@ -254,3 +258,18 @@ def test_source_manager_dialog_does_not_standardize_when_user_declines(
     assert dialog.folders_to_add == []
     assert (source_root / "images").exists() is False
     assert warnings == []
+
+
+def test_source_dialogs_use_shared_hydra_theme(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        SourceManagerDialog, "_load_existing_sources", lambda self: None
+    )
+
+    add_dialog = AddSourceDialog()
+    manager_dialog = SourceManagerDialog(db_path=tmp_path / "classkit.db")
+
+    assert add_dialog.styleSheet() == HYDRA_DIALOG_STYLE
+    assert manager_dialog.styleSheet() == HYDRA_DIALOG_STYLE
+    assert HYDRA_DIALOG_MUTED_TEXT_COLOR in manager_dialog._summary.styleSheet()

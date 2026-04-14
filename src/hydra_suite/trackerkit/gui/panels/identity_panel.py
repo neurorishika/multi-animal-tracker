@@ -1060,22 +1060,50 @@ class IdentityPanel(QWidget):
             row.set_realtime_batch_cap(max_animals, realtime_enabled)
             effective_batches.append(row.spin_batch.value())
 
-        if not realtime_enabled:
+        messages: list[str] = []
+        if realtime_enabled:
+            warn_waste = any(
+                should_warn_for_padding_waste(batch_size, upper_bound=max_animals)
+                for batch_size in effective_batches
+            )
+            message = (
+                f"Realtime individual inference is capped to {max_animals} animal(s) per frame. "
+                "Pose and CNN batch controls are clamped to avoid oversized per-frame batches."
+            )
+            if warn_waste:
+                message += " Reduce larger saved values when switching back to non-realtime if you want to avoid partially empty exported batches."
+            messages.append(message)
+
+        pose_recommendation = self._main_window._current_pose_benchmark_recommendation()
+        if pose_recommendation is not None:
+            messages.append(
+                f"Benchmark recommendation: pose batch {pose_recommendation.batch_size} on {pose_recommendation.runtime_label}."
+            )
+
+        cnn_recommendations = self._main_window._current_cnn_benchmark_recommendations()
+        if cnn_recommendations:
+            runtime_recommendation = (
+                self._main_window._current_cnn_runtime_recommendation()
+            )
+            summaries = []
+            for key in sorted(cnn_recommendations):
+                recommendation = cnn_recommendations[key]
+                label = Path(recommendation.model_path).stem
+                summaries.append(f"{label}: {recommendation.batch_size}")
+            prefix = "Benchmark recommendations"
+            if runtime_recommendation is not None:
+                prefix = (
+                    f"Benchmark recommendation: CNN runtime {runtime_recommendation.runtime_label}; "
+                    "batch sizes"
+                )
+            messages.append(prefix + " " + ", ".join(summaries) + ".")
+
+        if not messages:
             self.lbl_individual_batch_notice.clear()
             self.lbl_individual_batch_notice.setVisible(False)
             return
 
-        warn_waste = any(
-            should_warn_for_padding_waste(batch_size, upper_bound=max_animals)
-            for batch_size in effective_batches
-        )
-        message = (
-            f"Realtime individual inference is capped to {max_animals} animal(s) per frame. "
-            "Pose and CNN batch controls are clamped to avoid oversized per-frame batches."
-        )
-        if warn_waste:
-            message += " Reduce larger saved values when switching back to non-realtime if you want to avoid partially empty exported batches."
-        self.lbl_individual_batch_notice.setText(message)
+        self.lbl_individual_batch_notice.setText("\n".join(messages))
         self.lbl_individual_batch_notice.setVisible(True)
 
     def _refresh_cnn_identity_model_combo(self) -> None:

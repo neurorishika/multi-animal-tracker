@@ -96,7 +96,7 @@ class _LabelRow(QWidget):
         row.addWidget(self._name_edit, 2)
 
         key_lbl = QLabel("key:")
-        key_lbl.setStyleSheet("color:#777; font-size:11px;")
+        key_lbl.setStyleSheet("color:#ffffff; font-size:11px;")
         key_lbl.setFixedWidth(28)
         row.addWidget(key_lbl)
 

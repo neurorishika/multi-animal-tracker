@@ -67,19 +67,20 @@ class TrackingOrchestrator:
     def _write_rich_export_csv(
         self, rich_df: pd.DataFrame, final_csv_path: str
     ) -> str | None:
-        """Write canonical rich export and a legacy alias for older consumers."""
+        """Write the canonical rich export and remove any stale legacy alias."""
         rich_path = self._rich_export_path(final_csv_path)
         legacy_path = self._rich_export_path(final_csv_path, legacy=True)
         try:
             rich_df.to_csv(rich_path, index=False)
-            rich_df.to_csv(legacy_path, index=False)
+            if legacy_path != rich_path and os.path.exists(legacy_path):
+                os.remove(legacy_path)
         except Exception:
             logger.exception("Failed to save rich export CSV to: %s", rich_path)
             return None
 
         logger.info("Rich trajectories saved to: %s", rich_path)
         if legacy_path != rich_path:
-            logger.info("Legacy rich-export alias saved to: %s", legacy_path)
+            logger.info("Legacy rich-export alias removed: %s", legacy_path)
         return rich_path
 
     def _remove_legacy_rich_exports(self, final_csv_path: str) -> None:
@@ -3213,6 +3214,8 @@ class TrackingOrchestrator:
 
     def start_preview_on_video(self, video_path):
         """start_preview_on_video method documentation."""
+        from hydra_suite.core.tracking import TrackingWorker
+
         if self._mw.tracking_worker and self._mw.tracking_worker.isRunning():
             return
         self._mw._stop_all_requested = False
@@ -3293,8 +3296,6 @@ class TrackingOrchestrator:
                 )
                 self._mw._cache_builder_worker.start()
                 return  # Will resume via _on_preview_cache_built
-
-            from hydra_suite.core.tracking import TrackingWorker
 
         self._mw.tracking_worker = TrackingWorker(
             video_path,
@@ -3478,6 +3479,7 @@ class TrackingOrchestrator:
             "YOLO_SEQ_MIN_CROP_SIZE_PX",
             "YOLO_SEQ_ENFORCE_SQUARE_CROP",
             "YOLO_SEQ_STAGE2_IMGSZ",
+            "YOLO_SEQ_INDIVIDUAL_BATCH_SIZE",
             "YOLO_SEQ_STAGE2_POW2_PAD",
             "YOLO_HEADTAIL_CONF_THRESHOLD",
             "POSE_OVERRIDES_HEADTAIL",

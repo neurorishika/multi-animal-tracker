@@ -9,8 +9,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from hydra_suite.posekit.gui.main_window import MainWindow
-from hydra_suite.posekit.gui.models import FrameAnn
+from hydra_suite.posekit.gui.main_window import MainWindow  # noqa: E402
+from hydra_suite.posekit.gui.models import FrameAnn  # noqa: E402
 
 
 class _DummyCombo:

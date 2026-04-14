@@ -27,6 +27,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         self.model = None
         self.detect_model = None
         self._headtail_analyzer = None  # HeadTailAnalyzer instance
+        self._onnx_predict_device = None
         self.obb_predict_device = None
         self.detect_predict_device = None
         self.device = self._detect_device()
@@ -130,7 +131,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         if enable_onnx_runtime and ONNXRUNTIME_AVAILABLE and local_model_file:
             self._try_load_onnx_model(model_path_str)
             if self.use_onnx:
-                self.obb_predict_device = self.device
+                self.obb_predict_device = self._onnx_predict_device or self.device
                 return
 
         if (
@@ -209,8 +210,16 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                     f"YOLO {task} model file not found: {runtime_model_path_str}"
                 )
             model = YOLO(str(model_path), task=task)
+        self._attach_runtime_artifact_path(model, model_path)
         is_pytorch_checkpoint = use_builtin or model_path.suffix.lower() == ".pt"
         predict_device = self.device
+        if (
+            not is_pytorch_checkpoint
+            and model_path.suffix.lower() == ".onnx"
+            and str(self.device).strip().lower() == "mps"
+            and self._should_force_onnx_cpu_fallback(model_path)
+        ):
+            predict_device = "cpu"
         if is_pytorch_checkpoint:
             try:
                 model.to(self.device)
@@ -354,7 +363,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
                 "YOLO ONNX %s failed on mps/CoreML path. Retrying on CPU ORT provider.",
                 context,
             )
-            self.device = "cpu"
+            self._mark_onnx_artifact_for_cpu_fallback(
+                getattr(model, "_hydra_runtime_artifact_path", None)
+                or getattr(self, "onnx_model_path", None)
+            )
+            self._onnx_predict_device = "cpu"
             self.obb_predict_device = "cpu"
             try:
                 if hasattr(model, "predictor"):
@@ -658,9 +671,6 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         )
 
     def _seq_stage1_predict(self, frame, target_classes, raw_conf_floor, max_det):
-        detect_predict_device = (
-            getattr(self, "detect_predict_device", None) or self.device
-        )
         detect_target_classes = self.params.get(
             "YOLO_DETECT_TARGET_CLASSES", target_classes
         )
@@ -676,11 +686,17 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             max_det=max_det,
             verbose=False,
         )
+        detect_predict_device = (
+            getattr(self, "detect_predict_device", None) or self.device
+        )
         if detect_predict_device is not None:
             detect_kwargs["device"] = detect_predict_device
         seq_detect_imgsz = int(self.params.get("YOLO_SEQ_DETECT_IMGSZ", 0))
         if seq_detect_imgsz > 0:
             detect_kwargs["imgsz"] = seq_detect_imgsz
+        return self._predict_detect_stage1(detect_kwargs, detect_predict_device)
+
+    def _predict_detect_stage1(self, detect_kwargs, detect_predict_device):
         try:
             return self.detect_model.predict(**detect_kwargs)
         except Exception as exc:
@@ -691,6 +707,9 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             logger.warning(
                 "YOLO detect stage-1 ONNX inference failed on mps/CoreML path. Retrying on CPU ORT provider."
             )
+            self._mark_onnx_artifact_for_cpu_fallback(
+                getattr(self.detect_model, "_hydra_runtime_artifact_path", None)
+            )
             self.detect_predict_device = "cpu"
             try:
                 if hasattr(self.detect_model, "predictor"):
@@ -700,6 +719,51 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             retry_kwargs = dict(detect_kwargs)
             retry_kwargs["device"] = "cpu"
             return self.detect_model.predict(**retry_kwargs)
+
+    def _seq_stage1_fixed_batch_size(self) -> int | None:
+        artifact_path = getattr(self.detect_model, "_hydra_runtime_artifact_path", None)
+        if not artifact_path:
+            return None
+        suffix = Path(str(artifact_path)).suffix.lower()
+        if suffix not in {".onnx", ".engine", ".trt"}:
+            return None
+        raw_value = self.params.get("YOLO_DETECT_RUNTIME_BUILD_BATCH_SIZE", None)
+        if raw_value in (None, "", 0, "0"):
+            raw_value = self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)
+        try:
+            return max(1, int(raw_value or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _seq_stage1_predict_batched(
+        self,
+        frames,
+        target_classes,
+        raw_conf_floor,
+        max_det,
+    ):
+        fixed_batch_size = self._seq_stage1_fixed_batch_size()
+        if fixed_batch_size is not None:
+            all_results = []
+            for chunk_start in range(0, len(frames), fixed_batch_size):
+                chunk = list(frames[chunk_start : chunk_start + fixed_batch_size])
+                actual_chunk = len(chunk)
+                if actual_chunk < fixed_batch_size and actual_chunk > 0:
+                    chunk.extend([chunk[0]] * (fixed_batch_size - actual_chunk))
+                chunk_results = self._seq_stage1_predict(
+                    chunk,
+                    target_classes,
+                    raw_conf_floor,
+                    max_det,
+                )
+                all_results.extend(list(chunk_results)[:actual_chunk])
+            return all_results
+        return self._seq_stage1_predict(
+            list(frames),
+            target_classes,
+            raw_conf_floor,
+            max_det,
+        )
 
     def _seq_build_crops(self, frame, xyxy, order, max_det):
         crops = []
@@ -746,6 +810,63 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             pad_img = np.zeros((predict_imgsz, predict_imgsz, 3), dtype=np.uint8)
             crops_for_stage2 = list(crops_for_stage2) + [pad_img] * (p2 - n_real)
         return crops_for_stage2, n_real
+
+    def _seq_individual_batch_size(self) -> int | None:
+        raw_value = self.params.get("YOLO_SEQ_INDIVIDUAL_BATCH_SIZE", None)
+        if raw_value in (None, "", 0, "0"):
+            return None
+        try:
+            return max(1, int(raw_value))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _seq_stage2_pad_crop(predict_imgsz, reference_crop):
+        if predict_imgsz is not None and int(predict_imgsz) > 0:
+            size = int(predict_imgsz)
+            return np.zeros((size, size, 3), dtype=np.uint8)
+        return np.zeros_like(reference_crop)
+
+    def _seq_run_stage2_obb_batched(
+        self,
+        crops_for_stage2,
+        target_classes,
+        raw_conf_floor,
+        max_det,
+        predict_imgsz,
+    ):
+        if not crops_for_stage2:
+            return []
+        batch_size = self._seq_individual_batch_size()
+        if batch_size is None:
+            padded_crops, n_real_crops = self._seq_pad_crops_to_pow2(
+                crops_for_stage2, predict_imgsz
+            )
+            stage2_results = self._seq_run_stage2_obb(
+                padded_crops,
+                target_classes,
+                raw_conf_floor,
+                max_det,
+                predict_imgsz,
+            )
+            return list(stage2_results)[:n_real_crops]
+
+        all_results = []
+        for chunk_start in range(0, len(crops_for_stage2), batch_size):
+            chunk = list(crops_for_stage2[chunk_start : chunk_start + batch_size])
+            actual_chunk = len(chunk)
+            if actual_chunk < batch_size and actual_chunk > 0:
+                pad_crop = self._seq_stage2_pad_crop(predict_imgsz, chunk[0])
+                chunk.extend([pad_crop] * (batch_size - actual_chunk))
+            chunk_results = self._seq_run_stage2_obb(
+                chunk,
+                target_classes,
+                raw_conf_floor,
+                max_det,
+                predict_imgsz,
+            )
+            all_results.extend(list(chunk_results)[:actual_chunk])
+        return all_results
 
     def _seq_run_stage2_obb(
         self, crops_for_stage2, target_classes, raw_conf_floor, max_det, predict_imgsz
@@ -934,13 +1055,11 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
             return [], [], [], [], [], det0
 
         crops_for_stage2, predict_imgsz = self._seq_resize_crops_for_stage2(crops)
-        crops_for_stage2, n_real_crops = self._seq_pad_crops_to_pow2(
-            crops_for_stage2, predict_imgsz
-        )
+        n_real_crops = len(crops_for_stage2)
 
         if profiler is not None:
             profiler.phase_start("sequential_obb_inference")
-        stage2_results = self._seq_run_stage2_obb(
+        stage2_results = self._seq_run_stage2_obb_batched(
             crops_for_stage2, target_classes, raw_conf_floor, max_det, predict_imgsz
         )
         if profiler is not None:
@@ -1123,73 +1242,218 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
     def _batched_sequential_mode(
         self, frames, start_frame_idx, return_raw, progress_callback, profiler=None
     ):
-        batch_detections = []
-        for idx, frame in enumerate(frames):
-            frame_count = int(start_frame_idx) + int(idx)
-            (
-                raw_meas,
-                raw_sizes,
-                raw_shapes,
-                _results,
-                raw_confidences,
-                raw_obb_corners,
-                raw_heading_hints,
-                raw_heading_confidences,
-                raw_directed_mask,
-                raw_canonical_affines,
-            ) = self.detect_objects(
-                frame,
-                frame_count,
-                return_raw=True,
-                profiler=profiler,
+        actual_frame_count = len(frames)
+        p = self.params
+        target_classes = p.get("YOLO_TARGET_CLASSES", None)
+        raw_conf_floor = max(1e-4, float(p.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3)))
+        max_det = self._raw_detection_cap()
+
+        if profiler is not None:
+            profiler.phase_start("yolo_seq_stage1_inference")
+        try:
+            stage1_results = self._seq_stage1_predict_batched(
+                frames,
+                target_classes,
+                raw_conf_floor,
+                max_det,
+            )
+        except Exception as exc:
+            logger.error("YOLO batched sequential detect stage failed: %s", exc)
+            empty_raw = ([], [], [], [], [], [], [], [], None)
+            empty_filtered = ([], [], [], [], [])
+            return [empty_raw if return_raw else empty_filtered for _ in frames]
+        if profiler is not None:
+            profiler.phase_end(
+                "yolo_seq_stage1_inference",
+                work_units=actual_frame_count,
             )
 
+        per_frame_stage1 = [None] * actual_frame_count
+        per_frame_merged = [
+            {
+                "meas": [],
+                "sizes": [],
+                "shapes": [],
+                "conf": [],
+                "corners": [],
+            }
+            for _ in range(actual_frame_count)
+        ]
+        all_crops = []
+        all_offsets = []
+        all_original_sizes = []
+        all_frame_indices = []
+
+        if profiler is not None:
+            profiler.phase_start("sequential_obb_crop")
+        for idx in range(actual_frame_count):
+            det0 = stage1_results[idx] if idx < len(stage1_results) else None
+            per_frame_stage1[idx] = det0
+            boxes = getattr(det0, "boxes", None)
+            if boxes is None or len(boxes) == 0:
+                continue
+            xyxy = np.ascontiguousarray(boxes.xyxy.cpu().numpy(), dtype=np.float32)
+            det_conf = np.ascontiguousarray(boxes.conf.cpu().numpy(), dtype=np.float32)
+            order = np.argsort(det_conf)[::-1]
+            if len(order) > max_det:
+                order = order[:max_det]
+            crops, crop_offsets, crop_original_sizes = self._seq_build_crops(
+                frames[idx], xyxy, order, max_det
+            )
+            for crop, crop_offset, crop_size in zip(
+                crops, crop_offsets, crop_original_sizes
+            ):
+                all_crops.append(crop)
+                all_offsets.append(crop_offset)
+                all_original_sizes.append(crop_size)
+                all_frame_indices.append(idx)
+        if profiler is not None:
+            profiler.phase_end("sequential_obb_crop", work_units=len(all_crops))
+
+        if all_crops:
+            crops_for_stage2, predict_imgsz = self._seq_resize_crops_for_stage2(
+                all_crops
+            )
+            if profiler is not None:
+                profiler.phase_start("sequential_obb_inference")
+            stage2_results = self._seq_run_stage2_obb_batched(
+                crops_for_stage2,
+                target_classes,
+                raw_conf_floor,
+                max_det,
+                predict_imgsz,
+            )
+            if profiler is not None:
+                profiler.phase_end(
+                    "sequential_obb_inference",
+                    work_units=len(all_crops),
+                )
+
+            for crop_index, result in enumerate(stage2_results):
+                frame_index = all_frame_indices[crop_index]
+                x0, y0 = all_offsets[crop_index]
+                if result is None or result.obb is None or len(result.obb) == 0:
+                    continue
+                (
+                    crop_meas,
+                    crop_sizes,
+                    crop_shapes,
+                    crop_conf,
+                    crop_corners,
+                ) = self._extract_raw_detections(result.obb)
+                if not crop_meas:
+                    continue
+                if predict_imgsz is not None:
+                    orig_w, orig_h = all_original_sizes[crop_index]
+                    sx = orig_w / float(predict_imgsz)
+                    sy = orig_h / float(predict_imgsz)
+                else:
+                    sx, sy = 1.0, 1.0
+                bucket = per_frame_merged[frame_index]
+                for detection_index in range(len(crop_meas)):
+                    meas = np.asarray(
+                        crop_meas[detection_index], dtype=np.float32
+                    ).copy()
+                    meas[0] = meas[0] * np.float32(sx) + np.float32(x0)
+                    meas[1] = meas[1] * np.float32(sy) + np.float32(y0)
+                    corners = np.asarray(
+                        crop_corners[detection_index], dtype=np.float32
+                    ).copy()
+                    corners[:, 0] = corners[:, 0] * np.float32(sx) + np.float32(x0)
+                    corners[:, 1] = corners[:, 1] * np.float32(sy) + np.float32(y0)
+                    bucket["meas"].append(meas)
+                    bucket["sizes"].append(float(crop_sizes[detection_index]) * sx * sy)
+                    bucket["shapes"].append(tuple(crop_shapes[detection_index]))
+                    bucket["conf"].append(float(crop_conf[detection_index]))
+                    bucket["corners"].append(corners)
+
+        per_frame_raw = []
+        for idx in range(actual_frame_count):
+            bucket = per_frame_merged[idx]
+            if not bucket["meas"]:
+                per_frame_raw.append(None)
+                continue
+            conf_arr = np.asarray(bucket["conf"], dtype=np.float32)
+            order_final = np.argsort(conf_arr)[::-1]
+            if len(order_final) > max_det:
+                order_final = order_final[:max_det]
+            per_frame_raw.append(
+                (
+                    [bucket["meas"][i] for i in order_final],
+                    [bucket["sizes"][i] for i in order_final],
+                    [bucket["shapes"][i] for i in order_final],
+                    [bucket["conf"][i] for i in order_final],
+                    [bucket["corners"][i] for i in order_final],
+                )
+            )
+
+        if self._headtail_analyzer is not None and self._headtail_analyzer.is_available:
+            per_frame_corners = [
+                raw[4] if raw is not None else [] for raw in per_frame_raw
+            ]
+            headtail_per_frame = self._compute_headtail_hints_cross_frame(
+                frames[:actual_frame_count], per_frame_corners, profiler=profiler
+            )
+        else:
+            headtail_per_frame = None
+
+        batch_detections = []
+        for idx in range(actual_frame_count):
+            raw = per_frame_raw[idx]
             if return_raw:
-                batch_detections.append(
+                if raw is None:
+                    batch_detections.append(([], [], [], [], [], [], [], [], None))
+                else:
                     (
                         raw_meas,
                         raw_sizes,
                         raw_shapes,
                         raw_confidences,
                         raw_obb_corners,
-                        raw_heading_hints,
-                        raw_heading_confidences,
-                        raw_directed_mask,
-                        raw_canonical_affines,
+                    ) = raw
+                    if headtail_per_frame is not None:
+                        (
+                            raw_heading_hints,
+                            raw_heading_confidences,
+                            raw_directed_mask,
+                            raw_canonical_affines,
+                        ) = headtail_per_frame[idx]
+                    else:
+                        raw_heading_hints = [float("nan")] * len(raw_meas)
+                        raw_heading_confidences = [0.0] * len(raw_meas)
+                        raw_directed_mask = [0] * len(raw_meas)
+                        raw_canonical_affines = None
+                    batch_detections.append(
+                        (
+                            raw_meas,
+                            raw_sizes,
+                            raw_shapes,
+                            raw_confidences,
+                            raw_obb_corners,
+                            raw_heading_hints,
+                            raw_heading_confidences,
+                            raw_directed_mask,
+                            raw_canonical_affines,
+                        )
                     )
-                )
             else:
-                (
-                    meas,
-                    sizes,
-                    shapes,
-                    confidences,
-                    obb_corners_list,
-                    _,
-                    _heading_hints,
-                    _heading_confidences,
-                    _directed_mask,
-                ) = self.filter_raw_detections(
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confidences,
-                    raw_obb_corners,
-                    roi_mask=None,
-                    detection_ids=None,
-                    heading_hints=raw_heading_hints,
-                    heading_confidences=raw_heading_confidences,
-                    directed_mask=raw_directed_mask,
-                )
-                batch_detections.append(
-                    (meas, sizes, shapes, confidences, obb_corners_list)
-                )
+                if raw is None:
+                    batch_detections.append(([], [], [], [], []))
+                else:
+                    batch_detections.append(
+                        self._assemble_batched_frame_result(
+                            raw,
+                            headtail_per_frame,
+                            idx,
+                            return_raw=False,
+                        )
+                    )
 
             if progress_callback and (idx + 1) % 10 == 0:
                 progress_callback(
                     idx + 1,
-                    len(frames),
-                    f"Processing batch frame {idx + 1}/{len(frames)}",
+                    actual_frame_count,
+                    f"Processing batch frame {idx + 1}/{actual_frame_count}",
                 )
 
         return batch_detections

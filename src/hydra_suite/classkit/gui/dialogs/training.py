@@ -420,7 +420,7 @@ class ClassKitTrainingDialog(QDialog):
         self._mode_desc_label = QLabel("")
         self._mode_desc_label.setWordWrap(True)
         self._mode_desc_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 4px 8px; background: #1e1e1e; border-radius: 4px;"
+            "color: #ffffff; font-size: 11px; padding: 4px 8px; background: #1e1e1e; border-radius: 4px;"
         )
         form.addRow("", self._mode_desc_label)
 
@@ -429,7 +429,7 @@ class ClassKitTrainingDialog(QDialog):
         data_summary_layout.setContentsMargins(10, 8, 10, 8)
         self._data_summary_label = QLabel("")
         self._data_summary_label.setWordWrap(True)
-        self._data_summary_label.setStyleSheet("color:#ddd; font-size:11px;")
+        self._data_summary_label.setStyleSheet("color:#ffffff; font-size:11px;")
         data_summary_layout.addWidget(self._data_summary_label)
 
         layout_gen = QVBoxLayout(self.general_tab)
@@ -452,7 +452,7 @@ class ClassKitTrainingDialog(QDialog):
             "Uses sampled project images to minimize resizing loss without unnecessary upscaling."
         )
         self._auto_size_helper_label.setWordWrap(True)
-        self._auto_size_helper_label.setStyleSheet("color: #888; font-size: 11px;")
+        self._auto_size_helper_label.setStyleSheet("color: #ffffff; font-size: 11px;")
 
         self._auto_size_controls = QWidget()
         row_layout = QVBoxLayout(self._auto_size_controls)
@@ -781,7 +781,7 @@ class ClassKitTrainingDialog(QDialog):
             "When enabled, random flip augmentation is disabled; brightness and contrast jitter remain available.</i>"
         )
         exp_note.setWordWrap(True)
-        exp_note.setStyleSheet("color:#aaa; font-size:11px;")
+        exp_note.setStyleSheet("color:#ffffff; font-size:11px;")
         exp_vbox.addWidget(exp_note)
 
         self._exp_constraints_label = QLabel("")
@@ -1171,7 +1171,7 @@ class ClassKitTrainingDialog(QDialog):
         self.log_view.setReadOnly(True)
         self.log_view.setFixedHeight(160)
         self.log_view.setStyleSheet(
-            "background:#111; color:#ccc; font-family:monospace; font-size:11px;"
+            "background:#111; color:#ffffff; font-family:monospace; font-size:11px;"
         )
         layout.addWidget(self.log_view)
 
@@ -1204,7 +1204,7 @@ class ClassKitTrainingDialog(QDialog):
         name = self._scheme.name if self._scheme else "free-form"
         header = QLabel(
             f"<h2 style='color:#ffffff;margin:0'>Train Classifier</h2>"
-            f"<p style='color:#888;margin:4px 0 0 0'>Scheme: <b>{name}</b>"
+            f"<p style='color:#ffffff;margin:4px 0 0 0'>Scheme: <b>{name}</b>"
             f" &nbsp;|&nbsp; Classes: <b>{total}</b>"
             f" &nbsp;|&nbsp; Labeled samples: <b>{self._n_labeled}</b></p>"
         )

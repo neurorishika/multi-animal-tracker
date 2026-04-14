@@ -539,6 +539,9 @@ def _preview_build_yolo_params(context, resize_f, use_detection_filters):
             context.get("yolo_seq_enforce_square_crop", True)
         ),
         "YOLO_SEQ_STAGE2_IMGSZ": int(context.get("yolo_seq_stage2_imgsz", 160)),
+        "YOLO_SEQ_INDIVIDUAL_BATCH_SIZE": int(
+            context.get("yolo_seq_individual_batch_size", 16)
+        ),
         "YOLO_SEQ_STAGE2_POW2_PAD": bool(
             context.get("yolo_seq_stage2_pow2_pad", False)
         ),

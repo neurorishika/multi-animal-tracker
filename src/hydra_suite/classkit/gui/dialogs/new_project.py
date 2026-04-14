@@ -52,7 +52,7 @@ class NewProjectDialog(BaseDialog):
             "Choose the project folder first, then pick a starter labeling scheme or define one in full."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #aaaaaa;")
+        intro.setStyleSheet("color: #ffffff;")
         layout.addWidget(header)
         layout.addWidget(intro)
 
@@ -83,7 +83,7 @@ class NewProjectDialog(BaseDialog):
         details_layout.addLayout(details_form)
 
         preview_label = QLabel("Project Folder")
-        preview_label.setStyleSheet("color: #cfcfcf;")
+        preview_label.setStyleSheet("color: #ffffff;")
         details_layout.addWidget(preview_label)
 
         self.project_preview = QLabel()
@@ -109,7 +109,9 @@ class NewProjectDialog(BaseDialog):
 
         self._scheme_info = QLabel("")
         self._scheme_info.setWordWrap(True)
-        self._scheme_info.setStyleSheet("color:#888; font-size:11px; padding-left:4px;")
+        self._scheme_info.setStyleSheet(
+            "color:#ffffff; font-size:11px; padding-left:4px;"
+        )
         scheme_vlayout.addWidget(self._scheme_info)
 
         div = QFrame()
@@ -141,7 +143,7 @@ class NewProjectDialog(BaseDialog):
         info.setWordWrap(True)
         info.setStyleSheet(
             "padding:10px; background-color:#252526; border-radius:6px; "
-            "border-left:3px solid #0e639c; color:#aaaaaa; line-height:1.6;"
+            "border-left:3px solid #0e639c; color:#ffffff; line-height:1.6;"
         )
         layout.addWidget(info)
 

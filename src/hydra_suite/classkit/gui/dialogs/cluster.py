@@ -67,7 +67,7 @@ class ClusterDialog(QDialog):
         info.setWordWrap(True)
         info.setStyleSheet(
             "padding: 12px; background-color: #252526; border-radius: 6px; "
-            + "border-left: 3px solid #0e639c; color: #aaaaaa; line-height: 1.8;"
+            + "border-left: 3px solid #0e639c; color: #ffffff; line-height: 1.8;"
         )
         layout.addWidget(info)
 

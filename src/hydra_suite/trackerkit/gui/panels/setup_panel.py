@@ -566,9 +566,14 @@ class SetupPanel(QWidget):
                 "Lower values speed up processing but reduce spatial accuracy."
             )
         )
-        fl_sys = QFormLayout(None)
-        fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.form_performance = fl_sys
+        self.form_performance = None
+        self.performance_control_grid = QGridLayout()
+        self.performance_control_grid.setContentsMargins(0, 0, 0, 0)
+        self.performance_control_grid.setHorizontalSpacing(10)
+        self.performance_control_grid.setVerticalSpacing(10)
+        self._performance_base_control_cards = []
+        self._performance_control_cards = []
+        self._performance_optional_control_cards = {}
 
         self.spin_resize = QDoubleSpinBox()
         self.spin_resize.setRange(0.1, 1.0)
@@ -590,22 +595,15 @@ class SetupPanel(QWidget):
         self.combo_compute_runtime.currentIndexChanged.connect(
             self._main_window._on_runtime_context_changed
         )
-        _perf_row = QHBoxLayout()
-        _perf_row.setSpacing(6)
-        _perf_scale_label = QLabel("Scale")
-        _perf_scale_label.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        scale_card = self._create_performance_control_card("Scale", self.spin_resize)
+        self._performance_base_control_cards.append(scale_card)
+        self._performance_control_cards.append(scale_card)
+        detection_card = self._create_performance_control_card(
+            "Detection runtime",
+            self.combo_compute_runtime,
         )
-        _perf_row.addWidget(_perf_scale_label)
-        _perf_row.addWidget(self.spin_resize, 1)
-        _perf_row.addSpacing(4)
-        _perf_runtime_label = QLabel("Detection")
-        _perf_runtime_label.setStyleSheet(
-            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
-        )
-        _perf_row.addWidget(_perf_runtime_label)
-        _perf_row.addWidget(self.combo_compute_runtime, 2)
-        fl_sys.addRow(_perf_row)
+        self._performance_base_control_cards.append(detection_card)
+        self._performance_control_cards.append(detection_card)
 
         self.combo_headtail_runtime = QComboBox()
         self.combo_headtail_runtime.setFixedHeight(30)
@@ -613,9 +611,14 @@ class SetupPanel(QWidget):
             "Head-tail runtime for oriented crop classification.\n"
             "Visible only when head-tail analysis is enabled."
         )
-        fl_sys.addRow("Head-tail runtime", self.combo_headtail_runtime)
+        self._register_optional_performance_control(
+            self.combo_headtail_runtime,
+            "Head-tail runtime",
+        )
         self._main_window._set_form_row_visible(
-            fl_sys, self.combo_headtail_runtime, False
+            self.form_performance,
+            self.combo_headtail_runtime,
+            False,
         )
 
         self.combo_cnn_runtime = QComboBox()
@@ -624,8 +627,15 @@ class SetupPanel(QWidget):
             "CNN identity runtime for per-animal classifiers.\n"
             "Visible only when at least one CNN classifier is configured."
         )
-        fl_sys.addRow("CNN runtime", self.combo_cnn_runtime)
-        self._main_window._set_form_row_visible(fl_sys, self.combo_cnn_runtime, False)
+        self._register_optional_performance_control(
+            self.combo_cnn_runtime,
+            "CNN runtime",
+        )
+        self._main_window._set_form_row_visible(
+            self.form_performance,
+            self.combo_cnn_runtime,
+            False,
+        )
 
         self.combo_pose_runtime_flavor = QComboBox()
         self.combo_pose_runtime_flavor.setFixedHeight(30)
@@ -633,9 +643,14 @@ class SetupPanel(QWidget):
             "Pose runtime used by the pose extraction pipeline.\n"
             "This can be set independently from detection when pose is enabled."
         )
-        fl_sys.addRow("Pose runtime", self.combo_pose_runtime_flavor)
+        self._register_optional_performance_control(
+            self.combo_pose_runtime_flavor,
+            "Pose runtime",
+        )
         self._main_window._set_form_row_visible(
-            fl_sys, self.combo_pose_runtime_flavor, False
+            self.form_performance,
+            self.combo_pose_runtime_flavor,
+            False,
         )
 
         self.check_save_confidence = QCheckBox("Save metrics")
@@ -702,7 +717,9 @@ class SetupPanel(QWidget):
         perf_toggle_grid.setColumnStretch(1, 1)
         perf_toggle_grid.setColumnStretch(2, 1)
         perf_toggle_grid.setColumnStretch(3, 1)
-        fl_sys.addRow("", perf_toggle_grid)
+        self._reflow_performance_controls()
+        vl_sys.addLayout(self.performance_control_grid)
+        vl_sys.addLayout(perf_toggle_grid)
         self._sync_realtime_cache_controls()
 
         self.btn_clear_detection_caches = QPushButton("Clear All Caches")
@@ -714,13 +731,22 @@ class SetupPanel(QWidget):
         self.btn_clear_detection_caches.clicked.connect(
             self._main_window._clear_detection_caches
         )
+        self.btn_benchmark_models = QPushButton("Benchmark Models...")
+        self.btn_benchmark_models.setFixedHeight(28)
+        self.btn_benchmark_models.setToolTip(
+            "Benchmark the currently selected TrackerKit model pipelines across runtimes\n"
+            "and batch sizes using the loaded video geometry and body-size settings."
+        )
+        self.btn_benchmark_models.clicked.connect(
+            self._main_window._open_benchmark_dialog
+        )
         _perf_actions_row = QHBoxLayout()
         _perf_actions_row.setContentsMargins(0, 0, 0, 0)
         _perf_actions_row.addStretch(1)
+        _perf_actions_row.addWidget(self.btn_benchmark_models)
         _perf_actions_row.addWidget(self.btn_clear_detection_caches)
         vl_sys.addLayout(_perf_actions_row)
 
-        vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
 
         # ============================================================
@@ -848,6 +874,78 @@ class SetupPanel(QWidget):
         self._sync_batch_policy_controls()
         # NOTE: _populate_compute_runtime_options and _on_runtime_context_changed
         # are called after panel construction in main_window.py
+
+    def _create_performance_control_card(self, title: str, widget: QWidget) -> QFrame:
+        """Build a compact labeled card for one performance control."""
+        card = QFrame()
+        card.setObjectName("PerformanceControlCard")
+        card.setStyleSheet(
+            "QFrame#PerformanceControlCard {"
+            "background-color: #252526;"
+            "border: 1px solid #3e3e42;"
+            "border-radius: 8px;"
+            "}"
+            "QLabel#PerformanceControlLabel {"
+            "color: #bdbdbd;"
+            "font-size: 10px;"
+            "font-weight: 600;"
+            "}"
+        )
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(6)
+
+        label = QLabel(title)
+        label.setObjectName("PerformanceControlLabel")
+        layout.addWidget(label)
+        layout.addWidget(widget)
+        return card
+
+    def _register_optional_performance_control(
+        self,
+        widget: QWidget,
+        title: str,
+    ) -> None:
+        """Track an optional runtime control that should repack when toggled."""
+        card = self._create_performance_control_card(title, widget)
+        card.setVisible(False)
+        self._performance_control_cards.append(card)
+        self._performance_optional_control_cards[widget] = card
+
+    def _set_performance_control_visible(
+        self,
+        widget: QWidget | None,
+        visible: bool,
+    ) -> bool:
+        """Show or hide a tracked performance control and repack the grid."""
+        card = self._performance_optional_control_cards.get(widget)
+        if card is None or widget is None:
+            return False
+        widget.setVisible(bool(visible))
+        card.setVisible(bool(visible))
+        self._reflow_performance_controls()
+        return True
+
+    def _reflow_performance_controls(self) -> None:
+        """Lay out visible performance controls into a compact two-column grid."""
+        while self.performance_control_grid.count():
+            self.performance_control_grid.takeAt(0)
+
+        visible_cards = list(self._performance_base_control_cards)
+        visible_cards.extend(
+            card
+            for card in self._performance_control_cards
+            if card not in self._performance_base_control_cards and not card.isHidden()
+        )
+        column_count = 2
+        for index, card in enumerate(visible_cards):
+            row = index // column_count
+            column = index % column_count
+            self.performance_control_grid.addWidget(card, row, column)
+        for column in range(column_count):
+            self.performance_control_grid.setColumnStretch(column, 1)
 
     def _sync_batch_policy_controls(self, *_args) -> None:
         """Notify dependent panels when realtime or animal-count policy changes."""

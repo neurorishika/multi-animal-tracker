@@ -18,6 +18,7 @@ Qt = QtCore.Qt
 ShortcutEditorDialog = pytest.importorskip(
     "hydra_suite.classkit.gui.dialogs.shortcut_editor"
 ).ShortcutEditorDialog
+HYDRA_DIALOGS = pytest.importorskip("hydra_suite.widgets.dialogs")
 
 
 @pytest.fixture()
@@ -44,3 +45,16 @@ def test_review_shortcut_defaults_use_plus_and_minus(qapp) -> None:
 
     assert shortcuts["Approve review label"] == QKeySequence(Qt.Key.Key_Plus).toString()
     assert shortcuts["Reject review label"] == QKeySequence(Qt.Key.Key_Minus).toString()
+
+
+def test_shortcut_editor_uses_shared_dialog_theme(qapp) -> None:
+    dialog = ShortcutEditorDialog()
+    info_labels = [
+        label
+        for label in dialog.findChildren(QtWidgets.QLabel)
+        if label.text().startswith("Click a row and press")
+    ]
+
+    assert dialog.styleSheet() == HYDRA_DIALOGS.HYDRA_DIALOG_STYLE
+    assert info_labels
+    assert HYDRA_DIALOGS.HYDRA_DIALOG_MUTED_TEXT_COLOR in info_labels[0].styleSheet()

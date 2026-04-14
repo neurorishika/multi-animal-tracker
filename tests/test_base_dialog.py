@@ -84,3 +84,27 @@ def test_base_dialog_no_dark_style(qapp):
 
     dlg = BaseDialog("Plain", apply_dark_style=False)
     assert dlg.styleSheet() == ""
+
+
+def test_base_dialog_uses_trackerkit_aligned_shared_theme(qapp):
+    """BaseDialog applies the shared HYDRA dialog theme."""
+    from hydra_suite.widgets.dialogs import (
+        HYDRA_DIALOG_STYLE,
+        HYDRA_DIALOG_TEXT_COLOR,
+        BaseDialog,
+    )
+
+    dlg = BaseDialog("Styled")
+
+    assert dlg.styleSheet() == HYDRA_DIALOG_STYLE
+    assert "background-color: #0e639c;" in HYDRA_DIALOG_STYLE
+    assert "border-color: #007acc;" in HYDRA_DIALOG_STYLE
+    assert "background-color: #4a4a4a;" in HYDRA_DIALOG_STYLE
+    assert "color: #9cdcfe;" in HYDRA_DIALOG_STYLE
+    assert f"color: {HYDRA_DIALOG_TEXT_COLOR};" in HYDRA_DIALOG_STYLE
+    assert "QLabel:disabled" not in HYDRA_DIALOG_STYLE
+    assert "QGroupBox:disabled" not in HYDRA_DIALOG_STYLE
+    assert "QCheckBox:disabled" not in HYDRA_DIALOG_STYLE
+    assert "QRadioButton:disabled" not in HYDRA_DIALOG_STYLE
+    assert "QFrame {\n    color: #3e3e42;\n}" not in HYDRA_DIALOG_STYLE
+    assert 'QFrame[frameShape="4"],' in HYDRA_DIALOG_STYLE

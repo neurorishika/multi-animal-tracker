@@ -14,6 +14,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+from hydra_suite.trackerkit.benchmarking import BenchmarkRecommendation
 from hydra_suite.trackerkit.gui.main_window import MainWindow
 from hydra_suite.trackerkit.gui.orchestrators import session as session_module
 
@@ -671,6 +672,37 @@ def test_setup_panel_headtail_and_cnn_runtime_visibility_tracks_enablement(
     window.close()
 
 
+def test_setup_panel_performance_runtime_cards_reflow_when_visibility_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+    window = _make_main_window(monkeypatch)
+    panel = window._setup_panel
+    grid = panel.performance_control_grid
+    headtail_card = panel._performance_optional_control_cards[
+        panel.combo_headtail_runtime
+    ]
+    pose_card = panel._performance_optional_control_cards[
+        panel.combo_pose_runtime_flavor
+    ]
+
+    window._set_form_row_visible(None, panel.combo_headtail_runtime, True)
+    window._set_form_row_visible(None, panel.combo_pose_runtime_flavor, True)
+    qapp.processEvents()
+
+    assert grid.itemAtPosition(1, 0).widget() is headtail_card
+    assert grid.itemAtPosition(1, 1).widget() is pose_card
+
+    window._set_form_row_visible(None, panel.combo_headtail_runtime, False)
+    qapp.processEvents()
+
+    assert grid.itemAtPosition(1, 0).widget() is pose_card
+    assert grid.itemAtPosition(1, 1) is None
+    window.close()
+
+
 def test_saved_config_preserves_selected_pose_runtime_flavor(
     monkeypatch: pytest.MonkeyPatch,
     qapp: QApplication,
@@ -704,14 +736,23 @@ def test_saved_config_preserves_selected_headtail_and_cnn_runtimes(
     tmp_path: Path,
 ) -> None:
     window = _make_main_window(monkeypatch)
+    monkeypatch.setattr(
+        session_module,
+        "supported_runtimes_for_pipeline",
+        lambda pipeline: (
+            ["cpu", "mps", "onnx_coreml", "onnx_cpu"]
+            if pipeline == "headtail"
+            else ["cpu", "mps", "onnx_cpu"]
+        ),
+    )
 
     window._identity_panel.g_identity.setChecked(True)
     window._identity_panel.g_headtail.setChecked(True)
     window._identity_panel._add_cnn_classifier_row()
-    window._populate_headtail_runtime_options(preferred="mps")
+    window._populate_headtail_runtime_options(preferred="onnx_coreml")
     window._populate_cnn_runtime_options(preferred="onnx_cpu")
 
-    headtail_idx = window._setup_panel.combo_headtail_runtime.findData("mps")
+    headtail_idx = window._setup_panel.combo_headtail_runtime.findData("onnx_coreml")
     cnn_idx = window._setup_panel.combo_cnn_runtime.findData("onnx_cpu")
     assert headtail_idx >= 0
     assert cnn_idx >= 0
@@ -721,7 +762,7 @@ def test_saved_config_preserves_selected_headtail_and_cnn_runtimes(
     config_path = tmp_path / "aux_runtime.json"
     assert window.save_config(preset_mode=True, preset_path=str(config_path))
     saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
-    assert saved_cfg["headtail_runtime"] == "mps"
+    assert saved_cfg["headtail_runtime"] == "onnx_coreml"
     assert saved_cfg["cnn_runtime"] == "onnx_cpu"
     window.close()
 
@@ -939,7 +980,7 @@ def test_realtime_batch_policy_clamps_identity_controls_to_animal_count(
     window._setup_panel.spin_max_targets.setValue(3)
     window._setup_panel.chk_realtime_mode.setChecked(True)
 
-    assert window._detection_panel.lbl_batch_policy_notice.isVisible() is True
+    assert window._detection_panel.lbl_batch_policy_notice.isHidden() is False
     assert (
         "one frame at a time" in window._detection_panel.lbl_batch_policy_notice.text()
     )
@@ -948,10 +989,101 @@ def test_realtime_batch_policy_clamps_identity_controls_to_animal_count(
     assert window._identity_panel.spin_pose_batch.value() == 3
     assert row.spin_batch.maximum() == 3
     assert row.spin_batch.value() == 3
-    assert window._identity_panel.lbl_individual_batch_notice.isVisible() is True
+    assert window._identity_panel.lbl_individual_batch_notice.isHidden() is False
     assert (
         "capped to 3 animal(s) per frame"
         in window._identity_panel.lbl_individual_batch_notice.text()
+    )
+    window.close()
+
+
+def test_realtime_sequential_mode_keeps_crop_batch_setting_visible(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._detection_panel.combo_yolo_obb_mode.setCurrentIndex(1)
+    window._detection_panel.spin_yolo_seq_individual_batch_size.setValue(7)
+    window._setup_panel.chk_realtime_mode.setChecked(True)
+
+    assert window._detection_panel.spin_yolo_batch_size.isEnabled() is False
+    assert (
+        window._detection_panel.spin_yolo_seq_individual_batch_size.isEnabled() is True
+    )
+    assert (
+        "Sequential stage-2 crop batching still uses the Stage-2 crop batch setting"
+        in window._detection_panel.lbl_batch_policy_notice.text()
+    )
+    window.close()
+
+
+def test_sequential_crop_batch_roundtrip_persists(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._detection_panel.combo_yolo_obb_mode.setCurrentIndex(1)
+    window._detection_panel.spin_yolo_seq_individual_batch_size.setValue(9)
+
+    config_path = tmp_path / "sequential_crop_batch_roundtrip.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["yolo_seq_individual_batch_size"] == 9
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+    reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert (
+        reloaded_window._detection_panel.spin_yolo_seq_individual_batch_size.value()
+        == 9
+    )
+    reloaded_window.close()
+
+
+def test_benchmark_recommendations_surface_in_runtime_and_batch_ui(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    _seed_trackerkit_model_repository(tmp_path, monkeypatch)
+
+    window = _make_main_window(monkeypatch)
+    window._detection_panel.combo_detection_method.setCurrentIndex(1)
+    window._benchmark_recommendations = {
+        "detection_direct": BenchmarkRecommendation(
+            target_key="detection_direct",
+            target_label="Detection",
+            runtime="cpu",
+            runtime_label="CPU",
+            batch_size=8,
+            mean_ms=20.0,
+            throughput_fps=400.0,
+            reason="test",
+            model_path="/tmp/direct.pt",
+            mean_per_frame_ms=2.5,
+        )
+    }
+
+    window._populate_compute_runtime_options(preferred="cpu")
+    texts = [
+        window._setup_panel.combo_compute_runtime.itemText(index)
+        for index in range(window._setup_panel.combo_compute_runtime.count())
+    ]
+
+    assert any("(Recommended)" in text for text in texts)
+    window._detection_panel._sync_batch_policy_controls()
+    assert (
+        "Benchmark recommendation"
+        in window._detection_panel.lbl_batch_policy_notice.text()
     )
     window.close()
 

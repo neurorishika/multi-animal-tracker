@@ -30,7 +30,7 @@ class ExportDialog(QDialog):
 
         self.setStyleSheet("""
             QDialog { background-color: #1e1e1e; }
-            QLabel { color: #cccccc; }
+            QLabel { color: #ffffff; }
             QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {
                 background-color: #252526;
                 color: #e0e0e0;
@@ -41,7 +41,7 @@ class ExportDialog(QDialog):
             QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {
                 border: 1px solid #007acc;
             }
-            QCheckBox { color: #cccccc; }
+            QCheckBox { color: #ffffff; }
             """)
 
         layout = QVBoxLayout(self)
@@ -110,7 +110,7 @@ class ExportDialog(QDialog):
         info.setWordWrap(True)
         info.setStyleSheet(
             "padding: 12px; background-color: #252526; border-radius: 6px; "
-            + "border-left: 3px solid #0e639c; color: #aaaaaa; line-height: 1.7;"
+            + "border-left: 3px solid #0e639c; color: #ffffff; line-height: 1.7;"
         )
         layout.addWidget(info)
 

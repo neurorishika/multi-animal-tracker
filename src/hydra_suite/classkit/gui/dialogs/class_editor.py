@@ -26,35 +26,10 @@ from hydra_suite.classkit.config.presets import (
     save_scheme_preset,
 )
 from hydra_suite.classkit.gui.dialogs._helpers import _LabelRow
-
-_DARK_STYLE = """
-    QDialog { background-color: #1e1e1e; }
-    QGroupBox {
-        border: 1px solid #3e3e42; border-radius: 6px;
-        margin-top: 12px; padding-top: 12px; color: #cccccc;
-    }
-    QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
-    QLabel { color: #cccccc; }
-    QLineEdit, QTextEdit, QPlainTextEdit, QListWidget {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QLineEdit:focus, QTextEdit:focus { border: 1px solid #007acc; }
-    QComboBox, QSpinBox, QDoubleSpinBox {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QComboBox:focus, QSpinBox:focus { border: 1px solid #007acc; }
-    QCheckBox { color: #cccccc; }
-    QPushButton {
-        background-color: #0e639c; color: #ffffff;
-        border: none; border-radius: 4px;
-        padding: 8px 16px; font-weight: 500;
-    }
-    QPushButton:hover { background-color: #1177bb; }
-    QPushButton:pressed { background-color: #0d5a8f; }
-    QPushButton:disabled { background-color: #3e3e42; color: #888888; }
-"""
+from hydra_suite.widgets.dialogs import (
+    HYDRA_DIALOG_MUTED_TEXT_COLOR,
+    HYDRA_DIALOG_STYLE,
+)
 
 _BTN_ADD = (
     "QPushButton { background-color:#1a4a1a; padding:4px 12px; border-radius:4px; }"
@@ -65,8 +40,8 @@ _BTN_DEL = (
     "QPushButton:hover { background-color:#6b2424; }"
 )
 _BTN_NEUTRAL = (
-    "QPushButton { background-color:#3e3e42; color:#e0e0e0; padding:4px 12px; border-radius:4px; }"
-    "QPushButton:hover { background-color:#555558; }"
+    "QPushButton { background-color:#3a3a3a; color:#d6d6d6; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#4a4a4a; }"
 )
 
 
@@ -84,7 +59,7 @@ class ClassEditorDialog(QDialog):
         self.resize(820, 540)
         self.setMinimumWidth(680)
         self.setMinimumHeight(400)
-        self.setStyleSheet(_DARK_STYLE)
+        self.setStyleSheet(HYDRA_DIALOG_STYLE)
 
         self._factors: List[dict] = []
         self._preset_lookup: dict[str, object] = {}
@@ -112,7 +87,9 @@ class ClassEditorDialog(QDialog):
 
         preset_bar = QHBoxLayout()
         lbl_preset = QLabel("Quick preset:")
-        lbl_preset.setStyleSheet("color:#888; font-size:11px;")
+        lbl_preset.setStyleSheet(
+            f"color:{HYDRA_DIALOG_MUTED_TEXT_COLOR}; font-size:11px;"
+        )
         preset_bar.addWidget(lbl_preset)
         self._preset_combo = QComboBox()
         self._preset_combo.setMaximumWidth(320)
@@ -147,7 +124,7 @@ class ClassEditorDialog(QDialog):
         self._factor_list.setMaximumWidth(220)
         self._factor_list.setStyleSheet(
             "QListWidget { background:#252526; border:1px solid #3e3e42; border-radius:4px; }"
-            "QListWidget::item { padding:6px 10px; color:#cccccc; }"
+            "QListWidget::item { padding:6px 10px; color:#ffffff; }"
             "QListWidget::item:selected { background-color:#094771; color:#ffffff; }"
         )
         self._factor_list.currentRowChanged.connect(self._on_factor_selected)
@@ -186,7 +163,7 @@ class ClassEditorDialog(QDialog):
         lbl_header.addWidget(QLabel("<b>Labels</b>"))
         lbl_header.addWidget(
             QLabel(
-                "<i style='color:#777; font-size:11px;'>"
+                "<i style='color:#ffffff; font-size:11px;'>"
                 "  Key: letter, digit, arrow (\u2191\u2193\u2190\u2192), symbol (+  \u2212  Space \u2026)</i>"
             )
         )

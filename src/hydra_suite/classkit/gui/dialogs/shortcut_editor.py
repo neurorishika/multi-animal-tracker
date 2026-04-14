@@ -14,24 +14,10 @@ from PySide6.QtWidgets import (
 )
 
 from hydra_suite.classkit.gui.dialogs._helpers import _KeyCapture
-
-_DARK_STYLE = """
-    QDialog { background-color: #1e1e1e; }
-    QLabel { color: #cccccc; }
-    QLineEdit {
-        background-color: #252526; color: #e0e0e0;
-        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
-    }
-    QLineEdit:focus { border: 1px solid #007acc; }
-    QPushButton {
-        background-color: #0e639c; color: #ffffff;
-        border: none; border-radius: 4px;
-        padding: 8px 16px; font-weight: 500;
-    }
-    QPushButton:hover { background-color: #1177bb; }
-    QPushButton:pressed { background-color: #0d5a8f; }
-    QPushButton:disabled { background-color: #3e3e42; color: #888888; }
-"""
+from hydra_suite.widgets.dialogs import (
+    HYDRA_DIALOG_MUTED_TEXT_COLOR,
+    HYDRA_DIALOG_STYLE,
+)
 
 _PLUS_KEY = QKeySequence(Qt.Key.Key_Plus).toString()
 _MINUS_KEY = QKeySequence(Qt.Key.Key_Minus).toString()
@@ -57,7 +43,7 @@ class ShortcutEditorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
         self.setMinimumWidth(500)
-        self.setStyleSheet(_DARK_STYLE)
+        self.setStyleSheet(HYDRA_DIALOG_STYLE)
 
         self._shortcuts: dict = {name: seq for name, seq in self.DEFAULT_SHORTCUTS}
         if current:
@@ -77,7 +63,7 @@ class ShortcutEditorDialog(QDialog):
             "Label-specific shortcuts are defined in the <b>Class Scheme Editor</b>."
         )
         info.setWordWrap(True)
-        info.setStyleSheet("color:#888; font-size:11px;")
+        info.setStyleSheet(f"color:{HYDRA_DIALOG_MUTED_TEXT_COLOR}; font-size:11px;")
         layout.addWidget(info)
 
         form = QFormLayout()

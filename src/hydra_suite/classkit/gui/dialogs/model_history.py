@@ -32,7 +32,7 @@ class ModelHistoryDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Previously Trained Models")
         self.setMinimumSize(940, 620)
-        self.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
+        self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
         self._entries = list(model_entries)
         self._project_path = project_path
         self._db_path = Path(db_path) if db_path else None
@@ -45,7 +45,7 @@ class ModelHistoryDialog(QDialog):
         header = QLabel(
             "Select, rename, delete, or export trained checkpoints before loading one for inference."
         )
-        header.setStyleSheet("color: #aaaaaa; font-size: 12px;")
+        header.setStyleSheet("color: #ffffff; font-size: 12px;")
         layout.addWidget(header)
 
         self._qt_align = Qt.AlignVCenter | Qt.AlignLeft
@@ -73,10 +73,10 @@ class ModelHistoryDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet(
-            "QTableWidget { background-color: #252526; color: #cccccc; "
+            "QTableWidget { background-color: #252526; color: #ffffff; "
             "gridline-color: #3a3a3a; border: none; }"
             "QTableWidget::item:selected { background-color: #094771; }"
-            "QHeaderView::section { background-color: #2d2d2d; color: #cccccc; "
+            "QHeaderView::section { background-color: #2d2d2d; color: #ffffff; "
             "padding: 4px; border: none; border-right: 1px solid #3a3a3a; }"
         )
         self.table.doubleClicked.connect(self._on_double_click)
@@ -88,7 +88,7 @@ class ModelHistoryDialog(QDialog):
         self.detail_label.setFixedHeight(104)
         self.detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.detail_label.setStyleSheet(
-            "background: #252526; color: #cccccc; font-size: 11px; "
+            "background: #252526; color: #ffffff; font-size: 11px; "
             "padding: 7px 10px; border-radius: 4px;"
         )
         layout.addWidget(self.detail_label)
@@ -98,7 +98,7 @@ class ModelHistoryDialog(QDialog):
         self.rename_btn = QPushButton("Rename")
         self.rename_btn.setFixedHeight(36)
         self.rename_btn.setStyleSheet(
-            "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
+            "QPushButton { background-color: #3a3a3a; color: #ffffff; border-radius: 4px; "
             "padding: 0 14px; }"
             "QPushButton:hover { background-color: #4a4a4a; }"
         )
@@ -118,7 +118,7 @@ class ModelHistoryDialog(QDialog):
         self.export_btn = QPushButton("Export to models/")
         self.export_btn.setFixedHeight(36)
         self.export_btn.setStyleSheet(
-            "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
+            "QPushButton { background-color: #3a3a3a; color: #ffffff; border-radius: 4px; "
             "padding: 0 14px; }"
             "QPushButton:hover { background-color: #4a6b4a; color: white; }"
         )
@@ -143,7 +143,7 @@ class ModelHistoryDialog(QDialog):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setFixedHeight(36)
         cancel_btn.setStyleSheet(
-            "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
+            "QPushButton { background-color: #3a3a3a; color: #ffffff; border-radius: 4px; "
             "padding: 0 16px; }"
             "QPushButton:hover { background-color: #4a4a4a; }"
         )
@@ -242,9 +242,9 @@ class ModelHistoryDialog(QDialog):
         self.detail_label.setText(
             f"<b>{display_name}</b> &nbsp;&bull;&nbsp; Mode: <b>{mode}</b>"
             f" &nbsp;&bull;&nbsp; Val acc: <b>{acc_str}</b><br>"
-            f"<span style='color:#888'>Classes:</span> {classes_html}<br>"
-            f"<span style='color:#888'>Files:</span> {files_html}<br>"
-            f"<span style='color:#555;font-size:10px'>{ts}</span>"
+            f"<span style='color:#ffffff'>Classes:</span> {classes_html}<br>"
+            f"<span style='color:#ffffff'>Files:</span> {files_html}<br>"
+            f"<span style='color:#ffffff;font-size:10px'>{ts}</span>"
         )
 
     def _rename_selected(self) -> None:

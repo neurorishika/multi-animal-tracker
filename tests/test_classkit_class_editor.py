@@ -13,10 +13,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 
 from hydra_suite.classkit.gui.dialogs.class_editor import (  # noqa: E402
     ClassEditorDialog,
+)
+from hydra_suite.widgets.dialogs import (  # noqa: E402
+    HYDRA_DIALOG_MUTED_TEXT_COLOR,
+    HYDRA_DIALOG_STYLE,
 )
 
 
@@ -70,3 +74,16 @@ def test_class_editor_can_save_current_scheme_as_custom_preset(
 
     preset_index = dialog._preset_combo.findData("custom:shared_tags")
     assert preset_index >= 0
+
+
+def test_class_editor_uses_shared_dialog_theme(qapp) -> None:
+    dialog = ClassEditorDialog(classes=["red", "blue"])
+
+    assert dialog.styleSheet() == HYDRA_DIALOG_STYLE
+    preset_labels = [
+        label
+        for label in dialog.findChildren(QLabel)
+        if label.text() == "Quick preset:"
+    ]
+    assert preset_labels
+    assert HYDRA_DIALOG_MUTED_TEXT_COLOR in preset_labels[0].styleSheet()

@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 class RuntimeArtifactMixin:
     """Mixin supplying ONNX/TensorRT artifact caching and export helpers."""
 
+    _SESSION_ONNX_CPU_FALLBACK_ARTIFACTS: set[str] = set()
+
     def _is_realtime_workflow(self) -> bool:
         """Return whether the active tracking workflow is realtime."""
         raw_value = self.params.get(
@@ -33,6 +35,18 @@ class RuntimeArtifactMixin:
         """Return True for detector tasks that benefit from realtime batch-1 artifacts."""
         return str(task or "").strip().lower() in {"obb", "detect"}
 
+    def _realtime_detection_task_requires_batch1(self, task: str) -> bool:
+        """Return whether realtime mode should clamp this task's artifact batch to 1."""
+        if not self._is_realtime_workflow():
+            return False
+        task_name = str(task or "").strip().lower()
+        if task_name == "detect":
+            return True
+        if task_name != "obb":
+            return False
+        obb_mode = str(self.params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        return obb_mode != "sequential"
+
     def _should_export_raw_yolo_head(self, task: str) -> bool:
         """Whether deployment exports should bypass Ultralytics end-to-end postprocess."""
         task_name = str(task or "").strip().lower()
@@ -43,6 +57,34 @@ class RuntimeArtifactMixin:
     def _aux_export_profile_suffix(self, task: str) -> str:
         """Return a versioned artifact suffix for auxiliary task exports."""
         return "_rawheadv1" if self._should_export_raw_yolo_head(task) else ""
+
+    def _runtime_build_batch_size_override(
+        self,
+        task: str,
+        requested_batch_size: int | None = None,
+    ) -> int | None:
+        """Resolve optional task-specific build batch overrides for static runtimes."""
+        task_name = str(task or "").strip().lower()
+        override_keys: list[str] = []
+        if task_name == "obb":
+            obb_mode = str(self.params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+            if obb_mode == "sequential":
+                override_keys.append("YOLO_SEQ_STAGE2_RUNTIME_BUILD_BATCH_SIZE")
+            override_keys.append("YOLO_OBB_RUNTIME_BUILD_BATCH_SIZE")
+        elif task_name == "detect":
+            override_keys.append("YOLO_DETECT_RUNTIME_BUILD_BATCH_SIZE")
+        elif task_name == "classify":
+            override_keys.append("YOLO_CLASSIFY_RUNTIME_BUILD_BATCH_SIZE")
+
+        for key in override_keys:
+            raw_value = self.params.get(key, None)
+            if raw_value in (None, "", 0, "0"):
+                continue
+            try:
+                return max(1, int(raw_value))
+            except (TypeError, ValueError):
+                continue
+        return requested_batch_size
 
     @contextmanager
     def _yolo_runtime_export_profile(self, base_model, task: str):
@@ -128,10 +170,10 @@ class RuntimeArtifactMixin:
     ) -> int:
         """Resolve the fixed ONNX export batch size.
 
-        Realtime detector paths should use batch-1 artifacts to avoid padding
-        single-frame inference into a larger static export profile. Sequential
-        detector paths keep the configured batch size so batched prepasses can
-        still amortize export/runtime overhead.
+        Realtime frame-level detector paths should use batch-1 artifacts to avoid
+        padding single-frame inference into a larger static export profile.
+        Sequential stage-2 crop OBB paths keep the configured batch size so crop
+        grouping can still amortize runtime overhead.
         """
         default_batch = requested_batch_size
         if default_batch is None:
@@ -141,7 +183,7 @@ class RuntimeArtifactMixin:
         except (TypeError, ValueError):
             default_batch = 1
 
-        if self._is_realtime_workflow() and self._is_detection_runtime_task(task):
+        if self._realtime_detection_task_requires_batch1(task):
             return 1
         return default_batch
 
@@ -163,7 +205,7 @@ class RuntimeArtifactMixin:
         except (TypeError, ValueError):
             default_batch = 1
 
-        if self._is_realtime_workflow() and self._is_detection_runtime_task(task):
+        if self._realtime_detection_task_requires_batch1(task):
             return 1
 
         raw_override = self.params.get("TENSORRT_BUILD_BATCH_SIZE", None)
@@ -262,6 +304,39 @@ class RuntimeArtifactMixin:
     def _artifact_meta_path(self, artifact_path: Path) -> Path:
         return artifact_path.with_suffix(f"{artifact_path.suffix}.runtime_meta.json")
 
+    @classmethod
+    def _onnx_artifact_cache_key(cls, artifact_path: Path | str | None) -> str:
+        if not artifact_path:
+            return ""
+        try:
+            return str(Path(artifact_path).expanduser().resolve())
+        except Exception:
+            return str(artifact_path)
+
+    @classmethod
+    def _mark_onnx_artifact_for_cpu_fallback(
+        cls, artifact_path: Path | str | None
+    ) -> None:
+        cache_key = cls._onnx_artifact_cache_key(artifact_path)
+        if cache_key:
+            cls._SESSION_ONNX_CPU_FALLBACK_ARTIFACTS.add(cache_key)
+
+    @classmethod
+    def _should_force_onnx_cpu_fallback(cls, artifact_path: Path | str | None) -> bool:
+        cache_key = cls._onnx_artifact_cache_key(artifact_path)
+        return bool(cache_key and cache_key in cls._SESSION_ONNX_CPU_FALLBACK_ARTIFACTS)
+
+    @staticmethod
+    def _attach_runtime_artifact_path(model, artifact_path: Path | str | None) -> None:
+        if not artifact_path or model is None:
+            return
+        try:
+            model._hydra_runtime_artifact_path = str(
+                Path(artifact_path).expanduser().resolve()
+            )
+        except Exception:
+            pass
+
     def _artifact_is_fresh(self, artifact_path: Path, signature: str) -> bool:
         if not artifact_path.exists():
             return False
@@ -297,9 +372,14 @@ class RuntimeArtifactMixin:
         try:
             from ultralytics import YOLO
 
+            self._onnx_predict_device = self.device
             resolved_model = Path(model_path_str).expanduser().resolve()
-            onnx_batch_size = self._resolve_onnx_build_batch_size(
+            requested_batch_size = self._runtime_build_batch_size_override(
+                "obb",
                 self.params.get("TENSORRT_MAX_BATCH_SIZE", 1),
+            )
+            onnx_batch_size = self._resolve_onnx_build_batch_size(
+                requested_batch_size,
                 task="obb",
             )
             if resolved_model.suffix.lower() == ".onnx":
@@ -329,6 +409,7 @@ class RuntimeArtifactMixin:
                 )
                 logger.info(f"Loading ONNX model from: {onnx_path}")
                 self.model = YOLO(str(onnx_path), task="obb")
+                self._attach_runtime_artifact_path(self.model, onnx_path)
                 self.use_onnx = True
                 self.onnx_model_path = str(onnx_path)
                 self.onnx_imgsz = int(onnx_imgsz)
@@ -344,6 +425,45 @@ class RuntimeArtifactMixin:
                 batch_size=int(onnx_batch_size),
                 onnx_imgsz=onnx_imgsz,
             )
+            force_cpu_fallback = str(
+                self.device
+            ).strip().lower() == "mps" and self._should_force_onnx_cpu_fallback(
+                onnx_path
+            )
+            if force_cpu_fallback and onnx_path.exists():
+                source_mtime_ns = 0
+                artifact_mtime_ns = 0
+                try:
+                    source_mtime_ns = resolved_model.stat().st_mtime_ns
+                    artifact_mtime_ns = onnx_path.stat().st_mtime_ns
+                except Exception:
+                    pass
+                if artifact_mtime_ns >= source_mtime_ns:
+                    meta = self._read_artifact_meta(onnx_path)
+                    try:
+                        meta_imgsz = int(meta.get("imgsz", 0))
+                    except Exception:
+                        meta_imgsz = 0
+                    if meta_imgsz > 0:
+                        onnx_imgsz = meta_imgsz
+                    try:
+                        meta_batch = int(meta.get("batch_size", 0))
+                    except Exception:
+                        meta_batch = 0
+                    if meta_batch > 0:
+                        onnx_batch_size = meta_batch
+                    logger.info(
+                        "Loading ONNX model from: %s (CPU ORT fallback after prior CoreML failure)",
+                        onnx_path,
+                    )
+                    self.model = YOLO(str(onnx_path), task="obb")
+                    self._attach_runtime_artifact_path(self.model, onnx_path)
+                    self.use_onnx = True
+                    self.onnx_model_path = str(onnx_path)
+                    self.onnx_imgsz = int(onnx_imgsz)
+                    self.onnx_batch_size = int(onnx_batch_size)
+                    self._onnx_predict_device = "cpu"
+                    return
 
             if self._artifact_is_fresh(onnx_path, signature):
                 meta = self._read_artifact_meta(onnx_path)
@@ -361,6 +481,7 @@ class RuntimeArtifactMixin:
                     onnx_batch_size = meta_batch
                 logger.info(f"Loading ONNX model from: {onnx_path}")
                 self.model = YOLO(str(onnx_path), task="obb")
+                self._attach_runtime_artifact_path(self.model, onnx_path)
                 self.use_onnx = True
                 self.onnx_model_path = str(onnx_path)
                 self.onnx_imgsz = onnx_imgsz
@@ -392,6 +513,7 @@ class RuntimeArtifactMixin:
                 batch_size=int(onnx_batch_size),
             )
             self.model = YOLO(str(onnx_path), task="obb")
+            self._attach_runtime_artifact_path(self.model, onnx_path)
             self.use_onnx = True
             self.onnx_model_path = str(onnx_path)
             self.onnx_imgsz = onnx_imgsz
@@ -410,7 +532,10 @@ class RuntimeArtifactMixin:
         try:
             from ultralytics import YOLO
 
-            requested_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+            requested_batch_size = self._runtime_build_batch_size_override(
+                "obb",
+                self.params.get("TENSORRT_MAX_BATCH_SIZE", 16),
+            )
             build_batch_size = self._resolve_tensorrt_build_batch_size(
                 requested_batch_size,
                 task="obb",
@@ -645,6 +770,10 @@ class RuntimeArtifactMixin:
                     if self._is_detection_runtime_task(task)
                     else 1
                 )
+                requested_batch_size = self._runtime_build_batch_size_override(
+                    task,
+                    requested_batch_size,
+                )
                 onnx_batch_size = self._resolve_onnx_build_batch_size(
                     requested_batch_size,
                     task=task,
@@ -691,6 +820,10 @@ class RuntimeArtifactMixin:
                     self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)
                     if self._is_detection_runtime_task(task)
                     else 1
+                )
+                requested_batch_size = self._runtime_build_batch_size_override(
+                    task,
+                    requested_batch_size,
                 )
                 build_batch_size = self._resolve_tensorrt_build_batch_size(
                     requested_batch_size,

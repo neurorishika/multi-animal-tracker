@@ -61,8 +61,21 @@ class OBBCanvas(QGraphicsView):
 
         # State
         self._pix_item: Optional[QGraphicsPixmapItem] = None
-        self._obb_items: list = []
-        self._label_items: list = []
+        # GT layer (ground-truth, solid lines)
+        self._gt_obb_items: list = []
+        self._gt_label_items: list = []
+        self._gt_class_ids: list[int] = []
+        # Prediction layer (model output, dashed lines)
+        self._pred_obb_items: list = []
+        self._pred_label_items: list = []
+        self._pred_class_ids: list[int] = []
+        # Visibility state
+        self._show_gt: bool = True
+        self._show_pred: bool = True
+        self._visible_class_ids: set[int] = set()
+        # Backward-compat aliases (views of GT layer)
+        self._obb_items = self._gt_obb_items
+        self._label_items = self._gt_label_items
         self._zoom: float = 1.0
         self._min_zoom: float = 0.1
         self._max_zoom: float = 4.0
@@ -113,75 +126,176 @@ class OBBCanvas(QGraphicsView):
     # Detection overlays
     # ------------------------------------------------------------------
 
-    def set_detections(
+    def _build_class_lookup(
+        self, class_names: list[str] | dict[int, str] | None
+    ) -> dict[int, str]:
+        if isinstance(class_names, dict):
+            return {int(k): str(v) for k, v in class_names.items()}
+        return {idx: str(n) for idx, n in enumerate(class_names or ["object"])}
+
+    def _draw_detections(
         self,
         detections: list[dict],
-        class_names: list[str] | dict[int, str] | None = None,
+        obb_items: list,
+        label_items: list,
+        class_ids: list,
+        class_names: list[str] | dict[int, str] | None,
+        line_style: "Qt.PenStyle",
+        show_confidence: bool = False,
     ) -> None:
-        """Draw OBB polygons for *detections* on the canvas.
-
-        Each detection dict must have ``class_id`` (int) and
-        ``polygon_px`` (list of four ``(x, y)`` tuples).
-        """
-        self.clear_detections()
-
+        """Render *detections* into the given item lists."""
         font = QFont()
         font.setPixelSize(DEFAULT_OBB_FONT_SIZE)
-        if isinstance(class_names, dict):
-            class_name_lookup = {
-                int(key): str(value) for key, value in class_names.items()
-            }
-        else:
-            class_name_lookup = {
-                idx: str(name) for idx, name in enumerate(class_names or ["object"])
-            }
+        lookup = self._build_class_lookup(class_names)
 
         for det in detections:
             class_id: int = det.get("class_id", 0)
             polygon_px = det.get("polygon_px", [])
             if len(polygon_px) < 3:
                 continue
+            confidence = det.get("confidence", None)
 
             colour = _PALETTE[class_id % len(_PALETTE)]
-
-            # Build polygon
             qpoly = QPolygonF()
             for x, y in polygon_px:
                 qpoly.append(QPointF(x, y))
-            qpoly.append(QPointF(*polygon_px[0]))  # close polygon
+            qpoly.append(QPointF(*polygon_px[0]))
 
             pen = QPen(colour, DEFAULT_OBB_LINE_WIDTH)
             pen.setCosmetic(True)
+            pen.setStyle(line_style)
             poly_item = self._scene.addPolygon(
                 qpoly, pen, QBrush(Qt.BrushStyle.NoBrush)
             )
-            self._obb_items.append(poly_item)
+            obb_items.append(poly_item)
+            class_ids.append(class_id)
 
-            # Label at first corner
-            label_name = class_name_lookup.get(class_id, f"class_{class_id}")
-            label_text = f"{label_name} ({class_id})"
+            label_name = lookup.get(class_id, f"class_{class_id}")
+            if show_confidence and confidence is not None:
+                label_text = f"{label_name} ({confidence:.2f})"
+            else:
+                label_text = f"{label_name} ({class_id})"
             txt_item = QGraphicsTextItem(label_text)
             txt_item.setFont(font)
             txt_item.setDefaultTextColor(colour)
             txt_item.setPos(QPointF(*polygon_px[0]))
             self._scene.addItem(txt_item)
-            self._label_items.append(txt_item)
+            label_items.append(txt_item)
+
+    def _apply_visibility(self) -> None:
+        """Show/hide items based on visibility flags and class filter."""
+
+        def _set_layer(obb_items, label_items, class_ids, layer_visible):
+            for obb, lbl, cid in zip(obb_items, label_items, class_ids):
+                visible = layer_visible and (
+                    not self._visible_class_ids or cid in self._visible_class_ids
+                )
+                obb.setVisible(visible)
+                lbl.setVisible(visible)
+
+        _set_layer(
+            self._gt_obb_items, self._gt_label_items, self._gt_class_ids, self._show_gt
+        )
+        _set_layer(
+            self._pred_obb_items,
+            self._pred_label_items,
+            self._pred_class_ids,
+            self._show_pred,
+        )
+
+    def set_gt_detections(
+        self,
+        detections: list[dict],
+        class_names: list[str] | dict[int, str] | None = None,
+        *,
+        append: bool = False,
+    ) -> None:
+        """Draw ground-truth OBB polygons (solid lines)."""
+        if not append:
+            self.clear_gt_detections()
+        self._draw_detections(
+            detections,
+            self._gt_obb_items,
+            self._gt_label_items,
+            self._gt_class_ids,
+            class_names,
+            Qt.PenStyle.SolidLine,
+            show_confidence=False,
+        )
+        self._apply_visibility()
+
+    def set_pred_detections(
+        self,
+        detections: list[dict],
+        class_names: list[str] | dict[int, str] | None = None,
+    ) -> None:
+        """Draw model-prediction OBB polygons (dashed lines)."""
+        self.clear_pred_detections()
+        self._draw_detections(
+            detections,
+            self._pred_obb_items,
+            self._pred_label_items,
+            self._pred_class_ids,
+            class_names,
+            Qt.PenStyle.DashLine,
+            show_confidence=True,
+        )
+        self._apply_visibility()
+
+    def set_overlay_visibility(self, show_gt: bool, show_pred: bool) -> None:
+        """Toggle GT and prediction layer visibility."""
+        self._show_gt = show_gt
+        self._show_pred = show_pred
+        self._apply_visibility()
+
+    def set_class_filter(self, visible_class_ids: set[int]) -> None:
+        """Show only the given class IDs (empty set = show all)."""
+        self._visible_class_ids = set(visible_class_ids)
+        self._apply_visibility()
+
+    # Backward-compat aliases
+    def set_detections(
+        self,
+        detections: list[dict],
+        class_names: list[str] | dict[int, str] | None = None,
+    ) -> None:
+        """Backward-compatible alias: set GT detections."""
+        self.set_gt_detections(detections, class_names)
 
     def clear_detections(self) -> None:
-        """Remove all OBB polygon and label items from the scene."""
-        for item in self._obb_items:
+        """Backward-compatible alias: clear GT layer."""
+        self.clear_gt_detections()
+
+    def clear_gt_detections(self) -> None:
+        """Remove all GT polygon and label items from the scene."""
+        for item in self._gt_obb_items:
             self._scene.removeItem(item)
-        for item in self._label_items:
+        for item in self._gt_label_items:
             self._scene.removeItem(item)
-        self._obb_items.clear()
-        self._label_items.clear()
+        self._gt_obb_items.clear()
+        self._gt_label_items.clear()
+        self._gt_class_ids.clear()
+
+    def clear_pred_detections(self) -> None:
+        """Remove all prediction polygon and label items from the scene."""
+        for item in self._pred_obb_items:
+            self._scene.removeItem(item)
+        for item in self._pred_label_items:
+            self._scene.removeItem(item)
+        self._pred_obb_items.clear()
+        self._pred_label_items.clear()
+        self._pred_class_ids.clear()
 
     def clear_all(self) -> None:
         """Remove everything from the scene."""
         self._scene.clear()
         self._pix_item = None
-        self._obb_items.clear()
-        self._label_items.clear()
+        self._gt_obb_items.clear()
+        self._gt_label_items.clear()
+        self._gt_class_ids.clear()
+        self._pred_obb_items.clear()
+        self._pred_label_items.clear()
+        self._pred_class_ids.clear()
         self._zoom = 1.0
         self._fit_mode = True
         self.setCursor(Qt.CursorShape.ArrowCursor)

@@ -23,11 +23,6 @@ def normalize_class_names(values: Any) -> list[str]:
     return class_names or [DEFAULT_CLASS_NAME]
 
 
-def class_name_map(class_names: list[str]) -> dict[int, str]:
-    """Return the class-id to class-name mapping for a project."""
-    return {idx: name for idx, name in enumerate(normalize_class_names(class_names))}
-
-
 @dataclass
 class OBBSource:
     """Represents one source dataset directory."""
@@ -117,6 +112,7 @@ class DetectKitProject:
     # Session
     last_source_index: int = 0
     last_image_index: int = 0
+    active_model_path: str = ""
 
     @property
     def class_name(self) -> str:

@@ -30,6 +30,11 @@ from hydra_suite.runtime.compute_runtime import (
     derive_pose_runtime_settings,
     infer_compute_runtime_from_legacy,
 )
+from hydra_suite.trackerkit.benchmarking import (
+    collect_active_targets,
+    derive_benchmark_geometry_from_video,
+    lookup_cached_recommendation,
+)
 from hydra_suite.trackerkit.gui.model_utils import (
     _sanitize_model_token,
     get_pose_models_directory,
@@ -395,6 +400,9 @@ class ConfigOrchestrator:
         )
         self._panels.detection.spin_yolo_seq_stage2_imgsz.setValue(
             int(get_cfg("yolo_seq_stage2_imgsz", default=160))
+        )
+        self._panels.detection.spin_yolo_seq_individual_batch_size.setValue(
+            int(get_cfg("yolo_seq_individual_batch_size", default=16))
         )
         self._panels.detection.chk_yolo_seq_stage2_pow2_pad.setChecked(
             bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
@@ -1477,6 +1485,7 @@ class ConfigOrchestrator:
                 "yolo_seq_min_crop_size_px": self._panels.detection.spin_yolo_seq_min_crop_px.value(),
                 "yolo_seq_enforce_square_crop": self._panels.detection.chk_yolo_seq_square_crop.isChecked(),
                 "yolo_seq_stage2_imgsz": self._panels.detection.spin_yolo_seq_stage2_imgsz.value(),
+                "yolo_seq_individual_batch_size": self._panels.detection.spin_yolo_seq_individual_batch_size.value(),
                 "yolo_seq_stage2_pow2_pad": self._panels.detection.chk_yolo_seq_stage2_pow2_pad.isChecked(),
                 "yolo_seq_detect_conf_threshold": self._panels.detection.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self._panels.identity.spin_yolo_headtail_conf.value(),
@@ -1938,6 +1947,9 @@ class ConfigOrchestrator:
         advanced_config["yolo_manual_batch_size"] = (
             self._panels.detection.spin_yolo_batch_size.value()
         )
+        advanced_config["yolo_seq_individual_batch_size"] = (
+            self._panels.detection.spin_yolo_seq_individual_batch_size.value()
+        )
         advanced_config["video_show_pose"] = (
             self._panels.postprocess.check_video_show_pose.isChecked()
         )
@@ -2037,6 +2049,8 @@ class ConfigOrchestrator:
             "YOLO_SEQ_MIN_CROP_SIZE_PX": self._panels.detection.spin_yolo_seq_min_crop_px.value(),
             "YOLO_SEQ_ENFORCE_SQUARE_CROP": self._panels.detection.chk_yolo_seq_square_crop.isChecked(),
             "YOLO_SEQ_STAGE2_IMGSZ": self._panels.detection.spin_yolo_seq_stage2_imgsz.value(),
+            "YOLO_SEQ_INDIVIDUAL_BATCH_SIZE": self._panels.detection.spin_yolo_seq_individual_batch_size.value(),
+            "YOLO_SEQ_STAGE2_RUNTIME_BUILD_BATCH_SIZE": self._panels.detection.spin_yolo_seq_individual_batch_size.value(),
             "YOLO_SEQ_STAGE2_POW2_PAD": self._panels.detection.chk_yolo_seq_stage2_pow2_pad.isChecked(),
             "YOLO_SEQ_DETECT_CONF_THRESHOLD": self._panels.detection.spin_yolo_seq_detect_conf.value(),
             "YOLO_HEADTAIL_CONF_THRESHOLD": self._panels.identity.spin_yolo_headtail_conf.value(),
@@ -3449,6 +3463,149 @@ class ConfigOrchestrator:
                 "Detection parameters have been applied to the UI.\n"
                 "Use 'Preview Detection' to verify the results.",
             )
+
+    def _open_benchmark_dialog(self):
+        """Open the TrackerKit benchmark dialog for current model selections."""
+        from hydra_suite.trackerkit.gui.dialogs.benchmark_dialog import (
+            TrackerBenchmarkDialog,
+        )
+
+        video_path = self._panels.setup.file_line.text().strip()
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self._mw, "No Video", "Please load a video first.")
+            return
+
+        targets, notes = collect_active_targets(self._mw)
+        if not targets:
+            message = "No benchmarkable model targets are currently enabled."
+            if notes:
+                message += "\n\n" + "\n".join(notes)
+            QMessageBox.information(self._mw, "No Targets", message)
+            return
+
+        dialog = TrackerBenchmarkDialog(self._mw, self._mw)
+        if dialog.exec() == QDialog.Accepted:
+            notes = self._apply_benchmark_recommendations(dialog.recommendations())
+            self._refresh_benchmark_recommendations()
+            self._mw._on_runtime_context_changed()
+            message = "Benchmark recommendations applied to the current UI."
+            if notes:
+                message += "\n\n" + "\n".join(f"• {note}" for note in notes)
+            QMessageBox.information(self._mw, "Recommendations Applied", message)
+
+    def _refresh_benchmark_recommendations(self) -> None:
+        """Refresh cached benchmark recommendations for the current UI state."""
+        video_path = self._panels.setup.file_line.text().strip()
+        if not video_path or not os.path.exists(video_path):
+            self._mw._benchmark_recommendations = {}
+            return
+        try:
+            geometry = derive_benchmark_geometry_from_video(
+                video_path,
+                resize_factor=float(self._panels.setup.spin_resize.value()),
+                reference_body_size=float(
+                    self._panels.detection.spin_reference_body_size.value()
+                ),
+                reference_aspect_ratio=float(
+                    self._panels.detection.spin_reference_aspect_ratio.value()
+                ),
+                padding_fraction=float(
+                    self._panels.identity.spin_individual_padding.value()
+                ),
+            )
+        except Exception:
+            logger.debug(
+                "Could not derive benchmark geometry for the current video.",
+                exc_info=True,
+            )
+            self._mw._benchmark_recommendations = {}
+            return
+
+        recommendations = {}
+        targets, _notes = collect_active_targets(self._mw)
+        for target in targets:
+            recommendation = lookup_cached_recommendation(
+                target,
+                geometry,
+                realtime_enabled=self._mw._is_realtime_tracking_mode_enabled(),
+            )
+            if recommendation is not None:
+                recommendations[target.key] = recommendation
+        self._mw._benchmark_recommendations = recommendations
+
+    def _apply_benchmark_recommendations(
+        self, recommendations: dict[str, object]
+    ) -> list[str]:
+        """Apply cached benchmark recommendations back into the current UI."""
+        notes: list[str] = []
+
+        def _set_combo_data(combo: QComboBox, value: object) -> bool:
+            index = combo.findData(value)
+            if index < 0:
+                return False
+            combo.setCurrentIndex(index)
+            return True
+
+        detection = recommendations.get(
+            "detection_direct"
+            if self._panels.detection.combo_yolo_obb_mode.currentIndex() == 0
+            else "detection_sequential"
+        )
+        if detection is not None:
+            _set_combo_data(self._panels.setup.combo_compute_runtime, detection.runtime)
+            self._panels.detection.chk_enable_yolo_batching.setChecked(True)
+            self._panels.detection.combo_yolo_batch_mode.setCurrentIndex(1)
+            self._panels.detection.spin_yolo_batch_size.setValue(
+                int(detection.batch_size)
+            )
+            individual_batch_size = getattr(detection, "individual_batch_size", None)
+            if individual_batch_size is not None and hasattr(
+                self._panels.detection, "spin_yolo_seq_individual_batch_size"
+            ):
+                self._panels.detection.spin_yolo_seq_individual_batch_size.setValue(
+                    int(individual_batch_size)
+                )
+
+        headtail = recommendations.get("headtail")
+        if headtail is not None:
+            _set_combo_data(self._panels.setup.combo_headtail_runtime, headtail.runtime)
+
+        pose = recommendations.get(f"pose_{self._mw._current_pose_backend_key()}")
+        if pose is not None:
+            pose_flavor = derive_pose_runtime_settings(
+                pose.runtime,
+                backend_family=self._mw._current_pose_backend_key(),
+            ).get("pose_runtime_flavor", "cpu")
+            _set_combo_data(self._panels.setup.combo_pose_runtime_flavor, pose_flavor)
+            self._panels.identity.spin_pose_batch.setValue(int(pose.batch_size))
+
+        cnn_recommendations = [
+            recommendation
+            for key, recommendation in recommendations.items()
+            if str(key).startswith("cnn_")
+        ]
+        if cnn_recommendations:
+            shared_runtimes = {
+                recommendation.runtime for recommendation in cnn_recommendations
+            }
+            if len(shared_runtimes) == 1:
+                _set_combo_data(
+                    self._panels.setup.combo_cnn_runtime,
+                    cnn_recommendations[0].runtime,
+                )
+            else:
+                notes.append(
+                    "CNN runtime recommendations differed across classifiers, so the shared CNN runtime selector was left unchanged."
+                )
+            rows = self._panels.identity._cnn_classifier_rows()
+            for index, row in enumerate(rows):
+                recommendation = recommendations.get(f"cnn_{index}")
+                if recommendation is not None:
+                    row.spin_batch.setValue(int(recommendation.batch_size))
+
+        self._panels.detection._sync_batch_policy_controls()
+        self._panels.identity._sync_realtime_individual_batch_ui()
+        return notes
 
     # =========================================================================
     # COMPUTE RUNTIME (DELEGATE)

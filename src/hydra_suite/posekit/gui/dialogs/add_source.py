@@ -169,7 +169,6 @@ class AddSourceDialog(QDialog):
             if clicked == btn_sieve:
                 pre_mtime = _get_transaction_mtime(d)
                 proc = QProcess(self)
-                self._filterkit_proc = proc
                 proc.finished.connect(
                     lambda _ec, _es, _d=d, _r=resolved, _m=pre_mtime: (
                         self._on_filterkit_closed(_d, _r, _m)
