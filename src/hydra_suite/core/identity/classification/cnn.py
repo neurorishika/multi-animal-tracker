@@ -443,7 +443,7 @@ class TrackCNNHistory:
     def build_track_identity_list(self, n_tracks: int) -> list[str | None]:
         """Return list of length *n_tracks*: majority class per slot (or None).
 
-        This is what goes into ``association_data["track_cnn_identities"]``.
+        This is what goes into each CNN phase payload as ``track_identities``.
         """
         self.resize(n_tracks)
         return [self.majority_class(i) for i in range(n_tracks)]

@@ -243,3 +243,66 @@ def test_optimizer_replay_uses_directed_heading_for_assignment_and_kf() -> None:
     np.testing.assert_array_equal(_StubTrackAssigner.last_meas_ori_directed, [1])
     _, corrected = _StubKalmanFilterManager.last_instance.corrected_measurements[0]
     assert corrected[2] == np.float32(1.25)
+
+
+def test_optimizer_replay_skips_directed_pose_heading_when_pose_is_weak() -> None:
+    mod = _load_optimizer_module()
+
+    class _WeakPoseOnlyCache(_FakeCache):
+        def get_frame(self, frame_idx):
+            return (
+                [np.array([10.0, 20.0, 0.0], dtype=np.float32)],
+                [50.0],
+                [(50.0, 1.0)],
+                [0.95],
+                [np.array([[0, 0], [4, 0], [4, 2], [0, 2]], dtype=np.float32)],
+                [101],
+                [0.0],
+                [0.0],
+                [0],
+                None,
+                None,
+                None,
+            )
+
+    optimizer = mod.TrackingOptimizer(
+        video_path="dummy.mp4",
+        detection_cache_path="dummy.npz",
+        start_frame=0,
+        end_frame=0,
+        base_params={},
+        tuning_config={},
+    )
+    optimizer.cache = _WeakPoseOnlyCache()
+    optimizer._pose_run_context = (None, [], [], [], False)
+    optimizer._pose_frame_cache = {}
+    optimizer._stop_requested = False
+
+    original_compute = mod._compute_pose_features_for_frame
+
+    def _weak_pose_features(*args, **kwargs):
+        _kpts, _vis, _heading = original_compute(*args, **kwargs)
+        return (
+            [np.asarray([[0.0, 0.0, 0.95], [1.0, 0.0, 0.95]], dtype=np.float32)],
+            [0.9],
+            _heading,
+        )
+
+    mod._compute_pose_features_for_frame = _weak_pose_features
+    try:
+        params = {
+            "MAX_TARGETS": 1,
+            "REFERENCE_BODY_SIZE": 20.0,
+            "RESIZE_FACTOR": 1.0,
+            "LOST_THRESHOLD_FRAMES": 5,
+            "POSE_OVERRIDES_HEADTAIL": True,
+        }
+
+        score, _, _ = optimizer._run_tracking_loop(params)
+    finally:
+        mod._compute_pose_features_for_frame = original_compute
+
+    assert np.isfinite(score)
+    np.testing.assert_array_equal(_StubTrackAssigner.last_meas_ori_directed, [0])
+    _, corrected = _StubKalmanFilterManager.last_instance.corrected_measurements[0]
+    assert corrected[2] == np.float32(0.0)

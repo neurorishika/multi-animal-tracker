@@ -426,8 +426,8 @@ def test_pose_rejection_is_more_permissive_with_weak_visibility() -> None:
     assert float(permissive_cost[0, 0]) < 1e6
 
 
-def test_advanced_association_disabled_when_all_keypoints_none():
-    """All-None keypoint list must NOT trigger the advanced cost matrix path."""
+def test_has_pose_association_data_false_when_all_keypoints_none():
+    """All-None keypoint lists should not trigger pose-aware gating."""
     params = _params()
     params["MAX_TARGETS"] = 2
     assigner = TrackAssigner(params)
@@ -435,11 +435,11 @@ def test_advanced_association_disabled_when_all_keypoints_none():
         "detection_pose_keypoints": [None, None],
         "track_pose_prototypes": [None, None],
     }
-    assert not assigner._advanced_association_enabled(data_all_none)
+    assert not assigner._has_pose_association_data(data_all_none)
 
 
-def test_advanced_association_enabled_when_keypoint_present():
-    """Non-None keypoint must trigger the advanced cost matrix path."""
+def test_has_pose_association_data_true_when_keypoint_present():
+    """A non-None pose keypoint should enable pose-aware gating."""
     params = _params()
     params["MAX_TARGETS"] = 2
     assigner = TrackAssigner(params)
@@ -448,4 +448,164 @@ def test_advanced_association_enabled_when_keypoint_present():
         "detection_pose_keypoints": [kpt, None],
         "track_pose_prototypes": [None, None],
     }
-    assert assigner._advanced_association_enabled(data_with_kpt)
+    assert assigner._has_pose_association_data(data_with_kpt)
+
+
+def test_tag_identity_bonus_applies_without_pose_data() -> None:
+    assigner = TrackAssigner(_params())
+    kf = _DummyKF(1)
+    predictions = np.array([[20.0, 20.0, 0.1]], dtype=np.float32)
+    measurements = [np.array([20.0, 20.0, 0.1], dtype=np.float32)]
+    shapes = [(30.0, 1.2)]
+    last_shape_info = [(30.0, 1.2)]
+
+    base_cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+    )
+    tagged_cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+        association_data={
+            "detection_tag_ids": [7],
+            "track_last_tag_ids": [7],
+        },
+    )
+
+    assert float(tagged_cost[0, 0]) < float(base_cost[0, 0])
+
+
+def test_cnn_identity_penalty_applies_without_pose_data() -> None:
+    assigner = TrackAssigner(_params())
+    kf = _DummyKF(1)
+    predictions = np.array([[20.0, 20.0, 0.1]], dtype=np.float32)
+    measurements = [np.array([20.0, 20.0, 0.1], dtype=np.float32)]
+    shapes = [(30.0, 1.2)]
+    last_shape_info = [(30.0, 1.2)]
+
+    base_cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+    )
+    cnn_cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+        association_data={
+            "cnn_phases": [
+                {
+                    "label": "cnn_identity",
+                    "match_bonus": 20.0,
+                    "mismatch_penalty": 50.0,
+                    "detection_classes": ["alpha"],
+                    "track_identities": ["beta"],
+                }
+            ]
+        },
+    )
+
+    assert float(cnn_cost[0, 0]) > float(base_cost[0, 0])
+
+
+def test_sentinel_only_tag_lists_do_not_dilute_cnn_identity_cost() -> None:
+    assigner = TrackAssigner(_params())
+    kf = _DummyKF(1)
+    predictions = np.array([[20.0, 20.0, 0.1]], dtype=np.float32)
+    measurements = [np.array([20.0, 20.0, 0.1], dtype=np.float32)]
+    shapes = [(30.0, 1.2)]
+    last_shape_info = [(30.0, 1.2)]
+    cnn_phase = {
+        "label": "cnn_identity",
+        "match_bonus": 20.0,
+        "mismatch_penalty": 50.0,
+        "detection_classes": ["alpha"],
+        "track_identities": ["beta"],
+    }
+
+    cnn_cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+        association_data={"cnn_phases": [cnn_phase]},
+    )
+    sentinel_tag_cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+        association_data={
+            "cnn_phases": [cnn_phase],
+            "detection_tag_ids": [-1],
+            "track_last_tag_ids": [-1],
+        },
+    )
+
+    assert float(sentinel_tag_cost[0, 0]) == float(cnn_cost[0, 0])
+
+
+def test_pose_stage1_candidates_outside_fixed_cull_get_real_cost_in_large_n_spatial_mode() -> (
+    None
+):
+    params = _params()
+    params["ENABLE_SPATIAL_OPTIMIZATION"] = True
+    assigner = TrackAssigner(params)
+    n_tracks = 51
+    kf = _DummyKF(n_tracks)
+    predictions = np.zeros((n_tracks, 3), dtype=np.float32)
+    predictions[:, 2] = 0.0
+    predictions[0, :2] = [0.0, 0.0]
+    measurements = [np.array([60.0, 0.0, 0.0], dtype=np.float32)]
+    shapes = [(20.0, 1.3)]
+    last_shape_info = [(20.0, 1.3)] * n_tracks
+
+    association_data = {
+        "track_avg_step": [8.0] + [0.0] * (n_tracks - 1),
+        "detection_pose_keypoints": [
+            np.array(
+                [[0.0, 0.0, 1.0], [0.5, 0.0, 1.0], [1.0, 0.0, 1.0], [1.5, 0.0, 1.0]],
+                dtype=np.float32,
+            )
+        ],
+        "detection_pose_visibility": np.array([1.0], dtype=np.float32),
+        "track_pose_prototypes": [
+            np.array(
+                [[0.0, 0.0, 1.0], [0.5, 0.0, 1.0], [1.0, 0.0, 1.0], [1.5, 0.0, 1.0]],
+                dtype=np.float32,
+            )
+        ]
+        + [None] * (n_tracks - 1),
+    }
+
+    cost, candidates = assigner.compute_cost_matrix(
+        N=n_tracks,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+        association_data=association_data,
+    )
+
+    assert 0 in candidates
+    assert 0 in candidates[0]
+    assert float(cost[0, 0]) < 1e6

@@ -30,6 +30,9 @@ from hydra_suite.core.identity.pose.features import (
     compute_detection_pose_features as _pf_compute_det_features,
 )
 from hydra_suite.core.identity.pose.features import (
+    is_pose_heading_reliable as _pf_heading_reliable,
+)
+from hydra_suite.core.identity.pose.features import (
     load_pose_context_from_params as _pf_load_pose_context,
 )
 from hydra_suite.data.detection_cache import DetectionCache
@@ -586,11 +589,45 @@ class TrackingPreviewWorker(QThread):
                     _pose_ignore,
                     _pose_min_conf,
                 )
+                _pose_direction_min_visibility = float(
+                    np.clip(
+                        self.params.get(
+                            "POSE_DIRECTION_MIN_VISIBILITY",
+                            max(
+                                0.6,
+                                self.params.get("POSE_REJECTION_MIN_VISIBILITY", 0.5),
+                            ),
+                        ),
+                        0.0,
+                        1.0,
+                    )
+                )
+                _pose_direction_min_keypoints = max(
+                    1,
+                    int(self.params.get("POSE_DIRECTION_MIN_VALID_KEYPOINTS", 3)),
+                )
+                _pose_heading_mask = [
+                    (
+                        1
+                        if _pf_heading_reliable(
+                            _det_pose_kpts[idx] if idx < len(_det_pose_kpts) else None,
+                            (
+                                float(_det_pose_vis[idx])
+                                if idx < len(_det_pose_vis)
+                                else 0.0
+                            ),
+                            min_visibility=_pose_direction_min_visibility,
+                            min_valid_keypoints=_pose_direction_min_keypoints,
+                        )
+                        else 0
+                    )
+                    for idx in range(len(meas))
+                ]
                 detection_directed_heading, detection_directed_mask = (
                     _pf_build_direction_overrides(
                         len(meas),
                         _det_pose_headings,
-                        [heading is not None for heading in _det_pose_headings],
+                        _pose_heading_mask,
                         _headtail_hints,
                         _headtail_directed,
                         pose_overrides_headtail=bool(

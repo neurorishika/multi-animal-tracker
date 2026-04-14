@@ -243,6 +243,31 @@ def normalize_pose_keypoints(
     return out
 
 
+def count_valid_normalized_pose_keypoints(keypoints) -> int:
+    """Count normalized pose keypoints with finite x/y coordinates."""
+    if keypoints is None:
+        return 0
+    arr = np.asarray(keypoints, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2 or len(arr) == 0:
+        return 0
+    valid_mask = np.isfinite(arr[:, 0]) & np.isfinite(arr[:, 1])
+    return int(np.sum(valid_mask))
+
+
+def is_pose_heading_reliable(
+    normalized_keypoints,
+    visibility: float,
+    min_visibility: float = 0.6,
+    min_valid_keypoints: int = 3,
+) -> bool:
+    """Return True when pose heading is reliable enough to override orientation."""
+    if not np.isfinite(visibility) or float(visibility) < float(min_visibility):
+        return False
+    return count_valid_normalized_pose_keypoints(normalized_keypoints) >= max(
+        1, int(min_valid_keypoints)
+    )
+
+
 def load_pose_context_from_params(
     params: Dict[str, Any],
 ) -> Tuple[Any, List[int], List[int], List[int], bool]:
