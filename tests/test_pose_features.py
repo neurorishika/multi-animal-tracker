@@ -16,6 +16,8 @@ from hydra_suite.core.identity.pose.features import (
     build_pose_detection_keypoint_map,
     compute_detection_pose_features,
     compute_pose_geometry_from_keypoints,
+    count_valid_normalized_pose_keypoints,
+    is_pose_heading_reliable,
     normalize_pose_keypoints,
     parse_pose_group_tokens,
     resolve_pose_group_indices,
@@ -259,6 +261,26 @@ def test_normalize_pose_keypoints_conf_preserved():
     assert out is not None
     assert out[0, 2] == pytest.approx(0.85, abs=1e-5)
     assert out[1, 2] == pytest.approx(0.75, abs=1e-5)
+
+
+def test_count_valid_normalized_pose_keypoints_counts_finite_xy_only():
+    kpts = np.array(
+        [[0.0, 0.0, 1.0], [np.nan, np.nan, 0.0], [1.0, 1.0, 0.8]],
+        dtype=np.float32,
+    )
+    assert count_valid_normalized_pose_keypoints(kpts) == 2
+
+
+def test_is_pose_heading_reliable_requires_visibility_and_enough_keypoints():
+    kpts = np.array(
+        [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [2.0, 0.0, 0.9]],
+        dtype=np.float32,
+    )
+    assert is_pose_heading_reliable(kpts, visibility=0.75, min_visibility=0.6)
+    assert not is_pose_heading_reliable(kpts, visibility=0.4, min_visibility=0.6)
+    assert not is_pose_heading_reliable(
+        kpts[:2], visibility=0.75, min_visibility=0.6, min_valid_keypoints=3
+    )
 
 
 # ---------------------------------------------------------------------------

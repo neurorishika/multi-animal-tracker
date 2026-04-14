@@ -35,6 +35,9 @@ from hydra_suite.core.identity.pose.features import (
     compute_pose_geometry_from_keypoints as _pf_compute_geometry,
 )
 from hydra_suite.core.identity.pose.features import (
+    is_pose_heading_reliable as _pf_heading_reliable,
+)
+from hydra_suite.core.identity.pose.features import (
     normalize_pose_keypoints as _pf_normalize_keypoints,
 )
 from hydra_suite.core.identity.pose.features import (
@@ -1527,6 +1530,19 @@ class TrackingWorker(QThread):
         pose_ignore_indices = []
         pose_keypoint_names = []
         pose_min_valid_conf = float(p.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+        pose_direction_min_visibility = float(
+            np.clip(
+                p.get(
+                    "POSE_DIRECTION_MIN_VISIBILITY",
+                    max(0.6, p.get("POSE_REJECTION_MIN_VISIBILITY", 0.5)),
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        pose_direction_min_keypoints = max(
+            1, int(p.get("POSE_DIRECTION_MIN_VALID_KEYPOINTS", 3))
+        )
         pose_frame_keypoints_map = {}
         pose_frame_keypoints_map_frame = None
 
@@ -2111,7 +2127,13 @@ class TrackingWorker(QThread):
                     if pose_theta is None:
                         continue
                     detection_pose_heading[det_idx] = np.float32(pose_theta)
-                    pose_directed_mask[det_idx] = 1
+                    if _pf_heading_reliable(
+                        detection_pose_keypoints[det_idx],
+                        visibility,
+                        min_visibility=pose_direction_min_visibility,
+                        min_valid_keypoints=pose_direction_min_keypoints,
+                    ):
+                        pose_directed_mask[det_idx] = 1
 
             pose_overrides_headtail = bool(params.get("POSE_OVERRIDES_HEADTAIL", True))
             if len(meas) > 0:

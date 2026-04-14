@@ -11,8 +11,6 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 
-from hydra_suite.core.identity.classification.cnn import apply_cnn_identity_cost
-
 try:
     from numba import njit
 
@@ -125,6 +123,24 @@ class TrackAssigner:
                 candidates[i] = indices
         return candidates
 
+    def _compute_local_motion_gates(
+        self,
+        track_uncertainty: np.ndarray,
+        track_avg_step: np.ndarray,
+        cull_threshold: float,
+    ) -> np.ndarray:
+        p = self.params
+        reference_body_size = max(1.0, float(p.get("REFERENCE_BODY_SIZE", 20.0)))
+        gate_multiplier = float(p.get("ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER", 1.4))
+        uncertainty_ref = max(1.0, reference_body_size**2)
+        unc_scale = np.minimum(2.0, track_uncertainty / uncertainty_ref)
+        mot_scale = np.minimum(2.0, track_avg_step / reference_body_size)
+        return (
+            cull_threshold
+            * gate_multiplier
+            * (1.0 + 0.5 * unc_scale + 0.35 * mot_scale)
+        ).astype(np.float32, copy=False)
+
     @staticmethod
     def _orientation_diff(pred_theta, meas_theta, directed: bool) -> float:
         odiff = abs(float(pred_theta) - float(meas_theta))
@@ -184,19 +200,179 @@ class TrackAssigner:
             )
         return float(np.mean(dists_arr)), int(len(dists_arr))
 
-    def _advanced_association_enabled(self, association_data) -> bool:
+    def _has_pose_association_data(self, association_data) -> bool:
         if not association_data:
             return False
-        # A list full of None values means pose is disabled — only activate the
-        # advanced cost matrix when there is at least one actual (non-None) keypoint
-        # or prototype.  Using the key's mere presence (e.g. [None, None, …]) caused
-        # the worker to always take the advanced path while the optimizer/preview took
-        # the simple Numba path, making tuned parameters diverge in production.
         kpts = association_data.get("detection_pose_keypoints")
         protos = association_data.get("track_pose_prototypes")
         has_kpts = kpts is not None and any(k is not None for k in kpts)
         has_protos = protos is not None and any(p is not None for p in protos)
         return has_kpts or has_protos
+
+    def _normalize_cnn_phases(self, association_data) -> list[dict[str, Any]]:
+        if not association_data:
+            return []
+        cnn_phases = association_data.get("cnn_phases", None)
+        if cnn_phases is not None:
+            return list(cnn_phases)
+        return []
+
+    def _identity_scale(self, association_data, cnn_phases) -> float:
+        det_tag_ids = (
+            association_data.get("detection_tag_ids", []) if association_data else []
+        )
+        track_tag_ids = (
+            association_data.get("track_last_tag_ids", []) if association_data else []
+        )
+
+        def _has_valid_tag(values) -> bool:
+            return any(value is not None and int(value) != -1 for value in values)
+
+        has_tag_factor = _has_valid_tag(det_tag_ids) and _has_valid_tag(track_tag_ids)
+        n_identity_factors = (1 if has_tag_factor else 0) + len(cnn_phases)
+        return 1.0 / n_identity_factors if n_identity_factors > 1 else 1.0
+
+    def _apply_tag_identity_overlay(
+        self,
+        cost: np.ndarray,
+        association_data: Dict[str, Any] | None,
+        identity_scale: float,
+    ) -> None:
+        if not association_data:
+            return
+        det_tag_ids = association_data.get("detection_tag_ids", [])
+        track_tag_ids = association_data.get("track_last_tag_ids", [])
+        if not det_tag_ids or not track_tag_ids:
+            return
+
+        n_tracks, n_dets = cost.shape
+        det_arr = np.full(n_dets, -1, dtype=np.int32)
+        trk_arr = np.full(n_tracks, -1, dtype=np.int32)
+        det_limit = min(n_dets, len(det_tag_ids))
+        trk_limit = min(n_tracks, len(track_tag_ids))
+        if det_limit > 0:
+            det_arr[:det_limit] = np.asarray(det_tag_ids[:det_limit], dtype=np.int32)
+        if trk_limit > 0:
+            trk_arr[:trk_limit] = np.asarray(track_tag_ids[:trk_limit], dtype=np.int32)
+
+        valid = (trk_arr[:, None] != -1) & (det_arr[None, :] != -1)
+        if not np.any(valid):
+            return
+        match = valid & (trk_arr[:, None] == det_arr[None, :])
+        mismatch = valid & ~match
+        cost[match] -= float(self.params.get("TAG_MATCH_BONUS", 20.0)) * identity_scale
+        cost[mismatch] += (
+            float(self.params.get("TAG_MISMATCH_PENALTY", 50.0)) * identity_scale
+        )
+
+    def _apply_cnn_identity_overlays(
+        self,
+        cost: np.ndarray,
+        cnn_phases: list[dict[str, Any]],
+        identity_scale: float,
+    ) -> None:
+        if not cnn_phases:
+            return
+
+        n_tracks, n_dets = cost.shape
+        for phase in cnn_phases:
+            det_classes = np.asarray(
+                list(phase.get("detection_classes", []))[:n_dets], dtype=object
+            )
+            track_classes = np.asarray(
+                list(phase.get("track_identities", []))[:n_tracks], dtype=object
+            )
+            if det_classes.size == 0 or track_classes.size == 0:
+                continue
+
+            track_valid = np.not_equal(track_classes[:, None], None)
+            det_valid = np.not_equal(det_classes[None, :], None)
+            valid = track_valid & det_valid
+            if not np.any(valid):
+                continue
+            match = valid & (track_classes[:, None] == det_classes[None, :])
+            mismatch = valid & ~match
+            cost[match] -= float(phase.get("match_bonus", 20.0)) * identity_scale
+            cost[mismatch] += (
+                float(phase.get("mismatch_penalty", 50.0)) * identity_scale
+            )
+
+    @staticmethod
+    def _apply_candidate_gate(
+        cost: np.ndarray, candidates: Dict[int, List[int]]
+    ) -> None:
+        if not candidates:
+            return
+        allowed = np.zeros(cost.shape, dtype=bool)
+        for track_idx, det_indices in candidates.items():
+            if det_indices:
+                allowed[track_idx, det_indices] = True
+        cost[~allowed] = 1e6
+
+    def _apply_pose_rejection_overlay(
+        self,
+        cost: np.ndarray,
+        candidates: Dict[int, List[int]],
+        association_data: Dict[str, Any],
+    ) -> None:
+        detection_pose_keypoints = list(
+            association_data.get("detection_pose_keypoints", [None] * cost.shape[1])
+        )
+        detection_pose_visibility = np.asarray(
+            association_data.get(
+                "detection_pose_visibility", np.zeros(cost.shape[1], dtype=np.float32)
+            ),
+            dtype=np.float32,
+        )
+        track_pose_prototypes = list(
+            association_data.get("track_pose_prototypes", [None] * cost.shape[0])
+        )
+        pose_rejection_enabled = bool(self.params.get("ENABLE_POSE_REJECTION", True))
+        if not pose_rejection_enabled:
+            return
+
+        pose_veto_threshold = float(self.params.get("POSE_REJECTION_THRESHOLD", 0.5))
+        pose_min_visibility = float(
+            self.params.get("POSE_REJECTION_MIN_VISIBILITY", 0.5)
+        )
+
+        for track_idx, det_indices in candidates.items():
+            track_pose_proto = (
+                track_pose_prototypes[track_idx]
+                if track_idx < len(track_pose_prototypes)
+                else None
+            )
+            if track_pose_proto is None:
+                continue
+            for det_idx in det_indices:
+                if cost[track_idx, det_idx] >= 1e6:
+                    continue
+                visibility = (
+                    float(detection_pose_visibility[det_idx])
+                    if det_idx < len(detection_pose_visibility)
+                    else 0.0
+                )
+                visibility = float(np.clip(visibility, 0.0, 1.0))
+                det_pose_proto = (
+                    detection_pose_keypoints[det_idx]
+                    if det_idx < len(detection_pose_keypoints)
+                    else None
+                )
+                pose_dist, shared_keypoints = self._pose_paired_stats(
+                    det_pose_proto, track_pose_proto
+                )
+                adaptive_pose_threshold = pose_veto_threshold
+                if shared_keypoints > 0 and (
+                    shared_keypoints <= 3
+                    or visibility < min(1.0, pose_min_visibility + 0.15)
+                ):
+                    adaptive_pose_threshold *= 1.2
+                if (
+                    pose_dist is not None
+                    and visibility >= pose_min_visibility
+                    and pose_dist > adaptive_pose_threshold
+                ):
+                    cost[track_idx, det_idx] = 1e6
 
     def _compute_stage1_gate(
         self,
@@ -212,13 +388,11 @@ class TrackAssigner:
         track_uncertainty,
         track_avg_step,
         cull_threshold,
+        local_gates: np.ndarray | None = None,
     ):
         p = self.params
-        reference_body_size = max(1.0, float(p.get("REFERENCE_BODY_SIZE", 20.0)))
-        gate_multiplier = float(p.get("ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER", 1.4))
         max_area_ratio = float(p.get("ASSOCIATION_STAGE1_MAX_AREA_RATIO", 2.5))
         max_aspect_diff = float(p.get("ASSOCIATION_STAGE1_MAX_ASPECT_DIFF", 0.8))
-        uncertainty_ref = max(1.0, reference_body_size**2)
 
         # --- Vectorized position distances (N × M) ---
         diff = meas_pos[None, :, :] - pred_pos[:, None, :]  # (N, M, 2)
@@ -229,13 +403,12 @@ class TrackAssigner:
             pos_dist = np.linalg.norm(diff, axis=2)  # (N, M)
 
         # --- Per-track adaptive gate threshold ---
-        unc_scale = np.minimum(2.0, track_uncertainty / uncertainty_ref)
-        mot_scale = np.minimum(2.0, track_avg_step / reference_body_size)
-        local_gates = (
-            cull_threshold
-            * gate_multiplier
-            * (1.0 + 0.5 * unc_scale + 0.35 * mot_scale)
-        )  # (N,)
+        if local_gates is None:
+            local_gates = self._compute_local_motion_gates(
+                np.asarray(track_uncertainty, dtype=np.float32),
+                np.asarray(track_avg_step, dtype=np.float32),
+                cull_threshold,
+            )
 
         # --- Vectorized area ratio and aspect diff ---
         _prev = np.maximum(prev_areas, 1e-6)[:, None]  # (N, 1)
@@ -258,198 +431,6 @@ class TrackAssigner:
             if len(indices) > 0:
                 candidates[i] = indices.tolist()
         return candidates
-
-    def _compute_advanced_cost_matrix(
-        self,
-        N,
-        M,
-        meas_pos,
-        meas_ori,
-        pred_pos,
-        pred_ori,
-        shapes_area,
-        shapes_asp,
-        prev_areas,
-        prev_asps,
-        S_inv_batch,
-        meas_ori_directed,
-        association_data,
-    ):
-        p = self.params
-        cost = np.full((N, M), 1e6, dtype=np.float32)
-        track_uncertainty = np.asarray(
-            association_data.get("track_position_uncertainty", np.zeros(N)),
-            dtype=np.float32,
-        )
-        track_avg_step = np.asarray(
-            association_data.get("track_avg_step", np.zeros(N)), dtype=np.float32
-        )
-        candidates = self._compute_stage1_gate(
-            N,
-            M,
-            meas_pos,
-            pred_pos,
-            shapes_area,
-            shapes_asp,
-            prev_areas,
-            prev_asps,
-            S_inv_batch,
-            track_uncertainty,
-            track_avg_step,
-            min(
-                max(
-                    self.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
-                    / max(self.params.get("W_POSITION", 1.0), 1e-6),
-                    50.0,
-                ),
-                self.params.get("MAX_DISTANCE_THRESHOLD", 1000.0) * 3.0,
-            ),
-        )
-
-        detection_pose_keypoints = list(
-            association_data.get("detection_pose_keypoints", [None] * M)
-        )
-        detection_pose_visibility = np.asarray(
-            association_data.get("detection_pose_visibility", np.zeros(M)),
-            dtype=np.float32,
-        )
-        track_pose_prototypes = list(
-            association_data.get("track_pose_prototypes", [None] * N)
-        )
-        pose_rejection_enabled = bool(p.get("ENABLE_POSE_REJECTION", True))
-        pose_veto_threshold = float(p.get("POSE_REJECTION_THRESHOLD", 0.5))
-        pose_min_visibility = float(p.get("POSE_REJECTION_MIN_VISIBILITY", 0.5))
-
-        # --- AprilTag identity cost ---
-        _det_tag_ids = association_data.get("detection_tag_ids", [])
-        _track_tag_ids = association_data.get("track_last_tag_ids", [])
-        _tag_match_bonus = float(p.get("TAG_MATCH_BONUS", 20.0))
-        _tag_mismatch_penalty = float(p.get("TAG_MISMATCH_PENALTY", 50.0))
-        _NO_TAG = -1
-
-        # --- CNN Classifier identity cost config (multi-phase) ---
-        _cnn_phases = association_data.get("cnn_phases", None)
-        # Backward compat: old flat keys
-        if _cnn_phases is None:
-            _old_det = association_data.get("detection_cnn_classes")
-            _old_trk = association_data.get("track_cnn_identities")
-            if _old_det is not None and _old_trk is not None:
-                _cnn_phases = [
-                    {
-                        "label": "cnn_identity",
-                        "match_bonus": float(p.get("CNN_CLASSIFIER_MATCH_BONUS", 20.0)),
-                        "mismatch_penalty": float(
-                            p.get("CNN_CLASSIFIER_MISMATCH_PENALTY", 50.0)
-                        ),
-                        "detection_classes": _old_det,
-                        "track_identities": _old_trk,
-                    }
-                ]
-            else:
-                _cnn_phases = []
-
-        # Identity-scale normalization:
-        # N_total = AprilTags (1 if any det has a tag) + number of CNN phases
-        # Each factor contributes 1/N_total of its bonus/penalty.
-        # Full bonus/penalty only when ALL factors agree.
-        # When N_total==1, scale==1.0 (no change from current single-method behavior).
-        _n_identity_factors = (1 if _det_tag_ids else 0) + len(_cnn_phases)
-        _identity_scale = 1.0 / _n_identity_factors if _n_identity_factors > 1 else 1.0
-
-        for track_idx, det_indices in candidates.items():
-            inv_S = S_inv_batch[track_idx, :2, :2]
-            pred_theta = pred_ori[track_idx]
-            for det_idx in det_indices:
-                diff = meas_pos[det_idx] - pred_pos[track_idx]
-                pos_cost = (
-                    float(np.sqrt(diff @ inv_S @ diff))
-                    if p["USE_MAHALANOBIS"]
-                    else float(np.linalg.norm(diff))
-                )
-
-                visibility = (
-                    float(detection_pose_visibility[det_idx])
-                    if det_idx < len(detection_pose_visibility)
-                    else 0.0
-                )
-                visibility = float(np.clip(visibility, 0.0, 1.0))
-                det_pose_proto = (
-                    detection_pose_keypoints[det_idx]
-                    if det_idx < len(detection_pose_keypoints)
-                    else None
-                )
-                track_pose_proto = track_pose_prototypes[track_idx]
-                pose_dist, shared_keypoints = self._pose_paired_stats(
-                    det_pose_proto, track_pose_proto
-                )
-                adaptive_pose_threshold = pose_veto_threshold
-                if shared_keypoints > 0:
-                    if shared_keypoints <= 3 or visibility < min(
-                        1.0, pose_min_visibility + 0.15
-                    ):
-                        adaptive_pose_threshold *= 1.2
-                if (
-                    pose_rejection_enabled
-                    and pose_dist is not None
-                    and visibility >= pose_min_visibility
-                    and pose_dist > adaptive_pose_threshold
-                ):
-                    continue
-
-                orientation_cost = float(p["W_ORIENTATION"]) * self._orientation_diff(
-                    pred_theta,
-                    meas_ori[det_idx],
-                    (
-                        bool(meas_ori_directed[det_idx])
-                        if det_idx < len(meas_ori_directed)
-                        else False
-                    ),
-                )
-
-                area_cost = float(p["W_AREA"]) * abs(
-                    float(shapes_area[det_idx]) - float(prev_areas[track_idx])
-                )
-                aspect_cost = float(p["W_ASPECT"]) * abs(
-                    float(shapes_asp[det_idx]) - float(prev_asps[track_idx])
-                )
-
-                motion_core_cost = (
-                    float(p["W_POSITION"]) * pos_cost
-                    + orientation_cost
-                    + area_cost
-                    + aspect_cost
-                )
-
-                # --- AprilTag identity bonus / penalty ---
-                _dt = _det_tag_ids[det_idx] if det_idx < len(_det_tag_ids) else _NO_TAG
-                _tt = (
-                    _track_tag_ids[track_idx]
-                    if track_idx < len(_track_tag_ids)
-                    else _NO_TAG
-                )
-                if _dt != _NO_TAG and _tt != _NO_TAG:
-                    if _dt == _tt:
-                        motion_core_cost -= _tag_match_bonus * _identity_scale
-                    else:
-                        motion_core_cost += _tag_mismatch_penalty * _identity_scale
-
-                # --- CNN identity bonus / penalty (multi-phase) ---
-                for _phase in _cnn_phases:
-                    _dc = _phase["detection_classes"]
-                    _ti = _phase["track_identities"]
-                    _det_cls = _dc[det_idx] if det_idx < len(_dc) else None
-                    _trk_cls = _ti[track_idx] if track_idx < len(_ti) else None
-                    motion_core_cost = apply_cnn_identity_cost(
-                        motion_core_cost,
-                        _det_cls,
-                        _trk_cls,
-                        _phase["match_bonus"] * _identity_scale,
-                        _phase["mismatch_penalty"] * _identity_scale,
-                    )
-
-                cost[track_idx, det_idx] = motion_core_cost
-
-        return cost, candidates
 
     def compute_cost_matrix(
         self,
@@ -510,9 +491,8 @@ class TrackAssigner:
         pred_pos = predictions[:, :2]  # Predictions are already (N, 3)
         pred_ori = predictions[:, 2]
 
-        # Override meas_ori with the directed heading where pose/headtail detected direction.
-        # This ensures orientation cost in ALL paths (Numba, spatial, advanced) uses the
-        # correct directed angle rather than the 180°-ambiguous OBB axis angle.
+        # Override meas_ori with the directed heading where headtail or
+        # high-confidence pose supplies a reliable direction.
         if association_data is not None:
             _dh = association_data.get("detection_pose_heading")
             if _dh is not None:
@@ -543,7 +523,12 @@ class TrackAssigner:
             else 1e6
         )
 
-        if self._advanced_association_enabled(association_data):
+        has_pose_data = self._has_pose_association_data(association_data)
+        pose_candidates = {}
+        local_gates = None
+        track_uncertainty = None
+        track_avg_step = None
+        if has_pose_data:
             track_uncertainty = (
                 np.asarray(kf_manager.get_position_uncertainties(), dtype=np.float32)
                 if hasattr(kf_manager, "get_position_uncertainties")
@@ -551,9 +536,36 @@ class TrackAssigner:
                     np.float32
                 )
             )
-            advanced_data = dict(association_data or {})
-            advanced_data["track_position_uncertainty"] = track_uncertainty
-            return self._compute_advanced_cost_matrix(
+            track_avg_step = np.asarray(
+                association_data.get("track_avg_step", np.zeros(N)),
+                dtype=np.float32,
+            )
+            local_gates = self._compute_local_motion_gates(
+                track_uncertainty,
+                track_avg_step,
+                cull_threshold,
+            )
+            pose_candidates = self._compute_stage1_gate(
+                N,
+                M,
+                meas_pos,
+                pred_pos,
+                shapes_area,
+                shapes_asp,
+                prev_areas,
+                prev_asps,
+                S_inv_batch,
+                track_uncertainty,
+                track_avg_step,
+                cull_threshold,
+                local_gates=local_gates,
+            )
+
+        spatial_candidates = {}
+        if has_pose_data and self._spatial_optimization_enabled() and N > 50:
+            spatial_candidates = pose_candidates
+            # KD-Tree mode uses a hybrid approach
+            cost = self._compute_cost_python_fallback(
                 N,
                 M,
                 meas_pos,
@@ -565,11 +577,11 @@ class TrackAssigner:
                 prev_areas,
                 prev_asps,
                 S_inv_batch,
+                p,
+                spatial_candidates,
                 meas_ori_directed_arr,
-                advanced_data,
             )
-
-        if self._spatial_optimization_enabled() and N > 50:
+        elif self._spatial_optimization_enabled() and N > 50:
             spatial_candidates = self._get_spatial_candidates(
                 N, M, pred_pos, meas_pos, cull_threshold
             )
@@ -590,31 +602,49 @@ class TrackAssigner:
                 spatial_candidates,
                 meas_ori_directed_arr,
             )
-            return cost, spatial_candidates
+        else:
+            cost = _compute_cost_matrix_numba(
+                N,
+                M,
+                meas_pos,
+                meas_ori,
+                pred_pos,
+                pred_ori,
+                shapes_area,
+                shapes_asp,
+                prev_areas,
+                prev_asps,
+                S_inv_batch,
+                p["USE_MAHALANOBIS"],
+                p["W_POSITION"],
+                p["W_ORIENTATION"],
+                p["W_AREA"],
+                p["W_ASPECT"],
+                (
+                    max(cull_threshold, float(np.max(local_gates)))
+                    if local_gates is not None and len(local_gates) > 0
+                    else cull_threshold
+                ),
+                meas_ori_directed_arr,
+            )
 
-        # Default: Full Numba Matrix
-        cost = _compute_cost_matrix_numba(
-            N,
-            M,
-            meas_pos,
-            meas_ori,
-            pred_pos,
-            pred_ori,
-            shapes_area,
-            shapes_asp,
-            prev_areas,
-            prev_asps,
-            S_inv_batch,
-            p["USE_MAHALANOBIS"],
-            p["W_POSITION"],
-            p["W_ORIENTATION"],
-            p["W_AREA"],
-            p["W_ASPECT"],
-            cull_threshold,
-            meas_ori_directed_arr,
-        )
+        if association_data:
+            cnn_phases = self._normalize_cnn_phases(association_data)
+            identity_scale = self._identity_scale(association_data, cnn_phases)
+            self._apply_tag_identity_overlay(cost, association_data, identity_scale)
+            self._apply_cnn_identity_overlays(cost, cnn_phases, identity_scale)
 
-        return cost, {}
+            if has_pose_data:
+                self._apply_candidate_gate(cost, pose_candidates)
+                self._apply_pose_rejection_overlay(
+                    cost, pose_candidates, association_data
+                )
+            elif spatial_candidates:
+                pose_candidates = spatial_candidates
+
+            return cost, pose_candidates
+
+        return cost, spatial_candidates
 
     def compute_assignment_confidence(
         self: object, cost: object, matched_pairs: object
