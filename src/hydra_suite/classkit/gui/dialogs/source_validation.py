@@ -84,9 +84,9 @@ def inspect_classkit_source_dir(dataset_root: Path) -> ClassKitSourceInspection:
         )
 
     raise ValueError(
-        "Selected source folder must contain an images/ subdirectory, the "
-        "folder itself must contain compatible .jpg / .jpeg / .png files, "
-        "or it must be a supported COCO or YOLO OBB dataset root.\n\n"
+        "Selected source folder must contain compatible .jpg / .jpeg / .png files, "
+        "an images/ subdirectory, a supported COCO or YOLO OBB/detect dataset root, "
+        "or a train/val class-folder dataset root.\n\n"
         f"{dataset_root}"
     )
 

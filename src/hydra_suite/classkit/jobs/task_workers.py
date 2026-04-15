@@ -32,12 +32,14 @@ class IngestWorker(QRunnable):
         source_path: Path,
         db_path: Path,
         project_classes: Optional[List[str]] = None,
+        import_labels: bool = True,
     ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.source_path = source_path
         self.db_path = db_path
         self.project_classes = list(project_classes or [])
+        self.import_labels = bool(import_labels)
         self.signals = TaskSignals()
 
     @Slot()
@@ -47,7 +49,10 @@ class IngestWorker(QRunnable):
             self.signals.progress.emit(0, "Initializing ingestion...")
 
             from ..core.data.ingest import IngestWorker as Ingester
-            from ..core.data.source_import import build_source_import_plan
+            from ..core.data.source_import import (
+                build_source_import_plan,
+                materialize_source_import_plan,
+            )
             from ..core.store.db import ClassKitDB
 
             # Initialize
@@ -58,8 +63,7 @@ class IngestWorker(QRunnable):
             # Scan and ingest
             self.signals.progress.emit(10, f"Scanning folder: {self.source_path}...")
             plan = build_source_import_plan(self.source_path)
-            image_paths = list(plan.image_paths)
-            self.signals.progress.emit(40, f"Found {len(image_paths):,} images")
+            self.signals.progress.emit(40, f"Found {len(plan.image_paths):,} images")
 
             project_labels = {
                 str(label) for label in self.project_classes if str(label).strip()
@@ -67,18 +71,20 @@ class IngestWorker(QRunnable):
             imported_labels = {
                 str(label) for label in plan.discovered_labels if str(label).strip()
             }
-            default_placeholder_labels = {"class_1", "class_2"}
-            if (
-                imported_labels
-                and project_labels
-                and project_labels != default_placeholder_labels
-            ):
+            if self.import_labels and imported_labels and project_labels:
                 missing = sorted(imported_labels - project_labels)
                 if missing:
                     raise ValueError(
                         "Imported dataset labels do not match the current project classes: "
                         + ", ".join(missing)
                     )
+
+            plan = materialize_source_import_plan(
+                plan,
+                self.db_path,
+                include_labels=self.import_labels,
+            )
+            image_paths = list(plan.image_paths)
 
             self.signals.progress.emit(50, "Computing image hashes...")
             ingester.ingest(image_paths, metadata_by_path=plan.metadata_by_path)

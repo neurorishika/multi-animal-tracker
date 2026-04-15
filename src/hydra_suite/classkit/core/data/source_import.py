@@ -3,14 +3,33 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass
+from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
+from hydra_suite.data.project_bundle import (
+    bundle_root_for_path,
+    ensure_bundle_subdirectory,
+)
 from hydra_suite.training.dataset_inspector import inspect_obb_or_detect_dataset
 
 from .ingest import scan_images
+
+_SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
+_LABEL_METADATA_KEYS = {
+    "annotation_count",
+    "annotation_path",
+    "category_ids",
+    "category_names",
+    "class_ids",
+    "class_name",
+    "class_folder",
+    "label_path",
+}
 
 
 @dataclass(slots=True)
@@ -33,6 +52,95 @@ class SourceImportPlan:
     label_updates: dict[str, tuple[str, float]]
     metadata_by_path: dict[str, dict[str, Any]]
     discovered_labels: list[str]
+
+
+def _iter_supported_images(folder: Path) -> list[Path]:
+    return [
+        path.resolve()
+        for path in sorted(folder.iterdir())
+        if path.is_file() and path.suffix.lower() in _SUPPORTED_IMAGE_EXTS
+    ]
+
+
+def _slugify_name(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._")
+    return slug or "source"
+
+
+def _strip_label_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in metadata.items() if key not in _LABEL_METADATA_KEYS
+    }
+
+
+def _materialize_metadata(
+    metadata: dict[str, Any],
+    *,
+    original_image_path: Path,
+    standardized_source_dir: Path,
+    include_label_metadata: bool,
+) -> dict[str, Any]:
+    payload = dict(metadata)
+    if not include_label_metadata:
+        payload = _strip_label_metadata(payload)
+    payload["original_image_path"] = str(original_image_path.resolve())
+    payload["standardized_source_dir"] = str(standardized_source_dir.resolve())
+    return payload
+
+
+def _standardized_source_dir(source_root: Path, project_anchor: Path) -> Path:
+    project_root = bundle_root_for_path(project_anchor)
+    ensure_bundle_subdirectory(project_root, "artifacts/imported_sources")
+    source_hash = sha1(str(source_root.resolve()).encode("utf-8")).hexdigest()[:10]
+    folder_name = f"{_slugify_name(source_root.name)}-{source_hash}"
+    return ensure_bundle_subdirectory(
+        project_root, f"artifacts/imported_sources/{folder_name}"
+    )
+
+
+def materialize_source_import_plan(
+    plan: SourceImportPlan,
+    project_anchor: Path,
+    *,
+    include_labels: bool = True,
+) -> SourceImportPlan:
+    """Copy one source into the project's internal canonical image store."""
+    standardized_root = _standardized_source_dir(plan.source_root, project_anchor)
+    images_root = standardized_root / "images"
+    images_root.mkdir(parents=True, exist_ok=True)
+
+    image_paths: list[Path] = []
+    label_updates: dict[str, tuple[str, float]] = {}
+    metadata_by_path: dict[str, dict[str, Any]] = {}
+    discovered_labels = list(plan.discovered_labels) if include_labels else []
+
+    for index, source_path in enumerate(plan.image_paths, start=1):
+        source_key = str(source_path.resolve())
+        source_metadata = plan.metadata_by_path.get(source_key, {})
+        original_name = _slugify_name(source_path.stem)[:48]
+        target_name = f"{index:06d}_{original_name}{source_path.suffix.lower()}"
+        target_path = (images_root / target_name).resolve()
+        shutil.copy2(source_path, target_path)
+
+        target_key = str(target_path)
+        image_paths.append(target_path)
+        metadata_by_path[target_key] = _materialize_metadata(
+            source_metadata,
+            original_image_path=source_path,
+            standardized_source_dir=standardized_root,
+            include_label_metadata=include_labels,
+        )
+        if include_labels and source_key in plan.label_updates:
+            label_updates[target_key] = plan.label_updates[source_key]
+
+    return SourceImportPlan(
+        source_root=plan.source_root,
+        source_kind=plan.source_kind,
+        image_paths=image_paths,
+        label_updates=label_updates,
+        metadata_by_path=metadata_by_path,
+        discovered_labels=discovered_labels,
+    )
 
 
 def _metadata_payload(
@@ -113,6 +221,10 @@ def inspect_external_source(root: Path) -> ExternalSourceInspection | None:
     """Return an external-dataset summary when *root* matches a supported format."""
     root = root.expanduser().resolve()
 
+    class_folder_summary = _inspect_class_folder_source(root)
+    if class_folder_summary is not None:
+        return class_folder_summary
+
     coco_dataset = _load_coco_dataset(root)
     if coco_dataset is not None:
         _json_path, payload = coco_dataset
@@ -157,6 +269,36 @@ def inspect_external_source(root: Path) -> ExternalSourceInspection | None:
         images_count=len(items),
         annotation_count=annotation_count,
         discovered_labels=label_set,
+    )
+
+
+def _inspect_class_folder_source(root: Path) -> ExternalSourceInspection | None:
+    split_dirs = [
+        root / split for split in ("train", "val", "test") if (root / split).is_dir()
+    ]
+    if not split_dirs:
+        return None
+
+    images_count = 0
+    discovered_labels: set[str] = set()
+    for split_dir in split_dirs:
+        for class_dir in sorted(split_dir.iterdir()):
+            if not class_dir.is_dir():
+                continue
+            images = _iter_supported_images(class_dir)
+            if not images:
+                continue
+            images_count += len(images)
+            discovered_labels.add(class_dir.name)
+
+    if images_count == 0 or not discovered_labels:
+        return None
+
+    return ExternalSourceInspection(
+        source_kind="class_folders",
+        images_count=images_count,
+        annotation_count=images_count,
+        discovered_labels=sorted(discovered_labels),
     )
 
 
@@ -323,12 +465,59 @@ def _build_coco_plan(root: Path) -> SourceImportPlan:
     )
 
 
+def _build_class_folder_plan(root: Path) -> SourceImportPlan:
+    image_paths: list[Path] = []
+    label_updates: dict[str, tuple[str, float]] = {}
+    metadata_by_path: dict[str, dict[str, Any]] = {}
+    discovered_labels: list[str] = []
+
+    for split_name in ("train", "val", "test"):
+        split_dir = root / split_name
+        if not split_dir.is_dir():
+            continue
+        for class_dir in sorted(split_dir.iterdir()):
+            if not class_dir.is_dir():
+                continue
+            label = class_dir.name.strip()
+            if not label:
+                continue
+            images = _iter_supported_images(class_dir)
+            if not images:
+                continue
+            if label not in discovered_labels:
+                discovered_labels.append(label)
+            for image_path in images:
+                image_key = str(image_path)
+                image_paths.append(image_path)
+                label_updates[image_key] = (label, 1.0)
+                metadata_by_path[image_key] = _metadata_payload(
+                    root,
+                    "class_folders",
+                    {
+                        "split": split_name,
+                        "class_name": label,
+                        "class_folder": str(class_dir.resolve()),
+                    },
+                )
+
+    return SourceImportPlan(
+        source_root=root,
+        source_kind="class_folders",
+        image_paths=image_paths,
+        label_updates=label_updates,
+        metadata_by_path=metadata_by_path,
+        discovered_labels=discovered_labels,
+    )
+
+
 def build_source_import_plan(source_root: Path) -> SourceImportPlan:
     """Build a normalized import plan for a selected ClassKit source."""
     source_root = source_root.expanduser().resolve()
 
     external = inspect_external_source(source_root)
     if external is not None:
+        if external.source_kind == "class_folders":
+            return _build_class_folder_plan(source_root)
         if external.source_kind == "coco":
             return _build_coco_plan(source_root)
         return _build_yolo_plan(source_root)

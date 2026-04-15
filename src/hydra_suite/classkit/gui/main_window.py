@@ -2198,6 +2198,149 @@ class MainWindow(QMainWindow):
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
 
+    @staticmethod
+    def _build_imported_scheme_dict(labels: list[str]) -> dict:
+        """Return a single-factor scheme dictionary for imported class labels."""
+        return {
+            "name": "imported_labels",
+            "description": "Single-factor labeling scheme created from imported source labels",
+            "factors": [
+                {
+                    "name": "class",
+                    "labels": list(labels),
+                    "shortcut_keys": [""] * len(labels),
+                }
+            ],
+            "training_modes": ["flat_custom", "flat_yolo"],
+        }
+
+    def _replace_project_schema_from_labels(self, labels: list[str]) -> None:
+        """Replace the project classes and scheme with imported flat labels."""
+        if not labels:
+            return
+
+        normalized_labels = [
+            str(label).strip() for label in labels if str(label).strip()
+        ]
+        scheme_dict = self._build_imported_scheme_dict(normalized_labels)
+
+        if self.project_path:
+            config = self._load_project_config()
+            config["classes"] = normalized_labels
+            config_path = self._project_config_path()
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w") as handle:
+                json.dump(config, handle, indent=2)
+
+            scheme_path = self._project_scheme_path()
+            scheme_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(scheme_path, "w") as handle:
+                json.dump(scheme_dict, handle, indent=2)
+
+        self.classes = normalized_labels
+        self.rebuild_label_buttons()
+        self.setup_label_shortcuts()
+        self._refresh_shortcut_help()
+        self.update_context_panel()
+
+    def _project_image_count(self) -> int:
+        """Return the number of images currently registered in the project DB."""
+        if not self.db_path:
+            return len(self.image_paths or [])
+        from ..core.store.db import ClassKitDB
+
+        return ClassKitDB(self.db_path).count_images()
+
+    def _prompt_schema_mismatch_resolution(
+        self,
+        source_root: Path,
+        imported_labels: list[str],
+        *,
+        can_rewrite: bool,
+    ) -> str:
+        """Ask how to handle imported labels that do not fit the current schema."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Source Labels Do Not Match Project Schema")
+        imported_preview = ", ".join(imported_labels[:8]) or "(none)"
+        current_preview = ", ".join((self.classes or [])[:8]) or "(none)"
+        if len(imported_labels) > 8:
+            imported_preview += ", ..."
+        if len(self.classes or []) > 8:
+            current_preview += ", ..."
+        msg.setText(
+            f"Source '{source_root.name}' contains labels that do not match the current project schema."
+        )
+        msg.setInformativeText(
+            "Imported labels: "
+            f"{imported_preview}\n"
+            "Project schema: "
+            f"{current_preview}\n\n"
+            + (
+                "This is the first source in the project, so you can replace the project schema with these imported labels, import images only, or cancel."
+                if can_rewrite
+                else "You can import the images without labels, or cancel this source import."
+            )
+        )
+
+        rewrite_button = None
+        if can_rewrite:
+            rewrite_button = msg.addButton(
+                "Rewrite Schema and Import Labels",
+                QMessageBox.AcceptRole,
+            )
+        import_images_only_button = msg.addButton(
+            "Import Images Only",
+            QMessageBox.ActionRole,
+        )
+        cancel_button = msg.addButton(QMessageBox.Cancel)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if rewrite_button is not None and clicked == rewrite_button:
+            return "rewrite"
+        if clicked == import_images_only_button:
+            return "images_only"
+        if clicked == cancel_button:
+            return "cancel"
+        return "cancel"
+
+    def _resolve_ingest_request(self, source_root: Path) -> dict | None:
+        """Return the next ingest request, prompting when source labels mismatch."""
+        from ..core.data.source_import import build_source_import_plan
+
+        plan = build_source_import_plan(source_root)
+        imported_labels = [
+            str(label).strip() for label in plan.discovered_labels if str(label).strip()
+        ]
+        project_labels = [
+            str(label).strip() for label in (self.classes or []) if str(label).strip()
+        ]
+        placeholder_labels = ["class_1", "class_2"]
+        project_label_set = set(project_labels)
+        imported_label_set = set(imported_labels)
+        mismatch = bool(imported_labels) and (
+            not project_labels
+            or project_labels == placeholder_labels
+            or not imported_label_set.issubset(project_label_set)
+        )
+
+        if not mismatch:
+            return {"source_root": source_root, "import_labels": True}
+
+        can_rewrite = self._project_image_count() == 0
+        resolution = self._prompt_schema_mismatch_resolution(
+            source_root,
+            imported_labels,
+            can_rewrite=can_rewrite,
+        )
+        if resolution == "rewrite":
+            self._replace_project_schema_from_labels(imported_labels)
+            return {"source_root": source_root, "import_labels": True}
+        if resolution == "images_only":
+            return {"source_root": source_root, "import_labels": False}
+        return None
+
     def _save_last_training_settings(self) -> None:
         """Persist the most recent training dialog settings into the project config."""
         if not self.project_path or not isinstance(self._last_training_settings, dict):
@@ -4315,11 +4458,6 @@ class MainWindow(QMainWindow):
         if folders_to_add:
             self._ingest_queue = list(folders_to_add)
             self._ingest_batch_total = len(self._ingest_queue)
-            self._ingest_imported_labels = []
-            self._ingest_can_adopt_classes = self.classes == [
-                "class_1",
-                "class_2",
-            ] and not any(bool(label) for label in (self.image_labels or []))
             self._run_next_ingest()
         elif folders_to_remove:
             # Removals only — reload and offer to redo pipeline
@@ -4338,10 +4476,21 @@ class MainWindow(QMainWindow):
         if not self._ingest_queue:
             return
         folder = self._ingest_queue[0]
+        request = self._resolve_ingest_request(folder)
+        if request is None:
+            self._ingest_queue = []
+            self.progress_bar.setVisible(False)
+            self.status.showMessage("Source import cancelled")
+            return
 
         from ..jobs.task_workers import IngestWorker
 
-        worker = IngestWorker(folder, self.db_path, project_classes=self.classes)
+        worker = IngestWorker(
+            request["source_root"],
+            self.db_path,
+            project_classes=self.classes,
+            import_labels=bool(request.get("import_labels", True)),
+        )
         worker.signals.started.connect(
             lambda f=folder: self.status.showMessage(f"[Step 1/5] Ingesting {f.name}…")
         )
@@ -4356,9 +4505,6 @@ class MainWindow(QMainWindow):
 
     def _on_ingest_batch_item_done(self, result):
         """Called when one folder in the ingest batch finishes."""
-        for label in result.get("imported_labels", []) or []:
-            if label not in self._ingest_imported_labels:
-                self._ingest_imported_labels.append(label)
         self._ingest_queue.pop(0)
         if self._ingest_queue:
             # More folders to go
@@ -4370,12 +4516,6 @@ class MainWindow(QMainWindow):
             total = (
                 num_images  # accumulative count not tracked per-folder; just show last
             )
-            if self._ingest_can_adopt_classes and self._ingest_imported_labels:
-                self.classes = list(self._ingest_imported_labels)
-                self._save_project_classes(self.classes)
-                self.rebuild_label_buttons()
-                self.setup_label_shortcuts()
-                self._refresh_shortcut_help()
             QMessageBox.information(
                 self,
                 "Ingestion Complete",

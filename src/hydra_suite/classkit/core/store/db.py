@@ -2,6 +2,7 @@
 
 import csv
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1532,6 +1533,7 @@ class ClassKitDB:
             # Fetch ids to delete (SQLite doesn't have dirname())
             c.execute("SELECT id, file_path, meta_json FROM images")
             ids_to_delete = []
+            standardized_dirs_to_delete: set[Path] = set()
             for row_id, fp, meta_json in c.fetchall():
                 metadata = self._decode_meta_json(meta_json)
                 source_root = metadata.get("source_root")
@@ -1540,9 +1542,15 @@ class ClassKitDB:
                     and str(Path(str(source_root)).resolve()) == folder_resolved
                 ):
                     ids_to_delete.append(row_id)
+                    standardized_dir = metadata.get("standardized_source_dir")
+                    if standardized_dir:
+                        standardized_dirs_to_delete.add(Path(str(standardized_dir)))
                     continue
                 if str(Path(fp).parent) == folder_resolved:
                     ids_to_delete.append(row_id)
+                    standardized_dir = metadata.get("standardized_source_dir")
+                    if standardized_dir:
+                        standardized_dirs_to_delete.add(Path(str(standardized_dir)))
 
             if ids_to_delete:
                 placeholders = ",".join("?" for _ in ids_to_delete)
@@ -1551,4 +1559,10 @@ class ClassKitDB:
                     ids_to_delete,
                 )
             conn.commit()
+
+        for standardized_dir in standardized_dirs_to_delete:
+            try:
+                shutil.rmtree(standardized_dir, ignore_errors=True)
+            except Exception:
+                continue
         return len(ids_to_delete)

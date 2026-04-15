@@ -23,6 +23,9 @@ classkit_config_path = pytest.importorskip(
 classkit_model_dir = pytest.importorskip(
     "hydra_suite.classkit.gui.project"
 ).classkit_model_dir
+classkit_scheme_path = pytest.importorskip(
+    "hydra_suite.classkit.gui.project"
+).classkit_scheme_path
 main_window_module = pytest.importorskip("hydra_suite.classkit.gui.main_window")
 MainWindow = main_window_module.MainWindow
 
@@ -204,6 +207,75 @@ def test_empty_review_mode_reverts_combo_selection(
     assert shown == [
         ("Review Queue Empty", "There are no unverified machine labels to review yet.")
     ]
+
+
+def test_first_source_schema_mismatch_can_rewrite_project_schema(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    source_root = tmp_path / "folder_labels"
+    ant_train = source_root / "train" / "ant"
+    bee_val = source_root / "val" / "bee"
+    ant_train.mkdir(parents=True)
+    bee_val.mkdir(parents=True)
+    (ant_train / "frame001.jpg").write_bytes(b"ant-image")
+    (bee_val / "frame002.png").write_bytes(b"bee-image")
+
+    window = MainWindow()
+    window.project_path = project_dir
+    window.db_path = project_dir / "classkit.db"
+    window.classes = ["class_1", "class_2"]
+
+    monkeypatch.setattr(
+        MainWindow,
+        "_prompt_schema_mismatch_resolution",
+        lambda self, source_root, imported_labels, can_rewrite: "rewrite",
+    )
+
+    request = window._resolve_ingest_request(source_root)
+
+    assert request == {"source_root": source_root, "import_labels": True}
+    assert window.classes == ["ant", "bee"]
+    config = json.loads(classkit_config_path(project_dir).read_text(encoding="utf-8"))
+    assert config["classes"] == ["ant", "bee"]
+    scheme = json.loads(classkit_scheme_path(project_dir).read_text(encoding="utf-8"))
+    assert scheme["factors"][0]["labels"] == ["ant", "bee"]
+
+
+def test_non_first_source_schema_mismatch_can_import_images_only(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hydra_suite.classkit.core.store.db import ClassKitDB
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    db_path = project_dir / "classkit.db"
+    db = ClassKitDB(db_path)
+    existing_image = project_dir / "existing.jpg"
+    existing_image.write_bytes(b"existing")
+    db.add_images([existing_image], [None])
+
+    source_root = tmp_path / "folder_labels"
+    bee_train = source_root / "train" / "bee"
+    bee_train.mkdir(parents=True)
+    (bee_train / "frame001.jpg").write_bytes(b"bee-image")
+
+    window = MainWindow()
+    window.project_path = project_dir
+    window.db_path = db_path
+    window.classes = ["ant"]
+
+    monkeypatch.setattr(
+        MainWindow,
+        "_prompt_schema_mismatch_resolution",
+        lambda self, source_root, imported_labels, can_rewrite: "images_only",
+    )
+
+    request = window._resolve_ingest_request(source_root)
+
+    assert request == {"source_root": source_root, "import_labels": False}
+    assert window.classes == ["ant"]
 
 
 def test_assign_label_can_continue_in_infinite_labeling_mode(
