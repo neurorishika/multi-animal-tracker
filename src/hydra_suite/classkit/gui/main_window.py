@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -115,6 +116,7 @@ class MainWindow(QMainWindow):
         self._stepper = None
         self._custom_shortcuts: dict = {}  # action_name → key sequence string
         self._outline_threshold = 0.60
+        self._marker_size_multiplier = 1.0
 
         # Display enhancement settings (sync with PoseKit)
         self.clahe_clip = 2.0
@@ -601,22 +603,56 @@ class MainWindow(QMainWindow):
         # ── Group 1: Project Info ─────────────────────────────────────
         group_info = QGroupBox("Project Info")
         layout_info = QVBoxLayout(group_info)
+        layout_info.setContentsMargins(12, 10, 12, 12)
+        layout_info.setSpacing(8)
+        group_info.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
 
         self.context_info = QLabel("No project loaded.")
         self.context_info.setWordWrap(True)
+        self.context_info.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        self.context_info.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         self.context_info.setStyleSheet(
-            "color: #cccccc; font-size: 12px; line-height: 1.5;"
+            "color: #cccccc; font-size: 11px; line-height: 1.3;"
         )
         layout_info.addWidget(self.context_info)
 
         autosave_row = QHBoxLayout()
-        autosave_row.addWidget(QLabel("Autosave (s):"))
+        autosave_row.setContentsMargins(0, 2, 0, 0)
+        autosave_row.setSpacing(8)
+        autosave_label = QLabel("Autosave")
+        autosave_label.setStyleSheet("color: #9a9a9a; font-size: 11px;")
+        autosave_row.addWidget(autosave_label)
+        autosave_row.addStretch(1)
         self.autosave_spin = QSpinBox()
         self.autosave_spin.setRange(1, 300)
         self.autosave_spin.setValue(max(1, self._autosave_interval_ms // 1000))
+        self.autosave_spin.setSuffix(" s")
+        self.autosave_spin.setFixedWidth(82)
         self.autosave_spin.valueChanged.connect(self.on_autosave_interval_changed)
         autosave_row.addWidget(self.autosave_spin)
         layout_info.addLayout(autosave_row)
+
+        marker_size_row = QHBoxLayout()
+        marker_size_row.addWidget(QLabel("Marker size:"))
+        self.marker_size_spin = QDoubleSpinBox()
+        self.marker_size_spin.setRange(0.5, 3.0)
+        self.marker_size_spin.setSingleStep(0.1)
+        self.marker_size_spin.setDecimals(1)
+        self.marker_size_spin.setValue(self._marker_size_multiplier)
+        self.marker_size_spin.setToolTip(
+            "Scale explorer marker sizes for denser or sparser projections."
+        )
+        self.marker_size_spin.valueChanged.connect(self.on_marker_size_changed)
+        marker_size_row.addWidget(self.marker_size_spin)
+        layout_info.addLayout(marker_size_row)
 
         self.context_layout.addWidget(group_info)
 
@@ -768,6 +804,7 @@ class MainWindow(QMainWindow):
 
         self.explorer = ExplorerView()
         self.explorer.set_uncertainty_outline_threshold(self._outline_threshold)
+        self.explorer.set_marker_size_multiplier(self._marker_size_multiplier)
         self.explorer.point_clicked.connect(self.on_explorer_point_clicked)
         self.explorer.point_hovered.connect(self.on_explorer_point_hovered)
         self.explorer.empty_hovered.connect(self.on_explorer_empty_hover)
@@ -790,6 +827,26 @@ class MainWindow(QMainWindow):
         top_controls_row.addWidget(self.view_mode_combo)
 
         top_controls_row.addSpacing(12)
+        self.outline_threshold_label = QLabel("Outline confidence <")
+        top_controls_row.addWidget(self.outline_threshold_label)
+        self.outline_threshold_spin = QDoubleSpinBox()
+        self.outline_threshold_spin.setRange(0.0, 1.0)
+        self.outline_threshold_spin.setSingleStep(0.05)
+        self.outline_threshold_spin.setDecimals(2)
+        self.outline_threshold_spin.setValue(self._outline_threshold)
+        self.outline_threshold_spin.setFixedWidth(72)
+        self.outline_threshold_spin.setToolTip(
+            "Confidence threshold for white uncertainty outlines in Predictions mode.\n"
+            "Set to 0 to disable uncertainty outlines."
+        )
+        self.outline_threshold_spin.valueChanged.connect(
+            self.on_outline_threshold_changed
+        )
+        top_controls_row.addWidget(self.outline_threshold_spin)
+        self.outline_threshold_label.setVisible(False)
+        self.outline_threshold_spin.setVisible(False)
+
+        top_controls_row.addStretch(1)
         top_controls_row.addWidget(QLabel("<b>Projection:</b>"))
         self.btn_umap_embedding = QPushButton("Embeddings")
         self.btn_umap_embedding.setCheckable(True)
@@ -803,6 +860,7 @@ class MainWindow(QMainWindow):
         self.btn_umap_model.setCheckable(True)
         self.btn_umap_model.setChecked(False)
         self.btn_umap_model.setEnabled(False)
+        self.btn_umap_model.setVisible(False)
         self.btn_umap_model.setFixedWidth(110)
         self.btn_umap_model.setToolTip(
             "Switch explorer to UMAP of trained model predictions (computed automatically after checkpoint load)"
@@ -816,6 +874,7 @@ class MainWindow(QMainWindow):
         self.btn_pca_model.setCheckable(True)
         self.btn_pca_model.setChecked(False)
         self.btn_pca_model.setEnabled(False)
+        self.btn_pca_model.setVisible(False)
         self.btn_pca_model.setFixedWidth(110)
         self.btn_pca_model.setToolTip(
             "Switch explorer to PCA of model predictions (computed on demand)"
@@ -825,11 +884,22 @@ class MainWindow(QMainWindow):
         )
         top_controls_row.addWidget(self.btn_pca_model)
 
-        top_controls_row.addStretch(1)
         explorer_layout.addLayout(top_controls_row)
         explorer_layout.addWidget(self.explorer, 1)
 
-        # Labeling controls row
+        # Labeling controls
+        self.labeling_options_group = QGroupBox("Labeling Options")
+        self.labeling_options_group.setVisible(False)
+        labeling_options_layout = QVBoxLayout(self.labeling_options_group)
+        labeling_options_layout.setContentsMargins(10, 10, 10, 10)
+        labeling_options_layout.setSpacing(8)
+
+        self.labeling_options_hint = QLabel(
+            "Sample and manage the current labeling candidate set."
+        )
+        self.labeling_options_hint.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        labeling_options_layout.addWidget(self.labeling_options_hint)
+
         self.label_controls_row = QHBoxLayout()
         self.label_controls_row.setSpacing(12)
 
@@ -855,28 +925,9 @@ class MainWindow(QMainWindow):
         self.label_controls_row.addWidget(self.btn_clear_candidates)
 
         self.label_controls_row.addStretch(1)
+        labeling_options_layout.addLayout(self.label_controls_row)
 
-        self.label_controls_row.addSpacing(8)
-        self.outline_threshold_label = QLabel("outline = confidence <")
-        self.label_controls_row.addWidget(self.outline_threshold_label)
-        self.outline_threshold_spin = QDoubleSpinBox()
-        self.outline_threshold_spin.setRange(0.0, 1.0)
-        self.outline_threshold_spin.setSingleStep(0.05)
-        self.outline_threshold_spin.setDecimals(2)
-        self.outline_threshold_spin.setValue(self._outline_threshold)
-        self.outline_threshold_spin.setFixedWidth(72)
-        self.outline_threshold_spin.setToolTip(
-            "Confidence threshold for white uncertainty outlines in Explorer mode.\n"
-            "Set to 0 to disable uncertainty outlines."
-        )
-        self.outline_threshold_spin.valueChanged.connect(
-            self.on_outline_threshold_changed
-        )
-        self.label_controls_row.addWidget(self.outline_threshold_spin)
-        self.outline_threshold_label.setVisible(False)
-        self.outline_threshold_spin.setVisible(False)
-
-        explorer_layout.addLayout(self.label_controls_row)
+        explorer_layout.addWidget(self.labeling_options_group)
 
         # ── Inline Active Learning panel ────────────────────────────────
 
@@ -1156,6 +1207,7 @@ class MainWindow(QMainWindow):
                     "version": "1.0",
                     "classes": project_info.get("classes", []),
                     "autosave_interval_ms": self._autosave_interval_ms,
+                    "marker_size_multiplier": self._marker_size_multiplier,
                 }
                 with open(self._project_config_path(), "w") as f:
                     json.dump(config, f, indent=2)
@@ -1285,6 +1337,17 @@ class MainWindow(QMainWindow):
             self.autosave_spin.setValue(self._autosave_interval_ms // 1000)
             self.autosave_spin.blockSignals(False)
 
+        self._marker_size_multiplier = float(
+            config.get("marker_size_multiplier", self._marker_size_multiplier)
+        )
+        self._marker_size_multiplier = max(0.5, min(3.0, self._marker_size_multiplier))
+        if hasattr(self, "marker_size_spin"):
+            self.marker_size_spin.blockSignals(True)
+            self.marker_size_spin.setValue(self._marker_size_multiplier)
+            self.marker_size_spin.blockSignals(False)
+        if hasattr(self, "explorer") and self.explorer is not None:
+            self.explorer.set_marker_size_multiplier(self._marker_size_multiplier)
+
         saved_shortcuts = config.get("custom_shortcuts", {})
         if isinstance(saved_shortcuts, dict):
             self._custom_shortcuts = saved_shortcuts
@@ -1375,11 +1438,9 @@ class MainWindow(QMainWindow):
         """Update context panel with project info."""
         if not self.project_path:
             self.context_info.setText(
-                "<div style='line-height: 1.65;'>"
-                "No project loaded.<br><br>"
-                "Get started:<br>"
-                "• <b>File → New Project</b> to create<br>"
-                "• <b>File → Open Project</b> to load<br>"
+                "<div style='line-height:1.35;'>"
+                "<div style='color:#f2f2f2; font-size:13px; font-weight:600; margin-bottom:4px;'>No project loaded</div>"
+                "<div style='color:#8d8d8d;'>File -> New Project or File -> Open Project</div>"
                 "</div>"
             )
             if hasattr(self, "review_info"):
@@ -1396,49 +1457,78 @@ class MainWindow(QMainWindow):
             else 0
         )
 
-        info_html = "<div style='line-height: 1.7;'>"
-        info_html += f"<b style='color: #ffffff; font-size: 15px;'>{self.project_path.name}</b><br>"
-        info_html += f"<span style='color: #888888; font-size: 11px;'>{self.project_path}</span><br><br>"
-        info_html += f"<b>Database:</b> {'Connected' if self.db_path and self.db_path.exists() else 'Not ready'}<br>"
-        info_html += f"<b>Total Images:</b> {total_count:,}<br>"
-        info_html += f"<b>Labeled:</b> {labeled_count:,}<br>"
-        info_html += f"<b>Unlabeled:</b> {unlabeled_count:,}<br>"
-        info_html += f"<b>Classes:</b> {len(self.classes)} ({', '.join(self.classes[:5])}{'...' if len(self.classes) > 5 else ''})<br>"
-        info_html += f"<b>Embeddings:</b> {'ready' if self.embeddings is not None else 'not computed'}<br>"
-        info_html += (
-            f"<b>Clusters:</b> {n_clusters if n_clusters else 'not clustered'}<br>"
-        )
-        info_html += f"<b>UMAP:</b> {'ready' if self.umap_coords is not None else 'not computed'}<br>"
-        info_html += (
-            f"<b>Current Mode:</b> {self._mode_display_name(self.explorer_mode)}<br>"
-        )
-        info_html += (
-            f"<b>Candidate Set:</b> {len(self.candidate_indices)} points"
+        classes_preview = ", ".join(escape(name) for name in self.classes[:4])
+        if len(self.classes) > 4:
+            classes_preview += ", ..."
+
+        candidate_text = (
+            f"{len(self.candidate_indices):,} points"
             if self.candidate_indices
-            else "<b>Candidate Set:</b> none sampled"
+            else "none"
         )
-        info_html += "</div>"
+        db_state = (
+            "Connected" if self.db_path and self.db_path.exists() else "Not ready"
+        )
+        embedding_state = "Ready" if self.embeddings is not None else "Pending"
+        cluster_state = f"{n_clusters:,}" if n_clusters else "Pending"
+        umap_state = "Ready" if self.umap_coords is not None else "Pending"
+
+        info_rows = [
+            ("DB", db_state),
+            ("Images", f"{total_count:,}"),
+            ("Labeled", f"{labeled_count:,}"),
+            ("Open", f"{unlabeled_count:,}"),
+            (
+                "Classes",
+                (
+                    f"{len(self.classes):,} ({classes_preview})"
+                    if classes_preview
+                    else f"{len(self.classes):,}"
+                ),
+            ),
+            ("Embeddings", embedding_state),
+            ("Clusters", cluster_state),
+            ("UMAP", umap_state),
+            ("Mode", self._mode_display_name(self.explorer_mode)),
+            ("Candidates", candidate_text),
+        ]
+
+        info_html = "<div style='line-height:1.3;'>"
+        info_html += f"<div style='color:#ffffff; font-size:14px; font-weight:600;'>{escape(self.project_path.name)}</div>"
+        info_html += f"<div style='color:#7f7f7f; font-size:10px; margin:2px 0 8px 0;'>{escape(str(self.project_path))}</div>"
+        info_html += (
+            "<table cellspacing='0' cellpadding='0' "
+            "style='width:100%; color:#cfcfcf; font-size:11px;'>"
+        )
+        for label, value in info_rows:
+            info_html += (
+                "<tr>"
+                f"<td style='color:#8d8d8d; padding:2px 10px 2px 0; vertical-align:top; white-space:nowrap;'>{label}</td>"
+                f"<td style='color:#f1f1f1; padding:2px 0; vertical-align:top;'>{value}</td>"
+                "</tr>"
+            )
+        info_html += "</table>"
 
         # ── Next Step guidance ──────────────────────────────────────────
         next_step = ""
         if total_count == 0:
-            next_step = "• <b>File → Source Manager</b>"
+            next_step = "File -> Source Manager"
         elif self.embeddings is None:
-            next_step = "• <b>Actions → Compute Embeddings</b>"
+            next_step = "Actions -> Compute Embeddings"
         elif self.cluster_assignments is None:
-            next_step = "• <b>Actions → Cluster Embeddings</b>"
+            next_step = "Actions -> Cluster Embeddings"
         elif self.umap_coords is None:
-            next_step = "• <b>Actions → Compute UMAP</b>"
-        elif labeled_count < 10:
-            next_step = "• <b>Labeling → Sample Randomly</b>"
+            next_step = "Actions -> Compute UMAP"
         elif len(self.candidate_indices) == 0:
-            next_step = "• <b>Labeling → Sample next candidates</b>"
+            next_step = "Labeling -> Sample next candidates"
         else:
-            next_step = "• <b>Labeling → Enter Labeling Mode (L)</b>"
+            next_step = "Labeling -> Enter Labeling Mode (L)"
 
-        info_html += "<div style='margin-top:16px; padding:10px; background:#2d2d2d; border-radius:6px; border-left:3px solid #0e639c;'>"
-        info_html += "<b style='color:#0e639c; font-size:11px; text-transform:uppercase;'>Suggested Next Step:</b><br>"
-        info_html += f"<span style='color:#ffffff; font-size:12px;'>{next_step}</span>"
+        info_html += (
+            "<div style='margin-top:8px; padding-top:8px; border-top:1px solid #2f2f2f;'>"
+            "<span style='color:#5ea6da; font-size:10px; font-weight:600; text-transform:uppercase;'>Next</span>"
+            f"<div style='color:#f3f3f3; font-size:11px; margin-top:2px;'>{next_step}</div>"
+        )
         info_html += "</div>"
 
         self.context_info.setText(info_html)
@@ -2089,6 +2179,7 @@ class MainWindow(QMainWindow):
             with open(project_config_path, "r") as f:
                 config = json.load(f)
         config["autosave_interval_ms"] = int(self._autosave_interval_ms)
+        config["marker_size_multiplier"] = float(self._marker_size_multiplier)
         project_config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(project_config_path, "w") as f:
             json.dump(config, f, indent=2)
@@ -2273,6 +2364,17 @@ class MainWindow(QMainWindow):
         self._save_project_runtime_settings()
         self._update_autosave_heartbeat_text()
         self.status.showMessage(f"Autosave interval set to {seconds}s")
+
+    def on_marker_size_changed(self, value: float) -> None:
+        """Apply a global marker-size multiplier to the explorer."""
+        self._marker_size_multiplier = max(0.5, min(3.0, float(value)))
+        if hasattr(self, "explorer") and self.explorer is not None:
+            self.explorer.set_marker_size_multiplier(self._marker_size_multiplier)
+            self.request_update_explorer_plot()
+        self._save_project_runtime_settings()
+        self.status.showMessage(
+            f"Marker size set to {self._marker_size_multiplier:.1f}x"
+        )
 
     def _flush_pending_label_updates(self, force: bool = False):
         """Persist buffered label updates to DB on autosave cadence or forced flush."""
@@ -3345,6 +3447,9 @@ class MainWindow(QMainWindow):
             widget = self.label_buttons_layout.itemAt(i).widget()
             if widget is not None:
                 widget.setEnabled(labels_enabled)
+
+        if hasattr(self, "labeling_options_group"):
+            self.labeling_options_group.setVisible(labels_enabled)
 
         if hasattr(self, "outline_threshold_label"):
             self.outline_threshold_label.setVisible(outlines_enabled)
@@ -7036,8 +7141,10 @@ class MainWindow(QMainWindow):
     def _set_model_projection_buttons_enabled(self, enabled: bool) -> None:
         """Enable/disable model-space projection toggles together."""
         self.btn_umap_model.setEnabled(enabled)
+        self.btn_umap_model.setVisible(enabled)
         if hasattr(self, "btn_pca_model"):
             self.btn_pca_model.setEnabled(enabled)
+            self.btn_pca_model.setVisible(enabled)
 
     def _switch_projection_space(self, target: str) -> None:
         """Switch explorer between embedding UMAP, model UMAP, and model PCA."""

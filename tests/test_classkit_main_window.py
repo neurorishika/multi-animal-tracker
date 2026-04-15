@@ -12,6 +12,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 QtGui = pytest.importorskip("PySide6.QtGui")
+QtCore = pytest.importorskip("PySide6.QtCore")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 QPixmap = QtGui.QPixmap
 QApplication = QtWidgets.QApplication
@@ -19,6 +20,9 @@ QApplication = QtWidgets.QApplication
 classkit_config_path = pytest.importorskip(
     "hydra_suite.classkit.gui.project"
 ).classkit_config_path
+classkit_model_dir = pytest.importorskip(
+    "hydra_suite.classkit.gui.project"
+).classkit_model_dir
 main_window_module = pytest.importorskip("hydra_suite.classkit.gui.main_window")
 MainWindow = main_window_module.MainWindow
 
@@ -62,20 +66,55 @@ def test_reset_analysis_view_restores_explore_embedding_mode(qapp) -> None:
     assert window.btn_pca_model.isChecked() is False
 
 
-def test_outline_control_only_visible_in_labeling_mode(qapp) -> None:
+def test_outline_control_only_visible_in_predictions_mode(qapp) -> None:
     window = MainWindow()
 
     window.set_explorer_mode("explore")
     assert window.outline_threshold_label.isHidden() is True
     assert window.outline_threshold_spin.isHidden() is True
 
-    window.set_explorer_mode("labeling")
+    window._model_probs = np.array([[0.9, 0.1]], dtype=np.float32)
+    window.set_explorer_mode("predictions")
     assert window.outline_threshold_label.isHidden() is False
     assert window.outline_threshold_spin.isHidden() is False
 
     window.set_explorer_mode("explore")
     assert window.outline_threshold_label.isHidden() is True
     assert window.outline_threshold_spin.isHidden() is True
+
+
+def test_labeling_options_only_visible_in_labeling_mode(qapp) -> None:
+    window = MainWindow()
+
+    window.set_explorer_mode("explore")
+    assert window.labeling_options_group.isHidden() is True
+
+    window.set_explorer_mode("labeling")
+    assert window.labeling_options_group.isHidden() is False
+
+    window.set_explorer_mode("explore")
+    assert window.labeling_options_group.isHidden() is True
+
+
+def test_model_projection_buttons_hidden_until_model_loaded(qapp) -> None:
+    window = MainWindow()
+
+    assert window.btn_umap_model.isHidden() is True
+    assert window.btn_pca_model.isHidden() is True
+
+    window._set_model_projection_buttons_enabled(True)
+
+    assert window.btn_umap_model.isHidden() is False
+    assert window.btn_pca_model.isHidden() is False
+
+
+def test_marker_size_control_updates_explorer(qapp) -> None:
+    window = MainWindow()
+
+    window.on_marker_size_changed(1.7)
+
+    assert window._marker_size_multiplier == pytest.approx(1.7)
+    assert window.explorer.marker_size_multiplier == pytest.approx(1.7)
 
 
 def test_review_buttons_live_in_left_review_panel(qapp) -> None:
@@ -100,6 +139,48 @@ def test_review_buttons_live_in_left_review_panel(qapp) -> None:
     assert (
         is_descendant(window.review_clear_unverified_btn, window.preview_panel) is False
     )
+
+
+def test_context_info_label_is_constrained_to_compact_height(qapp) -> None:
+    window = MainWindow()
+
+    policy = window.context_info.sizePolicy()
+
+    assert policy.verticalPolicy() == QtWidgets.QSizePolicy.Policy.Maximum
+    assert policy.horizontalPolicy() == QtWidgets.QSizePolicy.Policy.Preferred
+    assert window.context_info.alignment() & QtCore.Qt.AlignmentFlag.AlignTop
+
+
+def test_context_panel_renders_compact_project_summary(qapp, tmp_path: Path) -> None:
+    project_dir = tmp_path / "head-tail"
+    project_dir.mkdir()
+    db_path = project_dir / "classkit.db"
+    db_path.write_text("db", encoding="utf-8")
+
+    window = MainWindow()
+    window.project_path = project_dir
+    window.db_path = db_path
+    window.image_paths = ["a.png", "b.png", "c.png"]
+    window.image_labels = ["left", "", "right"]
+    window.classes = ["left", "right", "up", "down"]
+    window.embeddings = np.zeros((3, 4), dtype=np.float32)
+    window.cluster_assignments = [0, 1, 1]
+    window.umap_coords = np.zeros((3, 2), dtype=np.float32)
+    window.explorer_mode = "explore"
+    window.candidate_indices = []
+
+    window.update_context_panel()
+
+    html = window.context_info.text()
+    assert "head-tail" in html
+    assert (
+        "<td style='color:#8d8d8d; padding:2px 10px 2px 0; vertical-align:top; white-space:nowrap;'>DB</td>"
+        in html
+    )
+    assert "Connected" in html
+    assert "Candidates" in html
+    assert "none" in html
+    assert "Labeling -> Sample next candidates" in html
 
 
 def test_empty_review_mode_reverts_combo_selection(
@@ -707,6 +788,45 @@ def test_prediction_mode_uses_schema_map_colors(qapp) -> None:
     assert point_colors[1] == expected_map["zebra"].name()
 
 
+def test_prediction_mode_zoom_preserves_schema_map_colors(qapp) -> None:
+    from PySide6.QtCore import QPoint
+
+    from hydra_suite.classkit.gui.widgets.color_utils import build_category_color_map
+
+    class _WheelEvent:
+        def __init__(self, delta: int) -> None:
+            self._delta = delta
+
+        def angleDelta(self):
+            return QPoint(0, self._delta)
+
+    window = MainWindow()
+    window.image_paths = [Path("/tmp/a.png"), Path("/tmp/b.png")]
+    window.image_labels = [None, None]
+    window.classes = ["ant", "zebra"]
+    window.cluster_assignments = np.array([0, 1], dtype=np.int32)
+    window.umap_coords = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
+    window._model_class_names = ["zebra", "ant"]
+    window._model_probs = np.array([[0.05, 0.95], [0.99, 0.01]], dtype=np.float32)
+
+    window.set_explorer_mode("predictions")
+    window.update_explorer_plot(force_fit=True)
+
+    expected_map = build_category_color_map(
+        ["ant", "zebra", "unknown"],
+        category_order=["ant", "zebra", "unknown"],
+    )
+    before_colors = [item.brush().color().name() for item in window.explorer.points]
+
+    window.explorer.wheelEvent(_WheelEvent(120))
+
+    after_colors = [item.brush().color().name() for item in window.explorer.points]
+
+    assert before_colors == after_colors
+    assert after_colors[0] == expected_map["ant"].name()
+    assert after_colors[1] == expected_map["zebra"].name()
+
+
 def test_prediction_tooltip_only_exists_in_prediction_mode(qapp) -> None:
     window = MainWindow()
     window.image_paths = [Path("/tmp/a.png")]
@@ -972,8 +1092,8 @@ def test_autoload_model_from_db_prefers_newer_model_over_stale_predictions(
 def test_autoload_yolo_classifier_runs_inference_without_prompt(
     qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
+    models_dir = classkit_model_dir(tmp_path)
+    models_dir.mkdir(parents=True, exist_ok=True)
     yolo_path = models_dir / "yolo_classifier_latest.pt"
     yolo_path.write_text("weights", encoding="utf-8")
 
@@ -1196,4 +1316,5 @@ def test_open_recent_project_flushes_pending_label_updates_before_switch(
     window._open_recent_project(str(project_dir))
 
     assert calls[0] == ("flush", True)
+    assert calls[1] == ("load", str(project_dir))
     assert calls[1] == ("load", str(project_dir))
