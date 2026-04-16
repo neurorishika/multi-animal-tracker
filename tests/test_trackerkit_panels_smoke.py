@@ -1,6 +1,7 @@
 """Smoke tests: each panel instantiates and exposes expected key widgets."""
 
 import os
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -100,6 +101,9 @@ def test_setup_panel_wired_in_main_window(main_window):
     assert hasattr(main_window._setup_panel, "btn_file")
     assert not main_window._setup_panel.spin_start_frame.keyboardTracking()
     assert not main_window._setup_panel.spin_end_frame.keyboardTracking()
+    assert main_window._setup_panel.slider_timeline.hasTracking() is (
+        not sys.platform.startswith("linux")
+    )
     assert main_window._setup_panel.spin_traj_hist.minimum() == -1
 
 

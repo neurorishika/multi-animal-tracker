@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
@@ -343,11 +344,16 @@ class SetupPanel(QWidget):
         self.slider_timeline.setMinimum(0)
         self.slider_timeline.setMaximum(0)
         self.slider_timeline.setValue(0)
+        self.slider_timeline.setTracking(not sys.platform.startswith("linux"))
         self.slider_timeline.setEnabled(False)
         self.slider_timeline.setToolTip("Seek through video frames")
         self.slider_timeline.valueChanged.connect(
             self._main_window._on_timeline_changed
         )
+        self.slider_timeline.sliderPressed.connect(
+            self._main_window._on_timeline_pressed
+        )
+        self.slider_timeline.sliderMoved.connect(self._main_window._on_timeline_moved)
         timeline_layout.addWidget(self.slider_timeline)
         vl_player.addLayout(timeline_layout)
 
