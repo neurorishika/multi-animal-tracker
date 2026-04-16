@@ -2339,9 +2339,17 @@ def interpolate_trajectories(
 
         min_frame = traj_data["FrameID"].min()
         max_frame = traj_data["FrameID"].max()
+        has_missing_frames = len(traj_data) < max_frame - min_frame + 1
+        has_value_gaps = any(
+            col in traj_data.columns and traj_data[col].isna().any()
+            for col in ["X", "Y", "Theta"]
+        )
 
-        # Fast-path: no gaps possible — skip reindex and interpolation entirely.
-        if len(traj_data) >= max_frame - min_frame + 1:
+        # Fast-path: skip only when the trajectory is frame-complete and the
+        # interpolated columns already have no NaN gaps. TrackerKit writes
+        # contiguous occluded rows with NaN X/Y/Theta, and those still need to
+        # go through interpolation.
+        if not has_missing_frames and not has_value_gaps:
             # Still fix heading flips even without gaps
             if "Theta" in traj_data.columns:
                 traj_data["Theta"] = _fix_heading_flips(
@@ -2350,9 +2358,10 @@ def interpolate_trajectories(
             interpolated_parts.append(traj_data)
             continue
 
-        all_frames = np.arange(min_frame, max_frame + 1)
-        traj_data = traj_data.set_index("FrameID").reindex(all_frames).reset_index()
-        traj_data["TrajectoryID"] = traj_id
+        if has_missing_frames:
+            all_frames = np.arange(min_frame, max_frame + 1)
+            traj_data = traj_data.set_index("FrameID").reindex(all_frames).reset_index()
+            traj_data["TrajectoryID"] = traj_id
 
         if "State" in traj_data.columns:
             traj_data["State"] = traj_data["State"].fillna("occluded")

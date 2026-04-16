@@ -158,8 +158,13 @@
   "pose_pipeline_crop_workers": 4,
   "pose_pipeline_pre_resize": 0,
   "pose_precompute_batch_size": 64,
+  "enable_confidence_density_map": true,
   "density_gaussian_sigma_scale": 1.0,
   "density_temporal_sigma": 2.0,
   "density_binarize_threshold": 0.3,
-  "density_conservative_factor": 0.7
+  "density_conservative_factor": 0.7,
+  "density_min_frame_duration": 3,
+  "density_min_area_bodies": 0.25,
+  "density_downsample_factor": 8,
+  "export_confidence_density_video": true
 }

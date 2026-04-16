@@ -11,6 +11,7 @@ and lets the user apply the best result back to the main window.
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any, Dict, List
 
 import numpy as np
@@ -1043,7 +1044,9 @@ class BgParameterHelperDialog(BaseDialog):
         self._frame_slider = QSlider(Qt.Horizontal)
         self._frame_slider.setRange(0, 0)
         self._frame_slider.setValue(0)
+        self._frame_slider.setTracking(not sys.platform.startswith("linux"))
         self._frame_slider.valueChanged.connect(self._on_frame_slider_changed)
+        self._frame_slider.sliderMoved.connect(self._on_frame_slider_moved)
         frame_row.addWidget(self._frame_slider, stretch=1)
 
         self._frame_label = QLabel("0/0")
@@ -1149,8 +1152,11 @@ class BgParameterHelperDialog(BaseDialog):
     def _on_preview_frame_received(self, idx: int, rgb: np.ndarray) -> None:
         self._prev_frames.append(rgb)
         n = len(self._prev_frames)
+        self._prev_current_idx = n - 1
+        self._frame_slider.blockSignals(True)
         self._frame_slider.setRange(0, max(n - 1, 0))
         self._frame_slider.setValue(n - 1)
+        self._frame_slider.blockSignals(False)
         self._frame_label.setText(f"{n}/{n}")
         self._display_preview_frame(rgb)
         if self._prev_auto_fit_pending:
@@ -1163,17 +1169,29 @@ class BgParameterHelperDialog(BaseDialog):
             self._frame_label.setText(f"{val + 1}/{len(self._prev_frames)}")
             self._display_preview_frame(self._prev_frames[val])
 
+    def _on_frame_slider_moved(self, val: int) -> None:
+        if self._frame_slider.hasTracking():
+            return
+        if 0 <= val < len(self._prev_frames):
+            self._frame_label.setText(f"{val + 1}/{len(self._prev_frames)}")
+
     # ── Preview display ───────────────────────────────────────────────────────
 
     def _display_preview_frame(self, rgb: np.ndarray) -> None:
         h, w = rgb.shape[:2]
         z = self._prev_zoom_slider.value() / 100.0
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
+        transform_mode = (
+            Qt.FastTransformation
+            if self._frame_slider.isSliderDown()
+            or (self.preview_worker is not None and self.preview_worker.isRunning())
+            else Qt.SmoothTransformation
+        )
         scaled = qimg.scaled(
             int(w * z),
             int(h * z),
             Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
+            transform_mode,
         )
         pix = QPixmap.fromImage(scaled)
         self._prev_label.setPixmap(pix)

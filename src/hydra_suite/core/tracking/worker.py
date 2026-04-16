@@ -165,6 +165,11 @@ class TrackingWorker(QThread):
         p = self.get_current_params() if params is None else params
         return bool(p.get("ENABLE_CONFIDENCE_DENSITY_MAP", True))
 
+    def _confidence_density_video_export_enabled(self, params=None) -> bool:
+        """Return whether density-map diagnostic video export should run."""
+        p = self.get_current_params() if params is None else params
+        return bool(p.get("EXPORT_CONFIDENCE_DENSITY_VIDEO", True))
+
     def stop(self: object) -> object:
         """Request cooperative stop for current processing loop."""
         self._stop_requested = True
@@ -1272,31 +1277,36 @@ class TrackingWorker(QThread):
                         _ok, _fr = _cap.read()
                         return _fr if _ok else None
 
-                    logger.info("Exporting confidence density diagnostic video...")
-                    self.progress_signal.emit(
-                        50, "Exporting confidence density video..."
-                    )
+                    if self._confidence_density_video_export_enabled(p):
+                        logger.info("Exporting confidence density diagnostic video...")
+                        self.progress_signal.emit(
+                            50, "Exporting confidence density video..."
+                        )
 
-                    # Output at reduced resolution for speed.
-                    _diag_ds = 4  # 4× downsample for diagnostic video (independent of density grid ds)
-                    _out_w = max(1, _frame_w // _diag_ds)
-                    _out_h = max(1, _frame_h // _diag_ds)
+                        # Output at reduced resolution for speed.
+                        _diag_ds = 4  # 4× downsample for diagnostic video (independent of density grid ds)
+                        _out_w = max(1, _frame_w // _diag_ds)
+                        _out_h = max(1, _frame_h // _diag_ds)
 
-                    export_diagnostic_video(
-                        frame_reader=_diag_reader,
-                        n_frames=total_frames,
-                        frame_h=_out_h,
-                        frame_w=_out_w,
-                        density_grids=_raw_grids,
-                        regions=self._density_regions,
-                        output_path=_diag_path,
-                        fps=_fps,
-                        output_scale=1.0 / _diag_ds,
-                        binary_volume=_dm.binary_volume,
-                        progress_callback=_density_progress,
-                    )
+                        export_diagnostic_video(
+                            frame_reader=_diag_reader,
+                            n_frames=total_frames,
+                            frame_h=_out_h,
+                            frame_w=_out_w,
+                            density_grids=_raw_grids,
+                            regions=self._density_regions,
+                            output_path=_diag_path,
+                            fps=_fps,
+                            output_scale=1.0 / _diag_ds,
+                            binary_volume=_dm.binary_volume,
+                            progress_callback=_density_progress,
+                        )
+                        logger.info(f"Diagnostic video exported: {_diag_path}")
+                    else:
+                        logger.info(
+                            "Skipping confidence density diagnostic video export by configuration."
+                        )
                     self.progress_signal.emit(100, "Density map complete")
-                    logger.info(f"Diagnostic video exported: {_diag_path}")
 
                     # Reopen video capture for subsequent phases.
                     # CAP_PROP_POS_FRAMES seek is unreliable with some

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -129,6 +130,59 @@ def test_bg_parameter_helper_preview_auto_fits_first_frame(
     dialog.close()
 
 
+def test_bg_parameter_helper_preview_frame_receive_renders_once(
+    qapp: QApplication,
+) -> None:
+    dialog = BgParameterHelperDialog(
+        video_path="/tmp/video.mp4",
+        current_params={
+            "MAX_TARGETS": 5,
+            "RESIZE_FACTOR": 1.0,
+            "START_FRAME": 0,
+            "END_FRAME": 100,
+        },
+    )
+
+    render_spy = MagicMock()
+    dialog._display_preview_frame = render_spy
+
+    dialog._on_preview_frame_received(0, np.zeros((32, 32, 3), dtype=np.uint8))
+
+    assert render_spy.call_count == 1
+
+    dialog.close()
+
+
+def test_bg_parameter_helper_slider_scrub_does_not_render_until_release(
+    qapp: QApplication,
+) -> None:
+    dialog = BgParameterHelperDialog(
+        video_path="/tmp/video.mp4",
+        current_params={
+            "MAX_TARGETS": 5,
+            "RESIZE_FACTOR": 1.0,
+            "START_FRAME": 0,
+            "END_FRAME": 100,
+        },
+    )
+    dialog._prev_frames = [
+        np.zeros((16, 16, 3), dtype=np.uint8),
+        np.zeros((16, 16, 3), dtype=np.uint8),
+        np.zeros((16, 16, 3), dtype=np.uint8),
+    ]
+
+    render_spy = MagicMock()
+    dialog._display_preview_frame = render_spy
+
+    dialog._on_frame_slider_moved(2)
+
+    assert render_spy.call_count == 0
+    assert dialog._frame_label.text() == "3/3"
+    assert dialog._frame_slider.hasTracking() is (not sys.platform.startswith("linux"))
+
+    dialog.close()
+
+
 def test_bg_parameter_helper_wheel_zoom_keeps_cursor_anchor(
     qapp: QApplication,
 ) -> None:
@@ -192,6 +246,39 @@ def test_tracking_parameter_helper_preview_auto_fits_first_frame(
     qapp.processEvents()
 
     assert dialog._prev_zoom_slider.value() < 100
+
+    dialog.close()
+
+
+def test_tracking_parameter_helper_coalesces_preview_frame_renders(
+    qapp: QApplication,
+) -> None:
+    dialog = ParameterHelperDialog(
+        video_path="/tmp/video.mp4",
+        detection_cache_path="/tmp/cache.npz",
+        start_frame=0,
+        end_frame=100,
+        current_params={
+            "REFERENCE_BODY_SIZE": 40.0,
+            "RESIZE_FACTOR": 1.0,
+            "YOLO_CONFIDENCE_THRESHOLD": 0.5,
+        },
+    )
+
+    render_spy = MagicMock()
+    dialog._display_preview_frame = render_spy
+
+    frame_a = np.zeros((24, 24, 3), dtype=np.uint8)
+    frame_b = np.ones((24, 24, 3), dtype=np.uint8)
+    dialog._on_preview_frame_received(frame_a)
+    dialog._on_preview_frame_received(frame_b)
+
+    assert render_spy.call_count == 0
+
+    qapp.processEvents()
+
+    assert render_spy.call_count == 1
+    assert render_spy.call_args[0][0] is frame_b
 
     dialog.close()
 

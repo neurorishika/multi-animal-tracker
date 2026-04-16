@@ -17,6 +17,7 @@ import pandas as pd
 from ....data.detection_cache import DetectionCache
 from ...post.processing import _fix_heading_flips
 from ..geometry import ellipse_axes_from_area, ellipse_to_obb_corners
+from .naming import build_detection_image_filename, build_interpolated_image_filename
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,12 @@ class FrameTask:
     corners: np.ndarray
     expanded_corners: np.ndarray
     polygon_index: int
+    detection_id: int | None = None
+    interpolated: bool = False
+    interp_from_start: int | None = None
+    interp_from_end: int | None = None
+    interp_index: int | None = None
+    interp_total: int | None = None
 
 
 @dataclass
@@ -393,6 +400,18 @@ class OrientedTrackVideoExporter:
             height = payload["h"]
             theta = payload["theta"]
             obb_corners = payload["obb_corners"]
+            interp_from_start = (
+                payload["interp_from_start"] if "interp_from_start" in payload else None
+            )
+            interp_from_end = (
+                payload["interp_from_end"] if "interp_from_end" in payload else None
+            )
+            interp_index = (
+                payload["interp_index"] if "interp_index" in payload else None
+            )
+            interp_total = (
+                payload["interp_total"] if "interp_total" in payload else None
+            )
             lookup: dict[tuple[int, int], dict[str, Any]] = {}
             total = min(
                 len(frame_ids),
@@ -412,6 +431,27 @@ class OrientedTrackVideoExporter:
                     "h": float(height[idx]),
                     "theta": float(theta[idx]),
                     "obb_corners": np.asarray(obb_corners[idx], dtype=np.float32),
+                    "interp_from_start": (
+                        int(interp_from_start[idx])
+                        if interp_from_start is not None
+                        and idx < len(interp_from_start)
+                        else int(frame_ids[idx])
+                    ),
+                    "interp_from_end": (
+                        int(interp_from_end[idx])
+                        if interp_from_end is not None and idx < len(interp_from_end)
+                        else int(frame_ids[idx])
+                    ),
+                    "interp_index": (
+                        int(interp_index[idx])
+                        if interp_index is not None and idx < len(interp_index)
+                        else 1
+                    ),
+                    "interp_total": (
+                        int(interp_total[idx])
+                        if interp_total is not None and idx < len(interp_total)
+                        else 1
+                    ),
                 }
             return lookup
         finally:
@@ -519,6 +559,15 @@ class OrientedTrackVideoExporter:
                             theta=theta,
                             corners=np.asarray(record["obb_corners"], dtype=np.float32),
                             polygon_index=len(bundle.polygons),
+                            interpolated=True,
+                            interp_from_start=int(
+                                record.get("interp_from_start", frame_id)
+                            ),
+                            interp_from_end=int(
+                                record.get("interp_from_end", frame_id)
+                            ),
+                            interp_index=int(record.get("interp_index", 1)),
+                            interp_total=int(record.get("interp_total", 1)),
                         )
                         if task is None:
                             missing_breakdown["invalid_geometry_rows"] += 1
@@ -732,6 +781,7 @@ class OrientedTrackVideoExporter:
                 theta=theta,
                 corners=corners,
                 polygon_index=len(bundle.polygons),
+                detection_id=int(det_id),
             )
             if task is None:
                 missing["invalid_geometry_rows"] += 1
@@ -756,6 +806,12 @@ class OrientedTrackVideoExporter:
         theta: float,
         corners: np.ndarray,
         polygon_index: int,
+        detection_id: int | None = None,
+        interpolated: bool = False,
+        interp_from_start: int | None = None,
+        interp_from_end: int | None = None,
+        interp_index: int | None = None,
+        interp_total: int | None = None,
     ) -> Optional[FrameTask]:
         if not np.isfinite(center_x) or not np.isfinite(center_y):
             return None
@@ -784,6 +840,16 @@ class OrientedTrackVideoExporter:
             corners=np.asarray(corners, dtype=np.float32),
             expanded_corners=self._expand_corners(corners, self.padding_fraction),
             polygon_index=int(polygon_index),
+            detection_id=(int(detection_id) if detection_id is not None else None),
+            interpolated=bool(interpolated),
+            interp_from_start=(
+                int(interp_from_start) if interp_from_start is not None else None
+            ),
+            interp_from_end=(
+                int(interp_from_end) if interp_from_end is not None else None
+            ),
+            interp_index=(int(interp_index) if interp_index is not None else None),
+            interp_total=(int(interp_total) if interp_total is not None else None),
         )
 
     def _process_frame_bundle(
@@ -832,7 +898,7 @@ class OrientedTrackVideoExporter:
                         suppress_foreign_obb=self.suppress_foreign_obb_images,
                     )
                 if rendered_images is not None and self._write_image(
-                    task.trajectory_id, task.frame_id, rendered_images
+                    task, rendered_images
                 ):
                     images_written_by_track[task.trajectory_id] += 1
 
@@ -954,14 +1020,32 @@ class OrientedTrackVideoExporter:
         except Exception:
             return False
 
-    def _write_image(
-        self, trajectory_id: int, frame_id: int, image: np.ndarray
-    ) -> bool:
+    def _write_image(self, task: FrameTask, image: np.ndarray) -> bool:
         if self.image_output_dir is None:
             return False
-        track_dir = self.image_output_dir / f"trajectory_{int(trajectory_id):04d}"
-        track_dir.mkdir(parents=True, exist_ok=True)
-        output_path = track_dir / f"frame_{int(frame_id):06d}.{self.image_format}"
+        self.image_output_dir.mkdir(parents=True, exist_ok=True)
+        if task.detection_id is not None:
+            filename = build_detection_image_filename(
+                task.detection_id, self.image_format
+            )
+        elif task.interpolated:
+            filename = build_interpolated_image_filename(
+                frame_id=task.frame_id,
+                trajectory_id=task.trajectory_id,
+                interp_from=(
+                    int(task.interp_from_start or task.frame_id),
+                    int(task.interp_from_end or task.frame_id),
+                ),
+                interp_index=int(task.interp_index or 1),
+                interp_total=int(task.interp_total or 1),
+                extension=self.image_format,
+            )
+        else:
+            filename = (
+                f"f{int(task.frame_id):06d}_traj{int(task.trajectory_id):04d}."
+                f"{self.image_format}"
+            )
+        output_path = self.image_output_dir / filename
         try:
             return bool(cv2.imwrite(str(output_path), image))
         except Exception:

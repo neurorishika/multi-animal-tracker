@@ -114,6 +114,8 @@ class ParameterHelperDialog(BaseDialog):
         self._prev_scroll_h = 0
         self._prev_scroll_v = 0
         self._prev_last_frame: np.ndarray | None = None
+        self._prev_pending_frame: np.ndarray | None = None
+        self._prev_render_scheduled = False
         self._prev_zoom_anchor: tuple[int, int, float, float] | None = None
         self._prev_auto_fit_pending = True
 
@@ -912,21 +914,39 @@ class ParameterHelperDialog(BaseDialog):
         h, w = rgb.shape[:2]
         z = self._prev_zoom_slider.value() / 100.0
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
-        scaled = qimg.scaled(
-            int(w * z), int(h * z), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        transform_mode = (
+            Qt.FastTransformation
+            if self.preview_worker is not None and self.preview_worker.isRunning()
+            else Qt.SmoothTransformation
         )
+        scaled = qimg.scaled(int(w * z), int(h * z), Qt.KeepAspectRatio, transform_mode)
         pix = QPixmap.fromImage(scaled)
         self._prev_label.setPixmap(pix)
         self._prev_label.resize(pix.width(), pix.height())
+
+    def _schedule_preview_render(self) -> None:
+        if self._prev_render_scheduled:
+            return
+        self._prev_render_scheduled = True
+        QTimer.singleShot(0, self._flush_pending_preview_frame)
+
+    def _flush_pending_preview_frame(self) -> None:
+        self._prev_render_scheduled = False
+        if self._prev_pending_frame is None:
+            return
+        frame = self._prev_pending_frame
+        self._prev_pending_frame = None
+        self._display_preview_frame(frame)
+        if self._prev_auto_fit_pending:
+            self._prev_auto_fit_pending = False
+            QTimer.singleShot(0, self._fit_preview)
 
     @Slot(object)
     def _on_preview_frame_received(self, rgb):
         """Update the embedded preview panel."""
         self._prev_last_frame = rgb
-        self._display_preview_frame(rgb)
-        if self._prev_auto_fit_pending:
-            self._prev_auto_fit_pending = False
-            QTimer.singleShot(0, self._fit_preview)
+        self._prev_pending_frame = rgb
+        self._schedule_preview_render()
 
     def _capture_preview_zoom_anchor(self, viewport_pos=None) -> None:
         viewport = self._prev_scroll.viewport()

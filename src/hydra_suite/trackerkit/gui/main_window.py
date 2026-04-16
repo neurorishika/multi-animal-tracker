@@ -1823,6 +1823,14 @@ class MainWindow(QMainWindow):
         """Handle timeline slider change."""
         self._session_orch._on_timeline_changed(value)
 
+    def _on_timeline_pressed(self):
+        """Pause playback before interactive timeline scrubbing."""
+        self._session_orch._on_timeline_pressed()
+
+    def _on_timeline_moved(self, value):
+        """Update the timeline label while the user scrubs."""
+        self._session_orch._on_timeline_moved(value)
+
     def _goto_first_frame(self):
         """Go to the first frame."""
         self._session_orch._goto_first_frame()

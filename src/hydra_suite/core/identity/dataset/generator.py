@@ -13,6 +13,10 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from hydra_suite.core.identity.dataset.naming import (
+    build_detection_image_filename,
+    build_interpolated_image_filename,
+)
 from hydra_suite.core.identity.geometry import (
     ellipse_to_obb_corners,
     resolve_directed_angle,
@@ -529,11 +533,13 @@ class IndividualDatasetGenerator:
         if crop is None:
             return None
 
-        id_part = f"traj{int(traj_id):04d}"
-        filename = (
-            f"interp_f{int(frame_id):06d}_{id_part}_seg{int(interp_from[0]):06d}"
-            f"-{int(interp_from[1]):06d}_p{int(interp_index):03d}"
-            f"of{int(interp_total):03d}.{self.output_format}"
+        filename = build_interpolated_image_filename(
+            frame_id=frame_id,
+            trajectory_id=traj_id,
+            interp_from=(int(interp_from[0]), int(interp_from[1])),
+            interp_index=interp_index,
+            interp_total=interp_total,
+            extension=self.output_format,
         )
 
         interp_canon_angle, interp_canon_directed, interp_canon_source = (
@@ -712,7 +718,10 @@ class IndividualDatasetGenerator:
                 filename = filename_override
             elif detection_id is not None:
                 # Use DetectionID if available (preferred/unique)
-                filename = f"{name_prefix}did{int(detection_id)}.{self.output_format}"
+                filename = (
+                    f"{name_prefix}"
+                    f"{build_detection_image_filename(detection_id, self.output_format)}"
+                )
             elif track_id >= 0:
                 filename = (
                     f"{name_prefix}f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}."
@@ -797,10 +806,10 @@ class IndividualDatasetGenerator:
                 f.write("- Background outside OBB is masked to black\n")
                 f.write("- Detections are pre-filtered by ROI and size in tracking\n\n")
                 f.write("## File Naming\n\n")
-                f.write(f"- `fXXXXXX_tYYYY_dZZ.{self.output_format}`\n")
-                f.write("  - `fXXXXXX`: Frame number\n")
-                f.write("  - `tYYYY`: Track ID\n")
-                f.write("  - `dZZ`: Detection index within frame\n\n")
+                f.write(f"- `did<ID>.{self.output_format}` for detected rows\n")
+                f.write(
+                    f"- `interp_fXXXXXX_trajYYYY_segAAAAAA-BBBBBB_pCCCofDDD.{self.output_format}` for interpolated rows\n\n"
+                )
                 f.write("## Usage\n\n")
                 f.write("These crops can be used for:\n")
                 f.write("- Training individual identity classifiers\n")

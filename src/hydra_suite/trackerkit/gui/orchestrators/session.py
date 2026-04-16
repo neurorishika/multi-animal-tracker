@@ -1510,6 +1510,26 @@ class SessionOrchestrator:
         self._update_range_info()
         logger.info(f"Video player initialized: {self._mw.video_total_frames} frames")
 
+    def _set_current_frame_label(self, frame_idx: int, *, scrubbing: bool = False):
+        """Refresh the preview frame label without forcing a video seek."""
+        total_frames = max(self._mw.video_total_frames - 1, 0)
+        suffix = " (release to seek)" if scrubbing else ""
+        self._panels.setup.lbl_current_frame.setText(
+            f"Frame: {frame_idx}/{total_frames}{suffix}"
+        )
+
+    def _seek_preview_frame(self, frame_idx: int):
+        """Route programmatic seeks through the slider without double-rendering."""
+        if self._mw.video_total_frames <= 0:
+            return
+        bounded_idx = max(0, min(frame_idx, self._mw.video_total_frames - 1))
+        self._mw.video_current_frame_idx = bounded_idx
+        slider = self._panels.setup.slider_timeline
+        if slider.value() != bounded_idx:
+            slider.setValue(bounded_idx)
+            return
+        self._mw._display_current_frame()
+
     def _display_current_frame(self):
         """Display the current frame in the video label."""
         if self._mw.video_cap is None:
@@ -1526,9 +1546,7 @@ class SessionOrchestrator:
         self._mw.detection_test_result = None
         if hasattr(self._mw, "_detection_panel"):
             self._mw._detection_panel._update_preview_display()
-        self._panels.setup.lbl_current_frame.setText(
-            f"Frame: {self._mw.video_current_frame_idx}/{self._mw.video_total_frames - 1}"
-        )
+        self._set_current_frame_label(self._mw.video_current_frame_idx)
         self._panels.setup.slider_timeline.blockSignals(True)
         self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
         self._panels.setup.slider_timeline.blockSignals(False)
@@ -1543,43 +1561,42 @@ class SessionOrchestrator:
         self._mw.video_current_frame_idx = value
         self._mw._display_current_frame()
 
+    def _on_timeline_pressed(self):
+        """Pause playback before interactive timeline scrubbing begins."""
+        if self._mw.is_playing:
+            self._mw._stop_playback()
+
+    def _on_timeline_moved(self, value):
+        """Update the frame counter while the user drags the timeline handle."""
+        if self._panels.setup.slider_timeline.hasTracking():
+            return
+        self._set_current_frame_label(value, scrubbing=True)
+
     def _goto_first_frame(self):
         """Go to the first frame."""
         if self._mw.is_playing:
             self._mw._stop_playback()
-        self._mw.video_current_frame_idx = 0
-        self._panels.setup.slider_timeline.setValue(0)
-        self._mw._display_current_frame()
+        self._seek_preview_frame(0)
 
     def _goto_prev_frame(self):
         """Go to the previous frame."""
         if self._mw.is_playing:
             self._mw._stop_playback()
         if self._mw.video_current_frame_idx > 0:
-            self._mw.video_current_frame_idx -= 1
-            self._panels.setup.slider_timeline.setValue(
-                self._mw.video_current_frame_idx
-            )
-            self._mw._display_current_frame()
+            self._seek_preview_frame(self._mw.video_current_frame_idx - 1)
 
     def _goto_next_frame(self):
         """Go to the next frame."""
         if self._mw.is_playing:
             self._mw._stop_playback()
         if self._mw.video_current_frame_idx < self._mw.video_total_frames - 1:
-            self._mw.video_current_frame_idx += 1
-            self._panels.setup.slider_timeline.setValue(
-                self._mw.video_current_frame_idx
-            )
-            self._mw._display_current_frame()
+            self._seek_preview_frame(self._mw.video_current_frame_idx + 1)
 
     def _goto_last_frame(self):
         """Go to the last frame."""
         if self._mw.is_playing:
             self._mw._stop_playback()
-        self._mw.video_current_frame_idx = self._mw.video_total_frames - 1
-        self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
-        self._mw._display_current_frame()
+        self._seek_preview_frame(self._mw.video_total_frames - 1)
 
     def _goto_random_frame(self):
         """Jump to a random frame."""
@@ -1589,11 +1606,7 @@ class SessionOrchestrator:
             self._mw._stop_playback()
         if self._mw.video_total_frames <= 0:
             return
-        self._mw.video_current_frame_idx = np.random.randint(
-            0, self._mw.video_total_frames
-        )
-        self._panels.setup.slider_timeline.setValue(self._mw.video_current_frame_idx)
-        self._mw._display_current_frame()
+        self._seek_preview_frame(np.random.randint(0, self._mw.video_total_frames))
 
     def _toggle_playback(self):
         """Toggle play/pause."""

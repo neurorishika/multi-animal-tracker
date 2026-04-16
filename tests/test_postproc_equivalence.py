@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -72,3 +73,42 @@ def test_subset_bidirectional_fixture_regression() -> None:
         {"forward": forward, "backward": backward}, params
     )
     assert_equivalent(actual, expected, tol=STRICT_TOL)
+
+
+def test_interpolate_contiguous_occluded_nan_rows() -> None:
+    input_df = pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 1,
+                "FrameID": 0,
+                "X": 0.0,
+                "Y": 0.0,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 1,
+                "X": np.nan,
+                "Y": np.nan,
+                "Theta": np.nan,
+                "State": "occluded",
+            },
+            {
+                "TrajectoryID": 1,
+                "FrameID": 2,
+                "X": 20.0,
+                "Y": 10.0,
+                "Theta": 1.0,
+                "State": "active",
+            },
+        ]
+    )
+
+    actual = run_interpolate(input_df, {"method": "linear", "max_gap": 2})
+
+    gap_row = actual.loc[actual["FrameID"] == 1].iloc[0]
+    assert gap_row["State"] == "occluded"
+    assert gap_row["X"] == pytest.approx(10.0)
+    assert gap_row["Y"] == pytest.approx(5.0)
+    assert gap_row["Theta"] == pytest.approx(0.5)
