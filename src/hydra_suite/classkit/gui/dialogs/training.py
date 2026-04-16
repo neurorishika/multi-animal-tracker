@@ -4,7 +4,10 @@ from pathlib import Path
 from statistics import median
 from typing import List, Optional, Tuple
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -333,12 +336,16 @@ class ClassKitTrainingDialog(QDialog):
                 "custom_gradual_unfreeze_interval",
             ),
             (self._custom_input_size_spin, "custom_input_size"),
+            (self.hue_spin, "hue"),
+            (self.saturation_spin, "saturation"),
             (self.brightness_spin, "brightness"),
             (self.contrast_spin, "contrast"),
             (self.flip_ud_spin, "flipud"),
             (self.flip_lr_spin, "fliplr"),
         ):
             self._set_spin_value(widget, settings, key)
+        if "monochrome" in settings:
+            self.monochrome_check.setChecked(bool(settings.get("monochrome")))
 
         label_expansion = settings.get("label_expansion")
         if isinstance(label_expansion, dict) and label_expansion:
@@ -432,9 +439,45 @@ class ClassKitTrainingDialog(QDialog):
         self._data_summary_label.setStyleSheet("color:#ffffff; font-size:11px;")
         data_summary_layout.addWidget(self._data_summary_label)
 
+        self._sample_preview_group = QGroupBox("Training Sample Preview")
+        sample_preview_layout = QVBoxLayout(self._sample_preview_group)
+        sample_preview_layout.setContentsMargins(10, 8, 10, 8)
+        self._sample_preview_note = QLabel(
+            "Representative labeled source images before augmentation. Captions show the current label, split, and filename."
+        )
+        self._sample_preview_note.setWordWrap(True)
+        self._sample_preview_note.setStyleSheet("color:#cfcfcf; font-size:11px;")
+        sample_preview_layout.addWidget(self._sample_preview_note)
+
+        preview_toggle_row = QHBoxLayout()
+        preview_toggle_row.setContentsMargins(0, 0, 0, 0)
+        self._sample_preview_monochrome_toggle = QCheckBox("Preview monochrome samples")
+        self._sample_preview_monochrome_toggle.setToolTip(
+            "When monochrome mode is enabled for training, render these sample thumbnails in grayscale so the preview matches the derived training dataset."
+        )
+        self._sample_preview_monochrome_toggle.setEnabled(False)
+        preview_toggle_row.addWidget(self._sample_preview_monochrome_toggle)
+        preview_toggle_row.addStretch()
+        sample_preview_layout.addLayout(preview_toggle_row)
+
+        self._sample_preview_scroll = QScrollArea()
+        self._sample_preview_scroll.setWidgetResizable(True)
+        self._sample_preview_scroll.setFrameShape(QFrame.NoFrame)
+        self._sample_preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._sample_preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._sample_preview_scroll.setMinimumHeight(220)
+
+        self._sample_preview_container = QWidget()
+        self._sample_preview_cards_layout = QHBoxLayout(self._sample_preview_container)
+        self._sample_preview_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._sample_preview_cards_layout.setSpacing(8)
+        self._sample_preview_scroll.setWidget(self._sample_preview_container)
+        sample_preview_layout.addWidget(self._sample_preview_scroll)
+
         layout_gen = QVBoxLayout(self.general_tab)
         layout_gen.addLayout(form)
         layout_gen.addWidget(self._data_summary_group)
+        layout_gen.addWidget(self._sample_preview_group)
         layout_gen.addStretch()
         return self.general_tab
 
@@ -778,7 +821,7 @@ class ClassKitTrainingDialog(QDialog):
         exp_note = QLabel(
             "<i>Each row: source label \u2192 destination label when that flip is applied.<br>"
             "Pairs are applied to train images only; evaluation data is never flipped.<br>"
-            "When enabled, random flip augmentation is disabled; brightness and contrast jitter remain available.</i>"
+            "When enabled, random flip augmentation is disabled; hue, saturation, brightness, contrast, and monochrome settings remain available.</i>"
         )
         exp_note.setWordWrap(True)
         exp_note.setStyleSheet("color:#ffffff; font-size:11px;")
@@ -1159,6 +1202,31 @@ class ClassKitTrainingDialog(QDialog):
         )
         aug_form.addRow("<b>Contrast Jitter:</b>", self.contrast_spin)
 
+        self.saturation_spin = QDoubleSpinBox()
+        self.saturation_spin.setRange(0.0, 1.0)
+        self.saturation_spin.setSingleStep(0.05)
+        self.saturation_spin.setValue(0.0)
+        self.saturation_spin.setToolTip(
+            "Photometric saturation jitter. Useful when color strength varies but hue identity remains informative."
+        )
+        aug_form.addRow("<b>Saturation Jitter:</b>", self.saturation_spin)
+
+        self.hue_spin = QDoubleSpinBox()
+        self.hue_spin.setRange(0.0, 0.5)
+        self.hue_spin.setSingleStep(0.01)
+        self.hue_spin.setDecimals(2)
+        self.hue_spin.setValue(0.0)
+        self.hue_spin.setToolTip(
+            "Hue jitter fraction. Small values are recommended when color identity may shift across acquisitions."
+        )
+        aug_form.addRow("<b>Hue Jitter:</b>", self.hue_spin)
+
+        self.monochrome_check = QCheckBox("Force monochrome derived dataset")
+        self.monochrome_check.setToolTip(
+            "Convert the exported training dataset to grayscale RGB before training. This removes color information across train and validation splits."
+        )
+        aug_form.addRow("<b>Monochrome Mode:</b>", self.monochrome_check)
+
         self._exp_group = self._build_expansion_group()
         aug_layout.addWidget(self._exp_group)
         aug_layout.addStretch()
@@ -1248,6 +1316,18 @@ class ClassKitTrainingDialog(QDialog):
         self.contrast_spin.valueChanged.connect(
             lambda _value: self._refresh_data_summary()
         )
+        self.saturation_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self.hue_spin.valueChanged.connect(lambda _value: self._refresh_data_summary())
+        self.monochrome_check.toggled.connect(
+            lambda _checked: self._refresh_data_summary()
+        )
+        self.monochrome_check.toggled.connect(self._sync_sample_preview_controls)
+        self._sample_preview_monochrome_toggle.toggled.connect(
+            lambda _checked: self._refresh_sample_preview()
+        )
+        self._sync_sample_preview_controls()
         self._refresh_data_summary()
 
     def _populate_modes(self):
@@ -1516,6 +1596,12 @@ class ClassKitTrainingDialog(QDialog):
             enabled_augments.append(f"brightness {self.brightness_spin.value():.2f}")
         if self.contrast_spin.value() > 0:
             enabled_augments.append(f"contrast {self.contrast_spin.value():.2f}")
+        if self.saturation_spin.value() > 0:
+            enabled_augments.append(f"saturation {self.saturation_spin.value():.2f}")
+        if self.hue_spin.value() > 0:
+            enabled_augments.append(f"hue {self.hue_spin.value():.2f}")
+        if self.monochrome_check.isChecked():
+            enabled_augments.append("monochrome")
 
         if enabled_augments:
             lines.append(
@@ -1527,9 +1613,191 @@ class ClassKitTrainingDialog(QDialog):
             lines.append("Train-only stochastic augmentation: none.")
         return "\n".join(lines)
 
+    def _preview_records_with_splits(self) -> List[dict]:
+        preview_pairs = [
+            (path, label)
+            for path, label in zip(self._image_paths, self._labeled_label_names)
+            if str(label).strip()
+        ]
+        if not preview_pairs:
+            return []
+
+        labels = [label for _, label in preview_pairs]
+        try:
+            splits = build_stratified_splits(
+                labels,
+                val_fraction=self.val_fraction_spin.value(),
+                test_fraction=0.0,
+            )
+        except Exception:
+            splits = ["train"] * len(preview_pairs)
+
+        records = []
+        for (path, label), split in zip(preview_pairs, splits):
+            if Path(path).exists():
+                records.append(
+                    {
+                        "path": Path(path),
+                        "label": label,
+                        "split": str(split or "train"),
+                    }
+                )
+        return records
+
+    def _current_preview_records(self, max_items: int = 8) -> List[dict]:
+        records = self._preview_records_with_splits()
+        if len(records) <= max_items:
+            return records
+
+        selected = []
+        seen_paths = set()
+        for split_name in ("val", "train"):
+            for record in records:
+                record_key = str(record["path"])
+                if record["split"] != split_name or record_key in seen_paths:
+                    continue
+                selected.append(record)
+                seen_paths.add(record_key)
+                break
+            if len(selected) >= max_items:
+                return selected[:max_items]
+
+        buckets = {}
+        for record in records:
+            buckets.setdefault(record["label"], []).append(record)
+
+        for label in sorted(buckets):
+            buckets[label] = list(buckets[label])
+
+        while len(selected) < max_items:
+            added = False
+            for label in sorted(buckets):
+                bucket = buckets[label]
+                while bucket and str(bucket[0]["path"]) in seen_paths:
+                    bucket.pop(0)
+                if not bucket:
+                    continue
+                record = bucket.pop(0)
+                selected.append(record)
+                seen_paths.add(str(record["path"]))
+                added = True
+                if len(selected) >= max_items:
+                    break
+            if not added:
+                break
+        return selected[:max_items]
+
+    def _build_sample_preview_card(self, record: dict) -> QWidget:
+        card = QFrame()
+        card.setFrameShape(QFrame.StyledPanel)
+        card.setFixedWidth(150)
+        card.setStyleSheet(
+            "QFrame { background:#1e1e1e; border:1px solid #3e3e42; border-radius:6px; }"
+        )
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 8, 8, 8)
+        card_layout.setSpacing(6)
+
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignCenter)
+        image_label.setFixedSize(132, 132)
+        image_label.setStyleSheet(
+            "background:#111111; border:1px solid #3e3e42; border-radius:4px; color:#cfcfcf;"
+        )
+        pixmap = self._sample_preview_pixmap(record["path"])
+        if pixmap.isNull():
+            image_label.setText("Preview\nunavailable")
+        else:
+            image_label.setPixmap(
+                pixmap.scaled(128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        card_layout.addWidget(image_label)
+
+        caption = QLabel(
+            f"{record['label']}\n{str(record['split']).title()} split\n{record['path'].name}"
+        )
+        caption.setTextFormat(Qt.PlainText)
+        caption.setWordWrap(True)
+        caption.setStyleSheet("color:#ffffff; font-size:11px;")
+        caption.setToolTip(
+            f"Label: {record['label']}\nSplit: {record['split']}\nPath: {record['path']}"
+        )
+        card_layout.addWidget(caption)
+
+        return card
+
+    def _sample_preview_uses_monochrome(self) -> bool:
+        return bool(
+            self.monochrome_check.isChecked()
+            and self._sample_preview_monochrome_toggle.isChecked()
+        )
+
+    def _sample_preview_pixmap(self, path: Path) -> QPixmap:
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull() or not self._sample_preview_uses_monochrome():
+            return pixmap
+
+        image = pixmap.toImage()
+        if image.isNull():
+            return pixmap
+        grayscale = image.convertToFormat(QImage.Format_Grayscale8).convertToFormat(
+            QImage.Format_RGB32
+        )
+        return QPixmap.fromImage(grayscale)
+
+    def _sync_sample_preview_controls(self) -> None:
+        monochrome_enabled = self.monochrome_check.isChecked()
+        if monochrome_enabled:
+            self._sample_preview_monochrome_toggle.setEnabled(True)
+            if not self._sample_preview_monochrome_toggle.isChecked():
+                self._sample_preview_monochrome_toggle.setChecked(True)
+            self._sample_preview_note.setText(
+                "Representative labeled source images. With monochrome training enabled, you can preview the grayscale version that will be exported into the training pipeline."
+            )
+        else:
+            if self._sample_preview_monochrome_toggle.isChecked():
+                self._sample_preview_monochrome_toggle.setChecked(False)
+            self._sample_preview_monochrome_toggle.setEnabled(False)
+            self._sample_preview_note.setText(
+                "Representative labeled source images before augmentation. Captions show the current label, split, and filename."
+            )
+
+    def _refresh_sample_preview(self) -> None:
+        if not hasattr(self, "_sample_preview_cards_layout"):
+            return
+
+        while self._sample_preview_cards_layout.count():
+            item = self._sample_preview_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        records = self._current_preview_records()
+        has_preview_data = bool(records)
+        self._sample_preview_group.setVisible(
+            has_preview_data or bool(self._image_paths and self._labeled_label_names)
+        )
+
+        if not records:
+            empty_label = QLabel(
+                "No labeled image preview available yet. Add labeled samples to inspect the training inputs here."
+            )
+            empty_label.setWordWrap(True)
+            empty_label.setStyleSheet("color:#cfcfcf; font-size:11px;")
+            self._sample_preview_cards_layout.addWidget(empty_label)
+            return
+
+        for record in records:
+            self._sample_preview_cards_layout.addWidget(
+                self._build_sample_preview_card(record)
+            )
+        self._sample_preview_cards_layout.addStretch()
+
     def _refresh_data_summary(self) -> None:
         if hasattr(self, "_data_summary_label"):
             self._data_summary_label.setText(self.current_data_summary_text())
+        self._refresh_sample_preview()
 
     def _sync_expansion_constraints(self) -> None:
         expansion_enabled = bool(self._exp_group.isChecked())
@@ -1544,11 +1812,11 @@ class ClassKitTrainingDialog(QDialog):
             self.flip_lr_spin.setValue(0.0)
             self.flip_ud_spin.setValue(0.0)
             self._exp_constraints_label.setText(
-                "Label expansion ON: random flips are disabled; brightness and contrast jitter still apply to train samples."
+                "Label expansion ON: random flips are disabled; hue, saturation, brightness, contrast, and monochrome settings still apply to train samples."
             )
         else:
             self._exp_constraints_label.setText(
-                "Label expansion OFF: choose flip and photometric augmentation probabilities freely."
+                "Label expansion OFF: choose flip, color jitter, and monochrome settings freely."
             )
         self._refresh_data_summary()
 
@@ -1564,8 +1832,11 @@ class ClassKitTrainingDialog(QDialog):
 
         flipud_value = 0.0 if expansion_enabled else self.flip_ud_spin.value()
         fliplr_value = 0.0 if expansion_enabled else self.flip_lr_spin.value()
+        hue_value = self.hue_spin.value()
+        saturation_value = self.saturation_spin.value()
         brightness_value = self.brightness_spin.value()
         contrast_value = self.contrast_spin.value()
+        monochrome_value = self.monochrome_check.isChecked()
 
         _rt = str(self.compute_runtime_combo.currentData() or "cpu")
         _train_device = str(self.device_combo.currentData() or "cpu")
@@ -1642,7 +1913,10 @@ class ClassKitTrainingDialog(QDialog):
             "custom_input_size": self._custom_input_size_spin.value(),
             "flipud": flipud_value,
             "fliplr": fliplr_value,
+            "hue": hue_value,
+            "saturation": saturation_value,
             "brightness": brightness_value,
             "contrast": contrast_value,
+            "monochrome": monochrome_value,
             "label_expansion": label_expansion,
         }

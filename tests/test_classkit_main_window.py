@@ -543,23 +543,34 @@ def test_after_training_inference_skips_invalid_auto_model_umap(
     )
 
     class Dialog:
+        class ProgressBar:
+            def __init__(self) -> None:
+                self.value = None
+
+            def setValue(self, value: int) -> None:
+                self.value = value
+
         def __init__(self) -> None:
             self.logs = []
+            self.progress_bar = self.ProgressBar()
 
         def append_log(self, message: str) -> None:
             self.logs.append(message)
 
     window = MainWindow()
     window._model_probs = np.array([[1.0], [1.0], [1.0]], dtype=np.float32)
+    window.tabs.setCurrentIndex(0)
     dialog = Dialog()
 
     window._after_training_inference(dialog)
 
     assert critical_calls == []
+    assert window.tabs.currentWidget() is window.metrics_page
+    assert dialog.progress_bar.value == 100
     assert dialog.logs == [
-        "Inference complete — Metrics tab updated.",
         "Auto-computing model-space UMAP...",
         "Model-space UMAP skipped: Need at least 2 prediction columns to compute model-space UMAP.",
+        "Training Complete. Metrics tab updated.",
     ]
 
 
@@ -604,8 +615,16 @@ def test_after_training_inference_logs_model_umap_worker_error_without_modal(
             self.signals = DummySignals()
 
     class Dialog:
+        class ProgressBar:
+            def __init__(self) -> None:
+                self.value = None
+
+            def setValue(self, value: int) -> None:
+                self.value = value
+
         def __init__(self) -> None:
             self.logs = []
+            self.progress_bar = self.ProgressBar()
 
         def append_log(self, message: str) -> None:
             self.logs.append(message)
@@ -626,7 +645,12 @@ def test_after_training_inference_logs_model_umap_worker_error_without_modal(
     window._after_training_inference(dialog)
 
     assert critical_calls == []
-    assert dialog.logs[-1] == "Model-space UMAP failed: boom"
+    assert dialog.progress_bar.value == 100
+    assert dialog.logs == [
+        "Auto-computing model-space UMAP...",
+        "Model-space UMAP failed: boom",
+        "Training Complete. Metrics tab updated.",
+    ]
 
 
 def test_empty_hover_clears_preview_without_active_label_selection(qapp) -> None:
@@ -1007,6 +1031,39 @@ def test_make_training_spec_uses_selected_initial_model_path(
 
     assert custom_spec.base_model == ""
     assert custom_spec.resume_from == str(custom_start)
+
+
+def test_make_training_spec_maps_color_augmentations(qapp, tmp_path: Path) -> None:
+    window = MainWindow()
+
+    spec = window._make_training_spec(
+        {
+            "base_model": "yolo26n-cls.pt",
+            "epochs": 5,
+            "batch": 8,
+            "lr": 0.001,
+            "patience": 2,
+            "hue": 0.04,
+            "saturation": 0.35,
+            "brightness": 0.2,
+            "contrast": 0.15,
+            "monochrome": True,
+        },
+        window._training_role_for_mode("flat_yolo"),
+        "flat_yolo",
+        True,
+        tmp_path / "export_yolo",
+    )
+
+    assert spec.augmentation_profile.hue == pytest.approx(0.04)
+    assert spec.augmentation_profile.saturation == pytest.approx(0.35)
+    assert spec.augmentation_profile.brightness == pytest.approx(0.2)
+    assert spec.augmentation_profile.contrast == pytest.approx(0.15)
+    assert spec.augmentation_profile.monochrome is True
+    assert spec.augmentation_profile.args["hsv_h"] == pytest.approx(0.04)
+    assert spec.augmentation_profile.args["hsv_s"] == pytest.approx(0.35)
+    assert spec.augmentation_profile.args["hsv_v"] == pytest.approx(0.2)
+    assert "contrast" not in spec.augmentation_profile.args
 
 
 def test_autoload_cached_analysis_restores_state_without_prompt(qapp) -> None:

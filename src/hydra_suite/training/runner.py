@@ -304,6 +304,20 @@ def _apply_tiny_augmentation(img, augment, profile):
         img = np.clip((img.astype(np.float32) - mean) * factor + mean, 0, 255).astype(
             np.uint8
         )
+    if profile.saturation > 0 or profile.hue > 0:
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
+        if profile.saturation > 0:
+            sat_factor = random.uniform(
+                max(0.0, 1.0 - profile.saturation), 1.0 + profile.saturation
+            )
+            hsv[..., 1] = np.clip(hsv[..., 1] * sat_factor, 0, 255)
+        if profile.hue > 0:
+            hue_delta = random.uniform(-profile.hue, profile.hue) * 179.0
+            hsv[..., 0] = (hsv[..., 0] + hue_delta) % 180.0
+        img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+    if getattr(profile, "monochrome", False):
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
     return img
 
 
@@ -976,13 +990,22 @@ def _train_custom_classify(
         train_transforms.append(transforms.RandomHorizontalFlip(p=profile.fliplr))
     if profile.flipud > 0:
         train_transforms.append(transforms.RandomVerticalFlip(p=profile.flipud))
-    if profile.brightness > 0 or profile.contrast > 0:
+    if (
+        profile.brightness > 0
+        or profile.contrast > 0
+        or getattr(profile, "saturation", 0.0) > 0
+        or getattr(profile, "hue", 0.0) > 0
+    ):
         train_transforms.append(
             transforms.ColorJitter(
                 brightness=float(profile.brightness),
                 contrast=float(profile.contrast),
+                saturation=float(getattr(profile, "saturation", 0.0)),
+                hue=float(getattr(profile, "hue", 0.0)),
             )
         )
+    if getattr(profile, "monochrome", False):
+        train_transforms.append(transforms.Grayscale(num_output_channels=3))
     train_transforms.extend(
         [
             transforms.ToTensor(),
@@ -993,6 +1016,11 @@ def _train_custom_classify(
     val_tf = transforms.Compose(
         [
             transforms.Resize((sz, sz)),
+            *(
+                [transforms.Grayscale(num_output_channels=3)]
+                if getattr(profile, "monochrome", False)
+                else []
+            ),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
         ]

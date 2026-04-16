@@ -591,6 +591,7 @@ class ClassKitTrainingWorker(QRunnable):
                     self.signals.error.emit(f"Training failed for spec {i}")
                     return
 
+            self.signals.progress.emit(100, "")
             self.signals.success.emit(results)
         except Exception as exc:
             self.signals.error.emit(str(exc))
@@ -613,6 +614,7 @@ class ExportWorker(QRunnable):
         copy_files: bool = True,
         temp_dir: Optional[Path] = None,
         label_expansion: Optional[Dict[str, Dict[str, str]]] = None,
+        force_monochrome: bool = False,
     ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
@@ -627,6 +629,7 @@ class ExportWorker(QRunnable):
         self.temp_dir = temp_dir
         # label_expansion: {"fliplr": {"left": "right", "right": "left"}, ...}
         self.label_expansion: Dict[str, Dict[str, str]] = label_expansion or {}
+        self.force_monochrome = bool(force_monochrome)
         self.signals = TaskSignals()
 
     def _class_name(self, label: int) -> str:
@@ -643,8 +646,8 @@ class ExportWorker(QRunnable):
         )
 
     def _prepare_export_workspace(self) -> None:
-        """Create a temporary expansion workspace when label expansion is enabled."""
-        if self.label_expansion and self.temp_dir is None:
+        """Create a temporary export workspace when helper-generated images are needed."""
+        if (self.label_expansion or self.force_monochrome) and self.temp_dir is None:
             import tempfile
 
             self._expansion_tmpdir = tempfile.mkdtemp(prefix="classkit_exp_")
@@ -757,6 +760,40 @@ class ExportWorker(QRunnable):
             labels + extra_labels,
             splits + extra_splits,
         )
+
+    def _apply_monochrome_mode(
+        self,
+        image_paths: List[Path],
+        labels: List[int],
+        splits: List[str],
+    ) -> tuple[List[Path], List[int], List[str]]:
+        """Materialize grayscale RGB copies of the derived dataset when requested."""
+        if not self.force_monochrome or not self.temp_dir:
+            return image_paths, labels, splits
+
+        import cv2
+
+        mono_dir = Path(self.temp_dir) / "monochrome"
+        mono_dir.mkdir(parents=True, exist_ok=True)
+
+        converted_paths: List[Path] = []
+        total = len(image_paths)
+        for index, img_path in enumerate(image_paths):
+            img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+            if img is None:
+                raise FileNotFoundError(
+                    f"Failed to read image for monochrome export: {img_path}"
+                )
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            mono = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            out_p = mono_dir / f"mono_{index}_{img_path.stem}{img_path.suffix}"
+            cv2.imwrite(str(out_p), mono)
+            converted_paths.append(out_p)
+
+        if total:
+            self.signals.progress.emit(60, f"Converted {total} images to monochrome")
+            self.copy_files = True
+        return converted_paths, labels, splits
 
     def _expand_label_axis(
         self,
@@ -940,6 +977,9 @@ class ExportWorker(QRunnable):
             image_paths, labels, splits, class_names = self._collect_valid_labels()
             image_paths, labels, splits = self._apply_label_expansion(
                 image_paths, labels, splits, class_names
+            )
+            image_paths, labels, splits = self._apply_monochrome_mode(
+                image_paths, labels, splits
             )
             self._export_dataset(image_paths, labels, splits, class_names)
 

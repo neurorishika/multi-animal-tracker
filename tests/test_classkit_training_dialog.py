@@ -10,8 +10,12 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+QtGui = pytest.importorskip("PySide6.QtGui")
 QApplication = QtWidgets.QApplication
 QScrollArea = QtWidgets.QScrollArea
+QColor = QtGui.QColor
+QImage = QtGui.QImage
+QLabel = QtWidgets.QLabel
 
 ClassKitTrainingDialog = pytest.importorskip(
     "hydra_suite.classkit.gui.dialogs.training"
@@ -36,6 +40,26 @@ def cleanup_qt_widgets(qapp):
     gc.collect()
 
 
+def _write_test_image(path: Path, color_name: str) -> None:
+    image = QImage(32, 24, QImage.Format_RGB32)
+    image.fill(QColor(color_name))
+    assert image.save(str(path)) is True
+
+
+def _preview_card_image_label(dialog: ClassKitTrainingDialog) -> QLabel:
+    for index in range(dialog._sample_preview_cards_layout.count()):
+        card = dialog._sample_preview_cards_layout.itemAt(index).widget()
+        if card is None:
+            continue
+        layout = card.layout()
+        if layout is None or layout.count() == 0:
+            continue
+        image_label = layout.itemAt(0).widget()
+        if isinstance(image_label, QLabel) and image_label.pixmap() is not None:
+            return image_label
+    raise AssertionError("No preview image label found")
+
+
 def test_training_dialog_auto_sizes_from_average_image_dimensions(qapp) -> None:
     dialog = ClassKitTrainingDialog(
         n_labeled=8,
@@ -57,12 +81,18 @@ def test_training_dialog_augmentation_defaults_start_disabled(qapp) -> None:
 
     assert dialog.flip_ud_spin.value() == pytest.approx(0.0)
     assert dialog.flip_lr_spin.value() == pytest.approx(0.0)
+    assert dialog.hue_spin.value() == pytest.approx(0.0)
+    assert dialog.saturation_spin.value() == pytest.approx(0.0)
     assert dialog.brightness_spin.value() == pytest.approx(0.0)
     assert dialog.contrast_spin.value() == pytest.approx(0.0)
+    assert dialog.monochrome_check.isChecked() is False
     assert settings["flipud"] == pytest.approx(0.0)
     assert settings["fliplr"] == pytest.approx(0.0)
+    assert settings["hue"] == pytest.approx(0.0)
+    assert settings["saturation"] == pytest.approx(0.0)
     assert settings["brightness"] == pytest.approx(0.0)
     assert settings["contrast"] == pytest.approx(0.0)
+    assert settings["monochrome"] is False
 
 
 def test_training_dialog_restores_initial_settings(qapp) -> None:
@@ -84,8 +114,11 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
             "patience": 7,
             "custom_fine_tune_method": "layerwise_lr_decay",
             "custom_layerwise_lr_decay": 0.6,
+            "hue": 0.04,
+            "saturation": 0.35,
             "brightness": 0.2,
             "contrast": 0.15,
+            "monochrome": True,
             "initial_model_path": "/tmp/previous_model.pth",
         },
     )
@@ -95,8 +128,11 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
     assert dialog._custom_input_size_spin.value() == 192
     assert dialog._custom_fine_tune_method_combo.currentData() == "layerwise_lr_decay"
     assert dialog._custom_layerwise_decay_spin.value() == pytest.approx(0.6)
+    assert dialog.hue_spin.value() == pytest.approx(0.04)
+    assert dialog.saturation_spin.value() == pytest.approx(0.35)
     assert dialog.brightness_spin.value() == pytest.approx(0.2)
     assert dialog.contrast_spin.value() == pytest.approx(0.15)
+    assert dialog.monochrome_check.isChecked() is True
     assert dialog.tiny_width_spin.value() == 160
     assert dialog.tiny_height_spin.value() == 96
     assert dialog._custom_epochs_spin.value() == 30
@@ -144,6 +180,87 @@ def test_training_dialog_data_summary_reflects_stratified_split_and_expansion(
     assert "15 files are exported" in summary
 
 
+def test_training_dialog_shows_labeled_sample_preview(qapp, tmp_path: Path) -> None:
+    image_paths = []
+    for idx, color_name in enumerate(
+        ["red", "green", "blue", "yellow", "cyan", "magenta"]
+    ):
+        image_path = tmp_path / f"sample_{idx}.png"
+        _write_test_image(image_path, color_name)
+        image_paths.append(image_path)
+
+    labels = ["left", "left", "left", "right", "right", "right"]
+    dialog = ClassKitTrainingDialog(
+        n_labeled=len(labels),
+        class_choices=["left", "right"],
+        labeled_label_names=labels,
+        image_paths=image_paths,
+    )
+
+    records = dialog._current_preview_records()
+    preview_widgets = [
+        dialog._sample_preview_cards_layout.itemAt(i).widget()
+        for i in range(dialog._sample_preview_cards_layout.count())
+        if dialog._sample_preview_cards_layout.itemAt(i).widget() is not None
+    ]
+
+    assert not dialog._sample_preview_group.isHidden()
+    assert len(records) == len(preview_widgets)
+    assert {record["label"] for record in records} == {"left", "right"}
+    assert any(record["split"] == "val" for record in records)
+
+
+def test_training_dialog_monochrome_preview_toggle_matches_training_mode(
+    qapp, tmp_path: Path
+) -> None:
+    image_path = tmp_path / "sample.png"
+    _write_test_image(image_path, "red")
+
+    dialog = ClassKitTrainingDialog(
+        n_labeled=2,
+        class_choices=["left", "right"],
+        labeled_label_names=["left", "right"],
+        image_paths=[image_path, image_path],
+    )
+
+    assert dialog._sample_preview_monochrome_toggle.isEnabled() is False
+
+    dialog.monochrome_check.setChecked(True)
+
+    assert dialog._sample_preview_monochrome_toggle.isEnabled() is True
+    assert dialog._sample_preview_monochrome_toggle.isChecked() is True
+
+    image_label = _preview_card_image_label(dialog)
+    pixmap = image_label.pixmap()
+    color = pixmap.toImage().pixelColor(pixmap.width() // 2, pixmap.height() // 2)
+
+    assert color.red() == color.green() == color.blue()
+
+
+def test_training_dialog_preview_toggle_can_show_original_color_when_monochrome_enabled(
+    qapp, tmp_path: Path
+) -> None:
+    image_path = tmp_path / "sample.png"
+    _write_test_image(image_path, "red")
+
+    dialog = ClassKitTrainingDialog(
+        n_labeled=2,
+        class_choices=["left", "right"],
+        labeled_label_names=["left", "right"],
+        image_paths=[image_path, image_path],
+    )
+
+    dialog.monochrome_check.setChecked(True)
+    dialog._sample_preview_monochrome_toggle.setChecked(False)
+
+    image_label = _preview_card_image_label(dialog)
+    pixmap = image_label.pixmap()
+    color = pixmap.toImage().pixelColor(pixmap.width() // 2, pixmap.height() // 2)
+
+    assert color.red() > color.green()
+    assert color.red() > color.blue()
+
+
 def test_training_dialog_label_expansion_keeps_photometric_jitter(qapp) -> None:
     dialog = ClassKitTrainingDialog(
         n_labeled=6,
@@ -151,8 +268,11 @@ def test_training_dialog_label_expansion_keeps_photometric_jitter(qapp) -> None:
         labeled_label_names=["left", "right"] * 3,
     )
 
+    dialog.hue_spin.setValue(0.03)
+    dialog.saturation_spin.setValue(0.25)
     dialog.brightness_spin.setValue(0.2)
     dialog.contrast_spin.setValue(0.15)
+    dialog.monochrome_check.setChecked(True)
     dialog.flip_lr_spin.setValue(0.4)
     dialog._exp_group.setChecked(True)
     dialog._add_lr_row("left", "right")
@@ -161,9 +281,26 @@ def test_training_dialog_label_expansion_keeps_photometric_jitter(qapp) -> None:
 
     assert settings["fliplr"] == pytest.approx(0.0)
     assert settings["flipud"] == pytest.approx(0.0)
+    assert settings["hue"] == pytest.approx(0.03)
+    assert settings["saturation"] == pytest.approx(0.25)
     assert settings["brightness"] == pytest.approx(0.2)
     assert settings["contrast"] == pytest.approx(0.15)
+    assert settings["monochrome"] is True
     assert settings["label_expansion"] == {"fliplr": {"left": "right"}}
+
+
+def test_training_dialog_summary_mentions_color_jitter_and_monochrome(qapp) -> None:
+    dialog = ClassKitTrainingDialog(n_labeled=8, class_choices=["a", "b"])
+
+    dialog.hue_spin.setValue(0.05)
+    dialog.saturation_spin.setValue(0.3)
+    dialog.monochrome_check.setChecked(True)
+
+    summary = dialog.current_data_summary_text()
+
+    assert "hue 0.05" in summary
+    assert "saturation 0.30" in summary
+    assert "monochrome" in summary
 
 
 def test_training_dialog_exposes_custom_and_yolo_modes_only(qapp) -> None:

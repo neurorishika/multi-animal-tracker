@@ -5384,15 +5384,19 @@ class MainWindow(QMainWindow):
             enabled=True,
             flipud=settings.get("flipud", 0.0),
             fliplr=settings.get("fliplr", 0.5),
+            hue=settings.get("hue", 0.0),
+            saturation=settings.get("saturation", 0.0),
             brightness=settings.get("brightness", 0.0),
             contrast=settings.get("contrast", 0.0),
+            monochrome=bool(settings.get("monochrome", False)),
             args={
                 key: value
                 for key, value in {
                     "flipud": settings.get("flipud", 0.0),
                     "fliplr": settings.get("fliplr", 0.5),
+                    "hsv_h": settings.get("hue", 0.0),
+                    "hsv_s": settings.get("saturation", 0.0),
                     "hsv_v": settings.get("brightness", 0.0),
-                    "hsv_s": settings.get("contrast", 0.0),
                 }.items()
                 if float(value) > 0.0
             },
@@ -5768,7 +5772,8 @@ class MainWindow(QMainWindow):
     def _after_training_inference(self, dialog, _result=None) -> None:
         """Refresh metrics and model-space plots after post-training inference."""
         self._evaluate_model_on_labeled()
-        dialog.append_log("Inference complete — Metrics tab updated.")
+        self.tabs.setCurrentWidget(self.metrics_page)
+        dialog.progress_bar.setValue(100)
         dialog.append_log("Auto-computing model-space UMAP...")
         QTimer.singleShot(
             100,
@@ -5778,6 +5783,7 @@ class MainWindow(QMainWindow):
                 log_callback=dialog.append_log,
             ),
         )
+        dialog.append_log("Training Complete. Metrics tab updated.")
 
     def _on_training_success(self, dialog, context, results: list) -> None:
         """Handle successful training completion before post-training inference."""
@@ -5786,7 +5792,7 @@ class MainWindow(QMainWindow):
         )
         dialog._train_results = results
         dialog.publish_btn.setEnabled(True)
-        dialog.append_log("Training complete.")
+        dialog.append_log("Training finished. Refreshing predictions and metrics...")
         dialog.start_btn.setEnabled(True)
         dialog.cancel_btn.setEnabled(False)
 
@@ -5883,6 +5889,7 @@ class MainWindow(QMainWindow):
             output_path=context["run_dir"],
             format="ultralytics",
             val_fraction=context["settings"].get("val_fraction", 0.2),
+            force_monochrome=bool(context["settings"].get("monochrome", False)),
             scheme=scheme,
             labels_str=context["labels_str"],
         )
@@ -5900,6 +5907,7 @@ class MainWindow(QMainWindow):
             format="ultralytics",
             class_names=context["class_names_int"],
             val_fraction=context["settings"].get("val_fraction", 0.2),
+            force_monochrome=bool(context["settings"].get("monochrome", False)),
             label_expansion=context["settings"].get("label_expansion") or {},
         )
 
@@ -5952,6 +5960,7 @@ class MainWindow(QMainWindow):
             initial_settings=self._get_recent_project_training_settings(),
             recent_model_paths=self._list_recent_trainable_model_paths(),
             average_image_size=self._estimate_average_image_dimensions(),
+            image_paths=[path for path, _ in labeled_pairs],
             parent=self,
         )
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 pytest.importorskip("PySide6")
 
@@ -91,3 +93,33 @@ def test_export_worker_split_planning_ignores_unlabeled_items(tmp_path: Path) ->
     assert len(labels) == 6
     assert len(splits) == 6
     assert splits.count("val") == 2
+
+
+def test_export_worker_force_monochrome_materializes_grayscale_copies(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "color.png"
+    Image.new("RGB", (12, 10), color=(200, 80, 20)).save(image_path)
+
+    worker = ExportWorker(
+        image_paths=[image_path],
+        labels=[0],
+        output_path=tmp_path / "out.csv",
+        format="csv",
+        class_names={0: "left"},
+        force_monochrome=True,
+    )
+
+    worker._prepare_export_workspace()
+    image_paths, labels, splits, _class_names = worker._collect_valid_labels()
+    converted_paths, converted_labels, converted_splits = worker._apply_monochrome_mode(
+        image_paths, labels, splits
+    )
+
+    converted = np.asarray(Image.open(converted_paths[0]).convert("RGB"))
+
+    assert converted_paths[0] != image_path
+    assert converted_labels == labels
+    assert converted_splits == splits
+    assert np.array_equal(converted[..., 0], converted[..., 1])
+    assert np.array_equal(converted[..., 1], converted[..., 2])

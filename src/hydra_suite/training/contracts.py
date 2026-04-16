@@ -119,8 +119,11 @@ class AugmentationProfile:
     flipud: float = 0.0
     fliplr: float = 0.5
     rotate: float = 0.0
+    hue: float = 0.0
+    saturation: float = 0.0
     brightness: float = 0.0
     contrast: float = 0.0
+    monochrome: bool = False
     args: dict[str, Any] = field(default_factory=dict)
     # Label-switching expansion rules.
     # Maps flip axis name → {source_class_name: target_class_name}.

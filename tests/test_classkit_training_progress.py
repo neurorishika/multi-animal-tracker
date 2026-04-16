@@ -59,7 +59,7 @@ def test_classkit_training_worker_uses_negative_pct_for_log_messages(
 
     worker.run()
 
-    assert emitted == [(-1, "starting"), (25, ""), (-1, "still running")]
+    assert emitted == [(-1, "starting"), (25, ""), (-1, "still running"), (100, "")]
 
 
 def test_classkit_training_worker_multihead_progress_advances_early(
@@ -86,3 +86,4 @@ def test_classkit_training_worker_multihead_progress_advances_early(
 
     assert emitted[0][0] == 5
     assert emitted[1][0] == 55
+    assert emitted[-1] == (100, "")
