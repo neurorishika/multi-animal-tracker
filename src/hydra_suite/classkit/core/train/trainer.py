@@ -121,6 +121,7 @@ class EmbeddingHeadTrainer:
         # Training loop
         history = {"train_loss": [], "val_loss": [], "val_acc": []}
         best_val_loss = float("inf")
+        best_state = None
         patience_counter = 0
 
         for epoch in range(epochs):
@@ -159,9 +160,13 @@ class EmbeddingHeadTrainer:
                         f"val_acc: {val_acc:.4f}"
                     )
 
-                # Early stopping
+                # Early stopping with best-state checkpointing
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
+                    best_state = {
+                        k: v.detach().cpu().clone()
+                        for k, v in self.model.state_dict().items()
+                    }
                     patience_counter = 0
                 else:
                     patience_counter += 1
@@ -173,6 +178,11 @@ class EmbeddingHeadTrainer:
             else:
                 if verbose:
                     print(f"Epoch {epoch + 1}/{epochs} - train_loss: {train_loss:.4f}")
+
+        # Restore best model weights when early stopping was active
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            self.model.to(self.device)
 
         return history
 

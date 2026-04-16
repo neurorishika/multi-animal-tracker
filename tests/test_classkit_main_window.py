@@ -277,6 +277,61 @@ def test_non_first_source_schema_mismatch_can_import_images_only(
     assert request == {"source_root": source_root, "import_labels": False}
 
 
+def test_make_training_spec_propagates_custom_finetune_settings(
+    qapp, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    settings = {
+        "custom_backbone": "resnet18",
+        "custom_fine_tune_method": "gradual_unfreeze",
+        "custom_trainable_layers": 3,
+        "custom_backbone_lr_scale": 0.2,
+        "custom_layerwise_lr_decay": 0.55,
+        "custom_gradual_unfreeze_interval": 7,
+        "custom_input_size": 192,
+        "epochs": 12,
+        "batch": 8,
+        "lr": 0.0007,
+        "patience": 4,
+    }
+
+    spec = window._make_training_spec(
+        settings,
+        window._training_role_for_mode("flat_custom"),
+        "flat_custom",
+        False,
+        tmp_path / "export",
+    )
+
+    assert spec.custom_params is not None
+    assert spec.custom_params.backbone == "resnet18"
+    assert spec.custom_params.fine_tune_method == "gradual_unfreeze"
+    assert spec.custom_params.trainable_layers == 3
+    assert spec.custom_params.backbone_lr_scale == pytest.approx(0.2)
+    assert spec.custom_params.layerwise_lr_decay == pytest.approx(0.55)
+    assert spec.custom_params.gradual_unfreeze_interval == 7
+
+
+def test_labeled_eval_arrays_prefers_active_evaluation_subset(
+    qapp, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    image_paths = [tmp_path / f"img_{idx}.png" for idx in range(4)]
+    window.image_paths = [str(path) for path in image_paths]
+    window.image_labels = ["left", "left", "right", "right"]
+    window.classes = ["left", "right"]
+    window._set_active_evaluation_selection(
+        [str(image_paths[1]), str(image_paths[2])],
+        "val",
+    )
+
+    idx_arr, y_true, scope_text = window._labeled_eval_arrays()
+
+    assert idx_arr.tolist() == [1, 2]
+    assert y_true.tolist() == [0, 1]
+    assert scope_text == "Val split"
+
+
 def test_export_dataset_includes_labels_outside_current_scheme(
     qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

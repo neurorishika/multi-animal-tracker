@@ -616,6 +616,7 @@ class ExportWorker(QRunnable):
         temp_dir: Optional[Path] = None,
         label_expansion: Optional[Dict[str, Dict[str, str]]] = None,
         force_monochrome: bool = False,
+        preset_splits_by_path: Optional[Dict[str, str]] = None,
     ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
@@ -632,6 +633,10 @@ class ExportWorker(QRunnable):
         # label_expansion: {"fliplr": {"left": "right", "right": "left"}, ...}
         self.label_expansion: Dict[str, Dict[str, str]] = label_expansion or {}
         self.force_monochrome = bool(force_monochrome)
+        self.preset_splits_by_path = {
+            str(Path(path).resolve()): str(split)
+            for path, split in (preset_splits_by_path or {}).items()
+        }
         self.signals = TaskSignals()
 
     def _class_name(self, label: int) -> str:
@@ -672,7 +677,27 @@ class ExportWorker(QRunnable):
 
         image_paths = [item[0] for item in valid]
         labels = [item[1] for item in valid]
-        splits = self._build_splits(labels)
+        if self.preset_splits_by_path:
+            splits = []
+            unmatched = 0
+            for path in image_paths:
+                key = str(Path(path).resolve())
+                split = self.preset_splits_by_path.get(key)
+                if split is None:
+                    unmatched += 1
+                    split = "train"
+                splits.append(split)
+            if unmatched:
+                import warnings
+
+                warnings.warn(
+                    f"{unmatched} of {len(image_paths)} images did not match "
+                    f"any preset split key and defaulted to 'train'. "
+                    f"This may indicate a path resolution mismatch.",
+                    stacklevel=2,
+                )
+        else:
+            splits = self._build_splits(labels)
         class_names = {label: self._class_name(label) for label in set(labels)}
         return image_paths, labels, splits, class_names
 
@@ -987,6 +1012,10 @@ class ExportWorker(QRunnable):
                     "format": self.format,
                     "num_exported": len(image_paths),
                     "num_classes": len(set(labels)),
+                    "source_split_by_path": {
+                        str(Path(path).resolve()): split
+                        for path, split in zip(image_paths, splits)
+                    },
                 }
             )
 

@@ -53,6 +53,7 @@ class ClassKitTrainingDialog(QDialog):
         recent_model_paths: Optional[List[str]] = None,
         average_image_size: Optional[Tuple[float, float]] = None,
         image_paths: Optional[List[Path]] = None,
+        group_keys: Optional[List[str]] = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -72,6 +73,7 @@ class ClassKitTrainingDialog(QDialog):
         )
         self._average_image_size = average_image_size
         self._image_paths = [Path(path) for path in (image_paths or [])]
+        self._group_keys = list(group_keys or [])
         self._train_results = None
         self._worker = None
         self.setWindowTitle("Train Classifier")
@@ -314,6 +316,7 @@ class ClassKitTrainingDialog(QDialog):
             (self.batch_spin, "batch"),
             (self.lr_spin, "lr"),
             (self.val_fraction_spin, "val_fraction"),
+            (self.test_fraction_spin, "test_fraction"),
             (self.patience_spin, "patience"),
             (self.tiny_layers_spin, "tiny_layers"),
             (self.tiny_dim_spin, "tiny_dim"),
@@ -675,6 +678,13 @@ class ClassKitTrainingDialog(QDialog):
         self.val_fraction_spin.setValue(0.2)
         form.addRow("<b>Val Fraction:</b>", self.val_fraction_spin)
 
+        self.test_fraction_spin = QDoubleSpinBox()
+        self.test_fraction_spin.setRange(0.0, 0.5)
+        self.test_fraction_spin.setSingleStep(0.05)
+        self.test_fraction_spin.setDecimals(2)
+        self.test_fraction_spin.setValue(0.0)
+        form.addRow("<b>Test Fraction:</b>", self.test_fraction_spin)
+
         self.patience_spin = QSpinBox()
         self.patience_spin.setRange(0, 500)
         self.patience_spin.setValue(10)
@@ -695,6 +705,10 @@ class ClassKitTrainingDialog(QDialog):
         self.val_fraction_spin.setToolTip(
             "Fraction of labeled images reserved for validation (0.2 = 20%).\n"
             "Set to 0 only if you have very few labels."
+        )
+        self.test_fraction_spin.setToolTip(
+            "Optional fraction of labeled images reserved for a final test split.\n"
+            "Training still uses train/val; when test > 0, post-training metrics prefer the held-out test split."
         )
         self.patience_spin.setToolTip(
             "Early stopping: halt if val accuracy doesn't improve for N consecutive epochs.\n"
@@ -1301,6 +1315,9 @@ class ClassKitTrainingDialog(QDialog):
         self.val_fraction_spin.valueChanged.connect(
             lambda _value: self._refresh_data_summary()
         )
+        self.test_fraction_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
         self.split_strategy_combo.currentIndexChanged.connect(
             lambda _value: self._refresh_data_summary()
         )
@@ -1535,10 +1552,12 @@ class ClassKitTrainingDialog(QDialog):
                 self._labeled_label_names,
                 strategy=self._current_split_strategy(),
                 val_fraction=self.val_fraction_spin.value(),
-                test_fraction=0.0,
+                test_fraction=self.test_fraction_spin.value(),
+                groups=(self._group_keys or None),
             )
             train_count = sum(1 for split in splits if split == "train")
             val_count = sum(1 for split in splits if split == "val")
+            test_count = sum(1 for split in splits if split == "test")
             expansion_count = self._count_expanded_train_samples(
                 self._labeled_label_names,
                 splits,
@@ -1549,22 +1568,30 @@ class ClassKitTrainingDialog(QDialog):
                 "labeled": len(self._labeled_label_names),
                 "train": train_count,
                 "val": val_count,
+                "test": test_count,
                 "expansion": expansion_count,
                 "exported": len(self._labeled_label_names) + expansion_count,
             }
 
         labeled = max(0, int(self._n_labeled))
         val_count = int(round(labeled * float(self.val_fraction_spin.value())))
+        test_count = int(round(labeled * float(self.test_fraction_spin.value())))
         if labeled > 1:
-            val_count = min(val_count, labeled - 1)
+            test_count = min(test_count, labeled - 1)
+        else:
+            test_count = 0
+        remaining_after_test = max(0, labeled - test_count)
+        if remaining_after_test > 1:
+            val_count = min(val_count, remaining_after_test - 1)
         else:
             val_count = 0
-        train_count = max(0, labeled - val_count)
+        train_count = max(0, labeled - val_count - test_count)
         return {
             "exact": False,
             "labeled": labeled,
             "train": train_count,
             "val": val_count,
+            "test": test_count,
             "expansion": 0,
             "exported": labeled,
         }
@@ -1581,7 +1608,7 @@ class ClassKitTrainingDialog(QDialog):
         )
         lines = [
             (
-                f"{lead}: {summary['train']:,} train / {summary['val']:,} val "
+                f"{lead}: {summary['train']:,} train / {summary['val']:,} val / {summary['test']:,} test "
                 f"from {summary['labeled']:,} labeled images."
             )
         ]
@@ -1636,7 +1663,8 @@ class ClassKitTrainingDialog(QDialog):
                 labels,
                 strategy=self._current_split_strategy(),
                 val_fraction=self.val_fraction_spin.value(),
-                test_fraction=0.0,
+                test_fraction=self.test_fraction_spin.value(),
+                groups=(self._group_keys or None),
             )
         except Exception:
             splits = ["train"] * len(preview_pairs)
@@ -1871,6 +1899,7 @@ class ClassKitTrainingDialog(QDialog):
             "lr": self.lr_spin.value(),
             "split_strategy": self._current_split_strategy(),
             "val_fraction": self.val_fraction_spin.value(),
+            "test_fraction": self.test_fraction_spin.value(),
             "patience": self.patience_spin.value(),
             "tiny_layers": (
                 self._tiny_in_custom_layers_spin.value()

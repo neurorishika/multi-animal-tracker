@@ -112,6 +112,7 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
             "epochs": 30,
             "batch": 16,
             "lr": 0.002,
+            "test_fraction": 0.1,
             "patience": 7,
             "split_strategy": "random",
             "custom_fine_tune_method": "layerwise_lr_decay",
@@ -140,6 +141,7 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
     assert dialog.epochs_spin.value() == 30
     assert dialog.batch_spin.value() == 16
     assert dialog.lr_spin.value() == pytest.approx(0.002)
+    assert dialog.test_fraction_spin.value() == pytest.approx(0.1)
     assert dialog.patience_spin.value() == 7
     assert dialog.split_strategy_combo.currentData() == "random"
     assert dialog.get_settings()["initial_model_path"] == "/tmp/previous_model.pth"
@@ -214,9 +216,28 @@ def test_training_dialog_data_summary_reflects_stratified_split_and_expansion(
 
     summary = dialog.current_data_summary_text()
 
-    assert "8 train / 2 val" in summary
+    assert "8 train / 2 val / 0 test" in summary
     assert "adds 5 mirrored train copies" in summary
     assert "15 files are exported" in summary
+
+
+def test_training_dialog_grouped_preview_includes_test_split(qapp) -> None:
+    labels = ["left", "left", "left", "left", "right", "right", "right", "right"]
+    dialog = ClassKitTrainingDialog(
+        n_labeled=len(labels),
+        class_choices=["left", "right"],
+        labeled_label_names=labels,
+        group_keys=["a", "a", "b", "b", "c", "c", "d", "d"],
+    )
+
+    dialog.val_fraction_spin.setValue(0.25)
+    dialog.test_fraction_spin.setValue(0.25)
+
+    summary = dialog.current_data_summary_text()
+    settings = dialog.get_settings()
+
+    assert "4 train / 2 val / 2 test" in summary
+    assert settings["test_fraction"] == pytest.approx(0.25)
 
 
 def test_training_dialog_shows_labeled_sample_preview(qapp, tmp_path: Path) -> None:

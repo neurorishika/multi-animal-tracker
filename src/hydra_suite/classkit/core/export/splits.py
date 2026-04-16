@@ -10,6 +10,223 @@ def _normalize_split_strategy(strategy: str | None) -> str:
     return normalized if normalized in {"stratified", "random"} else "stratified"
 
 
+def _normalize_groups(
+    groups: Sequence[Hashable] | None,
+    *,
+    n_items: int,
+) -> list[Hashable] | None:
+    if groups is None:
+        return None
+    normalized = list(groups)
+    if len(normalized) != n_items:
+        raise ValueError("groups must have the same length as labels")
+    return normalized
+
+
+def _build_group_entries(
+    labels: Sequence[Hashable],
+    groups: Sequence[Hashable],
+) -> list[dict[str, object]]:
+    labels_list = list(labels)
+    indices_by_group: dict[Hashable, list[int]] = defaultdict(list)
+    for index, group in enumerate(groups):
+        indices_by_group[group].append(index)
+
+    entries: list[dict[str, object]] = []
+    for group in sorted(indices_by_group, key=str):
+        indices = list(indices_by_group[group])
+        label_counts = Counter(labels_list[index] for index in indices)
+        dominant_label = sorted(
+            label_counts.items(),
+            key=lambda item: (-item[1], str(item[0])),
+        )[0][0]
+        entries.append(
+            {
+                "group": group,
+                "indices": indices,
+                "label_counts": dict(label_counts),
+                "dominant_label": dominant_label,
+                "size": len(indices),
+            }
+        )
+    return entries
+
+
+def _assign_groups_to_split(
+    group_entries: list[dict[str, object]],
+    split_by_index: list[str],
+    *,
+    split_name: str,
+    target_allocations: dict[Hashable, int],
+) -> None:
+    remaining = {label: int(count) for label, count in target_allocations.items()}
+    desired_total = sum(remaining.values())
+    assigned_total = 0
+    while group_entries and assigned_total < desired_total:
+        best_pos: int | None = None
+        best_key: tuple[int, int, int, int, str] | None = None
+        for position, entry in enumerate(group_entries):
+            label_counts = entry["label_counts"]
+            gain = sum(
+                min(int(remaining.get(label, 0)), int(count))
+                for label, count in label_counts.items()
+            )
+            overshoot = sum(
+                max(0, int(count) - int(remaining.get(label, 0)))
+                for label, count in label_counts.items()
+            )
+            key = (
+                -int(gain),
+                max(0, assigned_total + int(entry["size"]) - desired_total),
+                int(overshoot),
+                int(entry["size"]),
+                int(entry.get("shuffle_rank", 0)),
+                str(entry["group"]),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best_pos = position
+
+        if best_pos is None:
+            break
+
+        entry = group_entries.pop(best_pos)
+        for index in entry["indices"]:
+            split_by_index[int(index)] = split_name
+        for label, count in entry["label_counts"].items():
+            remaining[label] = max(0, int(remaining.get(label, 0)) - int(count))
+        assigned_total += int(entry["size"])
+
+
+def build_grouped_stratified_splits(
+    labels: Sequence[Hashable],
+    groups: Sequence[Hashable],
+    *,
+    val_fraction: float = 0.2,
+    test_fraction: float = 0.0,
+    seed: int = 42,
+) -> list[str]:
+    """Return deterministic train/val/test split labels while keeping groups intact."""
+
+    import numpy as np
+
+    n_items = len(labels)
+    if n_items == 0:
+        return []
+
+    val_fraction = min(max(float(val_fraction), 0.0), 1.0)
+    test_fraction = min(max(float(test_fraction), 0.0), 1.0)
+
+    labels_list = list(labels)
+    groups_list = list(groups)
+    counts_by_label = dict(Counter(labels_list))
+    test_allocations = _allocate_holdout_counts(
+        counts_by_label,
+        fraction=test_fraction,
+        total_items=n_items,
+    )
+    val_allocations = _allocate_holdout_counts(
+        counts_by_label,
+        fraction=val_fraction,
+        total_items=n_items,
+        preallocated=test_allocations,
+    )
+
+    group_entries = _build_group_entries(labels_list, groups_list)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(group_entries)
+    for rank, entry in enumerate(group_entries):
+        entry["shuffle_rank"] = rank
+
+    split_by_index = ["train"] * n_items
+    _assign_groups_to_split(
+        group_entries,
+        split_by_index,
+        split_name="test",
+        target_allocations=test_allocations,
+    )
+    _assign_groups_to_split(
+        group_entries,
+        split_by_index,
+        split_name="val",
+        target_allocations=val_allocations,
+    )
+
+    if val_fraction > 0.0 and "val" not in split_by_index and n_items > 1:
+        train_counts = Counter(
+            labels_list[index]
+            for index, split in enumerate(split_by_index)
+            if split == "train"
+        )
+        entries_by_group = _build_group_entries(labels_list, groups_list)
+        for entry in entries_by_group:
+            if any(split_by_index[index] != "train" for index in entry["indices"]):
+                continue
+            if any(
+                int(train_counts.get(label, 0)) > int(count)
+                for label, count in entry["label_counts"].items()
+            ):
+                for index in entry["indices"]:
+                    split_by_index[int(index)] = "val"
+                return split_by_index
+
+    return split_by_index
+
+
+def build_grouped_random_splits(
+    labels: Sequence[Hashable],
+    groups: Sequence[Hashable],
+    *,
+    val_fraction: float = 0.2,
+    test_fraction: float = 0.0,
+    seed: int = 42,
+) -> list[str]:
+    """Return deterministic random train/val/test split labels while keeping groups intact."""
+
+    import numpy as np
+
+    n_items = len(labels)
+    if n_items == 0:
+        return []
+
+    val_fraction = min(max(float(val_fraction), 0.0), 1.0)
+    test_fraction = min(max(float(test_fraction), 0.0), 1.0)
+
+    desired_test = int(round(float(n_items) * test_fraction))
+    desired_val = int(round(float(n_items) * val_fraction))
+    if test_fraction > 0.0 and desired_test <= 0 and n_items > 1:
+        desired_test = 1
+    desired_test = min(max(0, desired_test), max(0, n_items - 1))
+
+    remaining_after_test = n_items - desired_test
+    if val_fraction > 0.0 and desired_val <= 0 and remaining_after_test > 1:
+        desired_val = 1
+    desired_val = min(max(0, desired_val), max(0, remaining_after_test - 1))
+
+    group_entries = _build_group_entries(labels, groups)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(group_entries)
+    for rank, entry in enumerate(group_entries):
+        entry["shuffle_rank"] = rank
+
+    split_by_index = ["train"] * n_items
+    assigned_test = 0
+    assigned_val = 0
+    for entry in group_entries:
+        group_size = int(entry["size"])
+        if assigned_test < desired_test:
+            for index in entry["indices"]:
+                split_by_index[int(index)] = "test"
+            assigned_test += group_size
+            continue
+        if assigned_val < desired_val:
+            for index in entry["indices"]:
+                split_by_index[int(index)] = "val"
+            assigned_val += group_size
+
+    return split_by_index
+
+
 def _allocate_holdout_counts(
     counts_by_label: dict[Hashable, int],
     *,
@@ -190,10 +407,28 @@ def build_dataset_splits(
     val_fraction: float = 0.2,
     test_fraction: float = 0.0,
     seed: int = 42,
+    groups: Sequence[Hashable] | None = None,
 ) -> list[str]:
     """Return deterministic split labels using the requested strategy."""
 
     normalized_strategy = _normalize_split_strategy(strategy)
+    normalized_groups = _normalize_groups(groups, n_items=len(labels))
+    if normalized_groups is not None:
+        if normalized_strategy == "random":
+            return build_grouped_random_splits(
+                labels,
+                normalized_groups,
+                val_fraction=val_fraction,
+                test_fraction=test_fraction,
+                seed=seed,
+            )
+        return build_grouped_stratified_splits(
+            labels,
+            normalized_groups,
+            val_fraction=val_fraction,
+            test_fraction=test_fraction,
+            seed=seed,
+        )
     if normalized_strategy == "random":
         return build_random_splits(
             labels,

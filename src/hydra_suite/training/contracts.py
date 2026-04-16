@@ -117,7 +117,7 @@ class AugmentationProfile:
 
     enabled: bool = True
     flipud: float = 0.0
-    fliplr: float = 0.5
+    fliplr: float = 0.0
     rotate: float = 0.0
     hue: float = 0.0
     saturation: float = 0.0

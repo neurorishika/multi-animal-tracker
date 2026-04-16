@@ -1001,7 +1001,32 @@ def _train_custom_classify(
     params: CustomCNNParams = spec.custom_params or CustomCNNParams()
 
     if params.backbone == "tinyclassifier":
-        return _train_tiny_classify(spec, run_dir, log_cb, progress_cb, should_cancel)
+        translated_spec = dataclasses.replace(
+            spec,
+            tiny_params=dataclasses.replace(
+                spec.tiny_params,
+                epochs=int(params.epochs),
+                batch=int(params.batch),
+                lr=float(params.lr),
+                weight_decay=float(params.weight_decay),
+                input_width=int(params.input_width),
+                input_height=int(params.input_height),
+                hidden_layers=int(params.hidden_layers),
+                hidden_dim=int(params.hidden_dim),
+                dropout=float(params.dropout),
+                patience=int(params.patience),
+                class_rebalance_mode=str(params.class_rebalance_mode),
+                class_rebalance_power=float(params.class_rebalance_power),
+                label_smoothing=float(params.label_smoothing),
+            ),
+        )
+        return _train_tiny_classify(
+            translated_spec,
+            run_dir,
+            log_cb,
+            progress_cb,
+            should_cancel,
+        )
 
     # --- Torchvision training path ---
     import json
@@ -1063,6 +1088,13 @@ def _train_custom_classify(
         ]
     )
 
+    # Build a shared class→index mapping across all splits so that indices
+    # are consistent even when a class is absent from the validation split.
+    # Without this, ImageFolder assigns indices independently per split,
+    # silently corrupting validation labels when a class is missing from val.
+    shared_class_to_idx = _build_class_to_idx(dataset_dir)
+    class_names = sorted(shared_class_to_idx.keys())
+
     train_ds = datasets.ImageFolder(str(dataset_dir / "train"), transform=train_tf)
     val_dir = dataset_dir / "val"
     has_validation = val_dir.exists() and any(
@@ -1071,7 +1103,19 @@ def _train_custom_classify(
     val_ds = (
         datasets.ImageFolder(str(val_dir), transform=val_tf) if has_validation else None
     )
-    class_names = train_ds.classes
+
+    for ds in [train_ds] + ([val_ds] if val_ds else []):
+        if ds.class_to_idx != shared_class_to_idx:
+            old_to_name = {v: k for k, v in ds.class_to_idx.items()}
+            remap = {
+                old_idx: shared_class_to_idx[name]
+                for old_idx, name in old_to_name.items()
+            }
+            ds.samples = [(p, remap[t]) for p, t in ds.samples]
+            ds.targets = [remap[t] for t in ds.targets]
+            ds.imgs = ds.samples
+            ds.class_to_idx = shared_class_to_idx
+            ds.classes = class_names
     checkpoint_extra_meta = {
         "fine_tune_method": getattr(params, "fine_tune_method", "head_only"),
         "layerwise_lr_decay": getattr(params, "layerwise_lr_decay", 0.75),

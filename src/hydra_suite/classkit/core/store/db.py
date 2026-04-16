@@ -466,6 +466,17 @@ class ClassKitDB:
             c.execute("SELECT file_path FROM images ORDER BY id")
             return [r[0] for r in c.fetchall()]
 
+    def get_image_metadata_by_path(self) -> Dict[str, Dict[str, Any]]:
+        """Return decoded image metadata keyed by canonical file path."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("SELECT file_path, meta_json FROM images ORDER BY id")
+            rows = c.fetchall()
+        return {
+            str(file_path): self._decode_meta_json(meta_json)
+            for file_path, meta_json in rows
+        }
+
     @staticmethod
     def _resolve_path_string(path: Path | str) -> str:
         """Return a canonical absolute string path for DB/cache comparisons."""

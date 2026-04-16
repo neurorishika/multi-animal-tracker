@@ -9,6 +9,7 @@ from PIL import Image
 
 pytest.importorskip("PySide6")
 
+from hydra_suite.classkit.core.export.splits import build_dataset_splits
 from hydra_suite.classkit.jobs.task_workers import ExportWorker
 
 
@@ -134,6 +135,59 @@ def test_export_worker_split_planning_uses_requested_strategy(
         "val_fraction": 0.25,
         "test_fraction": 0.0,
     }
+
+
+def test_grouped_dataset_splits_keep_related_samples_together() -> None:
+    labels = ["left", "left", "left", "left", "right", "right", "right", "right"]
+    groups = ["a", "a", "b", "b", "c", "c", "d", "d"]
+
+    splits = build_dataset_splits(
+        labels,
+        strategy="stratified",
+        val_fraction=0.25,
+        test_fraction=0.25,
+        groups=groups,
+    )
+
+    assert splits.count("train") == 4
+    assert splits.count("val") == 2
+    assert splits.count("test") == 2
+    for group in sorted(set(groups)):
+        assigned = {split for split, key in zip(splits, groups) if key == group}
+        assert len(assigned) == 1
+
+
+def test_export_worker_uses_preset_splits_by_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image_paths = [tmp_path / f"img_{idx}.jpg" for idx in range(4)]
+    preset = {
+        str(path.resolve()): split
+        for path, split in zip(image_paths, ["train", "test", "val", "train"])
+    }
+
+    def _unexpected_split_build(*args, **kwargs):
+        raise AssertionError("build_dataset_splits should not be called")
+
+    monkeypatch.setattr(
+        "hydra_suite.classkit.jobs.task_workers.build_dataset_splits",
+        _unexpected_split_build,
+    )
+
+    worker = ExportWorker(
+        image_paths=image_paths,
+        labels=[0, 0, 1, 1],
+        output_path=tmp_path / "out.csv",
+        format="csv",
+        class_names={0: "left", 1: "right"},
+        preset_splits_by_path=preset,
+    )
+
+    collected_paths, labels, splits, _class_names = worker._collect_valid_labels()
+
+    assert labels == [0, 0, 1, 1]
+    assert splits == ["train", "test", "val", "train"]
+    assert [str(path.resolve()) for path in collected_paths] == list(preset.keys())
 
 
 def test_export_worker_force_monochrome_materializes_grayscale_copies(

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 import numpy as np
@@ -441,6 +443,200 @@ def test_runner_flat_custom_dispatches_to_custom_classify():
     ) as mock_fn:
         runner.run_training(spec, "/tmp/run")
         mock_fn.assert_called_once()
+
+
+def test_train_custom_tinyclassifier_translates_custom_params_to_tiny_params():
+    sys.modules.setdefault("cv2", ModuleType("cv2"))
+
+    from hydra_suite.training import runner
+    from hydra_suite.training.contracts import (
+        AugmentationProfile,
+        CustomCNNParams,
+        TinyHeadTailParams,
+        TrainingHyperParams,
+        TrainingRole,
+        TrainingRunSpec,
+    )
+
+    spec = TrainingRunSpec(
+        role=TrainingRole.CLASSIFY_FLAT_CUSTOM,
+        source_datasets=[],
+        derived_dataset_dir="/tmp/ds",
+        base_model="",
+        hyperparams=TrainingHyperParams(),
+        augmentation_profile=AugmentationProfile(monochrome=True),
+        tiny_params=TinyHeadTailParams(),
+        custom_params=CustomCNNParams(
+            backbone="tinyclassifier",
+            epochs=7,
+            batch=9,
+            lr=0.004,
+            weight_decay=0.03,
+            patience=4,
+            hidden_layers=2,
+            hidden_dim=96,
+            dropout=0.05,
+            input_width=80,
+            input_height=72,
+            class_rebalance_mode="weighted_loss",
+            class_rebalance_power=1.5,
+            label_smoothing=0.08,
+        ),
+    )
+
+    with patch.object(
+        runner, "_train_tiny_classify", return_value={"success": True}
+    ) as mock_fn:
+        runner._train_custom_classify(spec, Path("/tmp/run"))
+
+    translated_spec = mock_fn.call_args[0][0]
+    assert translated_spec is not spec
+    assert translated_spec.augmentation_profile.monochrome is True
+    assert translated_spec.tiny_params.epochs == 7
+    assert translated_spec.tiny_params.batch == 9
+    assert translated_spec.tiny_params.lr == pytest.approx(0.004)
+    assert translated_spec.tiny_params.weight_decay == pytest.approx(0.03)
+    assert translated_spec.tiny_params.patience == 4
+    assert translated_spec.tiny_params.hidden_layers == 2
+    assert translated_spec.tiny_params.hidden_dim == 96
+    assert translated_spec.tiny_params.dropout == pytest.approx(0.05)
+    assert translated_spec.tiny_params.input_width == 80
+    assert translated_spec.tiny_params.input_height == 72
+    assert translated_spec.tiny_params.class_rebalance_mode == "weighted_loss"
+    assert translated_spec.tiny_params.class_rebalance_power == pytest.approx(1.5)
+    assert translated_spec.tiny_params.label_smoothing == pytest.approx(0.08)
+
+
+def test_train_custom_classify_remaps_validation_targets_to_shared_class_indices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from hydra_suite.training import runner, torchvision_model
+    from hydra_suite.training.contracts import (
+        AugmentationProfile,
+        CustomCNNParams,
+        TrainingHyperParams,
+        TrainingRole,
+        TrainingRunSpec,
+    )
+
+    dataset_dir = tmp_path / "dataset"
+    (dataset_dir / "train" / "ant").mkdir(parents=True)
+    (dataset_dir / "train" / "bee").mkdir(parents=True)
+    (dataset_dir / "val" / "bee").mkdir(parents=True)
+    (dataset_dir / "train" / "ant" / "ant_0.png").write_bytes(b"train-ant")
+    (dataset_dir / "train" / "bee" / "bee_0.png").write_bytes(b"train-bee")
+    (dataset_dir / "val" / "bee" / "bee_1.png").write_bytes(b"val-bee")
+
+    class FakeImageFolder:
+        def __init__(self, root, transform=None):
+            self.root = str(root)
+            self.transform = transform
+            if str(root).endswith("/train"):
+                self.class_to_idx = {"ant": 0, "bee": 1}
+                self.classes = ["ant", "bee"]
+                self.samples = [
+                    (str(Path(root) / "ant" / "ant_0.png"), 0),
+                    (str(Path(root) / "bee" / "bee_0.png"), 1),
+                ]
+            else:
+                self.class_to_idx = {"bee": 0}
+                self.classes = ["bee"]
+                self.samples = [(str(Path(root) / "bee" / "bee_1.png"), 0)]
+            self.targets = [label for _, label in self.samples]
+            self.imgs = list(self.samples)
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, index):
+            return torch.zeros(3, 64, 64), self.targets[index]
+
+    spec = TrainingRunSpec(
+        role=TrainingRole.CLASSIFY_FLAT_CUSTOM,
+        source_datasets=[],
+        derived_dataset_dir=str(dataset_dir),
+        base_model="",
+        hyperparams=TrainingHyperParams(),
+        device="cpu",
+        augmentation_profile=AugmentationProfile(enabled=False),
+        custom_params=CustomCNNParams(
+            backbone="resnet18",
+            input_size=64,
+            epochs=1,
+            batch=2,
+            patience=1,
+        ),
+    )
+
+    def _fake_training_loop(
+        model,
+        backbone,
+        train_loader,
+        val_loader,
+        optimizer,
+        criterion,
+        device,
+        params,
+        save_torchvision_checkpoint,
+        freeze_backbone,
+        get_layer_groups,
+        best_ckpt_path,
+        class_names,
+        checkpoint_extra_meta,
+        log_cb,
+        progress_cb,
+        should_cancel,
+    ):
+        assert train_loader.dataset.class_to_idx == {"ant": 0, "bee": 1}
+        assert train_loader.dataset.targets == [0, 1]
+        assert val_loader is not None
+        assert val_loader.dataset.class_to_idx == {"ant": 0, "bee": 1}
+        assert val_loader.dataset.classes == ["ant", "bee"]
+        assert val_loader.dataset.targets == [1]
+        assert val_loader.dataset.samples[0][1] == 1
+        best_ckpt_path.write_bytes(b"stub")
+        return 1.0, {"train_loss": [0.1], "val_acc": [1.0]}
+
+    monkeypatch.setattr("torchvision.datasets.ImageFolder", FakeImageFolder)
+    monkeypatch.setattr(
+        runner, "_build_class_to_idx", lambda _path: {"ant": 0, "bee": 1}
+    )
+    monkeypatch.setattr(
+        torchvision_model,
+        "build_torchvision_classifier",
+        lambda *args, **kwargs: torch.nn.Linear(4, 2),
+    )
+    monkeypatch.setattr(
+        torchvision_model, "freeze_backbone", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        torchvision_model, "get_layer_groups", lambda *args, **kwargs: []
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_optimizer_for_fine_tune_strategy",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(runner, "_pick_torch_device", lambda _device: "cpu")
+    monkeypatch.setattr(runner, "_run_torchvision_training_loop", _fake_training_loop)
+    monkeypatch.setattr(
+        torchvision_model,
+        "load_torchvision_classifier",
+        lambda *args, **kwargs: (
+            torch.nn.Linear(4, 2),
+            {"arch": "resnet18", "class_names": ["ant", "bee"], "input_size": (64, 64)},
+        ),
+    )
+    monkeypatch.setattr(
+        torchvision_model,
+        "export_torchvision_to_onnx",
+        lambda model, ckpt, path: Path(path).write_bytes(b"onnx"),
+    )
+
+    result = runner._train_custom_classify(spec, tmp_path / "run")
+
+    assert result["success"] is True
+    assert Path(result["artifact_path"]).exists()
 
 
 def test_load_compatible_checkpoint_weights_skips_mismatched_head(tmp_path: Path):

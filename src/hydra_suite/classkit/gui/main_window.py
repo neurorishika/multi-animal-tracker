@@ -4,6 +4,7 @@ ClassKit Main Window - Polished and feature-complete UI
 
 import hashlib
 import json
+import re
 import time
 from html import escape
 from pathlib import Path
@@ -73,6 +74,7 @@ class MainWindow(QMainWindow):
         self.image_labels = []
         self.image_confidences = []
         self._image_review_status = {}
+        self._image_metadata_by_path = {}
         self._review_candidate_indices = []
         self.classes = ["class_1", "class_2"]
         self.selected_point_index = None
@@ -112,6 +114,8 @@ class MainWindow(QMainWindow):
         self._al_candidates = None  # np.ndarray of selected AL batch indices
         self._active_model_mode = None  # "yolo", "tiny", or None
         self._heldout_validation_summary = None  # training-time held-out metric
+        self._active_evaluation_paths = None
+        self._active_evaluation_split_name = ""
         self._current_knn_neighbors = []
         self._stepper = None
         self._custom_shortcuts: dict = {}  # action_name → key sequence string
@@ -1540,6 +1544,7 @@ class MainWindow(QMainWindow):
         if not self.db_path:
             self.image_labels = []
             self._image_review_status = {}
+            self._image_metadata_by_path = {}
             self._review_candidate_indices = []
             self._invalidate_infinite_labeling_cache()
             return
@@ -1551,6 +1556,7 @@ class MainWindow(QMainWindow):
 
         self.image_labels = db.get_all_labels()
         self._image_review_status = db.get_label_review_status_by_path()
+        self._image_metadata_by_path = db.get_image_metadata_by_path()
         self._refresh_review_candidate_indices()
         self._invalidate_infinite_labeling_cache()
         if len(self.image_confidences) != len(self.image_paths):
@@ -1563,6 +1569,101 @@ class MainWindow(QMainWindow):
         if index is None or index < 0 or index >= len(self.image_paths):
             return {}
         return self._review_status_for_path(self.image_paths[index])
+
+    @staticmethod
+    def _resolved_path_key(path: Path | str) -> str:
+        return str(Path(path).resolve())
+
+    def _derive_training_group_key(self, path: Path | str) -> str:
+        resolved_path = self._resolved_path_key(path)
+        metadata = self._image_metadata_by_path.get(resolved_path, {})
+
+        original_path_text = metadata.get("original_image_path")
+        try:
+            original_path = (
+                Path(str(original_path_text)).expanduser().resolve()
+                if original_path_text
+                else Path(resolved_path)
+            )
+        except Exception:
+            original_path = Path(resolved_path)
+
+        source_root = None
+        source_root_text = metadata.get("source_root")
+        if source_root_text:
+            try:
+                source_root = Path(str(source_root_text)).expanduser().resolve()
+            except Exception:
+                source_root = None
+
+        try:
+            relative_path = original_path.relative_to(source_root)
+        except Exception:
+            relative_path = original_path
+
+        parent_parts = [str(part).lower() for part in relative_path.parts[:-1]]
+        if parent_parts and parent_parts[0] in {"train", "val", "test"}:
+            parent_parts = parent_parts[1:]
+
+        class_folder = str(metadata.get("class_folder") or "").strip().lower()
+        if class_folder and parent_parts and parent_parts[-1] == class_folder:
+            parent_parts = parent_parts[:-1]
+
+        stem = original_path.stem.lower()
+        stem_group = re.sub(
+            r"(?i)(?:[_-]?(?:frame|img|image))?[_-]?\d{2,}$",
+            "",
+            stem,
+        ).strip("_-")
+        if not stem_group:
+            stem_group = (
+                stem or hashlib.sha1(resolved_path.encode("utf-8")).hexdigest()[:12]
+            )
+
+        source_bucket = str(source_root or original_path.parent)
+        parent_bucket = "/".join(parent_parts) if parent_parts else "."
+        return f"{source_bucket}::{parent_bucket}::{stem_group}"
+
+    def _training_group_keys_for_paths(self, paths: list[Path]) -> list[str]:
+        return [self._derive_training_group_key(path) for path in paths]
+
+    def _set_active_evaluation_selection(
+        self,
+        paths: list[str] | None,
+        split_name: str = "",
+    ) -> None:
+        normalized = [self._resolved_path_key(path) for path in (paths or []) if path]
+        self._active_evaluation_paths = set(normalized) if normalized else None
+        self._active_evaluation_split_name = str(split_name or "").strip()
+
+    def _set_active_evaluation_from_meta(self, meta) -> None:
+        evaluation = meta.get("evaluation") if isinstance(meta, dict) else None
+        if not isinstance(evaluation, dict):
+            self._set_active_evaluation_selection(None)
+            return
+        self._set_active_evaluation_selection(
+            evaluation.get("paths") or [],
+            str(evaluation.get("split_name") or "").strip(),
+        )
+
+    def _cached_model_evaluation_info(self, path: Path):
+        if not self.db_path:
+            return None
+        try:
+            from ..core.store.db import ClassKitDB as _CKDb
+
+            resolved = self._resolved_path_key(path)
+            for entry in _CKDb(self.db_path).list_model_caches():
+                artifact_paths = {
+                    self._resolved_path_key(artifact)
+                    for artifact in entry.get("artifact_paths", [])
+                }
+                if resolved in artifact_paths:
+                    meta = entry.get("meta")
+                    return meta if isinstance(meta, dict) else None
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _review_source_label(raw_source: object) -> str:
@@ -2641,6 +2742,9 @@ class MainWindow(QMainWindow):
                     recent_model.get("best_val_acc"),
                     prefix="Saved held-out validation accuracy",
                 )
+                self._set_active_evaluation_from_meta(recent_model.get("meta"))
+        if cached_preds.get("evaluation"):
+            self._set_active_evaluation_from_meta(cached_preds)
         self._set_heldout_validation_summary(summary)
         self._model_probs = cached_preds["probs"]
         self._model_class_names = cached_preds["class_names"]
@@ -5384,7 +5488,7 @@ class MainWindow(QMainWindow):
         aug = AugmentationProfile(
             enabled=True,
             flipud=settings.get("flipud", 0.0),
-            fliplr=settings.get("fliplr", 0.5),
+            fliplr=settings.get("fliplr", 0.0),
             hue=settings.get("hue", 0.0),
             saturation=settings.get("saturation", 0.0),
             brightness=settings.get("brightness", 0.0),
@@ -5394,7 +5498,7 @@ class MainWindow(QMainWindow):
                 key: value
                 for key, value in {
                     "flipud": settings.get("flipud", 0.0),
-                    "fliplr": settings.get("fliplr", 0.5),
+                    "fliplr": settings.get("fliplr", 0.0),
                     "hsv_h": settings.get("hue", 0.0),
                     "hsv_s": settings.get("saturation", 0.0),
                     "hsv_v": settings.get("brightness", 0.0),
@@ -5447,8 +5551,15 @@ class MainWindow(QMainWindow):
                 spec,
                 custom_params=CustomCNNParams(
                     backbone=settings.get("custom_backbone", "tinyclassifier"),
+                    fine_tune_method=settings.get(
+                        "custom_fine_tune_method", "head_only"
+                    ),
                     trainable_layers=settings.get("custom_trainable_layers", 0),
                     backbone_lr_scale=settings.get("custom_backbone_lr_scale", 0.1),
+                    layerwise_lr_decay=settings.get("custom_layerwise_lr_decay", 0.75),
+                    gradual_unfreeze_interval=settings.get(
+                        "custom_gradual_unfreeze_interval", 5
+                    ),
                     input_size=settings.get("custom_input_size", 224),
                     epochs=settings.get("epochs", 50),
                     batch=settings.get("batch", 32),
@@ -5462,7 +5573,15 @@ class MainWindow(QMainWindow):
             )
         return spec
 
-    def _save_training_results_to_db(self, results, mode, labels_str):
+    def _save_training_results_to_db(
+        self,
+        results,
+        mode,
+        labels_str,
+        *,
+        evaluation_paths=None,
+        evaluation_split_name: str = "",
+    ):
         """Persist training results to the project model cache DB."""
         if not self.db_path or not results:
             return
@@ -5494,7 +5613,17 @@ class MainWindow(QMainWindow):
                 class_names=all_classes,
                 best_val_acc=best_acc,
                 num_classes=len(all_classes),
-                meta={"training_settings": dict(self._last_training_settings or {})},
+                meta={
+                    "training_settings": dict(self._last_training_settings or {}),
+                    "evaluation": {
+                        "split_name": str(evaluation_split_name or ""),
+                        "paths": [
+                            self._resolved_path_key(path)
+                            for path in (evaluation_paths or [])
+                            if path
+                        ],
+                    },
+                },
             )
         except Exception:
             pass  # non-fatal
@@ -5693,6 +5822,8 @@ class MainWindow(QMainWindow):
         """Build the immutable context used across export, train, and inference."""
         from pathlib import Path
 
+        from ..core.export.splits import build_dataset_splits
+
         settings = dict(settings or dialog.get_settings())
         self._last_training_settings = dict(settings)
         self._save_last_training_settings()
@@ -5705,6 +5836,28 @@ class MainWindow(QMainWindow):
         images, labels_str, int_labels, class_names_int = self._prepare_training_labels(
             labeled_pairs
         )
+        group_keys = self._training_group_keys_for_paths(images)
+        source_splits = build_dataset_splits(
+            labels_str,
+            strategy=settings.get("split_strategy", "stratified"),
+            val_fraction=float(settings.get("val_fraction", 0.2)),
+            test_fraction=float(settings.get("test_fraction", 0.0)),
+            groups=group_keys,
+        )
+        source_split_by_path = {
+            self._resolved_path_key(path): split
+            for path, split in zip(images, source_splits)
+        }
+        evaluation_split_name = ""
+        if "test" in source_splits:
+            evaluation_split_name = "test"
+        elif "val" in source_splits:
+            evaluation_split_name = "val"
+        evaluation_paths = [
+            self._resolved_path_key(path)
+            for path, split in zip(images, source_splits)
+            if split == evaluation_split_name
+        ]
         return {
             "settings": settings,
             "mode": mode,
@@ -5716,6 +5869,11 @@ class MainWindow(QMainWindow):
             "labels_str": labels_str,
             "int_labels": int_labels,
             "class_names_int": class_names_int,
+            "group_keys": group_keys,
+            "source_splits": source_splits,
+            "source_split_by_path": source_split_by_path,
+            "evaluation_split_name": evaluation_split_name,
+            "evaluation_paths": evaluation_paths,
         }
 
     def _validate_training_start_model(self, settings: dict) -> bool:
@@ -5808,6 +5966,10 @@ class MainWindow(QMainWindow):
         self._set_heldout_validation_summary(
             self._validation_summary_from_results(results)
         )
+        self._set_active_evaluation_selection(
+            context.get("evaluation_paths"),
+            context.get("evaluation_split_name", ""),
+        )
         dialog._train_results = results
         dialog.publish_btn.setEnabled(True)
         dialog.append_log("Training finished. Refreshing predictions and metrics...")
@@ -5815,7 +5977,11 @@ class MainWindow(QMainWindow):
         dialog.cancel_btn.setEnabled(False)
 
         self._save_training_results_to_db(
-            results, context["mode"], context["labels_str"]
+            results,
+            context["mode"],
+            context["labels_str"],
+            evaluation_paths=context.get("evaluation_paths"),
+            evaluation_split_name=context.get("evaluation_split_name", ""),
         )
         self._run_post_training_inference(
             results,
@@ -5892,7 +6058,9 @@ class MainWindow(QMainWindow):
                             class_names=factor_names,
                             split_strategy=self.split_strategy,
                             val_fraction=self.val_fraction,
+                            test_fraction=self.test_fraction,
                             label_expansion=exp_label_expansion,
+                            preset_splits_by_path=context["source_split_by_path"],
                         )
                         sub_worker.run()
 
@@ -5909,7 +6077,9 @@ class MainWindow(QMainWindow):
             format="ultralytics",
             split_strategy=context["settings"].get("split_strategy", "stratified"),
             val_fraction=context["settings"].get("val_fraction", 0.2),
+            test_fraction=context["settings"].get("test_fraction", 0.0),
             force_monochrome=bool(context["settings"].get("monochrome", False)),
+            preset_splits_by_path=context["source_split_by_path"],
             scheme=scheme,
             labels_str=context["labels_str"],
         )
@@ -5928,8 +6098,10 @@ class MainWindow(QMainWindow):
             class_names=context["class_names_int"],
             split_strategy=context["settings"].get("split_strategy", "stratified"),
             val_fraction=context["settings"].get("val_fraction", 0.2),
+            test_fraction=context["settings"].get("test_fraction", 0.0),
             force_monochrome=bool(context["settings"].get("monochrome", False)),
             label_expansion=context["settings"].get("label_expansion") or {},
+            preset_splits_by_path=context["source_split_by_path"],
         )
 
     def _start_training_from_dialog(self, dialog, labeled_pairs, scheme) -> None:
@@ -5982,6 +6154,9 @@ class MainWindow(QMainWindow):
             recent_model_paths=self._list_recent_trainable_model_paths(),
             average_image_size=self._estimate_average_image_dimensions(),
             image_paths=[path for path, _ in labeled_pairs],
+            group_keys=self._training_group_keys_for_paths(
+                [path for path, _ in labeled_pairs]
+            ),
             parent=self,
         )
 
@@ -6212,6 +6387,7 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a torchvision custom CNN checkpoint and run inference."""
+        self._set_active_evaluation_from_meta(self._cached_model_evaluation_info(path))
         self._set_heldout_validation_summary(
             self._validation_summary_from_value(
                 ckpt.get("best_val_acc") if isinstance(ckpt, dict) else None,
@@ -6265,6 +6441,7 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a tiny CNN checkpoint and run inference."""
+        self._set_active_evaluation_from_meta(self._cached_model_evaluation_info(path))
         self._set_heldout_validation_summary(
             self._validation_summary_from_value(
                 ckpt.get("best_val_acc") if isinstance(ckpt, dict) else None,
@@ -6309,6 +6486,7 @@ class MainWindow(QMainWindow):
         show_message_box: bool = True,
     ) -> None:
         """Load a YOLO classifier checkpoint and run inference."""
+        self._set_active_evaluation_from_meta(self._cached_model_evaluation_info(path))
         self._set_heldout_validation_summary(None)
         self._yolo_model_path = path
         self.status.showMessage(f"Loading YOLO model: {path.name}...")
@@ -6787,6 +6965,12 @@ class MainWindow(QMainWindow):
                 probs=probs,
                 class_names=class_names or [],
                 active_model_mode=mode,
+                meta={
+                    "evaluation": {
+                        "split_name": self._active_evaluation_split_name,
+                        "paths": sorted(self._active_evaluation_paths or []),
+                    }
+                },
             )
         except Exception:
             pass  # non-fatal — just means cache won't be available next session
@@ -7053,6 +7237,7 @@ class MainWindow(QMainWindow):
 
     def _load_model_from_cache_entry(self, entry: dict, on_success=None):
         """Load a model from a DB cache entry and run inference + UMAP."""
+        self._set_active_evaluation_from_meta(entry.get("meta"))
         self._set_heldout_validation_summary(
             self._validation_summary_from_value(
                 entry.get("best_val_acc") if isinstance(entry, dict) else None,
@@ -7090,12 +7275,28 @@ class MainWindow(QMainWindow):
             self._run_tiny_inference(Path(paths[0]), class_names, on_success=_after)
 
     def _labeled_eval_arrays(self):
-        """Return labeled indices and ground-truth class ids for evaluation."""
+        """Return labeled indices, ground-truth ids, and evaluation-scope text."""
         import numpy as np
 
         labeled_indices = [i for i, lbl in enumerate(self.image_labels) if lbl]
+        scope_text = "All labeled project images"
+        if self._active_evaluation_paths:
+            heldout_indices = [
+                index
+                for index, (path, lbl) in enumerate(
+                    zip(self.image_paths, self.image_labels)
+                )
+                if lbl
+                and self._resolved_path_key(path) in self._active_evaluation_paths
+            ]
+            split_label = (self._active_evaluation_split_name or "held-out").strip()
+            if heldout_indices:
+                labeled_indices = heldout_indices
+                scope_text = f"{split_label.title()} split"
+            else:
+                scope_text = "All labeled project images (held-out subset unavailable)"
         if len(labeled_indices) < 2:
-            return None, None
+            return None, None, scope_text
 
         class_to_id = {c: i for i, c in enumerate(self.classes)}
         y_true = np.array(
@@ -7103,8 +7304,8 @@ class MainWindow(QMainWindow):
         )
         valid = y_true >= 0
         if valid.sum() < 2:
-            return None, None
-        return np.array(labeled_indices)[valid], y_true[valid]
+            return None, None, scope_text
+        return np.array(labeled_indices)[valid], y_true[valid], scope_text
 
     def _aligned_eval_probs(self, idx_arr, probs_rows):
         """Align model probability columns to the project's class order."""
@@ -7210,7 +7411,7 @@ class MainWindow(QMainWindow):
 
             from ..core.train.metrics import compute_metrics
 
-            idx_arr, y_true = self._labeled_eval_arrays()
+            idx_arr, y_true, scope_text = self._labeled_eval_arrays()
             if idx_arr is None or y_true is None:
                 return
 
@@ -7219,16 +7420,26 @@ class MainWindow(QMainWindow):
             y_pred = probs_subset.argmax(axis=1)
             metrics = compute_metrics(y_pred, y_true, class_names=self.classes)
             self._update_metrics_display(
-                metrics, activate_metrics_tab=activate_metrics_tab
+                metrics,
+                evaluation_scope=scope_text,
+                activate_metrics_tab=activate_metrics_tab,
             )
         except Exception as e:
             self.metrics_view.setPlainText(f"Evaluation error: {e}")
 
-    def _update_metrics_display(self, metrics, activate_metrics_tab: bool = True):
+    def _update_metrics_display(
+        self,
+        metrics,
+        *,
+        evaluation_scope: str = "All labeled project images",
+        activate_metrics_tab: bool = True,
+    ):
         """Update Metrics tab: text report + matplotlib confusion matrix / per-class bars."""
         from ..core.train.metrics import format_metrics_report
 
-        report = format_metrics_report(metrics)
+        report = (
+            f"Evaluation subset: {evaluation_scope}\n\n{format_metrics_report(metrics)}"
+        )
         heldout_text = (
             self._heldout_validation_summary.get("text")
             if isinstance(self._heldout_validation_summary, dict)
@@ -7335,7 +7546,7 @@ class MainWindow(QMainWindow):
             fig.text(
                 0.5,
                 0.01,
-                f"Accuracy: {metrics.accuracy:.3f}  |  Macro F1: {metrics.macro_f1:.3f}  |  "
+                f"Eval subset: {evaluation_scope}  |  Accuracy: {metrics.accuracy:.3f}  |  Macro F1: {metrics.macro_f1:.3f}  |  "
                 f"Weighted F1: {metrics.weighted_f1:.3f}  |  n={metrics.num_samples}"
                 + (
                     f"  |  {self._heldout_validation_short_text()}"
