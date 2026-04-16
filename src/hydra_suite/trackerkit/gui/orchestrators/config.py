@@ -3297,7 +3297,7 @@ class ConfigOrchestrator:
 
         if (end_frame - start_frame) > 1000:
             QMessageBox.warning(
-                self,
+                self._mw,
                 "Range Too Large",
                 "The selected range is very large. For faster optimization, "
                 "please select a smaller slice (e.g., 100-500 frames) using "
@@ -3313,7 +3313,7 @@ class ConfigOrchestrator:
 
         if not already_valid:
             res = QMessageBox.question(
-                self,
+                self._mw,
                 "Detection Required",
                 "No detection cache covering frames "
                 f"{start_frame}\u2013{end_frame} was found.\n\n"
@@ -3335,7 +3335,7 @@ class ConfigOrchestrator:
             if new_params:
                 self._apply_optimized_params(new_params)
                 QMessageBox.information(
-                    self,
+                    self._mw,
                     "Parameters Applied",
                     "The optimized parameters have been applied to the UI.",
                 )

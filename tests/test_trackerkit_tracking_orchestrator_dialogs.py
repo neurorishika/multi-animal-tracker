@@ -206,6 +206,95 @@ def test_open_parameter_helper_uses_main_window_parent(monkeypatch) -> None:
     }
 
 
+def test_open_parameter_helper_range_warning_uses_main_window_parent(
+    monkeypatch,
+) -> None:
+    main_window = object()
+    panels = SimpleNamespace(
+        setup=SimpleNamespace(
+            file_line=SimpleNamespace(text=lambda: "video.mp4"),
+            spin_start_frame=SimpleNamespace(value=lambda: 0),
+            spin_end_frame=SimpleNamespace(value=lambda: 1001),
+        )
+    )
+    orchestrator = ConfigOrchestrator(
+        main_window=main_window,
+        config=object(),
+        panels=panels,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_warning(parent, title, message, *args, **kwargs):
+        captured["parent"] = parent
+        captured["title"] = title
+        captured["message"] = message
+        return config_module.QMessageBox.Ok
+
+    monkeypatch.setattr(config_module.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(config_module.QMessageBox, "warning", fake_warning)
+
+    orchestrator._open_parameter_helper()
+
+    assert captured == {
+        "parent": main_window,
+        "title": "Range Too Large",
+        "message": "The selected range is very large. For faster optimization, "
+        "please select a smaller slice (e.g., 100-500 frames) using "
+        "the 'Start Frame' and 'End Frame' boxes.",
+    }
+
+
+def test_open_parameter_helper_detection_prompt_uses_main_window_parent(
+    monkeypatch,
+) -> None:
+    main_window = object()
+    panels = SimpleNamespace(
+        setup=SimpleNamespace(
+            file_line=SimpleNamespace(text=lambda: "video.mp4"),
+            spin_start_frame=SimpleNamespace(value=lambda: 10),
+            spin_end_frame=SimpleNamespace(value=lambda: 100),
+        )
+    )
+    orchestrator = ConfigOrchestrator(
+        main_window=main_window,
+        config=object(),
+        panels=panels,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_question(parent, title, message, buttons):
+        captured["parent"] = parent
+        captured["title"] = title
+        captured["message"] = message
+        captured["buttons"] = buttons
+        return config_module.QMessageBox.No
+
+    monkeypatch.setattr(config_module.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(
+        ConfigOrchestrator,
+        "get_parameters_dict",
+        lambda self: {"YOLO_CONFIDENCE_THRESHOLD": 0.5},
+    )
+    monkeypatch.setattr(
+        ConfigOrchestrator,
+        "_find_or_plan_optimizer_cache_path",
+        lambda self, video_path, params, start_frame, end_frame: (
+            "/tmp/cache.npz",
+            False,
+        ),
+    )
+    monkeypatch.setattr(config_module.QMessageBox, "question", fake_question)
+
+    orchestrator._open_parameter_helper()
+
+    assert captured["parent"] is main_window
+    assert captured["title"] == "Detection Required"
+    assert (
+        "No detection cache covering frames 10\u2013100 was found."
+        in captured["message"]
+    )
+
+
 def test_start_tracking_on_video_restores_csv_and_worker_imports(
     monkeypatch,
     tmp_path: Path,
