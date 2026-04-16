@@ -6199,9 +6199,9 @@ class MainWindow(QMainWindow):
             class_names=resolved,
             input_size=size,
             on_success=_after_load,
-            force_monochrome=bool(ckpt.get("monochrome", False))
-            if isinstance(ckpt, dict)
-            else False,
+            force_monochrome=(
+                bool(ckpt.get("monochrome", False)) if isinstance(ckpt, dict) else False
+            ),
         )
 
     def _load_tiny_cnn_checkpoint(
@@ -6244,9 +6244,9 @@ class MainWindow(QMainWindow):
             path,
             class_names=resolved,
             on_success=_after_load,
-            force_monochrome=bool(ckpt.get("monochrome", False))
-            if isinstance(ckpt, dict)
-            else False,
+            force_monochrome=(
+                bool(ckpt.get("monochrome", False)) if isinstance(ckpt, dict) else False
+            ),
         )
 
     def _load_yolo_checkpoint(
