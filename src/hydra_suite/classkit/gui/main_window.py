@@ -2728,6 +2728,7 @@ class MainWindow(QMainWindow):
             200,
             lambda p=yolo_ckpt: self._run_yolo_inference(
                 p,
+                force_monochrome=self._resolve_yolo_force_monochrome(p),
                 on_success=lambda _result: self._activate_predictions_view_if_available(),
             ),
         )
@@ -5519,12 +5520,24 @@ class MainWindow(QMainWindow):
                 dialog.append_log(
                     f"Running multi-head YOLO inference ({len(all_artifacts)} models)..."
                 )
-                self._run_multihead_yolo_inference(all_artifacts, on_success=on_done)
+                self._run_multihead_yolo_inference(
+                    all_artifacts,
+                    on_success=on_done,
+                    force_monochrome=bool(
+                        (self._last_training_settings or {}).get("monochrome", False)
+                    ),
+                )
             else:
                 self._yolo_model_path = Path(artifact)
                 self._active_model_mode = "yolo"
                 dialog.append_log(f"Running YOLO inference: {Path(artifact).name}...")
-                self._run_yolo_inference(Path(artifact), on_success=on_done)
+                self._run_yolo_inference(
+                    Path(artifact),
+                    on_success=on_done,
+                    force_monochrome=bool(
+                        (self._last_training_settings or {}).get("monochrome", False)
+                    ),
+                )
         else:
             # Custom CNN or Tiny CNN .pth -- dispatch based on arch field
             import torch as _torch
@@ -5548,6 +5561,11 @@ class MainWindow(QMainWindow):
                     class_names=_class_names,
                     input_size=_sz,
                     on_success=on_done,
+                    force_monochrome=(
+                        bool(_ckpt.get("monochrome", False))
+                        if isinstance(_ckpt, dict)
+                        else False
+                    ),
                 )
             else:
                 dialog.append_log(
@@ -5998,10 +6016,17 @@ class MainWindow(QMainWindow):
 
         settings = dialog.get_settings()
 
-        label_to_index = {name: idx for idx, name in enumerate(self.classes)}
-        class_names = {idx: name for idx, name in enumerate(self.classes)}
+        export_class_order = list(self.classes)
+        for raw_label in self.image_labels:
+            label_name = str(raw_label).strip() if raw_label is not None else ""
+            if not label_name or label_name in export_class_order:
+                continue
+            export_class_order.append(label_name)
+
+        label_to_index = {name: idx for idx, name in enumerate(export_class_order)}
+        class_names = {idx: name for idx, name in enumerate(export_class_order)}
         include_unlabeled = settings.get("include_unlabeled", False)
-        unlabeled_index = len(self.classes)
+        unlabeled_index = len(export_class_order)
         if include_unlabeled:
             class_names[unlabeled_index] = "unlabeled"
 
@@ -6151,6 +6176,33 @@ class MainWindow(QMainWindow):
             return None
         return None
 
+    def _cached_model_training_settings(self, path: Path):
+        """Look up training settings stored alongside a cached model artifact."""
+        if not self.db_path:
+            return None
+        try:
+            from ..core.store.db import ClassKitDB as _CKDb
+
+            for entry in _CKDb(self.db_path).list_model_caches():
+                if str(path) not in entry.get("artifact_paths", []):
+                    continue
+                meta = entry.get("meta")
+                training_settings = (
+                    meta.get("training_settings") if isinstance(meta, dict) else None
+                )
+                if isinstance(training_settings, dict):
+                    return training_settings
+        except Exception:
+            return None
+        return None
+
+    def _resolve_yolo_force_monochrome(self, path: Path) -> bool:
+        """Resolve monochrome inference for YOLO models from cache or project state."""
+        training_settings = self._cached_model_training_settings(path)
+        if isinstance(training_settings, dict) and "monochrome" in training_settings:
+            return bool(training_settings.get("monochrome", False))
+        return bool((self._last_training_settings or {}).get("monochrome", False))
+
     def _load_custom_cnn_checkpoint(
         self,
         path: Path,
@@ -6278,6 +6330,7 @@ class MainWindow(QMainWindow):
         self._run_yolo_inference(
             path,
             on_success=_after_load,
+            force_monochrome=self._resolve_yolo_force_monochrome(path),
         )
 
     def _load_checkpoint_from_path(
@@ -6738,7 +6791,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass  # non-fatal — just means cache won't be available next session
 
-    def _run_yolo_inference(self, model_path: Path, on_success=None):
+    def _run_yolo_inference(
+        self,
+        model_path: Path,
+        on_success=None,
+        force_monochrome: bool = False,
+    ):
         """Run YOLO inference on all images in background and update confidences."""
         if not self.image_paths:
             return
@@ -6753,6 +6811,7 @@ class MainWindow(QMainWindow):
             self.image_paths,
             compute_runtime=compute_runtime,
             batch_size=64,
+            force_monochrome=force_monochrome,
         )
 
         def _inference_success(result):
@@ -6916,7 +6975,12 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
         self._threadpool_start(worker)
 
-    def _run_multihead_yolo_inference(self, model_paths: list, on_success=None):
+    def _run_multihead_yolo_inference(
+        self,
+        model_paths: list,
+        on_success=None,
+        force_monochrome: bool = False,
+    ):
         """Run YOLO inference on each factor model, concatenate log-prob columns."""
         import numpy as np
 
@@ -6956,7 +7020,13 @@ class MainWindow(QMainWindow):
                     on_success(merged)
 
         for mp in model_paths:
-            self._run_yolo_inference(mp, on_success=_head_done)
+            self._run_yolo_inference(
+                mp,
+                on_success=_head_done,
+                force_monochrome=(
+                    force_monochrome or self._resolve_yolo_force_monochrome(mp)
+                ),
+            )
 
     def _open_model_history(self):
         """Open the Model History dialog and load a selected past model."""

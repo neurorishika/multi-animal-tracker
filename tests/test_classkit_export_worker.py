@@ -193,3 +193,35 @@ def test_export_worker_ultralytics_allows_empty_validation_split(
     assert errors == []
     assert len(train_files) == 2
     assert val_files == []
+
+
+def test_export_worker_imagefolder_preserves_duplicate_basenames(
+    tmp_path: Path,
+) -> None:
+    source_a = tmp_path / "source_a"
+    source_b = tmp_path / "source_b"
+    source_a.mkdir()
+    source_b.mkdir()
+
+    image_a = source_a / "sample.png"
+    image_b = source_b / "sample.png"
+    Image.new("RGB", (12, 10), color=(200, 80, 20)).save(image_a)
+    Image.new("RGB", (12, 10), color=(20, 120, 220)).save(image_b)
+
+    output_path = tmp_path / "imagefolder_out"
+    worker = ExportWorker(
+        image_paths=[image_a, image_b],
+        labels=[0, 0],
+        output_path=output_path,
+        format="imagefolder",
+        class_names={0: "left"},
+        val_fraction=0.0,
+    )
+
+    errors = _run_worker_and_collect_error(worker)
+
+    train_files = sorted((output_path / "train" / "left").glob("*.png"))
+
+    assert errors == []
+    assert len(train_files) == 2
+    assert {path.name for path in train_files} == {"sample.png", "sample_1.png"}

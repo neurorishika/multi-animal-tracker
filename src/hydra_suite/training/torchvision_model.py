@@ -48,6 +48,25 @@ HEAD_MODULE_NAMES = {
     "fc_norm",
 }
 
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+def get_classifier_normalization_stats(
+    monochrome: bool = False,
+) -> tuple[list[float], list[float]]:
+    """Return normalization stats for ClassKit torchvision classifiers.
+
+    Monochrome mode should preserve identical channels after normalization,
+    so grayscale inputs use the same mean/std in all three channels.
+    """
+    if not monochrome:
+        return list(IMAGENET_MEAN), list(IMAGENET_STD)
+
+    mono_mean = float(sum(IMAGENET_MEAN) / len(IMAGENET_MEAN))
+    mono_std = float(sum(IMAGENET_STD) / len(IMAGENET_STD))
+    return [mono_mean, mono_mean, mono_mean], [mono_std, mono_std, mono_std]
+
 
 def is_timm_backbone(backbone: str) -> bool:
     """Return True when the backbone key refers to a TIMM model."""

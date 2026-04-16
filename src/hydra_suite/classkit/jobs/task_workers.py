@@ -1014,6 +1014,7 @@ class YoloInferenceWorker(QRunnable):
         image_paths: List[Path],
         compute_runtime: str = "cpu",
         batch_size: int = 64,
+        force_monochrome: bool = False,
         # Deprecated — use compute_runtime instead.
         device: str = "",
     ):
@@ -1028,6 +1029,7 @@ class YoloInferenceWorker(QRunnable):
             compute_runtime = device
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
+        self.force_monochrome = bool(force_monochrome)
         self.signals = TaskSignals()
 
     @staticmethod
@@ -1131,6 +1133,24 @@ class YoloInferenceWorker(QRunnable):
                 pass
         return model, class_names, predict_device
 
+    @staticmethod
+    def _prepare_batch_input(batch_paths, force_monochrome=False):
+        if not force_monochrome:
+            return [str(path) for path in batch_paths]
+
+        import cv2
+        import numpy as np
+
+        batch_input = []
+        for path in batch_paths:
+            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if img is None:
+                batch_input.append(np.zeros((8, 8, 3), dtype=np.uint8))
+                continue
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            batch_input.append(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+        return batch_input
+
     def _run_batches(self, model, class_names, predict_device):
         import numpy as np
 
@@ -1141,7 +1161,10 @@ class YoloInferenceWorker(QRunnable):
         all_probs = []
         for batch_start in range(0, num_images, self.batch_size):
             batch_paths = self.image_paths[batch_start : batch_start + self.batch_size]
-            batch_input = [str(p) for p in batch_paths]
+            batch_input = self._prepare_batch_input(
+                batch_paths,
+                force_monochrome=self.force_monochrome,
+            )
             kwargs = {"verbose": False}
             if predict_device is not None:
                 kwargs["device"] = predict_device
@@ -1604,9 +1627,10 @@ class TorchvisionInferenceWorker(QRunnable):
     def _build_transform(self):
         from torchvision import transforms
 
+        from ...training.torchvision_model import get_classifier_normalization_stats
+
         sz = self.input_size
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+        mean, std = get_classifier_normalization_stats(monochrome=self.force_monochrome)
         transform_steps = [transforms.Resize((sz, sz))]
         if self.force_monochrome:
             transform_steps.append(transforms.Grayscale(num_output_channels=3))
@@ -1665,6 +1689,19 @@ class TorchvisionInferenceWorker(QRunnable):
                 batch_tensors.append(np.zeros((3, sz, sz), dtype=np.float32))
         return np.stack(batch_tensors).astype(np.float32)
 
+    def _resolve_force_monochrome(self) -> bool:
+        try:
+            import torch
+
+            ckpt = torch.load(
+                str(self.model_path), map_location="cpu", weights_only=False
+            )
+            if isinstance(ckpt, dict):
+                return bool(ckpt.get("monochrome", self.force_monochrome))
+        except Exception:
+            pass
+        return self.force_monochrome
+
     @staticmethod
     def _softmax_numpy(logits):
         import numpy as np
@@ -1697,6 +1734,7 @@ class TorchvisionInferenceWorker(QRunnable):
             from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
+            self.force_monochrome = self._resolve_force_monochrome()
             transform = self._build_transform()
             infer_fn = self._create_infer_fn(rt)
             all_probs_np = self._run_inference_batches(infer_fn, transform)
@@ -1804,4 +1842,5 @@ class AprilTagAutoLabelWorker(QRunnable):
             traceback.print_exc()
             self.signals.error.emit(str(exc))
         finally:
+            self.signals.finished.emit()
             self.signals.finished.emit()

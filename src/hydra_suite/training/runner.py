@@ -992,6 +992,7 @@ def _train_custom_classify(
         build_torchvision_classifier,
         export_torchvision_to_onnx,
         freeze_backbone,
+        get_classifier_normalization_stats,
         get_layer_groups,
         load_torchvision_classifier,
         save_torchvision_checkpoint,
@@ -1015,11 +1016,12 @@ def _train_custom_classify(
     weights_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_dir = Path(spec.derived_dataset_dir)
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
     sz = params.input_size
 
     profile = spec.augmentation_profile
+    mean, std = get_classifier_normalization_stats(
+        monochrome=bool(getattr(profile, "monochrome", False))
+    )
     train_transforms = [transforms.Resize((sz, sz))]
     if profile.fliplr > 0:
         train_transforms.append(transforms.RandomHorizontalFlip(p=profile.fliplr))

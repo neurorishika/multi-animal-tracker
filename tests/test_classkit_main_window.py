@@ -275,7 +275,85 @@ def test_non_first_source_schema_mismatch_can_import_images_only(
     request = window._resolve_ingest_request(source_root)
 
     assert request == {"source_root": source_root, "import_labels": False}
-    assert window.classes == ["ant"]
+
+
+def test_export_dataset_includes_labels_outside_current_scheme(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDialog:
+        def __init__(self, default_output: str = "", parent=None) -> None:
+            captured["default_output"] = default_output
+
+        def exec(self) -> bool:
+            return True
+
+        def get_settings(self) -> dict[str, object]:
+            return {
+                "output_dir": str(tmp_path / "exports"),
+                "format": "imagefolder",
+                "copy_files": True,
+                "include_unlabeled": False,
+                "include_unverified_labels": False,
+                "val_fraction": 0.2,
+                "test_fraction": 0.0,
+            }
+
+    class FakeWorker:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+            self.signals = type(
+                "Signals",
+                (),
+                {
+                    "started": type(
+                        "Signal", (), {"connect": staticmethod(lambda _fn: None)}
+                    )(),
+                    "progress": type(
+                        "Signal", (), {"connect": staticmethod(lambda _fn: None)}
+                    )(),
+                    "success": type(
+                        "Signal", (), {"connect": staticmethod(lambda _fn: None)}
+                    )(),
+                    "error": type(
+                        "Signal", (), {"connect": staticmethod(lambda _fn: None)}
+                    )(),
+                    "finished": type(
+                        "Signal", (), {"connect": staticmethod(lambda _fn: None)}
+                    )(),
+                },
+            )()
+
+    monkeypatch.setattr(
+        "hydra_suite.classkit.gui.dialogs.ExportDialog",
+        FakeDialog,
+    )
+    monkeypatch.setattr(
+        "hydra_suite.classkit.jobs.task_workers.ExportWorker",
+        FakeWorker,
+    )
+
+    window = MainWindow()
+    window.project_path = tmp_path / "project"
+    window.project_path.mkdir()
+    window.image_paths = [tmp_path / "a.png", tmp_path / "b.png", tmp_path / "c.png"]
+    window.image_labels = ["left", "unknown", None]
+    window.classes = ["left", "right", "up", "down"]
+    window._flush_pending_label_updates = lambda force=False: None
+    window._threadpool_start = lambda worker: captured.setdefault("worker", worker)
+
+    window.export_dataset()
+
+    assert captured["image_paths"] == [tmp_path / "a.png", tmp_path / "b.png"]
+    assert captured["labels"] == [0, 4]
+    assert captured["class_names"] == {
+        0: "left",
+        1: "right",
+        2: "up",
+        3: "down",
+        4: "unknown",
+    }
 
 
 def test_assign_label_can_continue_in_infinite_labeling_mode(
@@ -1242,10 +1320,13 @@ def test_autoload_yolo_classifier_runs_inference_without_prompt(
         "hydra_suite.classkit.gui.main_window.QTimer.singleShot",
         lambda _ms, callback: callback(),
     )
+    window._last_training_settings = {"monochrome": True}
     monkeypatch.setattr(
         window,
         "_run_yolo_inference",
-        lambda path, on_success=None: launched.setdefault("path", path),
+        lambda path, on_success=None, force_monochrome=False: launched.update(
+            {"path": path, "force_monochrome": force_monochrome}
+        ),
     )
 
     scheduled = window._autoload_yolo_classifier(FakeDB())
@@ -1254,6 +1335,7 @@ def test_autoload_yolo_classifier_runs_inference_without_prompt(
     assert window._yolo_model_path == yolo_path
     assert window._active_model_mode == "yolo"
     assert launched["path"] == yolo_path
+    assert launched["force_monochrome"] is True
 
 
 def test_apply_cached_predictions_switches_to_prediction_view_when_no_batch(
