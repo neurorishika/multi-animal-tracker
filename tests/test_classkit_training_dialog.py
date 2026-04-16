@@ -93,6 +93,7 @@ def test_training_dialog_augmentation_defaults_start_disabled(qapp) -> None:
     assert settings["brightness"] == pytest.approx(0.0)
     assert settings["contrast"] == pytest.approx(0.0)
     assert settings["monochrome"] is False
+    assert settings["split_strategy"] == "stratified"
 
 
 def test_training_dialog_restores_initial_settings(qapp) -> None:
@@ -112,6 +113,7 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
             "batch": 16,
             "lr": 0.002,
             "patience": 7,
+            "split_strategy": "random",
             "custom_fine_tune_method": "layerwise_lr_decay",
             "custom_layerwise_lr_decay": 0.6,
             "hue": 0.04,
@@ -135,10 +137,47 @@ def test_training_dialog_restores_initial_settings(qapp) -> None:
     assert dialog.monochrome_check.isChecked() is True
     assert dialog.tiny_width_spin.value() == 160
     assert dialog.tiny_height_spin.value() == 96
-    assert dialog._custom_epochs_spin.value() == 30
-    assert dialog._custom_batch_spin.value() == 16
-    assert dialog._custom_patience_spin.value() == 7
+    assert dialog.epochs_spin.value() == 30
+    assert dialog.batch_spin.value() == 16
+    assert dialog.lr_spin.value() == pytest.approx(0.002)
+    assert dialog.patience_spin.value() == 7
+    assert dialog.split_strategy_combo.currentData() == "random"
     assert dialog.get_settings()["initial_model_path"] == "/tmp/previous_model.pth"
+
+
+def test_training_dialog_custom_mode_uses_general_hyperparams(qapp) -> None:
+    dialog = ClassKitTrainingDialog(
+        n_labeled=8,
+        class_choices=["a", "b"],
+        initial_settings={
+            "mode": "flat_custom",
+            "custom_backbone": "resnet18",
+        },
+    )
+
+    dialog.epochs_spin.setValue(17)
+    dialog.batch_spin.setValue(24)
+    dialog.lr_spin.setValue(0.003)
+    dialog.patience_spin.setValue(6)
+
+    settings = dialog.get_settings()
+
+    assert settings["epochs"] == 17
+    assert settings["batch"] == 24
+    assert settings["lr"] == pytest.approx(0.003)
+    assert settings["patience"] == 6
+
+
+def test_training_dialog_split_strategy_can_be_switched_to_random(qapp) -> None:
+    dialog = ClassKitTrainingDialog(n_labeled=8, class_choices=["a", "b"])
+
+    dialog.split_strategy_combo.setCurrentIndex(
+        dialog.split_strategy_combo.findData("random")
+    )
+
+    settings = dialog.get_settings()
+
+    assert settings["split_strategy"] == "random"
 
 
 def test_training_dialog_prefers_onnx_coreml_for_mps_inference(

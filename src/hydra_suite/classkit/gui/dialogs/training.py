@@ -34,7 +34,7 @@ from hydra_suite.classkit.config.custom_backbones import (
     get_custom_backbone_choices,
     register_user_timm_backbones,
 )
-from hydra_suite.classkit.core.export.splits import build_stratified_splits
+from hydra_suite.classkit.core.export.splits import build_dataset_splits
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 from .timm_backbone_browser import TimmBackboneBrowserDialog
@@ -305,17 +305,16 @@ class ClassKitTrainingDialog(QDialog):
             self._custom_fine_tune_method_combo,
             settings.get("custom_fine_tune_method"),
         )
+        self._set_combo_value(
+            self.split_strategy_combo, settings.get("split_strategy", "stratified")
+        )
 
         for widget, key in (
             (self.epochs_spin, "epochs"),
-            (self._custom_epochs_spin, "epochs"),
             (self.batch_spin, "batch"),
-            (self._custom_batch_spin, "batch"),
             (self.lr_spin, "lr"),
-            (self._custom_lr_spin, "lr"),
             (self.val_fraction_spin, "val_fraction"),
             (self.patience_spin, "patience"),
-            (self._custom_patience_spin, "patience"),
             (self.tiny_layers_spin, "tiny_layers"),
             (self.tiny_dim_spin, "tiny_dim"),
             (self.tiny_dropout_spin, "tiny_dropout"),
@@ -646,7 +645,7 @@ class ClassKitTrainingDialog(QDialog):
             self._initial_model_path_edit.setText(str(selected))
 
     def _build_hyperparams_widgets(self, form):
-        """Build epoch, batch, lr, val fraction, and patience widgets."""
+        """Build epoch, batch, lr, split, val fraction, and patience widgets."""
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(1, 999999)
         self.epochs_spin.setValue(50)
@@ -663,6 +662,11 @@ class ClassKitTrainingDialog(QDialog):
         self.lr_spin.setSingleStep(0.0001)
         self.lr_spin.setValue(0.001)
         form.addRow("<b>Learning Rate:</b>", self.lr_spin)
+
+        self.split_strategy_combo = QComboBox()
+        self.split_strategy_combo.addItem("Stratified", "stratified")
+        self.split_strategy_combo.addItem("Random", "random")
+        form.addRow("<b>Split Strategy:</b>", self.split_strategy_combo)
 
         self.val_fraction_spin = QDoubleSpinBox()
         self.val_fraction_spin.setRange(0.0, 0.5)
@@ -685,6 +689,9 @@ class ClassKitTrainingDialog(QDialog):
         self.lr_spin.setToolTip(
             "Initial learning rate. 0.001 is a robust default for both Tiny and YOLO."
         )
+        self.split_strategy_combo.setToolTip(
+            "How to pick train and validation items. Stratified preserves class balance; Random uses a deterministic shuffled split."
+        )
         self.val_fraction_spin.setToolTip(
             "Fraction of labeled images reserved for validation (0.2 = 20%).\n"
             "Set to 0 only if you have very few labels."
@@ -693,6 +700,9 @@ class ClassKitTrainingDialog(QDialog):
             "Early stopping: halt if val accuracy doesn't improve for N consecutive epochs.\n"
             "Set to 0 to disable early stopping."
         )
+
+    def _current_split_strategy(self) -> str:
+        return str(self.split_strategy_combo.currentData() or "stratified")
 
     @staticmethod
     def _safe_class_text(value: object) -> str:
@@ -1074,27 +1084,14 @@ class ClassKitTrainingDialog(QDialog):
         )
         custom_form.addRow(self._custom_input_size_label, self._custom_input_size_spin)
 
-        self._custom_epochs_spin = QSpinBox()
-        self._custom_epochs_spin.setRange(1, 500)
-        self._custom_epochs_spin.setValue(50)
-        custom_form.addRow("Epochs:", self._custom_epochs_spin)
-
-        self._custom_batch_spin = QSpinBox()
-        self._custom_batch_spin.setRange(1, 256)
-        self._custom_batch_spin.setValue(32)
-        custom_form.addRow("Batch size:", self._custom_batch_spin)
-
-        self._custom_lr_spin = QDoubleSpinBox()
-        self._custom_lr_spin.setRange(1e-5, 0.1)
-        self._custom_lr_spin.setSingleStep(0.0001)
-        self._custom_lr_spin.setDecimals(5)
-        self._custom_lr_spin.setValue(1e-3)
-        custom_form.addRow("Learning rate:", self._custom_lr_spin)
-
-        self._custom_patience_spin = QSpinBox()
-        self._custom_patience_spin.setRange(1, 100)
-        self._custom_patience_spin.setValue(10)
-        custom_form.addRow("Patience:", self._custom_patience_spin)
+        self._custom_general_settings_note = QLabel(
+            "Training epochs, batch size, learning rate, and patience always come from the General tab."
+        )
+        self._custom_general_settings_note.setWordWrap(True)
+        self._custom_general_settings_note.setStyleSheet(
+            "color:#cfcfcf; font-size:11px;"
+        )
+        custom_form.addRow("", self._custom_general_settings_note)
 
         self.tiny_rebalance_combo = QComboBox()
         self.tiny_rebalance_combo.addItem("None", "none")
@@ -1302,6 +1299,9 @@ class ClassKitTrainingDialog(QDialog):
         )
         self._sync_expansion_constraints()
         self.val_fraction_spin.valueChanged.connect(
+            lambda _value: self._refresh_data_summary()
+        )
+        self.split_strategy_combo.currentIndexChanged.connect(
             lambda _value: self._refresh_data_summary()
         )
         self.flip_lr_spin.valueChanged.connect(
@@ -1531,8 +1531,9 @@ class ClassKitTrainingDialog(QDialog):
 
     def _current_data_summary(self) -> dict:
         if self._labeled_label_names:
-            splits = build_stratified_splits(
+            splits = build_dataset_splits(
                 self._labeled_label_names,
+                strategy=self._current_split_strategy(),
                 val_fraction=self.val_fraction_spin.value(),
                 test_fraction=0.0,
             )
@@ -1570,7 +1571,14 @@ class ClassKitTrainingDialog(QDialog):
 
     def current_data_summary_text(self) -> str:
         summary = self._current_data_summary()
-        lead = "Stratified export" if summary["exact"] else "Estimated export"
+        strategy_label = (
+            "Stratified" if self._current_split_strategy() == "stratified" else "Random"
+        )
+        lead = (
+            f"{strategy_label} export"
+            if summary["exact"]
+            else f"Estimated {strategy_label.lower()} export"
+        )
         lines = [
             (
                 f"{lead}: {summary['train']:,} train / {summary['val']:,} val "
@@ -1624,8 +1632,9 @@ class ClassKitTrainingDialog(QDialog):
 
         labels = [label for _, label in preview_pairs]
         try:
-            splits = build_stratified_splits(
+            splits = build_dataset_splits(
                 labels,
+                strategy=self._current_split_strategy(),
                 val_fraction=self.val_fraction_spin.value(),
                 test_fraction=0.0,
             )
@@ -1857,25 +1866,12 @@ class ClassKitTrainingDialog(QDialog):
             "initial_model_path": self._normalize_path_text(
                 self._initial_model_path_edit.text()
             ),
-            "epochs": (
-                self._custom_epochs_spin.value()
-                if _is_custom
-                else self.epochs_spin.value()
-            ),
-            "batch": (
-                self._custom_batch_spin.value()
-                if _is_custom
-                else self.batch_spin.value()
-            ),
-            "lr": (
-                self._custom_lr_spin.value() if _is_custom else self.lr_spin.value()
-            ),
+            "epochs": self.epochs_spin.value(),
+            "batch": self.batch_spin.value(),
+            "lr": self.lr_spin.value(),
+            "split_strategy": self._current_split_strategy(),
             "val_fraction": self.val_fraction_spin.value(),
-            "patience": (
-                self._custom_patience_spin.value()
-                if _is_custom
-                else self.patience_spin.value()
-            ),
+            "patience": self.patience_spin.value(),
             "tiny_layers": (
                 self._tiny_in_custom_layers_spin.value()
                 if custom_is_tiny

@@ -373,10 +373,11 @@ def _run_tiny_training_loop(
 
     Returns (best_state, best_val_acc, history).
     """
-    best_val_acc = -1.0
+    best_val_acc = None
     best_state = None
     patience_counter = 0
     history = []
+    has_validation = bool(val_loader)
 
     for epoch in range(epochs):
         if should_cancel and should_cancel():
@@ -400,23 +401,34 @@ def _run_tiny_training_loop(
             {"epoch": epoch + 1, "train_loss": mean_loss, "val_acc": val_acc}
         )
 
-        if val_acc >= best_val_acc:
-            best_val_acc = val_acc
+        if has_validation:
+            if best_val_acc is None or (
+                val_acc is not None and val_acc >= best_val_acc
+            ):
+                best_val_acc = val_acc
+                best_state = {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                }
+                patience_counter = 0
+            else:
+                patience_counter += 1
+        else:
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
-            patience_counter = 0
-        else:
-            patience_counter += 1
 
         _safe_log(
             log_cb,
-            f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f} val_acc={val_acc:.4f}",
+            (
+                f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f} val_acc={val_acc:.4f}"
+                if val_acc is not None
+                else f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f} val_acc=n/a"
+            ),
         )
         if progress_cb:
             progress_cb(epoch + 1, epochs)
 
-        if val_loader and patience_counter >= patience:
+        if has_validation and patience_counter >= patience:
             _safe_log(log_cb, f"Early stopping triggered at epoch {epoch + 1}")
             break
 
@@ -428,7 +440,7 @@ def _run_tiny_validation(model, val_loader, device):
     import torch
 
     if not val_loader:
-        return 0.0
+        return None
     model.eval()
     correct, total = 0, 0
     with torch.inference_mode():
@@ -482,11 +494,12 @@ def _save_tiny_checkpoint(
         "input_size": [input_w, input_h],
         "num_classes": num_classes,
         "class_names": [name for name, _idx in sorted_class_items],
-        "best_val_acc": float(best_val_acc),
+        "best_val_acc": (float(best_val_acc) if best_val_acc is not None else None),
         "history": history,
         "hidden_layers": int(spec.tiny_params.hidden_layers),
         "hidden_dim": int(spec.tiny_params.hidden_dim),
         "dropout": float(spec.tiny_params.dropout),
+        "monochrome": bool(getattr(spec.augmentation_profile, "monochrome", False)),
     }
     torch.save(_ckpt_dict, out_ckpt)
 
@@ -495,7 +508,13 @@ def _save_tiny_checkpoint(
     metrics_path = run_dir / "tiny_metrics.json"
     metrics_path.write_text(
         _json.dumps(
-            {"best_val_acc": float(best_val_acc), "history": history}, indent=2
+            {
+                "best_val_acc": (
+                    float(best_val_acc) if best_val_acc is not None else None
+                ),
+                "history": history,
+            },
+            indent=2,
         ),
         encoding="utf-8",
     )
@@ -699,7 +718,7 @@ def _train_tiny_classify(
         "artifact_path": str(out_ckpt),
         "onnx_path": str(_onnx_path) if _onnx_path is not None else "",
         "metrics_path": str(metrics_path),
-        "best_val_acc": float(best_val_acc),
+        "best_val_acc": (float(best_val_acc) if best_val_acc is not None else None),
         "command": ["tiny_classify_inprocess"],
         "task": "tiny_classify",
     }
@@ -828,6 +847,7 @@ def _run_torchvision_training_loop(
     get_layer_groups_fn,
     best_ckpt_path,
     class_names,
+    checkpoint_extra_meta,
     log_cb,
     progress_cb,
     should_cancel,
@@ -839,9 +859,10 @@ def _run_torchvision_training_loop(
     import torch
 
     sz = params.input_size
-    best_val_acc = 0.0
+    best_val_acc = None
     patience_count = 0
     history: dict = {"train_loss": [], "val_acc": []}
+    has_validation = bool(val_loader)
     current_unfrozen_groups = 0
     total_groups = 0
     if backbone != "tinyclassifier":
@@ -890,53 +911,67 @@ def _run_torchvision_training_loop(
         avg_loss = total_loss / max(len(train_loader), 1)
         history["train_loss"].append(avg_loss)
 
-        model.eval()
-        correct = total = 0
-        with torch.no_grad():
-            for batch_x, batch_y in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                preds = model(batch_x).argmax(dim=1)
-                correct += (preds == batch_y).sum().item()
-                total += len(batch_y)
-        val_acc = correct / max(total, 1)
+        val_acc = None
+        if has_validation:
+            model.eval()
+            correct = total = 0
+            with torch.no_grad():
+                for batch_x, batch_y in val_loader:
+                    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                    preds = model(batch_x).argmax(dim=1)
+                    correct += (preds == batch_y).sum().item()
+                    total += len(batch_y)
+            val_acc = correct / max(total, 1)
         history["val_acc"].append(val_acc)
 
         _safe_log(
             log_cb,
-            f"Epoch {epoch + 1}/{params.epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}",
+            (
+                f"Epoch {epoch + 1}/{params.epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}"
+                if val_acc is not None
+                else f"Epoch {epoch + 1}/{params.epochs}  loss={avg_loss:.4f}  val_acc=n/a"
+            ),
         )
         if progress_cb:
             progress_cb(epoch + 1, params.epochs)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            patience_count = 0
-            save_torchvision_checkpoint_fn(
-                model=model,
-                backbone=backbone,
-                class_names=class_names,
-                factor_names=[],
-                input_size=(sz, sz),
-                best_val_acc=best_val_acc,
-                history=history,
-                trainable_layers=params.trainable_layers,
-                backbone_lr_scale=params.backbone_lr_scale,
-                extra_meta={
-                    "fine_tune_method": getattr(
-                        params, "fine_tune_method", "head_only"
-                    ),
-                    "layerwise_lr_decay": getattr(params, "layerwise_lr_decay", 0.75),
-                    "gradual_unfreeze_interval": getattr(
-                        params, "gradual_unfreeze_interval", 5
-                    ),
-                },
-                path=best_ckpt_path,
-            )
-        else:
-            patience_count += 1
-            if patience_count >= params.patience:
-                _safe_log(log_cb, f"Early stopping at epoch {epoch + 1}.")
-                break
+        if has_validation and val_acc is not None:
+            if best_val_acc is None or val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_count = 0
+                save_torchvision_checkpoint_fn(
+                    model=model,
+                    backbone=backbone,
+                    class_names=class_names,
+                    factor_names=[],
+                    input_size=(sz, sz),
+                    best_val_acc=best_val_acc,
+                    history=history,
+                    trainable_layers=params.trainable_layers,
+                    backbone_lr_scale=params.backbone_lr_scale,
+                    extra_meta=checkpoint_extra_meta,
+                    path=best_ckpt_path,
+                )
+            else:
+                patience_count += 1
+                if patience_count >= params.patience:
+                    _safe_log(log_cb, f"Early stopping at epoch {epoch + 1}.")
+                    break
+
+    if not has_validation and history["train_loss"]:
+        save_torchvision_checkpoint_fn(
+            model=model,
+            backbone=backbone,
+            class_names=class_names,
+            factor_names=[],
+            input_size=(sz, sz),
+            best_val_acc=None,
+            history=history,
+            trainable_layers=params.trainable_layers,
+            backbone_lr_scale=params.backbone_lr_scale,
+            extra_meta=checkpoint_extra_meta,
+            path=best_ckpt_path,
+        )
 
     return best_val_acc, history
 
@@ -1027,8 +1062,26 @@ def _train_custom_classify(
     )
 
     train_ds = datasets.ImageFolder(str(dataset_dir / "train"), transform=train_tf)
-    val_ds = datasets.ImageFolder(str(dataset_dir / "val"), transform=val_tf)
+    val_dir = dataset_dir / "val"
+    has_validation = val_dir.exists() and any(
+        path.is_file() for path in val_dir.rglob("*")
+    )
+    val_ds = (
+        datasets.ImageFolder(str(val_dir), transform=val_tf) if has_validation else None
+    )
     class_names = train_ds.classes
+    checkpoint_extra_meta = {
+        "fine_tune_method": getattr(params, "fine_tune_method", "head_only"),
+        "layerwise_lr_decay": getattr(params, "layerwise_lr_decay", 0.75),
+        "gradual_unfreeze_interval": getattr(params, "gradual_unfreeze_interval", 5),
+        "monochrome": bool(getattr(profile, "monochrome", False)),
+    }
+
+    if not has_validation:
+        _safe_log(
+            log_cb,
+            "No validation split found; training without held-out validation.",
+        )
 
     rebalance_mode = (
         str(getattr(params, "class_rebalance_mode", "none") or "none").strip().lower()
@@ -1060,8 +1113,16 @@ def _train_custom_classify(
         num_workers=0,
         pin_memory=True,
     )
-    val_loader = DataLoader(
-        val_ds, batch_size=params.batch, shuffle=False, num_workers=0, pin_memory=True
+    val_loader = (
+        DataLoader(
+            val_ds,
+            batch_size=params.batch,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=True,
+        )
+        if val_ds is not None
+        else None
     )
 
     device = _pick_torch_device(spec.device)
@@ -1126,6 +1187,7 @@ def _train_custom_classify(
         get_layer_groups,
         best_ckpt_path,
         class_names,
+        checkpoint_extra_meta,
         log_cb,
         progress_cb,
         should_cancel,
@@ -1156,7 +1218,14 @@ def _train_custom_classify(
     onnx_path = best_ckpt_path.with_suffix(".onnx")
     export_torchvision_to_onnx(best_model, best_ckpt, onnx_path)
 
-    _safe_log(log_cb, f"Training complete. Best val acc: {best_val_acc:.4f}")
+    _safe_log(
+        log_cb,
+        (
+            f"Training complete. Best val acc: {best_val_acc:.4f}"
+            if best_val_acc is not None
+            else "Training complete. Best val acc: n/a (validation disabled)."
+        ),
+    )
 
     return {
         "success": True,

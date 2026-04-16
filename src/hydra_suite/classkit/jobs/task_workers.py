@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from ..core.export.splits import build_stratified_splits
+from ..core.export.splits import build_dataset_splits
 
 
 class TaskSignals(QObject):
@@ -609,6 +609,7 @@ class ExportWorker(QRunnable):
         output_path: Path,
         format: str = "imagefolder",
         class_names: Optional[Dict[int, str]] = None,
+        split_strategy: str = "stratified",
         val_fraction: float = 0.2,
         test_fraction: float = 0.0,
         copy_files: bool = True,
@@ -623,6 +624,7 @@ class ExportWorker(QRunnable):
         self.output_path = output_path
         self.format = format
         self.class_names = class_names or {}
+        self.split_strategy = str(split_strategy or "stratified")
         self.val_fraction = float(val_fraction)
         self.test_fraction = float(test_fraction)
         self.copy_files = copy_files
@@ -637,10 +639,11 @@ class ExportWorker(QRunnable):
         return self.class_names.get(label, f"class_{label}")
 
     def _build_splits(self, labels: Optional[List[int]] = None):
-        """Build deterministic stratified train/val/test split assignments."""
+        """Build deterministic train/val/test split assignments."""
         labels = list(self.labels if labels is None else labels)
-        return build_stratified_splits(
+        return build_dataset_splits(
             labels,
+            strategy=self.split_strategy,
             val_fraction=self.val_fraction,
             test_fraction=self.test_fraction,
         )
@@ -929,12 +932,6 @@ class ExportWorker(QRunnable):
             else:
                 train_images.append(path)
                 train_labels.append(label)
-
-        if not val_images and train_images:
-            val_images.append(train_images[-1])
-            val_labels.append(train_labels[-1])
-            train_images = train_images[:-1]
-            train_labels = train_labels[:-1]
 
         export_ultralytics_classify(
             output_path=self.output_path,
@@ -1375,6 +1372,7 @@ class TinyCNNInferenceWorker(QRunnable):
         class_names: List[str],
         compute_runtime: str = "cpu",
         batch_size: int = 64,
+        force_monochrome: bool = False,
         # Deprecated — use compute_runtime instead.
         device: str = "",
     ):
@@ -1391,6 +1389,7 @@ class TinyCNNInferenceWorker(QRunnable):
             compute_runtime = device
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
+        self.force_monochrome = bool(force_monochrome)
         self.signals = TaskSignals()
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -1407,7 +1406,7 @@ class TinyCNNInferenceWorker(QRunnable):
         return "cpu"
 
     @staticmethod
-    def _load_batch_images(batch_paths, input_w, input_h):
+    def _load_batch_images(batch_paths, input_w, input_h, force_monochrome=False):
         import cv2
         import numpy as np
 
@@ -1419,6 +1418,9 @@ class TinyCNNInferenceWorker(QRunnable):
                     tensors.append(np.zeros((3, input_h, input_w), dtype=np.float32))
                     continue
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                if force_monochrome:
+                    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+                    img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
                 img = cv2.resize(
                     img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
                 )
@@ -1450,8 +1452,10 @@ class TinyCNNInferenceWorker(QRunnable):
             ckpt_names = ckpt.get("class_names")
             if ckpt_names:
                 resolved_names = list(ckpt_names)
+            force_monochrome = bool(ckpt.get("monochrome", self.force_monochrome))
         except Exception:
             input_w, input_h = 128, 64
+            force_monochrome = self.force_monochrome
 
         session = load_tiny_onnx(str(onnx_path), compute_runtime=rt)
         self.signals.progress.emit(
@@ -1460,7 +1464,12 @@ class TinyCNNInferenceWorker(QRunnable):
         all_probs = []
         for batch_start in range(0, num_images, self.batch_size):
             batch_paths = self.image_paths[batch_start : batch_start + self.batch_size]
-            batch_np = self._load_batch_images(batch_paths, input_w, input_h)
+            batch_np = self._load_batch_images(
+                batch_paths,
+                input_w,
+                input_h,
+                force_monochrome=force_monochrome,
+            )
             if batch_np.shape[0] == 0:
                 continue
             all_probs.append(run_tiny_onnx(session, batch_np))
@@ -1482,12 +1491,18 @@ class TinyCNNInferenceWorker(QRunnable):
         ckpt_names = ckpt.get("class_names")
         if ckpt_names:
             resolved_names = list(ckpt_names)
+        force_monochrome = bool(ckpt.get("monochrome", self.force_monochrome))
 
         self.signals.progress.emit(5, f"Tiny CNN inference on {num_images:,} images...")
         all_probs = []
         for batch_start in range(0, num_images, self.batch_size):
             batch_paths = self.image_paths[batch_start : batch_start + self.batch_size]
-            batch_np = self._load_batch_images(batch_paths, input_w, input_h)
+            batch_np = self._load_batch_images(
+                batch_paths,
+                input_w,
+                input_h,
+                force_monochrome=force_monochrome,
+            )
             if batch_np.shape[0] == 0:
                 continue
             x = torch.from_numpy(batch_np).to(torch_device)
@@ -1562,6 +1577,7 @@ class TorchvisionInferenceWorker(QRunnable):
         input_size: int = 224,
         compute_runtime: str = "cpu",
         batch_size: int = 64,
+        force_monochrome: bool = False,
     ):
         super().__init__()
         self.setAutoDelete(False)
@@ -1571,6 +1587,7 @@ class TorchvisionInferenceWorker(QRunnable):
         self.input_size = input_size
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
+        self.force_monochrome = bool(force_monochrome)
         self.signals = TaskSignals()
 
     @staticmethod
@@ -1590,13 +1607,16 @@ class TorchvisionInferenceWorker(QRunnable):
         sz = self.input_size
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
-        return transforms.Compose(
+        transform_steps = [transforms.Resize((sz, sz))]
+        if self.force_monochrome:
+            transform_steps.append(transforms.Grayscale(num_output_channels=3))
+        transform_steps.extend(
             [
-                transforms.Resize((sz, sz)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std),
             ]
         )
+        return transforms.Compose(transform_steps)
 
     def _create_infer_fn(self, rt: str):
         import torch
@@ -1638,6 +1658,8 @@ class TorchvisionInferenceWorker(QRunnable):
         for path in batch_paths:
             try:
                 img = Image.open(str(path)).convert("RGB")
+                if self.force_monochrome:
+                    img = img.convert("L").convert("RGB")
                 batch_tensors.append(transform(img).numpy())
             except Exception:
                 batch_tensors.append(np.zeros((3, sz, sz), dtype=np.float32))

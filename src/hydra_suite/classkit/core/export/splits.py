@@ -5,6 +5,11 @@ from math import floor
 from typing import Hashable, Sequence
 
 
+def _normalize_split_strategy(strategy: str | None) -> str:
+    normalized = str(strategy or "stratified").strip().lower()
+    return normalized if normalized in {"stratified", "random"} else "stratified"
+
+
 def _allocate_holdout_counts(
     counts_by_label: dict[Hashable, int],
     *,
@@ -133,3 +138,72 @@ def build_stratified_splits(
                         return split_by_index
 
     return split_by_index
+
+
+def build_random_splits(
+    labels: Sequence[Hashable],
+    *,
+    val_fraction: float = 0.2,
+    test_fraction: float = 0.0,
+    seed: int = 42,
+) -> list[str]:
+    """Return deterministic random train/val/test split labels."""
+
+    import numpy as np
+
+    n_items = len(labels)
+    if n_items == 0:
+        return []
+
+    val_fraction = min(max(float(val_fraction), 0.0), 1.0)
+    test_fraction = min(max(float(test_fraction), 0.0), 1.0)
+
+    desired_test = int(round(float(n_items) * test_fraction))
+    desired_val = int(round(float(n_items) * val_fraction))
+
+    if test_fraction > 0.0 and desired_test <= 0 and n_items > 1:
+        desired_test = 1
+    desired_test = min(max(0, desired_test), max(0, n_items - 1))
+
+    remaining_after_test = n_items - desired_test
+    if val_fraction > 0.0 and desired_val <= 0 and remaining_after_test > 1:
+        desired_val = 1
+    desired_val = min(max(0, desired_val), max(0, remaining_after_test - 1))
+
+    indices = list(range(n_items))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(indices)
+
+    split_by_index = ["train"] * n_items
+    for index in indices[:desired_test]:
+        split_by_index[index] = "test"
+    for index in indices[desired_test : desired_test + desired_val]:
+        split_by_index[index] = "val"
+
+    return split_by_index
+
+
+def build_dataset_splits(
+    labels: Sequence[Hashable],
+    *,
+    strategy: str = "stratified",
+    val_fraction: float = 0.2,
+    test_fraction: float = 0.0,
+    seed: int = 42,
+) -> list[str]:
+    """Return deterministic split labels using the requested strategy."""
+
+    normalized_strategy = _normalize_split_strategy(strategy)
+    if normalized_strategy == "random":
+        return build_random_splits(
+            labels,
+            val_fraction=val_fraction,
+            test_fraction=test_fraction,
+            seed=seed,
+        )
+    return build_stratified_splits(
+        labels,
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
+        seed=seed,
+    )

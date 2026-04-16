@@ -5872,6 +5872,7 @@ class MainWindow(QMainWindow):
                             output_path=factor_dir,
                             format="ultralytics",
                             class_names=factor_names,
+                            split_strategy=self.split_strategy,
                             val_fraction=self.val_fraction,
                             label_expansion=exp_label_expansion,
                         )
@@ -5888,6 +5889,7 @@ class MainWindow(QMainWindow):
             labels=[0] * len(context["images"]),
             output_path=context["run_dir"],
             format="ultralytics",
+            split_strategy=context["settings"].get("split_strategy", "stratified"),
             val_fraction=context["settings"].get("val_fraction", 0.2),
             force_monochrome=bool(context["settings"].get("monochrome", False)),
             scheme=scheme,
@@ -5906,6 +5908,7 @@ class MainWindow(QMainWindow):
             output_path=context["run_dir"] / "export",
             format="ultralytics",
             class_names=context["class_names_int"],
+            split_strategy=context["settings"].get("split_strategy", "stratified"),
             val_fraction=context["settings"].get("val_fraction", 0.2),
             force_monochrome=bool(context["settings"].get("monochrome", False)),
             label_expansion=context["settings"].get("label_expansion") or {},
@@ -6196,6 +6199,9 @@ class MainWindow(QMainWindow):
             class_names=resolved,
             input_size=size,
             on_success=_after_load,
+            force_monochrome=bool(ckpt.get("monochrome", False))
+            if isinstance(ckpt, dict)
+            else False,
         )
 
     def _load_tiny_cnn_checkpoint(
@@ -6238,6 +6244,9 @@ class MainWindow(QMainWindow):
             path,
             class_names=resolved,
             on_success=_after_load,
+            force_monochrome=bool(ckpt.get("monochrome", False))
+            if isinstance(ckpt, dict)
+            else False,
         )
 
     def _load_yolo_checkpoint(
@@ -6783,7 +6792,13 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
         self._threadpool_start(worker)
 
-    def _run_tiny_inference(self, model_path: Path, class_names: list, on_success=None):
+    def _run_tiny_inference(
+        self,
+        model_path: Path,
+        class_names: list,
+        on_success=None,
+        force_monochrome: bool = False,
+    ):
         """Run TinyCNN inference on all images in background and update confidences."""
         if not self.image_paths:
             return
@@ -6799,6 +6814,7 @@ class MainWindow(QMainWindow):
             class_names,
             compute_runtime=compute_runtime,
             batch_size=64,
+            force_monochrome=force_monochrome,
         )
 
         def _tiny_success(result):
@@ -6844,6 +6860,7 @@ class MainWindow(QMainWindow):
         class_names: list,
         input_size: int = 224,
         on_success=None,
+        force_monochrome: bool = False,
     ):
         """Launch TorchvisionInferenceWorker and wire signals to the standard post-inference path."""
         if not self.image_paths:
@@ -6858,6 +6875,7 @@ class MainWindow(QMainWindow):
             class_names=class_names,
             input_size=input_size,
             compute_runtime=rt,
+            force_monochrome=force_monochrome,
         )
 
         def _torchvision_success(result):

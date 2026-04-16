@@ -263,7 +263,7 @@ def save_torchvision_checkpoint(
     class_names: list[str],
     factor_names: list[str],
     input_size: tuple[int, int],
-    best_val_acc: float,
+    best_val_acc: float | None,
     history: dict[str, Any],
     trainable_layers: int,
     backbone_lr_scale: float,

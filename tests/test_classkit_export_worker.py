@@ -95,6 +95,47 @@ def test_export_worker_split_planning_ignores_unlabeled_items(tmp_path: Path) ->
     assert splits.count("val") == 2
 
 
+def test_export_worker_split_planning_uses_requested_strategy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_build_dataset_splits(
+        labels, *, strategy, val_fraction, test_fraction, seed=42
+    ):
+        captured["labels"] = list(labels)
+        captured["strategy"] = strategy
+        captured["val_fraction"] = val_fraction
+        captured["test_fraction"] = test_fraction
+        return ["train"] * len(labels)
+
+    monkeypatch.setattr(
+        "hydra_suite.classkit.jobs.task_workers.build_dataset_splits",
+        _fake_build_dataset_splits,
+    )
+
+    worker = ExportWorker(
+        image_paths=[tmp_path / f"img_{idx}.jpg" for idx in range(4)],
+        labels=[0, 0, 1, 1],
+        output_path=tmp_path / "out.csv",
+        format="csv",
+        class_names={0: "left", 1: "right"},
+        split_strategy="random",
+        val_fraction=0.25,
+    )
+
+    _image_paths, labels, splits, _class_names = worker._collect_valid_labels()
+
+    assert labels == [0, 0, 1, 1]
+    assert splits == ["train", "train", "train", "train"]
+    assert captured == {
+        "labels": [0, 0, 1, 1],
+        "strategy": "random",
+        "val_fraction": 0.25,
+        "test_fraction": 0.0,
+    }
+
+
 def test_export_worker_force_monochrome_materializes_grayscale_copies(
     tmp_path: Path,
 ) -> None:
@@ -123,3 +164,32 @@ def test_export_worker_force_monochrome_materializes_grayscale_copies(
     assert converted_splits == splits
     assert np.array_equal(converted[..., 0], converted[..., 1])
     assert np.array_equal(converted[..., 1], converted[..., 2])
+
+
+def test_export_worker_ultralytics_allows_empty_validation_split(
+    tmp_path: Path,
+) -> None:
+    image_paths = []
+    for idx, color in enumerate(((200, 80, 20), (20, 120, 220))):
+        image_path = tmp_path / f"sample_{idx}.png"
+        Image.new("RGB", (12, 10), color=color).save(image_path)
+        image_paths.append(image_path)
+
+    output_path = tmp_path / "ultralytics_out"
+    worker = ExportWorker(
+        image_paths=image_paths,
+        labels=[0, 0],
+        output_path=output_path,
+        format="ultralytics",
+        class_names={0: "left"},
+        val_fraction=0.0,
+    )
+
+    errors = _run_worker_and_collect_error(worker)
+
+    train_files = sorted((output_path / "train" / "left").glob("*.png"))
+    val_files = list((output_path / "val").rglob("*.png"))
+
+    assert errors == []
+    assert len(train_files) == 2
+    assert val_files == []
