@@ -4,13 +4,14 @@ Includes perceptual hashing, duplicate removal, and diversity sampling.
 """
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
+
+from hydra_suite.core.identity.dataset.naming import parse_identity_image_filename
 
 
 class _HashBKTreeNode:
@@ -475,8 +476,7 @@ class FilterKitCore:
 
     def load_dataset(self, folder_path: str) -> List[Dict[str, Any]]:
         """
-        Load images and extract metadata from filenames.
-        Supports format: did{detection_id}.png
+        Load flat MAT identity dataset images and extract metadata from filenames.
         """
         dataset = []
         folder = Path(folder_path)
@@ -490,46 +490,49 @@ class FilterKitCore:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
 
-        pattern = re.compile(r"did(\d+)\.png")
-
-        # Sort files to ensure deterministic order
-        files = sorted(folder.glob("*.png"))
+        files = sorted(
+            path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        )
 
         for file_path in files:
             img_path = str(file_path.resolve())
             filename = file_path.name
 
-            match = pattern.search(filename)
-            if match:
-                det_id = int(match.group(1))
-                frame_idx = det_id // 10000
-                det_idx = det_id % 10000
+            parsed = parse_identity_image_filename(filename)
+            if parsed is None:
+                continue
 
-                item = {
-                    "path": img_path,
-                    "filename": filename,
-                    "det_id": det_id,
-                    "frame_idx": frame_idx,
-                    "det_idx": det_idx,
-                    "annotations": [],
-                }
+            item = {
+                "path": img_path,
+                "filename": filename,
+                "det_id": int(parsed.get("det_id", 0)),
+                "frame_idx": int(parsed.get("frame_idx", 0)),
+                "det_idx": int(parsed.get("det_idx", 0)),
+                "annotations": [],
+                "source_type": str(parsed.get("source_type", "detected")),
+                "interpolated": bool(parsed.get("interpolated", False)),
+            }
+            if parsed.get("detection_id") is not None:
+                item["detection_id"] = int(parsed["detection_id"])
+            if parsed.get("trajectory_id") is not None:
+                item["trajectory_id"] = int(parsed["trajectory_id"])
 
-                if metadata:
-                    # Find matching frame in metadata
+            if metadata:
+                for image_entry in metadata.get("images", metadata.get("crops", [])):
+                    if str(image_entry.get("filename", "")).strip() == filename:
+                        item["annotations"].append(image_entry)
+                        break
+                if not item["annotations"]:
                     for frame_data in metadata.get("frames", []):
-                        if frame_data["frame_id"] == frame_idx:
-                            # Find matching annotation
-                            for ann in frame_data.get("annotations", []):
-                                # Heuristic: match based on detection index if available,
-                                # otherwise we might need a more robust matching strategy.
-                                # For now, we assume one detection per frame in this context.
-                                item["annotations"].append(ann)
+                        if frame_data.get("frame_id") == item["frame_idx"]:
+                            item["annotations"].extend(
+                                frame_data.get("annotations", [])
+                            )
                             break
-                dataset.append(item)
-            else:
-                # Fallback for other formats if needed, or skip
-                # For now, skip non-matching files
-                pass
+
+            dataset.append(item)
 
         return dataset
 

@@ -1,6 +1,8 @@
-"""Tests for FilterKit core deduplication behavior."""
+"""Tests for FilterKit core dataset loading and deduplication behavior."""
 
 from __future__ import annotations
+
+import json
 
 import numpy as np
 
@@ -107,3 +109,38 @@ def test_filterkit_histogram_dedup_matches_existing_behavior() -> None:
             "method": "histogram",
         }
     ]
+
+
+def test_filterkit_load_dataset_accepts_detected_and_interpolated_flat_names(
+    tmp_path,
+) -> None:
+    dataset_root = tmp_path / "dataset"
+    images_dir = dataset_root / "images"
+    images_dir.mkdir(parents=True)
+    (images_dir / "did101.jpg").write_bytes(b"x")
+    interp_name = "interp_f000002_traj0001_seg000001-000003_p001of001.png"
+    (images_dir / interp_name).write_bytes(b"y")
+    (dataset_root / "metadata.json").write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"filename": "did101.jpg", "source_type": "yolo_obb"},
+                    {"filename": interp_name, "source_type": "interpolated"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = FilterKitCore().load_dataset(str(images_dir))
+
+    assert [item["filename"] for item in dataset] == ["did101.jpg", interp_name]
+    assert dataset[0]["det_id"] == 101
+    assert dataset[0]["frame_idx"] == 0
+    assert dataset[0]["annotations"][0]["filename"] == "did101.jpg"
+    assert dataset[1]["interpolated"] is True
+    assert dataset[1]["source_type"] == "interpolated"
+    assert dataset[1]["frame_idx"] == 2
+    assert dataset[1]["trajectory_id"] == 1
+    assert dataset[1]["det_id"] < 0
+    assert dataset[1]["annotations"][0]["filename"] == interp_name

@@ -80,6 +80,11 @@ def _build_runtime_stubs(video_artifacts) -> dict[str, types.ModuleType]:
     batch_optimizer = types.ModuleType("hydra_suite.utils.batch_optimizer")
     batch_optimizer.BatchOptimizer = object
 
+    batch_policy = types.ModuleType("hydra_suite.utils.batch_policy")
+    batch_policy.clamp_realtime_individual_batch_size = (
+        lambda batch_size, *_args, **_kwargs: batch_size
+    )
+
     frame_prefetcher = types.ModuleType("hydra_suite.utils.frame_prefetcher")
 
     class FramePrefetcher:
@@ -106,6 +111,7 @@ def _build_runtime_stubs(video_artifacts) -> dict[str, types.ModuleType]:
         "hydra_suite.data.detection_cache": detection_cache,
         "hydra_suite.data.tag_observation_cache": tag_observation_cache,
         "hydra_suite.utils.batch_optimizer": batch_optimizer,
+        "hydra_suite.utils.batch_policy": batch_policy,
         "hydra_suite.utils.frame_prefetcher": frame_prefetcher,
     }
 
@@ -190,6 +196,7 @@ def _build_identity_and_tracking_stubs() -> dict[str, types.ModuleType]:
     pose_features_new.compute_pose_geometry_from_keypoints = (
         lambda *_args, **_kwargs: None
     )
+    pose_features_new.is_pose_heading_reliable = lambda *_args, **_kwargs: False
     pose_features_new.normalize_pose_keypoints = lambda *_args, **_kwargs: None
     pose_features_new.resolve_pose_group_indices = lambda *_args, **_kwargs: []
     pose_api = types.ModuleType("hydra_suite.core.identity.pose.api")
@@ -217,6 +224,10 @@ def _build_identity_and_tracking_stubs() -> dict[str, types.ModuleType]:
 
     pose_pipeline = types.ModuleType("hydra_suite.core.tracking.pose_pipeline")
     pose_pipeline.extract_one_crop = lambda *_args, **_kwargs: None
+    live_features = types.ModuleType("hydra_suite.core.tracking.live_features")
+    live_features.LiveCNNIdentityStore = object
+    live_features.LivePosePropertiesStore = object
+    live_features.LiveTagObservationStore = object
     precompute = types.ModuleType("hydra_suite.core.tracking.precompute")
     precompute.AprilTagPrecomputePhase = object
     precompute.CNNPrecomputePhase = object
@@ -238,6 +249,7 @@ def _build_identity_and_tracking_stubs() -> dict[str, types.ModuleType]:
         "hydra_suite.core.identity.properties.cache": properties_cache,
         "hydra_suite.core.tracking.density": density,
         "hydra_suite.core.tracking.cnn_features": cnn_features,
+        "hydra_suite.core.tracking.live_features": live_features,
         "hydra_suite.core.tracking.pose_pipeline": pose_pipeline,
         "hydra_suite.core.tracking.precompute": precompute,
         "hydra_suite.core.tracking.profiler": profiler,
@@ -329,6 +341,28 @@ def test_confidence_density_enabled_defaults_true_and_respects_flag() -> None:
 
     worker.set_parameters({"ENABLE_CONFIDENCE_DENSITY_MAP": False})
     assert worker._confidence_density_enabled() is False
+
+
+def test_confidence_density_video_export_defaults_true_and_respects_flag() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    assert worker._confidence_density_video_export_enabled({}) is True
+    assert (
+        worker._confidence_density_video_export_enabled(
+            {"EXPORT_CONFIDENCE_DENSITY_VIDEO": True}
+        )
+        is True
+    )
+    assert (
+        worker._confidence_density_video_export_enabled(
+            {"EXPORT_CONFIDENCE_DENSITY_VIDEO": False}
+        )
+        is False
+    )
+
+    worker.set_parameters({"EXPORT_CONFIDENCE_DENSITY_VIDEO": False})
+    assert worker._confidence_density_video_export_enabled() is False
 
 
 def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:

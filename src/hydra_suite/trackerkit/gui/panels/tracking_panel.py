@@ -841,6 +841,18 @@ class TrackingPanel(QWidget):
         )
         f_density.addRow("Grid downsample factor", self.spin_density_downsample_factor)
 
+        self.chk_export_confidence_density_video = QCheckBox(
+            "Export density diagnostic video"
+        )
+        self.chk_export_confidence_density_video.setChecked(True)
+        self.chk_export_confidence_density_video.setToolTip(
+            "Write a reduced-resolution confidence-density visualization video\n"
+            "next to the source video after density-map computation completes.\n"
+            "Disable to keep density-aware matching active without exporting\n"
+            "the diagnostic visualization file."
+        )
+        f_density.addRow("", self.chk_export_confidence_density_video)
+
         vl_density.addLayout(f_density)
         self.g_density.setContentLayout(vl_density)
         vbox.addWidget(self.g_density)

@@ -308,9 +308,12 @@ def test_final_canonical_media_export_writes_images_and_videos(tmp_path: Path):
     assert result.exported_videos == 2
     assert result.exported_images == 4
     assert Path(result.image_output_dir) == image_output_dir
-    assert (image_output_dir / "trajectory_0001" / "frame_000000.png").exists()
-    assert (image_output_dir / "trajectory_0001" / "frame_000002.png").exists()
-    assert (image_output_dir / "trajectory_0002" / "frame_000003.png").exists()
+    assert (image_output_dir / "did101.png").exists()
+    assert (image_output_dir / "did102.png").exists()
+    assert (
+        image_output_dir / "interp_f000002_traj0001_seg000001-000003_p001of001.png"
+    ).exists()
+    assert (image_output_dir / "did201.png").exists()
 
 
 def test_oriented_track_video_prefers_directed_heading_and_preserves_branch(

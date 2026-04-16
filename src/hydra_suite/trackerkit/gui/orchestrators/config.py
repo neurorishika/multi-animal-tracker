@@ -761,6 +761,9 @@ class ConfigOrchestrator:
         self._panels.tracking.spin_density_downsample_factor.setValue(
             int(get_cfg("density_downsample_factor", default=8))
         )
+        self._panels.tracking.chk_export_confidence_density_video.setChecked(
+            get_cfg("export_confidence_density_video", default=True)
+        )
         self._mw._on_confidence_density_map_toggled(
             self._panels.tracking.chk_enable_confidence_density_map.checkState()
         )
@@ -1618,6 +1621,7 @@ class ConfigOrchestrator:
                 "density_min_frame_duration": self._panels.tracking.spin_density_min_duration.value(),
                 "density_min_area_bodies": self._panels.tracking.spin_density_min_area_bodies.value(),
                 "density_downsample_factor": self._panels.tracking.spin_density_downsample_factor.value(),
+                "export_confidence_density_video": self._panels.tracking.chk_export_confidence_density_video.isChecked(),
                 "max_velocity_zscore": self._panels.postprocess.spin_max_velocity_zscore.value(),
                 "velocity_zscore_window_seconds": self._panels.postprocess.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self._panels.postprocess.spin_velocity_zscore_min_vel.value(),
@@ -2325,6 +2329,7 @@ class ConfigOrchestrator:
             "DENSITY_MIN_FRAME_DURATION": self._panels.tracking.spin_density_min_duration.value(),
             "DENSITY_MIN_AREA_BODIES": self._panels.tracking.spin_density_min_area_bodies.value(),
             "DENSITY_DOWNSAMPLE_FACTOR": self._panels.tracking.spin_density_downsample_factor.value(),
+            "EXPORT_CONFIDENCE_DENSITY_VIDEO": self._panels.tracking.chk_export_confidence_density_video.isChecked(),
             "ENABLE_PROFILING": self._panels.setup.chk_enable_profiling.isChecked(),
         }
 
