@@ -240,6 +240,47 @@ def test_training_dialog_grouped_preview_includes_test_split(qapp) -> None:
     assert settings["test_fraction"] == pytest.approx(0.25)
 
 
+def test_training_dialog_grouped_random_preview_preserves_train_when_only_one_group(
+    qapp,
+) -> None:
+    labels = ["left"] * 10
+    dialog = ClassKitTrainingDialog(
+        n_labeled=len(labels),
+        class_choices=["left"],
+        labeled_label_names=labels,
+        group_keys=["session-a"] * len(labels),
+    )
+
+    dialog.split_strategy_combo.setCurrentIndex(
+        dialog.split_strategy_combo.findData("random")
+    )
+    dialog.val_fraction_spin.setValue(0.2)
+
+    summary = dialog.current_data_summary_text()
+
+    assert "8 train / 2 val / 0 test" in summary
+    assert "item-level splitting" in summary
+
+
+def test_training_dialog_grouped_stratified_preview_preserves_train_when_only_one_group(
+    qapp,
+) -> None:
+    labels = ["left"] * 10
+    dialog = ClassKitTrainingDialog(
+        n_labeled=len(labels),
+        class_choices=["left"],
+        labeled_label_names=labels,
+        group_keys=["session-a"] * len(labels),
+    )
+
+    dialog.val_fraction_spin.setValue(0.2)
+
+    summary = dialog.current_data_summary_text()
+
+    assert "8 train / 2 val / 0 test" in summary
+    assert "item-level splitting" in summary
+
+
 def test_training_dialog_shows_labeled_sample_preview(qapp, tmp_path: Path) -> None:
     image_paths = []
     for idx, color_name in enumerate(

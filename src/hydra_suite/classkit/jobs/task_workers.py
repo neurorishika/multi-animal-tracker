@@ -688,13 +688,11 @@ class ExportWorker(QRunnable):
                     split = "train"
                 splits.append(split)
             if unmatched:
-                import warnings
-
-                warnings.warn(
-                    f"{unmatched} of {len(image_paths)} images did not match "
+                self.signals.progress.emit(
+                    -1,
+                    f"WARNING: {unmatched} of {len(image_paths)} images did not match "
                     f"any preset split key and defaulted to 'train'. "
                     f"This may indicate a path resolution mismatch.",
-                    stacklevel=2,
                 )
         else:
             splits = self._build_splits(labels)
@@ -992,20 +990,49 @@ class ExportWorker(QRunnable):
     @Slot()
     def run(self):
         try:
+            import time as _time
+
+            _t0 = _time.monotonic()
             self.signals.started.emit()
             self.signals.progress.emit(0, f"Exporting to {self.format}...")
 
             self._prepare_export_workspace()
             image_paths, labels, splits, class_names = self._collect_valid_labels()
+
+            # Log per-class per-split statistics
+            from collections import Counter
+
+            split_class_counts: dict = {}
+            for split, label in zip(splits, labels):
+                split_class_counts.setdefault(split, Counter())[label] += 1
+            for split_name in ("train", "val", "test"):
+                counts = split_class_counts.get(split_name)
+                if not counts:
+                    continue
+                total = sum(counts.values())
+                breakdown = ", ".join(
+                    f"{class_names.get(lbl, f'class_{lbl}')}={n}"
+                    for lbl, n in sorted(counts.items())
+                )
+                self.signals.progress.emit(
+                    -1, f"Split {split_name}: {total} images ({breakdown})"
+                )
+
             image_paths, labels, splits = self._apply_label_expansion(
                 image_paths, labels, splits, class_names
             )
             image_paths, labels, splits = self._apply_monochrome_mode(
                 image_paths, labels, splits
             )
+            self.signals.progress.emit(
+                -1, f"Exporting {len(image_paths)} images to {self.output_path}"
+            )
             self._export_dataset(image_paths, labels, splits, class_names)
 
-            self.signals.progress.emit(100, "Complete!")
+            _elapsed = _time.monotonic() - _t0
+            self.signals.progress.emit(
+                100, f"Export complete — {len(image_paths)} images in {_elapsed:.1f}s"
+            )
             self.signals.success.emit(
                 {
                     "output_path": self.output_path,

@@ -66,6 +66,14 @@ def _assign_groups_to_split(
         best_pos: int | None = None
         best_key: tuple[int, int, int, int, str] | None = None
         for position, entry in enumerate(group_entries):
+            remaining_after_assignment = sum(
+                int(candidate["size"])
+                for idx, candidate in enumerate(group_entries)
+                if idx != position
+            )
+            if remaining_after_assignment <= 0:
+                continue
+
             label_counts = entry["label_counts"]
             gain = sum(
                 min(int(remaining.get(label, 0)), int(count))
@@ -96,6 +104,51 @@ def _assign_groups_to_split(
         for label, count in entry["label_counts"].items():
             remaining[label] = max(0, int(remaining.get(label, 0)) - int(count))
         assigned_total += int(entry["size"])
+
+
+def _assign_random_groups_to_split(
+    group_entries: list[dict[str, object]],
+    split_by_index: list[str],
+    *,
+    split_name: str,
+    desired_total: int,
+) -> int:
+    """Assign shuffled groups to a holdout split without exhausting train data."""
+
+    assigned_total = 0
+    while group_entries and assigned_total < desired_total:
+        remaining_needed = desired_total - assigned_total
+        best_pos: int | None = None
+        best_key: tuple[int, int, int, str] | None = None
+        for position, entry in enumerate(group_entries):
+            group_size = int(entry["size"])
+            remaining_after_assignment = sum(
+                int(candidate["size"])
+                for idx, candidate in enumerate(group_entries)
+                if idx != position
+            )
+            if remaining_after_assignment <= 0:
+                continue
+
+            key = (
+                0 if group_size <= remaining_needed else 1,
+                abs(group_size - remaining_needed),
+                int(entry.get("shuffle_rank", 0)),
+                str(entry["group"]),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best_pos = position
+
+        if best_pos is None:
+            break
+
+        entry = group_entries.pop(best_pos)
+        for index in entry["indices"]:
+            split_by_index[int(index)] = split_name
+        assigned_total += int(entry["size"])
+
+    return assigned_total
 
 
 def build_grouped_stratified_splits(
@@ -210,19 +263,18 @@ def build_grouped_random_splits(
         entry["shuffle_rank"] = rank
 
     split_by_index = ["train"] * n_items
-    assigned_test = 0
-    assigned_val = 0
-    for entry in group_entries:
-        group_size = int(entry["size"])
-        if assigned_test < desired_test:
-            for index in entry["indices"]:
-                split_by_index[int(index)] = "test"
-            assigned_test += group_size
-            continue
-        if assigned_val < desired_val:
-            for index in entry["indices"]:
-                split_by_index[int(index)] = "val"
-            assigned_val += group_size
+    _assign_random_groups_to_split(
+        group_entries,
+        split_by_index,
+        split_name="test",
+        desired_total=desired_test,
+    )
+    _assign_random_groups_to_split(
+        group_entries,
+        split_by_index,
+        split_name="val",
+        desired_total=desired_val,
+    )
 
     return split_by_index
 
@@ -442,3 +494,78 @@ def build_dataset_splits(
         test_fraction=test_fraction,
         seed=seed,
     )
+
+
+def _split_counts(splits: Sequence[str]) -> dict[str, int]:
+    counts = Counter(str(split or "train") for split in splits)
+    return {
+        "train": int(counts.get("train", 0)),
+        "val": int(counts.get("val", 0)),
+        "test": int(counts.get("test", 0)),
+    }
+
+
+def _requested_holdout_names(
+    *,
+    val_fraction: float,
+    test_fraction: float,
+) -> list[str]:
+    requested: list[str] = []
+    if float(test_fraction) > 0.0:
+        requested.append("test")
+    if float(val_fraction) > 0.0:
+        requested.append("val")
+    return requested
+
+
+def build_training_dataset_splits(
+    labels: Sequence[Hashable],
+    *,
+    strategy: str = "stratified",
+    val_fraction: float = 0.2,
+    test_fraction: float = 0.0,
+    seed: int = 42,
+    groups: Sequence[Hashable] | None = None,
+    min_train_items: int = 2,
+) -> tuple[list[str], bool]:
+    """Return training splits, falling back to item-level splitting if grouping is too coarse."""
+
+    grouped_splits = build_dataset_splits(
+        labels,
+        strategy=strategy,
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
+        seed=seed,
+        groups=groups,
+    )
+    if groups is None:
+        return grouped_splits, False
+
+    requested_holdouts = _requested_holdout_names(
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
+    )
+    grouped_counts = _split_counts(grouped_splits)
+    grouped_missing = sum(
+        1 for split_name in requested_holdouts if grouped_counts.get(split_name, 0) <= 0
+    )
+    grouped_train_ok = grouped_counts.get("train", 0) >= int(min_train_items)
+
+    item_splits = build_dataset_splits(
+        labels,
+        strategy=strategy,
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
+        seed=seed,
+        groups=None,
+    )
+    item_counts = _split_counts(item_splits)
+    item_missing = sum(
+        1 for split_name in requested_holdouts if item_counts.get(split_name, 0) <= 0
+    )
+    item_train_ok = item_counts.get("train", 0) >= int(min_train_items)
+
+    if item_train_ok and (item_missing < grouped_missing or not grouped_train_ok):
+        return item_splits, True
+
+    return grouped_splits, False

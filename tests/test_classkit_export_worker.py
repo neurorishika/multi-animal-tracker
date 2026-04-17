@@ -9,7 +9,10 @@ from PIL import Image
 
 pytest.importorskip("PySide6")
 
-from hydra_suite.classkit.core.export.splits import build_dataset_splits
+from hydra_suite.classkit.core.export.splits import (
+    build_dataset_splits,
+    build_training_dataset_splits,
+)
 from hydra_suite.classkit.jobs.task_workers import ExportWorker
 
 
@@ -155,6 +158,53 @@ def test_grouped_dataset_splits_keep_related_samples_together() -> None:
     for group in sorted(set(groups)):
         assigned = {split for split, key in zip(splits, groups) if key == group}
         assert len(assigned) == 1
+
+
+def test_grouped_random_splits_do_not_consume_only_group() -> None:
+    labels = ["left"] * 10
+    groups = ["session-a"] * 10
+
+    splits = build_dataset_splits(
+        labels,
+        strategy="random",
+        val_fraction=0.2,
+        test_fraction=0.0,
+        groups=groups,
+    )
+
+    assert splits == ["train"] * 10
+
+
+def test_grouped_stratified_splits_do_not_consume_only_group() -> None:
+    labels = ["left"] * 10
+    groups = ["session-a"] * 10
+
+    splits = build_dataset_splits(
+        labels,
+        strategy="stratified",
+        val_fraction=0.2,
+        test_fraction=0.0,
+        groups=groups,
+    )
+
+    assert splits == ["train"] * 10
+
+
+def test_training_split_builder_falls_back_when_grouping_blocks_holdout() -> None:
+    labels = ["left"] * 10
+    groups = ["session-a"] * 10
+
+    splits, used_group_fallback = build_training_dataset_splits(
+        labels,
+        strategy="random",
+        val_fraction=0.2,
+        test_fraction=0.0,
+        groups=groups,
+    )
+
+    assert used_group_fallback is True
+    assert splits.count("train") == 8
+    assert splits.count("val") == 2
 
 
 def test_export_worker_uses_preset_splits_by_path(

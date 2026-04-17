@@ -34,7 +34,7 @@ from hydra_suite.classkit.config.custom_backbones import (
     get_custom_backbone_choices,
     register_user_timm_backbones,
 )
-from hydra_suite.classkit.core.export.splits import build_dataset_splits
+from hydra_suite.classkit.core.export.splits import build_training_dataset_splits
 from hydra_suite.utils.file_dialogs import HydraFileDialog as QFileDialog  # noqa: F811
 
 from .timm_backbone_browser import TimmBackboneBrowserDialog
@@ -74,6 +74,7 @@ class ClassKitTrainingDialog(QDialog):
         self._average_image_size = average_image_size
         self._image_paths = [Path(path) for path in (image_paths or [])]
         self._group_keys = list(group_keys or [])
+        self._used_split_group_fallback = False
         self._train_results = None
         self._worker = None
         self.setWindowTitle("Train Classifier")
@@ -1548,13 +1549,14 @@ class ClassKitTrainingDialog(QDialog):
 
     def _current_data_summary(self) -> dict:
         if self._labeled_label_names:
-            splits = build_dataset_splits(
+            splits, used_group_fallback = build_training_dataset_splits(
                 self._labeled_label_names,
                 strategy=self._current_split_strategy(),
                 val_fraction=self.val_fraction_spin.value(),
                 test_fraction=self.test_fraction_spin.value(),
                 groups=(self._group_keys or None),
             )
+            self._used_split_group_fallback = bool(used_group_fallback)
             train_count = sum(1 for split in splits if split == "train")
             val_count = sum(1 for split in splits if split == "val")
             test_count = sum(1 for split in splits if split == "test")
@@ -1571,8 +1573,10 @@ class ClassKitTrainingDialog(QDialog):
                 "test": test_count,
                 "expansion": expansion_count,
                 "exported": len(self._labeled_label_names) + expansion_count,
+                "used_group_fallback": bool(used_group_fallback),
             }
 
+        self._used_split_group_fallback = False
         labeled = max(0, int(self._n_labeled))
         val_count = int(round(labeled * float(self.val_fraction_spin.value())))
         test_count = int(round(labeled * float(self.test_fraction_spin.value())))
@@ -1594,6 +1598,7 @@ class ClassKitTrainingDialog(QDialog):
             "test": test_count,
             "expansion": 0,
             "exported": labeled,
+            "used_group_fallback": False,
         }
 
     def current_data_summary_text(self) -> str:
@@ -1621,6 +1626,11 @@ class ClassKitTrainingDialog(QDialog):
             )
         else:
             lines.append(f"Exported files: {summary['exported']:,} total.")
+
+        if summary.get("used_group_fallback"):
+            lines.append(
+                "Related-source grouping was too coarse for the requested holdout, so training falls back to item-level splitting for this export."
+            )
 
         enabled_augments = []
         if self.flip_lr_spin.value() > 0:
@@ -1659,7 +1669,7 @@ class ClassKitTrainingDialog(QDialog):
 
         labels = [label for _, label in preview_pairs]
         try:
-            splits = build_dataset_splits(
+            splits, _used_group_fallback = build_training_dataset_splits(
                 labels,
                 strategy=self._current_split_strategy(),
                 val_fraction=self.val_fraction_spin.value(),

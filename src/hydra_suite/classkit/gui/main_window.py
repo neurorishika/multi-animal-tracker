@@ -5822,7 +5822,7 @@ class MainWindow(QMainWindow):
         """Build the immutable context used across export, train, and inference."""
         from pathlib import Path
 
-        from ..core.export.splits import build_dataset_splits
+        from ..core.export.splits import build_training_dataset_splits
 
         settings = dict(settings or dialog.get_settings())
         self._last_training_settings = dict(settings)
@@ -5837,7 +5837,7 @@ class MainWindow(QMainWindow):
             labeled_pairs
         )
         group_keys = self._training_group_keys_for_paths(images)
-        source_splits = build_dataset_splits(
+        source_splits, used_group_fallback = build_training_dataset_splits(
             labels_str,
             strategy=settings.get("split_strategy", "stratified"),
             val_fraction=float(settings.get("val_fraction", 0.2)),
@@ -5872,6 +5872,7 @@ class MainWindow(QMainWindow):
             "group_keys": group_keys,
             "source_splits": source_splits,
             "source_split_by_path": source_split_by_path,
+            "used_group_fallback": bool(used_group_fallback),
             "evaluation_split_name": evaluation_split_name,
             "evaluation_paths": evaluation_paths,
         }
@@ -5994,26 +5995,31 @@ class MainWindow(QMainWindow):
 
     def _on_training_export_success(self, dialog, context, scheme, _result) -> None:
         """Start the actual training worker after dataset export finishes."""
-        from ..jobs.task_workers import ClassKitTrainingWorker
+        try:
+            from ..jobs.task_workers import ClassKitTrainingWorker
 
-        specs = self._build_training_specs(context, scheme)
-        train_worker = ClassKitTrainingWorker(
-            role=context["role"],
-            specs=specs,
-            run_dir=str(context["run_dir"]),
-            multi_head=context["multi_head"],
-        )
-        dialog._worker = train_worker
-        train_worker.signals.progress.connect(
-            lambda pct, msg: self._on_training_progress(dialog, pct, msg)
-        )
-        train_worker.signals.success.connect(
-            lambda results: self._on_training_success(dialog, context, results)
-        )
-        train_worker.signals.error.connect(
-            lambda err: self._on_training_error(dialog, err)
-        )
-        self._threadpool_start(train_worker)
+            dialog.append_log("Dataset export finished. Building training specs...")
+            specs = self._build_training_specs(context, scheme)
+            dialog.append_log(f"Starting training worker ({len(specs)} spec(s))...")
+            train_worker = ClassKitTrainingWorker(
+                role=context["role"],
+                specs=specs,
+                run_dir=str(context["run_dir"]),
+                multi_head=context["multi_head"],
+            )
+            dialog._worker = train_worker
+            train_worker.signals.progress.connect(
+                lambda pct, msg: self._on_training_progress(dialog, pct, msg)
+            )
+            train_worker.signals.success.connect(
+                lambda results: self._on_training_success(dialog, context, results)
+            )
+            train_worker.signals.error.connect(
+                lambda err: self._on_training_error(dialog, err)
+            )
+            self._threadpool_start(train_worker)
+        except Exception as exc:
+            self._on_training_error(dialog, f"Failed to start training: {exc}")
 
     @staticmethod
     def _decode_factor_labels(scheme, labels_str, factor_index: int) -> list[str]:
@@ -6125,7 +6131,36 @@ class MainWindow(QMainWindow):
 
         dialog.start_btn.setEnabled(False)
         dialog.cancel_btn.setEnabled(True)
+
+        # Log a full settings snapshot for debugging
+        _s = settings
+        _mode = _s.get("mode", "?")
+        _backbone = _s.get("backbone", _s.get("base_model", "?"))
+        _device = _s.get("device", "?")
+        _epochs = _s.get("epochs", "?")
+        _lr = _s.get("lr", "?")
+        _batch = _s.get("batch_size", _s.get("batch", "?"))
+        _patience = _s.get("patience", "?")
+        _split = _s.get("split_strategy", "?")
+        _val_frac = _s.get("val_fraction", "?")
+        _test_frac = _s.get("test_fraction", "?")
+        dialog.append_log(
+            f"Training config: mode={_mode}, backbone={_backbone}, "
+            f"device={_device}, epochs={_epochs}, lr={_lr}, batch={_batch}, "
+            f"patience={_patience}"
+        )
+        dialog.append_log(
+            f"Split: strategy={_split}, val_fraction={_val_frac}, "
+            f"test_fraction={_test_frac}"
+        )
+        if _s.get("initial_model_path"):
+            dialog.append_log(f"Warm-start from: {_s['initial_model_path']}")
+
         dialog.append_log("Starting dataset export...")
+        if context.get("used_group_fallback"):
+            dialog.append_log(
+                "Grouped source holdout was too coarse for the requested split; using item-level train/val/test fallback for this training export."
+            )
         dialog.append_log(dialog.current_data_summary_text())
         self._threadpool_start(worker)
 
