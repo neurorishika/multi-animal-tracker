@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
         self._show_model_umap = False  # Explorer toggle: embedding vs model UMAP
         self._show_model_pca = False  # Explorer toggle: embedding vs model PCA
         self._al_candidates = None  # np.ndarray of selected AL batch indices
-        self._active_model_mode = None  # "yolo", "tiny", or None
+        self._active_model_mode = None  # "yolo", "yolo_multihead", "tiny", "custom_cnn", "custom_cnn_multihead", or None
         self._heldout_validation_summary = None  # training-time held-out metric
         self._active_evaluation_paths = None
         self._active_evaluation_split_name = ""
@@ -1661,6 +1661,25 @@ class MainWindow(QMainWindow):
                 if resolved in artifact_paths:
                     meta = entry.get("meta")
                     return meta if isinstance(meta, dict) else None
+        except Exception:
+            return None
+        return None
+
+    def _cached_model_cache_entry(self, path: Path):
+        """Return the cached model entry containing *path* as an artifact."""
+        if not self.db_path:
+            return None
+        try:
+            from ..core.store.db import ClassKitDB as _CKDb
+
+            resolved = self._resolved_path_key(path)
+            for entry in _CKDb(self.db_path).list_model_caches():
+                artifact_paths = {
+                    self._resolved_path_key(artifact)
+                    for artifact in entry.get("artifact_paths", [])
+                }
+                if resolved in artifact_paths:
+                    return entry
         except Exception:
             return None
         return None
@@ -5671,40 +5690,60 @@ class MainWindow(QMainWindow):
             # Custom CNN or Tiny CNN .pth -- dispatch based on arch field
             import torch as _torch
 
-            _ckpt = _torch.load(str(artifact), map_location="cpu", weights_only=False)
-            _arch = (
-                _ckpt.get("arch", "tinyclassifier")
-                if isinstance(_ckpt, dict)
-                else "tinyclassifier"
-            )
-            _class_names = _ckpt.get("class_names") or sorted(set(labels_str))
-            self._active_model_mode = "tiny"
-            if _arch != "tinyclassifier":
-                _sz = _ckpt.get("input_size", (224, 224))
-                _sz = _sz[0] if isinstance(_sz, (list, tuple)) else int(_sz)
+            if multi_head:
+                all_artifacts = [
+                    Path(r["artifact_path"])
+                    for r in results
+                    if r.get("artifact_path") and Path(r["artifact_path"]).exists()
+                ]
+                self._active_model_mode = "custom_cnn_multihead"
                 dialog.append_log(
-                    f"Running Custom CNN inference ({_arch}): {Path(artifact).name}..."
+                    f"Running multi-head Custom CNN inference ({len(all_artifacts)} models)..."
                 )
-                self._run_torchvision_inference(
-                    Path(artifact),
-                    class_names=_class_names,
-                    input_size=_sz,
+                self._run_multihead_custom_inference(
+                    all_artifacts,
                     on_success=on_done,
-                    force_monochrome=(
-                        bool(_ckpt.get("monochrome", False))
-                        if isinstance(_ckpt, dict)
-                        else False
-                    ),
                 )
             else:
+                _ckpt = _torch.load(
+                    str(artifact), map_location="cpu", weights_only=False
+                )
+                _arch = (
+                    _ckpt.get("arch", "tinyclassifier")
+                    if isinstance(_ckpt, dict)
+                    else "tinyclassifier"
+                )
+                _class_names = _ckpt.get("class_names") or sorted(set(labels_str))
                 dialog.append_log(
-                    f"Running tiny CNN inference: {Path(artifact).name}..."
+                    (
+                        f"Running Custom CNN inference ({_arch}): {Path(artifact).name}..."
+                        if _arch != "tinyclassifier"
+                        else f"Running tiny CNN inference: {Path(artifact).name}..."
+                    )
                 )
-                self._run_tiny_inference(
-                    Path(artifact),
-                    class_names=_class_names,
-                    on_success=on_done,
+                self._active_model_mode = (
+                    "tiny" if _arch == "tinyclassifier" else "custom_cnn"
                 )
+                if _arch != "tinyclassifier":
+                    _sz = _ckpt.get("input_size", (224, 224))
+                    _sz = _sz[0] if isinstance(_sz, (list, tuple)) else int(_sz)
+                    self._run_torchvision_inference(
+                        Path(artifact),
+                        class_names=_class_names,
+                        input_size=_sz,
+                        on_success=on_done,
+                        force_monochrome=(
+                            bool(_ckpt.get("monochrome", False))
+                            if isinstance(_ckpt, dict)
+                            else False
+                        ),
+                    )
+                else:
+                    self._run_tiny_inference(
+                        Path(artifact),
+                        class_names=_class_names,
+                        on_success=on_done,
+                    )
 
     def _publish_training_results(self, dialog, scheme, scheme_name):
         """Publish trained model artifacts to the models directory."""
@@ -5726,12 +5765,13 @@ class MainWindow(QMainWindow):
 
         role_val = role_map.get(mode, "classify_flat_custom")
         role = TrainingRole(role_val)
+        published_paths: list[Path] = []
         for fi, result in enumerate(results):
             artifact = result.get("artifact_path", "")
             if not artifact:
                 continue
             try:
-                publish_trained_model(
+                _published_key, published_path = publish_trained_model(
                     role=role,
                     artifact_path=artifact,
                     size="tiny" if "tiny" in mode else "n",
@@ -5748,6 +5788,7 @@ class MainWindow(QMainWindow):
                         scheme.factors[fi].name if (multi_head and scheme) else None
                     ),
                 )
+                published_paths.append(Path(published_path))
                 from pathlib import Path as _Path
 
                 dialog.append_log(f"Published: {_Path(artifact).name}")
@@ -5767,6 +5808,23 @@ class MainWindow(QMainWindow):
 
             except Exception as exc:
                 dialog.append_log(f"Publish error: {exc}")
+
+        if multi_head and len(published_paths) > 1:
+            try:
+                from hydra_suite.classkit.model_bundle import (
+                    write_model_bundle_manifest,
+                )
+
+                manifest_path = published_paths[0].with_suffix(".bundle.json")
+                write_model_bundle_manifest(
+                    manifest_path,
+                    mode=str(mode),
+                    artifact_paths=published_paths,
+                    class_names=list(self.classes or []),
+                )
+                dialog.append_log(f"Published bundle manifest: {manifest_path.name}")
+            except Exception as exc:
+                dialog.append_log(f"Publish manifest warning: {exc}")
 
     def _validate_training_pairs(self):
         """Return labeled training pairs when training preconditions are satisfied."""
@@ -6413,6 +6471,15 @@ class MainWindow(QMainWindow):
             return bool(training_settings.get("monochrome", False))
         return bool((self._last_training_settings or {}).get("monochrome", False))
 
+    def _resolve_classifier_compute_runtime(self, path: Path) -> str:
+        """Resolve classifier inference runtime from cached training settings when available."""
+        training_settings = self._cached_model_training_settings(path)
+        if isinstance(training_settings, dict):
+            runtime = training_settings.get("compute_runtime")
+            if runtime:
+                return str(runtime)
+        return str((self._last_training_settings or {}).get("compute_runtime", "cpu"))
+
     def _load_custom_cnn_checkpoint(
         self,
         path: Path,
@@ -6555,6 +6622,52 @@ class MainWindow(QMainWindow):
     ):
         """Load a checkpoint, auto-detecting YOLO vs embedding-head vs tiny CNN format."""
         try:
+            cache_entry = self._cached_model_cache_entry(path)
+            cache_paths = (cache_entry or {}).get("artifact_paths") or []
+            if (
+                str((cache_entry or {}).get("mode", "")).startswith("multihead")
+                and len(cache_paths) > 1
+            ):
+
+                def _after_cache_load():
+                    if show_message_box:
+                        QMessageBox.information(
+                            self,
+                            "Checkpoint Loaded",
+                            f"Loaded multi-head model set with {len(cache_paths)} artifacts.\n"
+                            f"Inference on {len(self.image_paths):,} images complete.",
+                        )
+                    if on_success is not None:
+                        on_success()
+
+                self._load_model_from_cache_entry(
+                    cache_entry, on_success=_after_cache_load
+                )
+                return
+
+            from ..model_bundle import discover_multihead_model_bundle
+
+            external_bundle = discover_multihead_model_bundle(path)
+            if external_bundle is not None:
+
+                def _after_external_load():
+                    if show_message_box:
+                        QMessageBox.information(
+                            self,
+                            "Checkpoint Loaded",
+                            f"Loaded external {external_bundle.get('mode', 'multi-head')} bundle with "
+                            f"{len(external_bundle.get('artifact_paths') or [])} artifacts.\n"
+                            f"Inference on {len(self.image_paths):,} images complete.",
+                        )
+                    if on_success is not None:
+                        on_success()
+
+                self._load_model_from_cache_entry(
+                    external_bundle,
+                    on_success=_after_external_load,
+                )
+                return
+
             import torch
 
             ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
@@ -7080,9 +7193,7 @@ class MainWindow(QMainWindow):
         """Run TinyCNN inference on all images in background and update confidences."""
         if not self.image_paths:
             return
-        compute_runtime = (self._last_training_settings or {}).get(
-            "compute_runtime", "cpu"
-        )
+        compute_runtime = self._resolve_classifier_compute_runtime(model_path)
 
         from ..jobs.task_workers import TinyCNNInferenceWorker
 
@@ -7146,7 +7257,7 @@ class MainWindow(QMainWindow):
 
         from ..jobs.task_workers import TorchvisionInferenceWorker
 
-        rt = (self._last_training_settings or {}).get("compute_runtime", "cpu")
+        rt = self._resolve_classifier_compute_runtime(model_path)
         worker = TorchvisionInferenceWorker(
             model_path=model_path,
             image_paths=self.image_paths,
@@ -7193,6 +7304,141 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
         self._threadpool_start(worker)
+
+    def _run_multihead_custom_inference(self, model_paths: list, on_success=None):
+        """Run multi-head TinyClassifier/Custom CNN inference and concatenate outputs."""
+        import numpy as np
+        import torch
+
+        from ..jobs.task_workers import (
+            TinyCNNInferenceWorker,
+            TorchvisionInferenceWorker,
+        )
+
+        if not model_paths or not self.image_paths:
+            return
+
+        valid_paths = [Path(path) for path in model_paths if Path(path).exists()]
+        if not valid_paths:
+            return
+
+        collected: list[tuple[np.ndarray, list[str]]] = []
+        total_heads = len(valid_paths)
+
+        def _finish() -> None:
+            all_probs = np.concatenate([probs for probs, _ in collected], axis=1)
+            all_names = [name for _, names in collected for name in names]
+            merged = {"probs": all_probs, "class_names": all_names}
+            self._model_probs = all_probs
+            self._model_class_names = all_names
+            self.umap_model_coords = None
+            self.pca_model_coords = None
+            self._show_model_umap = False
+            self._show_model_pca = False
+            self.btn_umap_embedding.setChecked(True)
+            self.btn_umap_model.setChecked(False)
+            if hasattr(self, "btn_pca_model"):
+                self.btn_pca_model.setChecked(False)
+            self.image_confidences = list(all_probs.max(axis=1).astype(float))
+            self._set_model_projection_buttons_enabled(True)
+            self._update_al_status()
+            self.update_explorer_plot()
+            self.status.showMessage(
+                f"Multi-head Custom CNN inference done: {len(all_names)} combined classes"
+            )
+            self._active_model_mode = "custom_cnn_multihead"
+            self._persist_prediction_cache(
+                all_probs,
+                all_names,
+                "custom_cnn_multihead",
+            )
+            if on_success:
+                on_success(merged)
+
+        def _run_head(index: int) -> None:
+            if index >= total_heads:
+                _finish()
+                return
+
+            model_path = valid_paths[index]
+            ckpt = torch.load(str(model_path), map_location="cpu", weights_only=False)
+            arch = (
+                ckpt.get("arch", "tinyclassifier")
+                if isinstance(ckpt, dict)
+                else "tinyclassifier"
+            )
+            class_names = (
+                list(ckpt.get("class_names") or list(self.classes))
+                if isinstance(ckpt, dict)
+                else list(self.classes)
+            )
+            force_monochrome = (
+                bool(ckpt.get("monochrome", False)) if isinstance(ckpt, dict) else False
+            )
+            compute_runtime = self._resolve_classifier_compute_runtime(model_path)
+
+            if arch == "tinyclassifier":
+                worker = TinyCNNInferenceWorker(
+                    model_path,
+                    self.image_paths,
+                    class_names,
+                    compute_runtime=compute_runtime,
+                    batch_size=64,
+                    force_monochrome=force_monochrome,
+                )
+            else:
+                raw_size = (
+                    ckpt.get("input_size", (224, 224))
+                    if isinstance(ckpt, dict)
+                    else (224, 224)
+                )
+                input_size = (
+                    raw_size[0]
+                    if isinstance(raw_size, (list, tuple))
+                    else int(raw_size)
+                )
+                worker = TorchvisionInferenceWorker(
+                    model_path=model_path,
+                    image_paths=self.image_paths,
+                    class_names=class_names,
+                    input_size=input_size,
+                    compute_runtime=compute_runtime,
+                    batch_size=64,
+                    force_monochrome=force_monochrome,
+                )
+
+            def _head_success(result, next_index=index + 1):
+                collected.append((result["probs"], result["class_names"]))
+                _run_head(next_index)
+
+            worker.signals.success.connect(_head_success)
+            worker.signals.error.connect(
+                lambda error: self.status.showMessage(
+                    f"Multi-head Custom CNN error: {error}"
+                )
+            )
+            worker.signals.progress.connect(
+                lambda _progress, message, head=index + 1: (
+                    self.status.showMessage(
+                        f"[Custom CNN {head}/{total_heads}] {message}"
+                    )
+                    if message
+                    else None
+                )
+            )
+            if index == 0:
+                self.progress_bar.setValue(0)
+                self.progress_bar.setVisible(True)
+            worker.signals.finished.connect(
+                lambda finished_index=index: (
+                    self.progress_bar.setVisible(False)
+                    if finished_index + 1 >= total_heads
+                    else None
+                )
+            )
+            self._threadpool_start(worker)
+
+        _run_head(0)
 
     def _run_multihead_yolo_inference(
         self,
@@ -7272,6 +7518,8 @@ class MainWindow(QMainWindow):
 
     def _load_model_from_cache_entry(self, entry: dict, on_success=None):
         """Load a model from a DB cache entry and run inference + UMAP."""
+        import torch
+
         self._set_active_evaluation_from_meta(entry.get("meta"))
         self._set_heldout_validation_summary(
             self._validation_summary_from_value(
@@ -7306,8 +7554,53 @@ class MainWindow(QMainWindow):
                 self._active_model_mode = "yolo"
                 self._run_yolo_inference(Path(paths[0]), on_success=_after)
         else:
-            self._active_model_mode = "tiny"
-            self._run_tiny_inference(Path(paths[0]), class_names, on_success=_after)
+            if mode.startswith("multihead"):
+                all_paths = [Path(p) for p in paths if Path(p).exists()]
+                self._active_model_mode = "custom_cnn_multihead"
+                self._run_multihead_custom_inference(all_paths, on_success=_after)
+                return
+
+            ckpt = torch.load(str(paths[0]), map_location="cpu", weights_only=False)
+            arch = (
+                ckpt.get("arch", "tinyclassifier")
+                if isinstance(ckpt, dict)
+                else "tinyclassifier"
+            )
+            resolved_names = (
+                list(ckpt.get("class_names") or class_names)
+                if isinstance(ckpt, dict)
+                else class_names
+            )
+            force_monochrome = (
+                bool(ckpt.get("monochrome", False)) if isinstance(ckpt, dict) else False
+            )
+            if arch == "tinyclassifier":
+                self._active_model_mode = "tiny"
+                self._run_tiny_inference(
+                    Path(paths[0]),
+                    resolved_names,
+                    on_success=_after,
+                    force_monochrome=force_monochrome,
+                )
+            else:
+                raw_size = (
+                    ckpt.get("input_size", (224, 224))
+                    if isinstance(ckpt, dict)
+                    else (224, 224)
+                )
+                size = (
+                    raw_size[0]
+                    if isinstance(raw_size, (list, tuple))
+                    else int(raw_size)
+                )
+                self._active_model_mode = "custom_cnn"
+                self._run_torchvision_inference(
+                    Path(paths[0]),
+                    class_names=resolved_names,
+                    input_size=size,
+                    on_success=_after,
+                    force_monochrome=force_monochrome,
+                )
 
     def _labeled_eval_arrays(self):
         """Return labeled indices, ground-truth ids, and evaluation-scope text."""
@@ -7831,6 +8124,8 @@ class MainWindow(QMainWindow):
             model_name = "tiny CNN"
         elif self._active_model_mode == "custom_cnn":
             model_name = "custom CNN"
+        elif self._active_model_mode == "custom_cnn_multihead":
+            model_name = "multi-head custom CNN"
         elif self._trained_classifier is not None:
             model_name = "embedding head"
         else:

@@ -542,4 +542,24 @@ class ModelHistoryDialog(QDialog):
         copied, failed = self._copy_artifacts_to_dir(
             artifact_paths, dest_dir, base_stem
         )
+        if (
+            copied
+            and len(copied) > 1
+            and str(entry.get("mode", "")).startswith("multihead")
+        ):
+            try:
+                from hydra_suite.classkit.model_bundle import (
+                    write_model_bundle_manifest,
+                )
+
+                manifest_name = f"{base_stem}.bundle.json"
+                write_model_bundle_manifest(
+                    dest_dir / manifest_name,
+                    mode=str(entry.get("mode") or ""),
+                    artifact_paths=[dest_dir / name for name in copied],
+                    class_names=list(entry.get("class_names") or []),
+                )
+                copied = copied + [manifest_name]
+            except Exception as exc:
+                failed.append(f"bundle manifest: {exc}")
         self._show_export_result(dest_dir, copied, failed)

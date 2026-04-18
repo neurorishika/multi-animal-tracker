@@ -1393,6 +1393,281 @@ def test_autoload_yolo_classifier_runs_inference_without_prompt(
     assert launched["force_monochrome"] is True
 
 
+def test_load_model_from_cache_entry_dispatches_flat_custom_classifier(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import torch
+
+    artifact = tmp_path / "custom_model.pth"
+    artifact.write_bytes(b"weights")
+    entry = {
+        "mode": "flat_custom",
+        "artifact_paths": [str(artifact)],
+        "class_names": ["left", "right"],
+        "meta": {},
+    }
+
+    window = MainWindow()
+    called = {}
+
+    monkeypatch.setattr(
+        torch,
+        "load",
+        lambda *_args, **_kwargs: {
+            "arch": "timm/convnext_tiny.fb_in1k",
+            "class_names": ["left", "right"],
+            "input_size": (224, 224),
+            "monochrome": True,
+        },
+    )
+    monkeypatch.setattr(
+        window,
+        "_run_tiny_inference",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "flat custom checkpoints should not route through tiny inference"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        window,
+        "_run_torchvision_inference",
+        lambda model_path, class_names, input_size=224, on_success=None, force_monochrome=False: called.update(
+            {
+                "path": model_path,
+                "class_names": class_names,
+                "input_size": input_size,
+                "force_monochrome": force_monochrome,
+                "has_callback": callable(on_success),
+            }
+        ),
+    )
+
+    window._load_model_from_cache_entry(entry)
+
+    assert called == {
+        "path": artifact,
+        "class_names": ["left", "right"],
+        "input_size": 224,
+        "force_monochrome": True,
+        "has_callback": True,
+    }
+    assert window._active_model_mode == "custom_cnn"
+
+
+def test_load_model_from_cache_entry_dispatches_multihead_custom_classifier(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "factor_a.pth"
+    second = tmp_path / "factor_b.pth"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    entry = {
+        "mode": "multihead_custom",
+        "artifact_paths": [str(first), str(second)],
+        "class_names": ["left", "right", "up", "down"],
+        "meta": {},
+    }
+
+    window = MainWindow()
+    called = {}
+
+    monkeypatch.setattr(
+        window,
+        "_run_multihead_custom_inference",
+        lambda model_paths, on_success=None: called.update(
+            {
+                "paths": model_paths,
+                "has_callback": callable(on_success),
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        window,
+        "_run_tiny_inference",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "multi-head custom checkpoints should not route through tiny inference"
+            )
+        ),
+    )
+
+    window._load_model_from_cache_entry(entry)
+
+    assert called == {
+        "paths": [first, second],
+        "has_callback": True,
+    }
+    assert window._active_model_mode == "custom_cnn_multihead"
+
+
+def test_load_checkpoint_from_path_uses_cached_multihead_entry(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected = tmp_path / "factor_a.pth"
+    sibling = tmp_path / "factor_b.pth"
+    selected.write_bytes(b"a")
+    sibling.write_bytes(b"b")
+    entry = {
+        "mode": "multihead_custom",
+        "artifact_paths": [str(selected), str(sibling)],
+        "class_names": ["left", "right"],
+        "meta": {},
+    }
+
+    window = MainWindow()
+    called = {}
+
+    monkeypatch.setattr(window, "_cached_model_cache_entry", lambda _path: entry)
+    monkeypatch.setattr(
+        window,
+        "_load_model_from_cache_entry",
+        lambda cache_entry, on_success=None: called.update(
+            {
+                "entry": cache_entry,
+                "has_callback": callable(on_success),
+            }
+        ),
+    )
+
+    window._load_checkpoint_from_path(selected, show_message_box=False)
+
+    assert called == {
+        "entry": entry,
+        "has_callback": True,
+    }
+
+
+def test_load_checkpoint_from_path_discovers_external_multihead_manifest(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_module = pytest.importorskip("hydra_suite.classkit.model_bundle")
+
+    selected = tmp_path / "factor_a.pth"
+    sibling = tmp_path / "factor_b.pth"
+    selected.write_bytes(b"a")
+    sibling.write_bytes(b"b")
+    bundle_module.write_model_bundle_manifest(
+        tmp_path / "external_multihead.bundle.json",
+        mode="multihead_custom",
+        artifact_paths=[selected, sibling],
+        class_names=["left", "right"],
+    )
+
+    window = MainWindow()
+    called = {}
+
+    monkeypatch.setattr(window, "_cached_model_cache_entry", lambda _path: None)
+    monkeypatch.setattr(
+        window,
+        "_load_model_from_cache_entry",
+        lambda entry, on_success=None: called.update(
+            {
+                "entry": entry,
+                "has_callback": callable(on_success),
+            }
+        ),
+    )
+
+    window._load_checkpoint_from_path(selected, show_message_box=False)
+
+    assert called["entry"]["mode"] == "multihead_custom"
+    assert called["entry"]["artifact_paths"] == [
+        str(selected.resolve()),
+        str(sibling.resolve()),
+    ]
+    assert called["entry"]["class_names"] == ["left", "right"]
+    assert called["has_callback"] is True
+
+
+def test_load_checkpoint_from_path_discovers_external_multihead_siblings(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_module = pytest.importorskip("hydra_suite.classkit.model_bundle")
+
+    selected = tmp_path / "classkit_multihead_custom_20260417_factor_a.pth"
+    sibling = tmp_path / "classkit_multihead_custom_20260417_factor_b.pth"
+    selected.write_bytes(b"a")
+    sibling.write_bytes(b"b")
+
+    window = MainWindow()
+    called = {}
+
+    monkeypatch.setattr(window, "_cached_model_cache_entry", lambda _path: None)
+    monkeypatch.setattr(
+        bundle_module, "_looks_like_classkit_checkpoint", lambda _path: True
+    )
+    monkeypatch.setattr(
+        window,
+        "_load_model_from_cache_entry",
+        lambda entry, on_success=None: called.update(
+            {
+                "entry": entry,
+                "has_callback": callable(on_success),
+            }
+        ),
+    )
+
+    window._load_checkpoint_from_path(selected, show_message_box=False)
+
+    assert called["entry"]["mode"] == "multihead_custom"
+    assert called["entry"]["artifact_paths"] == [
+        str(selected.resolve()),
+        str(sibling.resolve()),
+    ]
+    assert called["has_callback"] is True
+
+
+def test_post_training_inference_dispatches_multihead_custom_classifier(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "factor_a.pth"
+    second = tmp_path / "factor_b.pth"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    class Dialog:
+        def __init__(self) -> None:
+            self.logs = []
+
+        def append_log(self, message: str) -> None:
+            self.logs.append(message)
+
+    window = MainWindow()
+    dialog = Dialog()
+    called = {}
+
+    monkeypatch.setattr(
+        window,
+        "_run_multihead_custom_inference",
+        lambda model_paths, on_success=None: called.update(
+            {
+                "paths": model_paths,
+                "has_callback": callable(on_success),
+            }
+        ),
+    )
+
+    window._run_post_training_inference(
+        [
+            {"artifact_path": str(first)},
+            {"artifact_path": str(second)},
+        ],
+        is_yolo=False,
+        multi_head=True,
+        labels_str=["left", "right"],
+        dialog=dialog,
+        on_done=lambda *_args, **_kwargs: None,
+    )
+
+    assert called == {
+        "paths": [first, second],
+        "has_callback": True,
+    }
+    assert window._active_model_mode == "custom_cnn_multihead"
+    assert dialog.logs == ["Running multi-head Custom CNN inference (2 models)..."]
+
+
 def test_apply_cached_predictions_switches_to_prediction_view_when_no_batch(
     qapp,
 ) -> None:
